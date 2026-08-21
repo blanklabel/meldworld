@@ -3313,6 +3313,50 @@ impl Db {
         Ok(())
     }
 
+    /// Burn the EPHEMERAL gear a single hero was wearing when it fell.
+    ///
+    /// Ephemeral is the tier that cannot be banked, and what it costs is not only the walk
+    /// home: it burns with **the hero that was wearing it**. That is what prices the extra
+    /// affixes it rolls (`count_ephemeral_bonus`) — a build hung off an ephemeral piece is a
+    /// build that can end mid-fight, so the strongest loadout in the game is also the one
+    /// most exposed to a single bad turn. Same shape as the insured durability tax beside it
+    /// (`apply_hero_fall_durability`, GR-2): charged **per fall, on that hero's own equipped
+    /// kit**, never account-wide — a party that loses its Shifter does not burn what the
+    /// Resonant is wearing.
+    ///
+    /// Deliberately NOT the same call as the run-end burn (`burn_ephemeral_gear`): that one
+    /// takes everything the player owns because the run is over either way, and using it
+    /// here would have one hero's death burn four heroes' kit.
+    pub async fn burn_hero_ephemeral_gear(
+        &self,
+        player_id: Uuid,
+        hero_slot: i32,
+    ) -> Result<u64, DbError> {
+        Ok(match &self.backend {
+            Backend::Pg(pool) => {
+                sqlx::query(
+                    "DELETE FROM gear
+                     WHERE owner_player_id = $1 AND insurance = 'red' AND equipped_hero_slot = $2",
+                )
+                .bind(player_id)
+                .bind(hero_slot)
+                .execute(pool)
+                .await?
+                .rows_affected()
+            }
+            Backend::Mem(m) => {
+                let mut m = m.lock().unwrap();
+                let before = m.gear.len();
+                m.gear.retain(|_, g| {
+                    !(g.owner_player_id == player_id
+                        && g.insurance == "red"
+                        && g.equipped_hero_slot == Some(hero_slot))
+                });
+                (before - m.gear.len()) as u64
+            }
+        })
+    }
+
     /// Equip a gear item to hero slot `Some(hero_slot)`, or unequip it with
     /// `None`, enforcing the loadout rules (vault-gear.md equip endpoint).
     /// Equipping is idempotent (already worn by that same hero → no-op),
@@ -3658,55 +3702,15 @@ fn note_weapon(b: &mut GearBonus, slot: &str, family: &str) {
     }
 }
 
-/// Fold one item's AD-1 affixes into a hero's running bonus.
+/// Fold one item's AD-1 affixes into a hero's running bonus, from the gear row's JSON.
 ///
-/// Stat and ward affixes apply immediately; a **keyword** affix only counts for
-/// the class whose mechanic it twists; a **synergy** affix is deferred to battle
-/// assembly, which is the only place that knows the party composition.
+/// The FOLD itself is `meld_proto::equipment::fold_affixes` — this only parses. It used to
+/// hold the match too, and because it lived here it only ever ran on Vault gear: an affix on
+/// a piece found mid-dive reached the fight through a different path that copied atk/def/spd
+/// and dropped everything else.
 fn apply_affixes(b: &mut GearBonus, raw: &str, hero_class: Option<&str>) {
     let class = hero_class.and_then(meld_proto::equipment::class_from_key);
-    for a in meld_proto::affixes::from_json(raw) {
-        if let Some(c) = class {
-            if !a.applies_to(c) {
-                continue;
-            }
-        } else if a.def().and_then(|d| d.only_class).is_some() {
-            continue;
-        }
-        let m = a.magnitude;
-        match a.key.as_str() {
-            "atk" => b.atk += m,
-            "def" => b.def += m,
-            "spd" => b.spd += m,
-            "barrier" => b.barrier += m,
-            "regen" => b.regen += m,
-            "evasion" => b.evasion += m,
-            "adrenaline_primed" => b.adrenaline += m,
-            "focus_slot" => b.focus_slots += m,
-            "ward" => b.ward += m,
-            "element_power" => {
-                if let Some(el) = &a.element {
-                    b.element_power.push((el.clone(), m));
-                }
-            }
-            "brand" if b.brand.is_none() => b.brand = a.element.clone(),
-            "resist" => {
-                if let Some(el) = &a.element {
-                    // A resist affix reads as a percentage; the modifier plumbing
-                    // wants a multiplier (25% resisted → 0.75).
-                    let mult = 1.0 - (m.clamp(0, 100) as f64 / 100.0);
-                    b.modifiers.push((el.clone(), mult));
-                }
-            }
-            "ally_atk" | "ally_def" => {
-                if let Some(ally) = &a.ally_class {
-                    let (atk, def) = if a.key == "ally_atk" { (m, 0) } else { (0, m) };
-                    b.synergies.push((ally.clone(), atk, def));
-                }
-            }
-            _ => {}
-        }
-    }
+    meld_proto::equipment::fold_affixes(b, &meld_proto::affixes::from_json(raw), class);
 }
 
 /// Fold one item's AD-1 chase-tier facts into a hero's running bonus: a unique's
@@ -5035,6 +5039,52 @@ mod tests {
         assert!(b.modifiers.iter().any(|(el, m)| el == "FIRE" && (*m - 0.75).abs() < 1e-9));
         // Synergy is deferred to battle assembly, which knows the party.
         assert_eq!(b.synergies, vec![("resonant".to_string(), 6, 0)]);
+    }
+
+    /// The DB half of the per-fall burn: a hero's own equipped ephemeral rows go, and only
+    /// those. It is the backstop for a red row that outlived a previous run — the piece
+    /// found THIS dive lives in the run, not here — so the important half of this test is
+    /// what it leaves alone.
+    #[tokio::test]
+    async fn a_hero_fall_burns_only_that_heros_ephemeral_rows() {
+        let db = mem().await;
+        let p = db.register("faller", "pw").await.unwrap().player_id;
+        let piece = |name: &str, ins: meld_proto::Insurance| LootedGear {
+            insurance: ins,
+            gear_id: Uuid::now_v7(),
+            name: name.into(),
+            slot: "accessory".into(),
+            class_key: String::new(),
+            tier: 6,
+            atk_bonus: 0,
+            def_bonus: 0,
+            spd_bonus: 3,
+            base_max_durability: 40,
+            max_durability: 40,
+            damage_modifiers: String::new(),
+            family: String::new(),
+            armor_weight: String::new(),
+            affixes: String::new(),
+            unique_key: String::new(),
+            set_key: String::new(),
+        };
+        let doomed = piece("Doomed Band", meld_proto::Insurance::Ephemeral);
+        let spared = piece("Spared Band", meld_proto::Insurance::Ephemeral);
+        let insured = piece("Insured Band", meld_proto::Insurance::Insured);
+        let (doomed_id, spared_id, insured_id) = (doomed.gear_id, spared.gear_id, insured.gear_id);
+        db.insert_looted_gear(p, &[doomed, spared, insured]).await.unwrap();
+        // Hero 0 wears the doomed one and the insured one; hero 1 wears the other.
+        for (id, slot) in [(doomed_id, 0), (insured_id, 0), (spared_id, 1)] {
+            db.set_equipped(p, id, Some(slot)).await.unwrap();
+        }
+
+        let burned = db.burn_hero_ephemeral_gear(p, 0).await.unwrap();
+
+        assert_eq!(burned, 1, "a fall burned {burned} pieces");
+        let left: Vec<String> = db.get_gear(p).await.unwrap().into_iter().map(|g| g.name).collect();
+        assert!(!left.contains(&"Doomed Band".to_string()), "hero 0's ephemeral piece survived");
+        assert!(left.contains(&"Spared Band".to_string()), "hero 1's kit burned with hero 0");
+        assert!(left.contains(&"Insured Band".to_string()), "insured gear is repaired, not burned");
     }
 
     #[tokio::test]

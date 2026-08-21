@@ -458,7 +458,7 @@ burns on death/leave; some is single-use. See
     `TwoHandedConflict` enforces both-hands-or-neither in either equip order. A hero with
     no recorded class is never locked out (derivation stays the backstop). The starter kit
     no longer hands a buckler to a two-handed class.
-- [ ] **GR-6 — "Red" becomes "Ephemeral" (and says so).** Rename `Insurance::Red` →
+- [x] **GR-6 — "Red" becomes "Ephemeral" (and says so).** Rename `Insurance::Red` →
   **`Ephemeral`** and `Blue` → **`Insured`** on the wire (serde alias keeps old
   payloads parsing) and in every player-facing string; the Blue-Chest/Red-Chest
   *fiction* stays in CANON §G but stops being the label a player must decode. Every
@@ -472,12 +472,23 @@ burns on death/leave; some is single-use. See
     **Ephemeral — "Vanishes when the run ends - win or lose."** on its own amber line
     (an unparseable word reads as Ephemeral: wrongly believing an item is safe costs the
     player the item).
-  - **Remains, and both halves were re-checked against the code:** the loot report /
-    end-of-run summary carries gear as bare names (`LootReport.gear: Vec<String>`), so the
-    one surface that appears at the exact moment a player is deciding what to risk is the
-    one surface that does not say the word; and the tooltip fires on
-    `Interaction::Hovered`, which **touch never reports** — so on a phone there is no path
-    to the sentence at all. The word is only ever a hover away on desktop.
+  - **The tally says it now.** `LootReport.gear` was `Vec<String>` — bare names — so the one
+    surface that appears at the exact moment a player is deciding what to risk was the one
+    surface that did not say the word. It carries `(name, Insurance)` off the wire (which
+    had it all along and the client was throwing away), each row wears the tier in its own
+    colour, and the full sentence is spelled out **once** under a haul that contains
+    anything ephemeral rather than per row. The death screen and the flee status line report
+    it too, because a hero falling now BURNS its ephemeral kit and that is the moment the
+    word matters most.
+  - **And a phone can finally read it.** The tooltip fired on `Interaction::Hovered`, which
+    touch never reports — so on a phone there was no path to the sentence at all, for the
+    one warning in the game a player cannot afford to miss. A **press-and-hold**
+    (`GEAR_HOLD_SECS`, 0.3s) opens the same panel, anchored to the ROW rather than to a
+    cursor (a finger is already covering the row) and flipped above it in the lower half of
+    the screen so a list near the bottom does not open its detail off-screen. Hover still
+    wins where both exist, and the two anchor differently on purpose.
+  - One `insurance_color` for every surface that speaks a tier, so the amber that means
+    "this burns" cannot drift between the tooltip, the tally and the death screen.
 - [x] **GR-3 — Ephemeral items/gear.** `Insurance::Ephemeral` is the flag, and it is
   enforced on **every** way a dive can end rather than at one chokepoint —
   `db.burn_ephemeral_gear` fires from `DbWrite::Death` (a wipe takes it exactly as any
@@ -2504,6 +2515,65 @@ the current build.
   - *Complete:* affix rerolling landed with the Forge (`MS-1`), and the elemental half
     with the `brand` affix (`AD-3`). Affixes, uniques, sets, damage types and rerolling
     are all live.
+  - ⚠️ **AND AN AFFIX ON GEAR FOUND THIS DIVE DID NOTHING AT ALL.** The affix→stat fold
+    lived in `meld-db`, so it only ever ran on VAULT rows; run loot reached the fight through
+    `effective_gear_bonus`, which copied `atk`/`def`/`spd` and dropped the rest — no brand,
+    no ward, no synergy, no keyword, for the whole dive you were carrying the piece. Which
+    means the **ephemeral tier's affixes could never once apply**: it only exists inside a
+    run and burns on the way home, so its entire payload was decorative and its only real
+    effect was the 1.6x stat. (Anything measured about ephemeral affixes before this — the
+    "4.00 affixes on an ephemeral legendary" in the commit above included — was counting
+    lines that did nothing in a fight.) One fold now
+    (`meld_proto::equipment::fold_affixes`), called by both paths, and a weapon found this
+    dive contributes its FAMILY too, or a bow you just picked up does not reach. Same shape
+    as the twice-declared `GearBonus` this repo already warns about.
+  - ✅ **THE POOL IS A HIERARCHY, NOT A COIN FLIP.** Measured on the flat pool: all 13
+    reachable keys landed on **32-34%** of a deep legendary, so `brand` was exactly as
+    common as `masterwork` and a wide roll was more random lines rather than a build worth
+    chasing. Draws are now **weighted** per affix class (`[affix] weight_stat` …
+    `weight_synergy`, parallel to the existing tier floors) and taken **without
+    replacement** — which also retires a silent tax: the loop used to `continue` past a
+    duplicate key and eat the line, so a nominal 5 delivered 4.29, a nominal 6 delivered
+    4.97, and `count_ephemeral_bonus` meant less the more of it you asked for. Now a
+    standard legendary weapon reads stat 38-40%, masterwork 33%, a ward 21%, an element
+    **13%**, a keyword or synergy **9%**, and every count lands exactly. The test holds the
+    ORDERING, not the rates.
+  - ✅ **EVERY CLASS HAS A KEYWORD AFFIX NOW.** The class-mechanic lane was a two-class
+    feature — the Hunter's Adrenaline and the Psyker's Focus slot — so six of the eight
+    fieldable classes drew from a pool with no twist in it, and the most characterful affix
+    class was one most heroes could never find. Six new ones, each reusing a state the
+    engine already models (the discipline `GR-4`'s potions were built on): Explorer
+    **pace_setter** (gauge part-filled at battle start), Resonant **mender_regen** (points
+    of max HP on the only innate regen in the game), Shifter **runner_dodge** (PERMANENT
+    dodge, not the decaying boon anyone can roll), Phoenix Guard **undead_bane** (read off
+    the ATTACKER — the wearer's zeal, not a property of the target), Smithwright
+    **tempered_start** (walks in already Tempered), Keeper **grafted_bloom** (spell power,
+    because its damage rides Mnd). `every_class_has_exactly_one_keyword_affix` reads the
+    roster, not a list.
+  - ✅ **EPHEMERAL IS THE BUILD-DEFINING TIER, and it is now priced like one.** It was the
+    strongest *number* in the game (`ephemeral_power_mult` 1.6) and nothing else — affix
+    count came from rarity alone, and rarity is rolled INDEPENDENTLY of insurance, so an
+    ephemeral **common** was reachable: a piece that burns on the way home, carries zero
+    affixes, and is strictly worse than the standard drop beside it. Three changes make the
+    tier what it was described as:
+    - **Never common** (structural, not a tunable): the tier that defines a run always
+      carries a build.
+    - **`[affix] count_ephemeral_bonus`** — two extra lines on top of its rarity's count, so
+      an ephemeral legendary reads 5 affixes where the insured legendary beside it reads 3.
+      What the tier buys is WIDTH, which is what a build is; a bigger single number is what
+      `ephemeral_power_mult` was already for. The strongest synergies in the game are now
+      ones you can only hold together for a single dive.
+    - **It burns when its WEARER falls**, not only when the run ends — the same trigger
+      `GR-2`'s durability tax uses, and the thing that prices the extra affixes: a build hung
+      off an ephemeral piece is a build a single bad turn can unmake. Run-side
+      (`PlayerRun::burn_equipped_ephemeral`), because gear found this dive does not reach the
+      `gear` table until extraction — the piece it matters most for lives only in the run —
+      with `Db::burn_hero_ephemeral_gear` as the backstop for a red row that outlived an
+      earlier run. It takes **that hero's own equipped pieces only**: a party losing its
+      Shifter does not burn what the Resonant is wearing.
+    - The loss is **named** on the wire (`GearWorn.ephemeral_burned`) and on every surface
+      that reports a fall, because "you lost some gear" does not tell a player which build
+      just ended.
   - ⚠️ **Fixed after the fact: "of Fury" was locked to a class with no Adrenaline.**
     `adrenaline_primed` banks Adrenaline and its `only_class` said **Explorer** — but
     `party_fighters` grants `adrenaline_max` to the **Hunter** and nobody else, so the one

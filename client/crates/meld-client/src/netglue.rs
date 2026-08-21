@@ -471,8 +471,16 @@ pub(crate) fn pump_net(
                     };
                     // You still paid for whoever went down before you got out.
                     if !worn.is_empty() {
-                        let names: Vec<&str> = worn.iter().map(|(n, _)| n.as_str()).collect();
+                        let names: Vec<&str> = worn.iter().map(|(n, ..)| n.as_str()).collect();
                         line.push_str(&format!(" - {} fell; kit worn", names.join(", ")));
+                        // Fleeing shows no report card, so this line is the ONLY place the
+                        // burn would be spoken — and an ephemeral piece lost on the way out
+                        // of a fight you ran from is exactly the loss a player would
+                        // otherwise discover much later, in a menu, with no explanation.
+                        let burned: usize = worn.iter().map(|(.., b)| b.len()).sum();
+                        if burned > 0 {
+                            line.push_str(&format!(", {burned} ephemeral piece(s) burned"));
+                        }
                     }
                     session.status = line;
                 } else {

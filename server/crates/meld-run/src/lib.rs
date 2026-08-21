@@ -14,7 +14,8 @@ use meld_balance::Balance;
 use meld_battle::{Battle, Fighter};
 use meld_proto::common::{ItemStack, LootGear};
 use meld_proto::enums::{
-    CharacterClass, CombatantKind, DamageType, EncounterClass, RunResult, TargetProfile,
+    CharacterClass, CombatantKind, DamageType, EncounterClass, Insurance, RunResult,
+    TargetProfile,
 };
 use meld_proto::Id;
 use meld_world::MonsterSpawn;
@@ -182,6 +183,32 @@ pub struct PlayerRun {
 impl PlayerRun {
     pub fn is_terminal(&self) -> bool {
         self.result.is_some()
+    }
+
+    /// Burn the EPHEMERAL pieces `hero_slot` was wearing when it fell, returning their
+    /// names so the loss can be reported. Insured and standard kit is untouched.
+    ///
+    /// Ephemeral gear is the widest build in the game (`count_ephemeral_bonus` extra
+    /// affixes on top of its rarity) and this is what it is priced against: it does not
+    /// merely fail to come home, it goes when **the hero wearing it** goes. So a run built
+    /// around one is a run a single bad turn can unmake — which is the trade that makes the
+    /// tier interesting rather than just strong.
+    ///
+    /// Run-side rather than in the DB on purpose: gear found this dive does not reach the
+    /// `gear` table until extraction, so the piece a hero found an hour ago and is wearing
+    /// right now lives ONLY here. The DB call of the same name is the backstop for a red
+    /// row that somehow outlived a previous run.
+    pub fn burn_equipped_ephemeral(&mut self, hero_slot: i32) -> Vec<String> {
+        let mut burned = Vec::new();
+        self.looted_gear.retain(|g| {
+            let doomed =
+                g.insurance == Insurance::Ephemeral && g.equipped_hero_slot == Some(hero_slot);
+            if doomed {
+                burned.push(g.name.clone());
+            }
+            !doomed
+        });
+        burned
     }
 
     /// Apply victory XP, leveling up as thresholds are crossed. Returns the
@@ -749,9 +776,14 @@ pub fn party_fighters(
                 // A Resonant regenerates a little HP each of its turns (innate) and
                 // stands in the back row.
                 CharacterClass::Resonant => {
-                    f.regen = ((f.max_hp as f64) * balance.battle.resonant_regen_fraction)
-                        .round()
-                        .max(1.0) as i32;
+                    // AD-1 "of the Wellspring": percentage POINTS of max HP on top of the
+                    // innate fraction. The Resonant is the only class with innate regen, so
+                    // deepening it is a twist nobody else could spend — and it stays a
+                    // FRACTION of the hero's own pool, like every other magnitude that
+                    // lands on a hero.
+                    let frac = balance.battle.resonant_regen_fraction
+                        + bonus.mender_regen_pct as f64 / 100.0;
+                    f.regen = ((f.max_hp as f64) * frac).round().max(1.0) as i32;
                     f.back_row = true;
                 }
                 // Adrenaline belongs to the HUNTER, which is where every ability that
@@ -766,6 +798,39 @@ pub fn party_fighters(
                     // AD-1 "of Fury": walk in with Adrenaline already banked, so the
                     // first turn can be a skill instead of a wind-up attack.
                     f.adrenaline = bonus.adrenaline.min(f.adrenaline_max);
+                }
+                // AD-1 "of the Blazed Trail": the Explorer sets the PACE, so it walks in
+                // with its gauge already part-filled — the same head start a Psyker's pin
+                // buys the whole party, earned by the loadout instead.
+                CharacterClass::Explorer => {
+                    f.gauge = (f.gauge + bonus.start_gauge_pct as f64 / 100.0).clamp(0.0, 0.99);
+                }
+                // AD-1 "of the Vanishing": the Shifter is the only class whose base Dex
+                // clears the dodge floor, so deepening the PERMANENT dodge is a twist
+                // nobody else has a use for. Not the Evasion boon — that decays, and every
+                // class can already roll it.
+                CharacterClass::Shifter => {
+                    f.dodge += bonus.dodge_pct as f64 / 100.0;
+                }
+                // AD-1 "of the Pyre": the order's standing bonus against the risen, deeper.
+                CharacterClass::PhoenixGuard => {
+                    f.undead_bane += bonus.undead_bane_pct as f64 / 100.0;
+                }
+                // AD-1 "of the Anvil": the Smithwright walks in already Tempered, its own
+                // signature buff, as a share of base atk. Seeded here like the ward affixes
+                // above rather than as a STACK of the ability — gear granting a standing
+                // bonus is the piece's own, not one of the five the fight allows.
+                CharacterClass::Smithwright => {
+                    f.atk += ((f.base_atk as f64) * (bonus.tempered_pct as f64 / 100.0))
+                        .round() as i32;
+                }
+                // AD-1 "of the Grafted Bloom": the Keeper's damage rides Mnd, so its
+                // spell power is the thing to deepen — the one martial-looking class where
+                // this is not a caster's affix on a swordsman.
+                CharacterClass::Keeper => {
+                    f.spell_power += ((f.spell_power as f64)
+                        * (bonus.spell_power_pct as f64 / 100.0))
+                        .round() as i32;
                 }
                 // Other martial classes hold the front line with no special resource.
                 _ => {}
@@ -2095,6 +2160,58 @@ mod tests {
         let fire = f.damage_modifiers[&DamageType::Fire];
         assert!(fire < 0.5, "four quarter-resist wards left fire at {fire}");
         assert!(fire >= 0.0, "a ward went NEGATIVE, which is absorption, not resistance");
+    }
+
+    /// A FALL BURNS THAT HERO'S EPHEMERAL KIT — and only that hero's, and only the
+    /// ephemeral tier. This is what the tier's extra affixes are priced against: the widest
+    /// build in the game is also the one a single bad turn can end. It has to be run-side,
+    /// because gear found this dive does not reach the `gear` table until extraction.
+    #[test]
+    fn a_fallen_hero_burns_its_own_ephemeral_kit_and_nobody_elses() {
+        let b = Balance::load_default().unwrap();
+        let mut runs = InstanceRun::new("i".into(), 0, &b, 0);
+        runs.add_party(vec![("p".into(), "u".into(), CharacterClass::Hunter, "r".into())]);
+        let piece = |name: &str, ins: Insurance, slot: Option<i32>| LootGear {
+            gear_id: name.into(),
+            name: name.into(),
+            rarity: "epic".into(),
+            slot: "chest".into(),
+            class_key: "hunter".into(),
+            insurance: ins,
+            tier: 12,
+            atk_bonus: 0,
+            def_bonus: 9,
+            spd_bonus: 0,
+            base_max_durability: 70,
+            max_durability: 70,
+            equipped_hero_slot: slot,
+            damage_modifiers: Vec::new(),
+            family: String::new(),
+            armor_weight: "medium".into(),
+            affixes: Vec::new(),
+            unique_key: String::new(),
+            set_key: String::new(),
+        };
+        let run = &mut runs.runs[0];
+        run.looted_gear = vec![
+            piece("Doomed", Insurance::Ephemeral, Some(0)),
+            piece("Someone Else's", Insurance::Ephemeral, Some(1)),
+            piece("In the Bag", Insurance::Ephemeral, None),
+            piece("Insured", Insurance::Insured, Some(0)),
+            piece("Standard", Insurance::Standard, Some(0)),
+        ];
+
+        let burned = run.burn_equipped_ephemeral(0);
+
+        assert_eq!(burned, vec!["Doomed".to_string()], "the wrong pieces burned");
+        let left: Vec<&str> = run.looted_gear.iter().map(|g| g.name.as_str()).collect();
+        assert_eq!(
+            left,
+            vec!["Someone Else's", "In the Bag", "Insured", "Standard"],
+            "a hero's death took another hero's kit, the backpack, or a tier that survives"
+        );
+        // Nothing to burn is not an error, and reports nothing rather than something.
+        assert!(run.burn_equipped_ephemeral(0).is_empty());
     }
 
     #[test]

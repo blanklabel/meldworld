@@ -184,6 +184,16 @@ an `of Masterwork` piece 4–6. It applies:
 - **Only to the hero who fell.** A teammate's death is not a bill you pay.
 - **To insured gear only** — ephemeral and standard have their own, harsher rules.
 
+**A fall also BURNS that hero's ephemeral gear.** Same trigger, same scope — that hero's own
+equipped pieces, per fall, on every outcome including a fight the party fled — but the
+consequence is destruction rather than wear, because ephemeral gear cannot be repaired and
+was never going to come home. This is what prices the tier's extra affixes
+(`[affix] count_ephemeral_bonus`): the widest build in the game is also the one a single bad
+turn can unmake. Enforced in the RUN (`PlayerRun::burn_equipped_ephemeral`) because gear
+found this dive is not owned Vault gear until extraction, with a DB-side backstop for a red
+row that outlived an earlier run. The pieces lost are named to the player on
+`battle.ended`'s `gear_worn.ephemeral_burned`.
+
 Falls are counted by the battle engine at the single point damage puts a fighter
 down. The two deaths that happen with **no battle** — a sprung dungeon trap and the
 Force blast of a Shift (CANON §W2) — charge the same tax from the same write.

@@ -248,10 +248,47 @@ pub(crate) fn gear_slot_stat(g: &GearLine) -> i32 {
 #[derive(Component)]
 pub(crate) struct GearTooltipRoot;
 
+/// How long a gear row must be held before its detail opens.
+///
+/// A HOVER is how a mouse asks "what is this"; a phone has no hover at all, so the same
+/// question has to be a HOLD. Without it the insurance sentence — the one that says a piece
+/// burns when you reach the city — was literally unreachable on touch (`GR-6`), which is the
+/// worst possible thing for a warning to be. Short enough not to feel like a wait, long
+/// enough that a tap meant to EQUIP does not flash a panel on its way through.
+pub(crate) const GEAR_HOLD_SECS: f32 = 0.3;
+
+/// The row currently being held down, and for how long.
+#[derive(Resource, Default)]
+pub(crate) struct GearHold {
+    gear_id: String,
+    held: f32,
+}
+
+/// Accumulate the hold on whichever gear row is pressed. Releasing, or moving to another
+/// row, starts over — a hold is one continuous press on one thing.
+pub(crate) fn track_gear_hold(
+    time: Res<Time>,
+    pressed: Query<(&Interaction, &GearButton)>,
+    mut hold: ResMut<GearHold>,
+) {
+    match pressed.iter().find(|(i, _)| **i == Interaction::Pressed) {
+        Some((_, g)) if g.gear_id == hold.gear_id => hold.held += time.delta_secs(),
+        Some((_, g)) => {
+            hold.gear_id = g.gear_id.clone();
+            hold.held = 0.0;
+        }
+        None => {
+            hold.gear_id.clear();
+            hold.held = 0.0;
+        }
+    }
+}
+
 pub(crate) fn render_gear_tooltip(
     mut commands: Commands,
     windows: Query<&Window>,
-    hovered: Query<(&Interaction, &GearButton)>,
+    hovered: Query<(&Interaction, &GearButton, &GlobalTransform, &ComputedNode)>,
+    hold: Res<GearHold>,
     inv: Res<InventoryData>,
     run_gear: Res<RunGearData>,
     roster: Res<PartyRoster>,
@@ -261,9 +298,21 @@ pub(crate) fn render_gear_tooltip(
     for e in &existing {
         commands.entity(e).despawn();
     }
-    let Some((_, g)) = hovered.iter().find(|(i, _)| **i == Interaction::Hovered) else {
+    // A mouse asks by hovering; a finger asks by holding. Hover wins when both are true
+    // (a desktop touchscreen reports a hover under the finger), and the two want DIFFERENT
+    // anchors: a cursor has somewhere to sit beside, a finger is already covering the row.
+    let hover = hovered.iter().find(|(i, ..)| **i == Interaction::Hovered);
+    let holding = (hold.held >= GEAR_HOLD_SECS)
+        .then(|| {
+            hovered
+                .iter()
+                .find(|(i, g, ..)| **i == Interaction::Pressed && g.gear_id == hold.gear_id)
+        })
+        .flatten();
+    let Some((_, g, tf, node)) = hover.or(holding) else {
         return;
     };
+    let by_hover = hover.is_some();
     let list = match g.source {
         GearSource::Vault => &inv.gear,
         GearSource::RunLoot => &run_gear.gear,
@@ -271,8 +320,29 @@ pub(crate) fn render_gear_tooltip(
     let Some(item) = list.iter().find(|it| it.gear_id == g.gear_id) else {
         return;
     };
-    let Some(pos) = windows.iter().next().and_then(|w| w.cursor_position()) else {
-        return;
+    let window = windows.iter().next();
+    let cursor = window.and_then(|w| w.cursor_position());
+    let pos = match (by_hover, cursor) {
+        // Beside the cursor, as before.
+        (true, Some(c)) => Vec2::new(c.x + 18.0, c.y + 18.0),
+        // A HELD row anchors to the row itself, and flips ABOVE it in the lower half of the
+        // screen — anchoring under the finger in a list near the bottom puts the panel off
+        // the edge, which reads as the hold not having worked.
+        _ => {
+            let (w, h) = window.map(|w| (w.width(), w.height())).unwrap_or((1280.0, 720.0));
+            // `GlobalTransform` on a UI node is its CENTRE in screen space.
+            let centre = tf.translation().truncate();
+            let size = node.size();
+            let below = centre.y + size.y / 2.0 + 8.0;
+            let x = (centre.x - size.x / 2.0).clamp(8.0, (w - 268.0).max(8.0));
+            if below > h * 0.55 {
+                // Above: the panel's own height is unknown before layout, so lift by a
+                // generous constant and let the clamp keep it on screen.
+                Vec2::new(x, (centre.y - size.y / 2.0 - 200.0).max(8.0))
+            } else {
+                Vec2::new(x, below)
+            }
+        }
     };
 
     let gold = Color::srgb(0.95, 0.85, 0.5);
@@ -285,6 +355,7 @@ pub(crate) fn render_gear_tooltip(
     };
     let ins = insurance_of(&item.insurance);
     let ins_label = format!("{} - {}", ins.label(), ins.tooltip());
+
     let dur = if item.max_durability <= 0 {
         "BROKEN".to_string()
     } else {
@@ -297,13 +368,7 @@ pub(crate) fn render_gear_tooltip(
     };
     // Ephemeral gets its own amber line rather than a word buried in a header:
     // a player must never lose an item without having been told it was temporary.
-    let ins_color = match ins {
-        Insurance::Ephemeral => Color::srgb(0.98, 0.62, 0.35),
-        // Insured is worth calling out too — it is the tier that survives a wipe, and
-        // a player choosing what to risk should be able to see which is which.
-        Insurance::Insured => Color::srgb(0.55, 0.75, 0.98),
-        Insurance::Standard => dim,
-    };
+    let ins_color = insurance_color(ins);
     let mut lines: Vec<(String, Color)> = vec![
         (item.name.clone(), gold),
         (format!("{} | Tier {}", class_display(&item.slot), item.tier), dim),
@@ -345,8 +410,8 @@ pub(crate) fn render_gear_tooltip(
             GlobalZIndex(1000),
             Node {
                 position_type: PositionType::Absolute,
-                left: Val::Px(pos.x + 18.0),
-                top: Val::Px(pos.y + 18.0),
+                left: Val::Px(pos.x),
+                top: Val::Px(pos.y),
                 flex_direction: FlexDirection::Column,
                 padding: UiRect::all(Val::Px(8.0)),
                 row_gap: Val::Px(2.0),
@@ -541,6 +606,19 @@ pub(crate) fn rarity_color(name: &str) -> Color {
     }
 }
 
+/// The colour an insurance tier is spoken in, wherever it is spoken. Amber for Ephemeral
+/// because it is a warning, blue for Insured because it is a reassurance, and the neutral
+/// dim for Standard — which is why Standard is usually left unsaid instead of coloured.
+pub(crate) fn insurance_color(ins: Insurance) -> Color {
+    match ins {
+        Insurance::Ephemeral => Color::srgb(0.98, 0.62, 0.35),
+        // Insured is worth calling out too — it is the tier that survives a wipe, and a
+        // player choosing what to risk should be able to see which is which.
+        Insurance::Insured => Color::srgb(0.55, 0.75, 0.98),
+        Insurance::Standard => Color::srgb(0.72, 0.78, 0.9),
+    }
+}
+
 /// `kind`'s icon at the head of a row. A thin wrapper: the rule lives in [`crate::icons`],
 /// which every other panel reaches for too.
 pub(crate) fn spawn_item_icon(
@@ -652,7 +730,7 @@ pub(crate) fn render_loot_report(
                         crate::icons::spawn_stack(row, wa.as_deref(), kind, *qty, 24.0);
                     });
                 }
-                for name in &report.gear {
+                for (name, ins) in &report.gear {
                     p.spawn(row_node()).with_children(|row| {
                         spawn_gear_chip(row, rarity_color(name), 24.0);
                         row.spawn((
@@ -665,18 +743,52 @@ pub(crate) fn render_loot_report(
                             TextFont { font_size: 16.0, ..default() },
                             TextColor(rarity_color(name)),
                         ));
+                        // The WORD, on the row, in the tier's own colour (`GR-6`). This card
+                        // is the last thing read before a player decides what to carry back
+                        // out, and a piece that burns has to say so HERE — the gear tooltip
+                        // is a hover away and a hover is not a thing a phone has.
+                        if *ins != Insurance::Standard {
+                            row.spawn((
+                                Text::new(ins.label().to_string()),
+                                TextFont { font_size: 14.0, ..default() },
+                                TextColor(insurance_color(*ins)),
+                            ));
+                        }
                     });
+                }
+                // Spelled out ONCE under the haul rather than per row: four ephemeral
+                // pieces do not need the same sentence four times, and a tally is read in
+                // a few seconds.
+                if report.gear.iter().any(|(_, i)| *i == Insurance::Ephemeral) {
+                    p.spawn((
+                        Text::new(Insurance::Ephemeral.tooltip().to_string()),
+                        TextFont { font_size: 14.0, ..default() },
+                        TextColor(insurance_color(Insurance::Ephemeral)),
+                    ));
                 }
                 // The COST, last and in the colour of a warning rather than a prize: the
                 // card is a balance sheet, and one that shows only the winnings teaches
                 // the player that dying is free. ASCII only — the default font has no
                 // em-dash and draws a missing-glyph box in its place.
-                for (hero, points) in &report.worn {
+                for (hero, points, burned) in &report.worn {
                     p.spawn((
                         Text::new(format!("{hero} fell: kit worn -{points} durability")),
                         TextFont { font_size: 17.0, ..default() },
                         TextColor(glass::WARN),
                     ));
+                    // And the part that does not come back. Named piece by piece, because an
+                    // ephemeral drop is the widest build in the game and "you lost some gear"
+                    // does not tell a player which build just ended. No leading indent: this
+                    // card CENTRES its rows, so whitespace buys nothing and the colour plus
+                    // the position under the hero's own line is what carries the hierarchy
+                    // (screenshot-checked, `MELD_TALLY`).
+                    for name in burned {
+                        p.spawn((
+                            Text::new(format!("{name} burned - Ephemeral, gone with them")),
+                            TextFont { font_size: 15.0, ..default() },
+                            TextColor(insurance_color(Insurance::Ephemeral)),
+                        ));
+                    }
                 }
             });
         });
@@ -1106,7 +1218,7 @@ mod report_cost_tests {
             chits: 4,
             items: vec![],
             gear: vec![],
-            worn: vec![("Kestrel".to_string(), 30)],
+            worn: vec![("Kestrel".to_string(), 30, Vec::new())],
             elapsed: 0.0,
             gate_return: false,
         });
@@ -1128,7 +1240,7 @@ mod report_cost_tests {
             chits: 9,
             items: vec![],
             gear: vec![],
-            worn: vec![("Kestrel".to_string(), 30)],
+            worn: vec![("Kestrel".to_string(), 30, Vec::new())],
             elapsed: 4.0,
             gate_return: true,
         };

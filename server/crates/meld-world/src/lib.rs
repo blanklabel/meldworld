@@ -798,6 +798,19 @@ pub fn roll_creature_loot(
             Insurance::Insured => l.insured_power_mult,
             Insurance::Standard => 1.0,
         };
+        // AN EPHEMERAL PIECE IS NEVER COMMON. Rarity and insurance are two independent
+        // rolls, so the combination was reachable — and a common carries `count_common`
+        // affixes, which is ZERO. That made the strongest tier in the game capable of
+        // dropping a piece with no build on it at all: it burns when you reach the city,
+        // burns when its wearer falls, and in exchange offers one inflated stat number.
+        // Strictly worse than the standard drop beside it, for the tier that is supposed to
+        // be the reason you push deeper. The floor is structural rather than a tunable: the
+        // rule is "the tier that defines a run always carries a build", not a coefficient.
+        let (rarity, rarity_mult) = if insurance == Insurance::Ephemeral && rarity == "common" {
+            ("rare", gr.rare_mult)
+        } else {
+            (rarity, rarity_mult)
+        };
         // One roll, routed into whichever stat this slot cares about: weapon
         // hits harder, armor shrugs off more, an accessory moves faster.
         let stat = (l.gear_atk_per_tier * tier as f64 * gjitter * rarity_mult * signature_mult * tier_mult)
@@ -852,6 +865,7 @@ pub fn roll_creature_loot(
             tier,
             rarity,
             is_signature,
+            insurance == Insurance::Ephemeral,
             class_key,
             slot,
             biome_for_distance(distance),
@@ -948,12 +962,17 @@ pub(crate) fn roll_affixes(
     tier: i32,
     rarity: &str,
     is_signature: bool,
+    // An EPHEMERAL piece rolls `count_ephemeral_bonus` extra lines. Ephemeral is the tier
+    // that cannot be banked and burns when its wearer falls, so what it buys is not a
+    // bigger number (that is `ephemeral_power_mult`) but a wider BUILD — the strongest
+    // synergies in the game being ones you can only hold together for a single dive.
+    is_ephemeral: bool,
     class_key: &str,
     slot: &str,
     biome: &str,
 ) -> Vec<aff::Affix> {
     let a = &balance.affix;
-    let count = a.count_for(rarity, is_signature);
+    let count = a.count_for(rarity, is_signature, is_ephemeral);
     if count == 0 {
         return Vec::new();
     }
@@ -973,13 +992,40 @@ pub(crate) fn roll_affixes(
     if pool.is_empty() {
         return Vec::new();
     }
+    // WEIGHTED, and WITHOUT REPLACEMENT. Two things were wrong with a uniform draw that
+    // skipped duplicates:
+    //
+    // * Flat odds meant nothing was a prize. Every reachable key landed on 32-34% of a deep
+    //   legendary, so `brand` — which decides what damage type your attacks ARE — was
+    //   exactly as common as `masterwork`, extra durability. A wider roll was more random
+    //   lines rather than a better-targeted build, and there was nothing to chase.
+    // * `continue` on a duplicate silently ATE the line, so the counts overstated what
+    //   landed and the gap grew with the count: a nominal 5 delivered 4.29, a nominal 6
+    //   delivered 4.97. Removing the drawn entry instead is exact — `min(count, pool)` lines
+    //   every time, and a piece still never rolls the same key twice.
+    let mut pool: Vec<(&aff::AffixDef, f64)> = pool
+        .into_iter()
+        .map(|d| (d, a.weight(affix_class_word(d.class))))
+        .collect();
     let mut out: Vec<aff::Affix> = Vec::new();
     for _ in 0..count {
-        let d = pool[rng.below(pool.len())];
-        // One of each key: two "+atk" lines read as a bug, not a roll.
-        if out.iter().any(|o| o.key == d.key) {
-            continue;
+        if pool.is_empty() {
+            break;
         }
+        let total: f64 = pool.iter().map(|(_, w)| *w).sum();
+        let mut pick = rng.unit() * total;
+        let mut idx = pool.len() - 1;
+        for (i, (_, w)) in pool.iter().enumerate() {
+            if pick < *w {
+                idx = i;
+                break;
+            }
+            pick -= *w;
+        }
+        // `swap_remove` rather than `remove`: the ORDER of the remaining pool never reaches
+        // the output (the weighted walk above re-derives its own total every draw), so the
+        // cheap removal is safe and still fully deterministic for a given seed.
+        let (d, _) = pool.swap_remove(idx);
         let jitter = 1.0 + rng.signed() * a.magnitude_jitter;
         let magnitude = match d.class {
             // A brand has no magnitude; a resist does.
@@ -1129,7 +1175,7 @@ pub fn rolled_gear(
         (Some(c), true) => eq::drop_weight(c).wire().to_string(),
         _ => String::new(),
     };
-    let affixes = roll_affixes(balance, &mut rng, tier, rarity, false, class_key, slot, biome);
+    let affixes = roll_affixes(balance, &mut rng, tier, rarity, false, false, class_key, slot, biome);
     let base = format!(
         "{} {}",
         POWER_ADJECTIVES[rng.below(POWER_ADJECTIVES.len())],
@@ -1235,7 +1281,7 @@ pub fn reroll_affixes_at(
     seed: u64,
 ) -> Vec<aff::Affix> {
     let mut rng = Rng(seed);
-    roll_affixes(balance, &mut rng, tier, rarity, false, class_key, slot, biome)
+    roll_affixes(balance, &mut rng, tier, rarity, false, false, class_key, slot, biome)
 }
 
 /// splitmix64 finalizer — the mix used both by [`Rng`] and by [`section_seed`].
@@ -8513,7 +8559,7 @@ mod tests {
         // A shallow legendary rolls only stat affixes: the early game stays a
         // legible ladder (P1-3).
         let mut rng = Rng(42);
-        let shallow = roll_affixes(&b, &mut rng, 1, "legendary", false, "explorer", "main_hand", "forest");
+        let shallow = roll_affixes(&b, &mut rng, 1, "legendary", false, false, "explorer", "main_hand", "forest");
         assert!(!shallow.is_empty());
         assert!(
             shallow.iter().all(|a| class_of(a) == AffixClass::Stat),
@@ -8524,7 +8570,7 @@ mod tests {
         let mut seen = std::collections::HashSet::new();
         for seed in 0..400u64 {
             let mut rng = Rng(seed);
-            for a in roll_affixes(&b, &mut rng, 12, "legendary", true, "explorer", "chest", "ashfall") {
+            for a in roll_affixes(&b, &mut rng, 12, "legendary", true, false, "explorer", "chest", "ashfall") {
                 seen.insert(class_of(&a));
             }
         }
@@ -8544,7 +8590,7 @@ mod tests {
             for seed in 0..400u64 {
                 let mut rng = Rng(seed);
                 for slot in ["main_hand", "chest", "accessory"] {
-                    if roll_affixes(&b, &mut rng, 12, "legendary", true, key, slot, "ashfall")
+                    if roll_affixes(&b, &mut rng, 12, "legendary", true, false, key, slot, "ashfall")
                         .iter()
                         .any(|a| a.key == d.key)
                     {
@@ -8557,10 +8603,10 @@ mod tests {
 
         // Common drops stay plain, and the same seed always rolls the same affixes.
         let mut rng = Rng(7);
-        assert!(roll_affixes(&b, &mut rng, 12, "common", false, "explorer", "main_hand", "forest").is_empty());
+        assert!(roll_affixes(&b, &mut rng, 12, "common", false, false, "explorer", "main_hand", "forest").is_empty());
         // Same seed, same affixes — loot stays reproducible from the world seed.
-        let a = roll_affixes(&b, &mut Rng(5), 12, "legendary", true, "explorer", "chest", "ashfall");
-        let c = roll_affixes(&b, &mut Rng(5), 12, "legendary", true, "explorer", "chest", "ashfall");
+        let a = roll_affixes(&b, &mut Rng(5), 12, "legendary", true, false, "explorer", "chest", "ashfall");
+        let c = roll_affixes(&b, &mut Rng(5), 12, "legendary", true, false, "explorer", "chest", "ashfall");
         assert_eq!(a, c);
     }
 
@@ -8569,7 +8615,7 @@ mod tests {
         let b = Balance::load_default().unwrap();
         for seed in 0..300u64 {
             let mut rng = Rng(seed);
-            for a in roll_affixes(&b, &mut rng, 14, "legendary", true, "resonant", "main_hand", "tundra") {
+            for a in roll_affixes(&b, &mut rng, 14, "legendary", true, false, "resonant", "main_hand", "tundra") {
                 // "of Fury" is a Hunter twist; a Resonant drop must never carry it.
                 assert_ne!(a.key, "adrenaline_primed", "seed {seed}");
                 assert_ne!(a.key, "focus_slot", "seed {seed}");
@@ -8582,7 +8628,7 @@ mod tests {
         let b = Balance::load_default().unwrap();
         for seed in 0..300u64 {
             let mut rng = Rng(seed);
-            for a in roll_affixes(&b, &mut rng, 14, "legendary", true, "shifter", "chest", "mire") {
+            for a in roll_affixes(&b, &mut rng, 14, "legendary", true, false, "shifter", "chest", "mire") {
                 if let Some(ally) = &a.ally_class {
                     assert_ne!(ally, "shifter", "a synergy affix asked for its own class");
                     assert!(CLASS_KEYS.contains(&ally.as_str()));
@@ -8741,6 +8787,181 @@ mod tests {
     /// never find gear, and five drops in twelve were wearable by nobody alive. Asked of
     /// the unlock registry rather than of a second hand-written list, because a second list
     /// is how this happened.
+    /// AN EPHEMERAL DROP IS ALWAYS A BUILD. Two independent rolls (rarity, insurance) meant
+    /// the strongest tier in the game could come up **common** — and a common carries zero
+    /// affixes, so the piece that burns twice over offered one inflated number and nothing
+    /// else. Floored at rare, and it rolls `count_ephemeral_bonus` MORE lines than its
+    /// rarity alone would give it, which is what makes it defining rather than merely big.
+    #[test]
+    fn an_ephemeral_drop_is_always_a_build() {
+        let b = Balance::load_default().unwrap();
+        let mut seen = 0;
+        for seed in 0..6000u64 {
+            // A reward spike: only an elite / Gatekeeper / rite / chest can yield the tier.
+            let Some(g) = roll_creature_loot(&b, 1200, 3, 3.0, seed).gear else { continue };
+            if g.insurance != Insurance::Ephemeral {
+                continue;
+            }
+            seen += 1;
+            assert_ne!(g.rarity, "common", "an ephemeral piece with no affixes at all");
+            assert!(
+                !g.affixes.is_empty(),
+                "ephemeral {} rolled no affixes - it burns twice and does nothing",
+                g.name
+            );
+        }
+        assert!(seen > 0, "no ephemeral gear ever dropped from a spiked kill");
+    }
+
+    /// And the bonus is real: same rarity, same everything, MORE lines.
+    #[test]
+    fn ephemeral_rolls_a_wider_build_than_the_piece_beside_it() {
+        let b = Balance::load_default().unwrap();
+        let bonus = b.affix.count_ephemeral_bonus;
+        assert!(bonus > 0, "the ephemeral tier buys no extra affixes at all");
+        for seed in 0..200u64 {
+            let plain =
+                roll_affixes(&b, &mut Rng(seed), 20, "epic", false, false, "hunter", "chest", "ashfall");
+            let ephem =
+                roll_affixes(&b, &mut Rng(seed), 20, "epic", false, true, "hunter", "chest", "ashfall");
+            // `roll_affixes` skips a duplicate key rather than re-drawing, so the counts are
+            // an upper bound each - what must hold is that the ephemeral piece is never the
+            // NARROWER of the two, and that it is genuinely wider on average.
+            assert!(
+                ephem.len() >= plain.len(),
+                "seed {seed}: ephemeral rolled {} lines against a plain {}",
+                ephem.len(),
+                plain.len()
+            );
+        }
+        let width = |eph: bool| -> usize {
+            (0..400u64)
+                .map(|s| {
+                    roll_affixes(&b, &mut Rng(s), 20, "epic", false, eph, "hunter", "chest", "ashfall")
+                        .len()
+                })
+                .sum()
+        };
+        assert!(
+            width(true) > width(false),
+            "the ephemeral bonus never widened a single roll"
+        );
+    }
+
+    /// EVERY FIELDABLE CLASS HAS A KEYWORD AFFIX, and exactly one. The class-mechanic lane
+    /// was a two-class feature — the Hunter's Adrenaline and the Psyker's Focus slot — so
+    /// six of eight classes drew from a pool with no twist in it, and the most characterful
+    /// affix class was one most heroes could never find. Asked of the roster rather than a
+    /// hand-written list, because that is how it came to be two in the first place.
+    #[test]
+    fn every_class_has_exactly_one_keyword_affix() {
+        for key in CLASS_KEYS {
+            let class = eq::class_from_key(key).expect("a fieldable class parses");
+            let mine: Vec<&str> = meld_proto::affixes::AFFIXES
+                .iter()
+                .filter(|d| matches!(d.class, meld_proto::affixes::AffixClass::Keyword))
+                .filter(|d| d.only_class == Some(class))
+                .map(|d| d.key)
+                .collect();
+            assert_eq!(
+                mine.len(),
+                1,
+                "{key} owns {mine:?} keyword affixes - every class gets exactly one twist"
+            );
+        }
+        // And no keyword belongs to a class nobody can field.
+        for d in meld_proto::affixes::AFFIXES
+            .iter()
+            .filter(|d| matches!(d.class, meld_proto::affixes::AffixClass::Keyword))
+        {
+            let owner = d.only_class.expect("a keyword affix names its class");
+            assert!(
+                CLASS_KEYS.contains(&eq::class_key(owner)),
+                "{} belongs to {owner:?}, who cannot be fielded",
+                d.key
+            );
+        }
+    }
+
+    /// A PRIZE IS RARER THAN FILLER. A flat pool made `brand` — which decides what damage
+    /// type your attacks ARE — exactly as common as `masterwork`, extra durability: measured
+    /// at 32-34% each, every key identical, so a wide roll was more random lines rather than
+    /// a build worth chasing. The ORDERING is what is asserted, not the rates: the weights
+    /// are `[TUNABLE]` and the shape is the rule.
+    #[test]
+    fn a_prize_affix_is_rarer_than_filler() {
+        use meld_proto::affixes::AffixClass;
+        let b = Balance::load_default().unwrap();
+        let mut hits: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+        let rolls = 4000u64;
+        for s in 0..rolls {
+            for aff in
+                roll_affixes(&b, &mut Rng(s), 20, "legendary", false, false, "hunter", "main_hand", "ashfall")
+            {
+                let cls = meld_proto::affixes::find(&aff.key).map(|d| d.class);
+                *hits.entry(format!("{cls:?}")).or_default() += 1;
+            }
+        }
+        let rate = |c: AffixClass| -> f64 {
+            let n = meld_proto::affixes::AFFIXES.iter().filter(|d| d.class == c).count().max(1);
+            hits.get(&format!("{:?}", Some(c))).copied().unwrap_or(0) as f64 / n as f64
+        };
+        // Per-affix rates, so a class with more members is not credited for its size.
+        let (stat, quality, ward, element, keyword, synergy) = (
+            rate(AffixClass::Stat),
+            rate(AffixClass::Quality),
+            rate(AffixClass::Ward),
+            rate(AffixClass::Element),
+            rate(AffixClass::Keyword),
+            rate(AffixClass::Synergy),
+        );
+        assert!(stat > ward, "stat {stat} should be commoner filler than a ward {ward}");
+        assert!(quality > ward, "masterwork {quality} should be commoner than a ward {ward}");
+        assert!(ward > element, "a ward {ward} should be commoner than an element {element}");
+        assert!(
+            element > keyword && element > synergy,
+            "the build-defining classes must be the rarest: element {element}, keyword \
+             {keyword}, synergy {synergy}"
+        );
+        assert!(keyword > 0.0 && synergy > 0.0, "a prize that never drops is not a prize");
+    }
+
+    /// THE COUNT IS THE COUNT. The draw used to `continue` past a duplicate key, silently
+    /// eating the line — so a nominal 5 delivered 4.29 and a nominal 6 delivered 4.97, and
+    /// the gap grew with the count, which made `count_ephemeral_bonus` mean less the more of
+    /// it you asked for. Drawing without replacement is exact.
+    #[test]
+    fn every_line_a_piece_is_owed_actually_lands() {
+        let b = Balance::load_default().unwrap();
+        for (rarity, sig, eph) in [
+            ("rare", false, false),
+            ("legendary", false, false),
+            ("legendary", false, true),
+            ("legendary", true, true),
+        ] {
+            let want = b.affix.count_for(rarity, sig, eph);
+            for s in 0..500u64 {
+                let got =
+                    roll_affixes(&b, &mut Rng(s), 20, rarity, sig, eph, "hunter", "main_hand", "ashfall");
+                assert_eq!(
+                    got.len(),
+                    want,
+                    "{rarity} sig={sig} eph={eph} seed {s}: owed {want} lines, landed {}",
+                    got.len()
+                );
+                // Still never the same key twice.
+                let mut keys: Vec<&str> = got.iter().map(|a| a.key.as_str()).collect();
+                keys.sort();
+                let before = keys.len();
+                keys.dedup();
+                assert_eq!(keys.len(), before, "a piece rolled the same affix twice");
+            }
+        }
+        // A pool smaller than the count caps at the pool, rather than looping forever.
+        let shallow = roll_affixes(&b, &mut Rng(1), 1, "legendary", true, true, "hunter", "chest", "forest");
+        assert!(!shallow.is_empty() && shallow.len() <= 4, "tier-1 pool is 3 keys: {shallow:?}");
+    }
+
     #[test]
     fn every_fieldable_class_can_find_gear() {
         let owned: Vec<String> = meld_proto::unlocks::UNLOCKS.iter().map(|u| u.key.to_string()).collect();
@@ -8773,7 +8994,7 @@ mod tests {
             let mut rng = Rng(seed);
             for slot in ["main_hand", "chest", "accessory"] {
                 for class in CLASS_KEYS {
-                    for aff in roll_affixes(&b, &mut rng, 40, "legendary", true, class, slot, "ashfall") {
+                    for aff in roll_affixes(&b, &mut rng, 40, "legendary", true, false, class, slot, "ashfall") {
                         seen.insert(aff.key.clone());
                     }
                 }
@@ -8795,7 +9016,7 @@ mod tests {
         let b = Balance::load_default().unwrap();
         for seed in 0..500u64 {
             let mut rng = Rng(seed);
-            for aff in roll_affixes(&b, &mut rng, 30, "epic", false, "psyker", "main_hand", "tundra") {
+            for aff in roll_affixes(&b, &mut rng, 30, "epic", false, false, "psyker", "main_hand", "tundra") {
                 let Some(d) = meld_proto::affixes::find(&aff.key) else { continue };
                 if matches!(d.class, meld_proto::affixes::AffixClass::Element) {
                     let el = aff.element.as_deref().unwrap_or("");
@@ -8816,7 +9037,7 @@ mod tests {
         for seed in 0..600u64 {
             for slot in ["main_hand", "off_hand"] {
                 let mut rng = Rng(seed);
-                for a in roll_affixes(&b, &mut rng, 12, "legendary", true, "explorer", slot, "ashfall") {
+                for a in roll_affixes(&b, &mut rng, 12, "legendary", true, false, "explorer", slot, "ashfall") {
                     if a.key == "brand" {
                         branded_hands += 1;
                         assert!(a.element.is_some(), "a brand with no element");
@@ -8826,7 +9047,7 @@ mod tests {
             // Armour and accessories never decide what your swing is.
             for slot in ["head", "chest", "legs", "accessory"] {
                 let mut rng = Rng(seed);
-                for a in roll_affixes(&b, &mut rng, 12, "legendary", true, "explorer", slot, "ashfall") {
+                for a in roll_affixes(&b, &mut rng, 12, "legendary", true, false, "explorer", slot, "ashfall") {
                     assert_ne!(a.key, "brand", "{slot} rolled a brand");
                 }
             }

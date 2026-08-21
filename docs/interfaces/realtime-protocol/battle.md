@@ -303,13 +303,14 @@ Terminal resolution of the battle for the recipient's party.
 | hero_name | string | That hero's name, so the report reads as a person rather than an index. |
 | falls | integer | Times this hero went down in this fight; >1 when revived and killed again. |
 | durability_lost | integer | Points taken off **each** insured piece the hero was wearing — not a total across the set. |
+| ephemeral_burned | string[] | Names of the **ephemeral** pieces this hero was wearing, which burned with it. Additive (default `[]`); empty for a hero wearing none, which is most of them. Insured gear pays durability and can be repaired; ephemeral gear is simply gone, and it is the widest build in the game — so the loss is named piece by piece rather than counted, because "you lost some gear" does not tell a player which build just ended. |
 
 **Server behavior on `defeat`** — each KO'd player's run ends as `died`: backpack and run level deleted; blue-chest gear returned to the Hub at `max_durability × 0.9` (round down, floor 0; gear at 0 is unequippable until repaired) — a persistent server-side mutation (CANON.md §B, D6). A [`run.member_result`](run-social.md#runmember_result-s2c) with `result: "died"` follows immediately.
 
 **Example — victory**
 
 ```json
-{"type": "battle.ended", "seq": 4500, "ts": 1783728150000, "payload": {"battle_id": "0197a600-0001-7abc-9def-0123456789ab", "outcome": "victory", "xp_awards": [{"player_id": "0197a2f0-11aa-7bbb-8ccc-0d1e2f3a4b5c", "xp": 420, "run_level_after": 13}], "loot": [{"item_id": "0197a602-8888-7abc-9def-0123456789ab", "item_kind": "iron_ore", "quantity": 3, "insurance": null}], "class_emblem_drops": [], "gatekeeper_cleared": false, "gear_worn": [{"hero_slot": 2, "hero_name": "Kestrel", "falls": 1, "durability_lost": 30}]}}
+{"type": "battle.ended", "seq": 4500, "ts": 1783728150000, "payload": {"battle_id": "0197a600-0001-7abc-9def-0123456789ab", "outcome": "victory", "xp_awards": [{"player_id": "0197a2f0-11aa-7bbb-8ccc-0d1e2f3a4b5c", "xp": 420, "run_level_after": 13}], "loot": [{"item_id": "0197a602-8888-7abc-9def-0123456789ab", "item_kind": "iron_ore", "quantity": 3, "insurance": null}], "class_emblem_drops": [], "gatekeeper_cleared": false, "gear_worn": [{"hero_slot": 2, "hero_name": "Kestrel", "falls": 1, "durability_lost": 30, "ephemeral_burned": ["Legendary Ashfall Warblade of Fury"]}]}}
 ```
 
 ---

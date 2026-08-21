@@ -527,6 +527,16 @@ pub mod battle {
         /// More than one when a hero was revived and killed again in the same fight.
         pub falls: u32,
         pub durability_lost: i32,
+        /// Names of the **ephemeral** pieces this hero was wearing, which burned with it.
+        ///
+        /// The two tiers pay for a death in the two ways they can: insured gear pays
+        /// durability and can be repaired, ephemeral gear is simply gone. A cost the player
+        /// is never shown is a cost they will read as the game cheating, and this one is the
+        /// largest in the game — an ephemeral piece carries the widest affix spread there
+        /// is, so losing one can end a build mid-fight. Additive; empty for a hero that was
+        /// wearing none, which is most of them.
+        #[serde(default)]
+        pub ephemeral_burned: Vec<String>,
     }
     #[derive(Debug, Clone, Serialize, Deserialize)]
     pub struct XpAward {

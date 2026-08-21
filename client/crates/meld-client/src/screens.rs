@@ -851,7 +851,7 @@ pub(crate) fn ended_ui(mut commands: Commands, end: Res<EndInfo>) {
             // The wipe's bill, itemised per hero. A TPK is the largest durability charge
             // in the game and the one a player is least able to infer, since every hero
             // in the party paid it at once.
-            for (hero, points) in &end.worn {
+            for (hero, points, burned) in &end.worn {
                 p.spawn((
                     Text::new(format!("{hero} fell: kit worn -{points} durability")),
                     TextFont {
@@ -860,6 +860,19 @@ pub(crate) fn ended_ui(mut commands: Commands, end: Res<EndInfo>) {
                     },
                     TextColor(Color::srgb(0.95, 0.75, 0.35)),
                 ));
+                // The ephemeral half of the bill, named. It is not repairable and not
+                // recoverable, so it belongs on the death screen more than the durability
+                // line does — that one is an invoice, this one is a eulogy.
+                for name in burned {
+                    p.spawn((
+                        Text::new(format!("{name} burned - Ephemeral, gone with them")),
+                        TextFont {
+                            font_size: 16.0,
+                            ..default()
+                        },
+                        TextColor(Color::srgb(0.98, 0.62, 0.35)),
+                    ));
+                }
             }
             if !end.worn.is_empty() {
                 p.spawn((
