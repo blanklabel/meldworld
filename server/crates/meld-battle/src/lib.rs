@@ -98,6 +98,33 @@ pub struct Fighter {
     /// standing bonus against the risen. On the ATTACKER, because it is the wearer's own
     /// zeal rather than a property of what it is hitting.
     pub undead_bane: f64,
+    /// Set when a gauge knock lands on a creature that has a signature to answer with, and
+    /// consumed on its next turn to force that signature instead of a rolled action.
+    ///
+    /// This is the REBUKE: denying a boss its turn works, and the boss comes back angry. It
+    /// is not a reaction — this engine deliberately has none (the Psyker doc's Dampen/Static/
+    /// Vent are left unbuilt rather than reinvented as something wearing the name) — it is a
+    /// flag read when the creature takes its OWN turn, which is a thing the engine already
+    /// does. So gauge denial stops being free: you buy a turn and pay for it with the worst
+    /// attack in the boss's book.
+    pub rebuke_pending: bool,
+    /// STAGGERED: knocked down and not yet back up. Set by a gauge knock, cleared the moment
+    /// this fighter next acts.
+    ///
+    /// The vulnerable window, and the reward for spending a turn on denial — a staggered
+    /// fighter takes `staggered_damage_mult` more from everything. Without it a knock buys
+    /// only tempo, which is thin for an ability that could have been damage.
+    pub staggered: bool,
+    /// How many more of its own turns this fighter must take before its gauge can be knocked
+    /// again. Set when a knock lands, decremented each time it acts.
+    ///
+    /// It comes up as the fighter DOES — the guard has to survive the recovery turn, or the
+    /// party simply re-knocks the instant it stands and every single boss turn becomes a
+    /// rebuke. Counted in TURNS rather than ticks because creature `speed_stat` is a fixed
+    /// 40-125 while a hero's climbs with Dex: a timer can lapse before a slow creature's
+    /// gauge has refilled, and then the lock resumes. Counted in turns, "it always gets
+    /// turns" is unconditional.
+    pub gauge_guard_turns: u8,
     pub gauge: f64,
     pub statuses: Vec<String>,
     /// Content key of the fighter's class (`explorer`/`psyker`/`resonant`/…), surfaced
@@ -273,6 +300,9 @@ impl Fighter {
             spell_power: atk,
             dodge: 0.0,
             undead_bane: 0.0,
+            staggered: false,
+            gauge_guard_turns: 0,
+            rebuke_pending: false,
             gauge: 0.0,
             statuses: Vec::new(),
             class_key: String::new(),
@@ -510,6 +540,22 @@ enum Stack {
 /// The timed status a hastened fighter carries: its gauge fills faster while it holds.
 pub const HASTE_STATUS: &str = "hasted";
 
+/// A fighter that has just had its gauge knocked down cannot have it knocked down again
+/// while this holds.
+///
+/// Gauge denial was implemented by hand at **fourteen** call sites and composed into an
+/// unbounded lock: measured, a party's Ransack (116 casts) and Holy Censure (34) held a
+/// 66,792 HP gatekeeper at 29% gauge for **464 hero-turns** — it never acted once, took the
+/// party to zero damage, and turned a boss into a safe, endless grind. The repo already knew
+/// the shape: `hallowed_ground` is gated once-a-fight with the comment that a deep Phoenix
+/// Guard casting it on repeat "means nothing on the other side ever acts again". Against ONE
+/// enemy, Censure is that ability four rungs earlier and unrestricted.
+///
+/// A BOON rather than an affliction, so it EXPIRES — a permanent guard is simply the same
+/// bug pointed the other way, and `statuses` treats an unknown condition as a boon for
+/// exactly this reason.
+pub const GAUGE_GUARD_STATUS: &str = "gauge_guard";
+
 /// What a hero swings with when its WEAPON does not say.
 ///
 /// A class does not have a damage type — its weapon does
@@ -728,6 +774,8 @@ pub struct Battle {
     hunter_apex_mult: f64,
     phoenix_guard_swell_mult: f64,
     phoenix_guard_swell_drain: f64,
+    gauge_guard_turns: u8,
+    staggered_damage_mult: f64,
     phoenix_guard_root_barrier_fraction: f64,
     phoenix_guard_shock_mult: f64,
     phoenix_guard_toll_mult: f64,
@@ -1046,6 +1094,8 @@ impl Battle {
             phoenix_guard_shock_mult: balance.battle.phoenix_guard_shock_mult,
             phoenix_guard_toll_mult: balance.battle.phoenix_guard_toll_mult,
             phoenix_guard_undead_mult: balance.battle.phoenix_guard_undead_mult,
+            gauge_guard_turns: balance.battle.gauge_guard_turns,
+            staggered_damage_mult: balance.battle.staggered_damage_mult,
             phoenix_guard_vigil_barrier_fraction: balance
                 .battle
                 .phoenix_guard_vigil_barrier_fraction,
@@ -1878,7 +1928,7 @@ impl Battle {
                 let dmg = self.damage(scaled, self.fighters[t].def, self.fighters[t].defending);
                 effects.extend(self.apply_damage(t, dmg));
                 if drain > 0.0 && self.fighters[t].alive {
-                    self.fighters[t].gauge = (self.fighters[t].gauge - drain).max(0.0);
+                    self.deny_gauge(t, Some(drain));
                     effects.push(ResolvedEffect {
                         modifier_flag: None,
                         target_id: self.fighters[t].combatant_id.clone(),
@@ -1920,7 +1970,7 @@ impl Battle {
             None => self.apply_damage(target_i, self.damage(scaled_atk, def, defending)),
         };
         if drain > 0.0 && self.fighters[target_i].alive {
-            self.fighters[target_i].gauge = (self.fighters[target_i].gauge - drain).max(0.0);
+            self.deny_gauge(target_i, Some(drain));
             effects.push(ResolvedEffect { modifier_flag: None,
                 target_id: self.fighters[target_i].combatant_id.clone(),
                 kind: EffectKind::StatusApplied,
@@ -2081,8 +2131,7 @@ impl Battle {
                     effects.push(fx);
                 }
                 if drain > 0.0 && self.fighters[target_i].alive {
-                    self.fighters[target_i].gauge =
-                        (self.fighters[target_i].gauge - drain).max(0.0);
+                    self.deny_gauge(target_i, Some(drain));
                     effects.push(ResolvedEffect {
                         modifier_flag: None,
                         target_id: self.fighters[target_i].combatant_id.clone(),
@@ -2212,8 +2261,7 @@ impl Battle {
                 };
                 // Dropped iron staggers: the blow costs the target part of its turn.
                 if self.fighters[target_i].alive {
-                    self.fighters[target_i].gauge =
-                        (self.fighters[target_i].gauge - self.smith.hammer_gauge_drain).max(0.0);
+                    self.deny_gauge(target_i, Some(self.smith.hammer_gauge_drain));
                     effects.push(ResolvedEffect {
                         modifier_flag: None,
                         target_id: self.fighters[target_i].combatant_id.clone(),
@@ -2340,9 +2388,7 @@ impl Battle {
                         DamageType::Mind,
                     ));
                     if self.fighters[t].alive {
-                        self.fighters[t].gauge = (self.fighters[t].gauge
-                            - self.keeper.thorn_grove_gauge_drain)
-                            .max(0.0);
+                        self.deny_gauge(t, Some(self.keeper.thorn_grove_gauge_drain));
                         effects.push(ResolvedEffect {
                             modifier_flag: None,
                             target_id: self.fighters[t].combatant_id.clone(),
@@ -2382,8 +2428,7 @@ impl Battle {
                     ),
                 };
                 if drain > 0.0 && self.fighters[target_i].alive {
-                    self.fighters[target_i].gauge =
-                        (self.fighters[target_i].gauge - drain).max(0.0);
+                    self.deny_gauge(target_i, Some(drain));
                     effects.push(ResolvedEffect {
                         modifier_flag: None,
                         target_id: self.fighters[target_i].combatant_id.clone(),
@@ -2493,7 +2538,7 @@ impl Battle {
                 let dmg = self.damage(scaled, self.fighters[t].def, self.fighters[t].defending);
                 effects.extend(self.apply_damage(t, dmg));
                 if !ascendant && self.fighters[t].alive {
-                    self.fighters[t].gauge = 0.0;
+                    self.deny_gauge(t, None);
                     effects.push(ResolvedEffect {
                         modifier_flag: None,
                         target_id: self.fighters[t].combatant_id.clone(),
@@ -2562,10 +2607,9 @@ impl Battle {
         // a Silvered Strike knocks a fixed amount off.
         if self.fighters[target_i].alive {
             if skill == "holy_censure" {
-                self.fighters[target_i].gauge = 0.0;
+                self.deny_gauge(target_i, None);
             } else {
-                self.fighters[target_i].gauge =
-                    (self.fighters[target_i].gauge - self.phoenix_guard_swell_drain).max(0.0);
+                self.deny_gauge(target_i, Some(self.phoenix_guard_swell_drain));
             }
             effects.push(ResolvedEffect { modifier_flag: None,
                 target_id: self.fighters[target_i].combatant_id.clone(),
@@ -2718,8 +2762,7 @@ impl Battle {
                     }
                 }
                 if self.fighters[target_i].alive {
-                    self.fighters[target_i].gauge =
-                        (self.fighters[target_i].gauge - drain).max(0.0);
+                    self.deny_gauge(target_i, Some(drain));
                     effects.push(ResolvedEffect {
                         modifier_flag: None,
                         target_id: self.fighters[target_i].combatant_id.clone(),
@@ -2790,7 +2833,7 @@ impl Battle {
                     }
                 }
                 if drain > 0.0 && self.fighters[t].alive {
-                    self.fighters[t].gauge = (self.fighters[t].gauge - drain).max(0.0);
+                    self.deny_gauge(t, Some(drain));
                     effects.push(ResolvedEffect {
                         modifier_flag: None,
                         target_id: self.fighters[t].combatant_id.clone(),
@@ -3100,12 +3143,21 @@ impl Battle {
                 self.grant_barrier(psyker_i, raw)
             }
             // Dominate Mind is Temporal Anchor's senior: it does not slow the foe's
-            // gauge, it takes the turn outright, every turn it is held.
+            // gauge, it takes the turn outright — and then `GAUGE_GUARD_STATUS` holds it off
+            // until the window lapses. It used to land EVERY turn it was held, which is the
+            // unbounded lock the guard exists to end; Event Horizon, its own senior, slows
+            // the RATE for exactly that reason.
             "temporal_anchor" => self.tick_control(psyker_i, kind, stacks, target_id),
             "dominate_mind" => {
+                // The ZERO first, then the shared control tick. Both go through
+                // `deny_gauge` now, and `tick_control`'s drain would otherwise raise the
+                // guard and make this ability bounce off its own plumbing — the taking of
+                // the turn is what Dominate Mind IS, so it is the one that must land.
+                let taken = self
+                    .focus_enemy_target(psyker_i, kind, target_id)
+                    .map(|t| (t, self.deny_gauge(t, None)));
                 let mut effects = self.tick_control(psyker_i, kind, stacks, target_id);
-                if let Some(t) = self.focus_enemy_target(psyker_i, kind, target_id) {
-                    self.fighters[t].gauge = 0.0;
+                if let Some((t, _landed)) = taken {
                     effects.push(ResolvedEffect {
                         modifier_flag: None,
                         target_id: self.fighters[t].combatant_id.clone(),
@@ -3698,7 +3750,7 @@ impl Battle {
             return Vec::new();
         };
         let drain = self.psyker_anchor_gauge_drain * stacks as f64;
-        self.fighters[t].gauge = (self.fighters[t].gauge - drain).max(0.0);
+        self.deny_gauge(t, Some(drain));
         vec![ResolvedEffect { modifier_flag: None,
             target_id: self.fighters[t].combatant_id.clone(),
             kind: EffectKind::StatusApplied,
@@ -4039,8 +4091,40 @@ impl Battle {
     /// attack, and roll a weighted choice. A telegraphed pick starts a channel
     /// (emitting [`Event::TelegraphStarted`]) and returns `None` — the cast
     /// lands via `tick` step 1b at `executes_at`.
+    /// The creature's REBUKE: the **rarest** thing in its book — its lowest-weight ability it
+    /// has the level for.
+    ///
+    /// Rarest rather than biggest, and that is the whole design: "an attack it would not
+    /// normally do" IS the low-weight entry, and picking by weight means the variety comes
+    /// out of the kits that are already authored rather than out of a new field on all 52 of
+    /// them. A boss whose scarcest entry is a self-heal comes back up and MENDS; one whose
+    /// scarcest is a telegraphed ruin comes back swinging. Both are announced — a telegraph
+    /// shouts, and an instant ability has its own callout — so the rebuke is always legible.
+    ///
+    /// `None` for a creature with no authored kit, which is what keeps this to things that
+    /// have something to answer WITH, without anything having to declare itself a boss.
+    fn signature_ability(&self, i: usize) -> Option<usize> {
+        let level = self.fighters[i].level;
+        self.fighters[i]
+            .abilities
+            .iter()
+            .enumerate()
+            .filter(|(_, a)| a.min_level <= level)
+            .min_by_key(|(_, a)| a.weight)
+            .map(|(idx, _)| idx)
+    }
+
     fn take_monster_turn(&mut self, actor_i: usize, events: &mut Vec<Event>) -> Option<Resolution> {
         let now = self.tick_count;
+        // THE REBUKE. Its turn was taken, so this one is its signature — not a rolled action,
+        // and not gated on the cooldown: the cooldown is what paces a boss's own rhythm, and
+        // this is the fight answering an interruption. Consumed whether or not it fires, so a
+        // single knock buys a single rebuke.
+        if std::mem::take(&mut self.fighters[actor_i].rebuke_pending) {
+            if let Some(idx) = self.signature_ability(actor_i) {
+                return self.begin_ability(actor_i, idx, events);
+            }
+        }
         let (hp_pct, level, has_pool) = {
             let f = &self.fighters[actor_i];
             let pct = if f.max_hp > 0 {
@@ -4571,6 +4655,51 @@ impl Battle {
         self.fighters[i].timed_statuses.iter().any(|(n, _)| n == name)
     }
 
+    /// KNOCK A FIGHTER'S GAUGE DOWN — the one place that happens.
+    ///
+    /// `amount` of `None` zeroes it outright; `Some(d)` subtracts that much. Returns whether
+    /// the knock LANDED, so the caller can report a bounce instead of silently doing nothing.
+    ///
+    /// It is one function because denial was fourteen hand-written subtractions across every
+    /// resolver, and nothing checked what happened when they were chained. Measured: 150
+    /// gauge attacks over 464 hero-turns held a gatekeeper at 29% and it never acted — the
+    /// party took ZERO damage from a boss with 66,792 HP. That is the same unbounded lock
+    /// `hallowed_ground` is gated once-a-fight to prevent, reached with two repeatable rows
+    /// instead of one capstone.
+    ///
+    /// So a knock still WORKS — taking a boss's turn is the play these abilities are for —
+    /// but it leaves a `GAUGE_GUARD_STATUS` behind, and a guarded fighter cannot be knocked
+    /// again until it lapses. One landing, then a window where the fight answers back.
+    fn deny_gauge(&mut self, target_i: usize, amount: Option<f64>) -> bool {
+        if self.fighters[target_i].gauge_guard_turns > 0 {
+            return false;
+        }
+        let before = self.fighters[target_i].gauge;
+        self.fighters[target_i].gauge = match amount {
+            None => 0.0,
+            Some(d) => (before - d).max(0.0),
+        };
+        // Nothing was actually taken, so nothing is guarded: a drain on an empty gauge must
+        // not buy the target a free immunity window.
+        if (before - self.fighters[target_i].gauge).abs() < f64::EPSILON {
+            return false;
+        }
+        self.fighters[target_i].staggered = true;
+        self.fighters[target_i].gauge_guard_turns = self.gauge_guard_turns;
+        // Arm the REBUKE — but only on something that HAS a signature to answer with. The
+        // rule is universal and the effect only exists where a telegraph does, so ordinary
+        // fauna is unchanged and no creature needs a flag saying "I am a boss".
+        if self.signature_ability(target_i).is_some() {
+            self.fighters[target_i].rebuke_pending = true;
+        }
+        // Say so on the wire, or a player whose drain bounced sees an ability do nothing:
+        // a token nothing renders is a token that does not exist to the player.
+        if !self.fighters[target_i].statuses.iter().any(|s| s == GAUGE_GUARD_STATUS) {
+            self.fighters[target_i].statuses.push(GAUGE_GUARD_STATUS.to_string());
+        }
+        true
+    }
+
     /// Knock conditions off a fighter, reporting one effect each. The shared tail of "a blow
     /// brings you round" and "care takes the wheel back".
     fn shake_off(&mut self, i: usize, which: &[&str]) -> Vec<ResolvedEffect> {
@@ -4807,6 +4936,14 @@ impl Battle {
         // point every hit passes through — rather than in each ability that could benefit.
         let dmg = if self.is_marked(target_i) {
             ((dmg as f64) * self.explorer_mark_damage_mult).round() as i32
+        } else {
+            dmg
+        };
+        // A STAGGERED fighter is wide open. This is what a gauge knock BUYS beyond the tempo
+        // — it lives here, the one point every hit passes through, rather than in each
+        // ability that might benefit, exactly as the blaze bonus above does.
+        let dmg = if self.fighters[target_i].staggered {
+            ((dmg as f64) * self.staggered_damage_mult).round() as i32
         } else {
             dmg
         };
@@ -5061,6 +5198,15 @@ impl Battle {
     }
 
     fn reset_gauge(&mut self, i: usize) {
+        // Acting is what brings you back UP: the stagger ends here, and one of the guard's
+        // turns is spent. The guard deliberately outlives this turn — if it lapsed the moment
+        // the fighter recovered, the party would re-knock instantly and every boss turn in
+        // the fight would be a rebuke.
+        self.fighters[i].staggered = false;
+        self.fighters[i].gauge_guard_turns = self.fighters[i].gauge_guard_turns.saturating_sub(1);
+        if self.fighters[i].gauge_guard_turns == 0 {
+            self.fighters[i].statuses.retain(|s| s != GAUGE_GUARD_STATUS);
+        }
         self.fighters[i].gauge = 0.0;
         self.fighters[i].awaiting = false;
     }
@@ -6018,6 +6164,263 @@ mod tests {
     }
 
 
+    /// A SINGLE ENEMY CANNOT BE DENIED EVERY TURN OF A LONG FIGHT.
+    ///
+    /// This is the bug the guard exists for, measured in a played run: a party's Ransack (116
+    /// casts) and Holy Censure (34) held a 66,792 HP gatekeeper at 29% gauge for 464
+    /// hero-turns. It never acted once — a boss fight that cost the party zero HP and ran
+    /// forever. `hallowed_ground` was already gated once-a-fight with exactly that reasoning;
+    /// nothing gated the repeatable rows that reach the same place.
+    ///
+    /// Asserted as "the gauge gets through" rather than on a tick count: the guard duration
+    /// is `[TUNABLE]` and what must hold is that chaining cannot stop a creature acting.
+    #[test]
+    fn a_lone_enemy_cannot_be_gauge_locked_out_of_the_fight() {
+        let b = Balance::load_default().unwrap();
+        let mut bt = Battle::new(
+            "b".into(),
+            EncounterClass::Gatekeeper,
+            vec![player("h", 40)],
+            vec![monster("m", 100_000, 40)],
+            &b,
+            7,
+        );
+        let m = bt.idx("m").unwrap();
+
+        // The first knock LANDS — denying a turn is the play these abilities are for.
+        bt.fighters[m].gauge = 0.9;
+        assert!(bt.deny_gauge(m, None), "the first knock must work");
+        assert_eq!(bt.fighters[m].gauge, 0.0);
+
+        // Chaining does not. However many times it is tried, while the guard holds.
+        bt.fighters[m].gauge = 0.9;
+        for attempt in 0..20 {
+            assert!(!bt.deny_gauge(m, None), "knock {attempt} got through the guard");
+        }
+        assert_eq!(bt.fighters[m].gauge, 0.9, "a guarded gauge was still being taken");
+
+        // And TAKING A TURN lifts it, so a later knock is a real play again rather than a
+        // one-per-fight call — a permanent guard is the same bug pointed the other way.
+        // Cleared by acting rather than by a clock, because a timed guard can lapse before a
+        // slow creature's gauge has refilled, and then the lock simply resumes.
+        // It takes `gauge_guard_turns` of its OWN turns to clear — the guard outliving the
+        // recovery turn is the point, or every boss turn would be a rebuke.
+        bt.reset_gauge(m);
+        bt.fighters[m].gauge = 0.9;
+        assert!(!bt.deny_gauge(m, None), "the guard lapsed on the recovery turn itself");
+        for _ in 0..b.battle.gauge_guard_turns {
+            bt.reset_gauge(m);
+        }
+        bt.fighters[m].gauge = 0.9;
+        assert!(bt.deny_gauge(m, None), "the guard never cleared");
+    }
+
+    /// THE INVARIANT, stated as the thing that was broken: however hard a party leans on
+    /// gauge denial, a creature keeps getting turns. Measured before the guard: 150 knocks
+    /// over 464 hero-turns and a boss that never acted once.
+    #[test]
+    fn a_creature_keeps_getting_turns_however_hard_the_party_denies_it() {
+        let b = Balance::load_default().unwrap();
+        let mut bt = Battle::new(
+            "b".into(),
+            EncounterClass::Gatekeeper,
+            vec![player("h", 40)],
+            vec![monster("m", 100_000, 40)],
+            &b,
+            7,
+        );
+        let m = bt.idx("m").unwrap();
+        // Knock it down at every opportunity, exactly as the measured party did, and count
+        // the creature's own ACTIONS out of the tick's events — `tick` resolves a monster's
+        // turn itself, so watching the gauge would miss the very thing being counted.
+        let mut acted = 0;
+        for _ in 0..4000 {
+            bt.deny_gauge(m, None);
+            for e in bt.tick() {
+                if let Event::Resolved(r) = e {
+                    if r.actor_id == "m" {
+                        acted += 1;
+                    }
+                }
+            }
+        }
+        assert!(
+            acted > 0,
+            "a creature under constant denial never acted once - the lock is back"
+        );
+    }
+
+    /// A KNOCKED-DOWN FIGHTER IS WIDE OPEN — the reward for spending a turn on denial.
+    /// Without it a knock buys only tempo, which is thin for an ability that could have been
+    /// damage; with it, staggering something is a setup the whole party cashes in.
+    #[test]
+    fn a_staggered_fighter_takes_more_from_everything() {
+        let b = Balance::load_default().unwrap();
+        let mult = b.battle.staggered_damage_mult;
+        assert!(mult > 1.0, "a stagger that grants no opening is not a reward");
+        let hit = |staggered: bool| -> i32 {
+            let mut bt = Battle::new(
+                "b".into(),
+                EncounterClass::Standard,
+                vec![player("h", 40)],
+                vec![monster("m", 100_000, 40)],
+                &b,
+                7,
+            );
+            let m = bt.idx("m").unwrap();
+            if staggered {
+                bt.fighters[m].gauge = 0.9;
+                assert!(bt.deny_gauge(m, None));
+            }
+            let before = bt.fighters[m].hp;
+            bt.apply_damage(m, 100);
+            before - bt.fighters[m].hp
+        };
+        let (open, guarded) = (hit(true), hit(false));
+        assert!(
+            open > guarded,
+            "a staggered fighter took no more than a standing one: {open} vs {guarded}"
+        );
+        // And it is the tunable doing it, not something incidental.
+        assert_eq!(open, ((guarded as f64) * mult).round() as i32);
+    }
+
+    /// THE REBUKE: take a boss's turn and its NEXT turn is its signature.
+    ///
+    /// This is what makes gauge denial a decision rather than a free tactic — you buy a turn
+    /// and pay for it with the worst attack in the boss's book. Not a reaction (this engine
+    /// has none, deliberately): a flag consumed when the creature takes its own turn.
+    #[test]
+    fn a_boss_whose_turn_was_taken_answers_with_its_signature() {
+        use meld_proto::abilities::MonsterAbility;
+        let b = Balance::load_default().unwrap();
+        let signature = MonsterAbility {
+            ability_kind: "ruinous_blow".into(),
+            callout_text: "IT RAISES ITS ARMS".into(),
+            // Deliberately the LEAST likely thing to be rolled, and on cooldown, so the only
+            // way it can fire is the rebuke forcing it.
+            weight: 1,
+            cooldown_ticks: 10_000,
+            telegraph_ticks: 5,
+            hp_threshold_pct: None,
+            min_level: 1,
+            effects: Vec::new(),
+        };
+        let mut m = monster("m", 100_000, 40);
+        m.abilities = vec![signature];
+        m.ability_ready_at.insert(0, u64::MAX);
+        let mut bt = Battle::new(
+            "b".into(),
+            EncounterClass::Gatekeeper,
+            vec![player("h", 40)],
+            vec![m],
+            &b,
+            7,
+        );
+        let mi = bt.idx("m").unwrap();
+
+        // Its turn is taken.
+        bt.fighters[mi].gauge = 0.9;
+        assert!(bt.deny_gauge(mi, None), "the knock did not land");
+        assert!(bt.fighters[mi].rebuke_pending, "a boss took the knock and shrugged");
+
+        // Its next turn is the signature, cooldown notwithstanding — the cooldown paces a
+        // boss's own rhythm; this is the fight answering an interruption.
+        let mut events = Vec::new();
+        bt.take_monster_turn(mi, &mut events);
+        assert!(
+            events.iter().any(|e| matches!(e, Event::TelegraphStarted { callout_text, .. }
+                if callout_text == "IT RAISES ITS ARMS")),
+            "the rebuke did not shout its signature: {events:?}"
+        );
+        // Consumed, so ONE knock buys ONE rebuke rather than arming it forever.
+        assert!(!bt.fighters[mi].rebuke_pending, "the rebuke re-arms itself for free");
+    }
+
+    /// Ordinary fauna has no signature, so nothing is armed and nothing changes — the rule is
+    /// universal but the effect only exists where a telegraph does, which is what keeps this a
+    /// boss mechanic without anything having to declare itself a boss.
+    #[test]
+    fn a_creature_with_no_signature_is_not_rebuked() {
+        let b = Balance::load_default().unwrap();
+        let mut bt = Battle::new(
+            "b".into(),
+            EncounterClass::Standard,
+            vec![player("h", 40)],
+            vec![monster("m", 500, 40)],
+            &b,
+            7,
+        );
+        let mi = bt.idx("m").unwrap();
+        bt.fighters[mi].gauge = 0.9;
+        assert!(bt.deny_gauge(mi, None), "the knock did not land");
+        assert!(
+            !bt.fighters[mi].rebuke_pending,
+            "a creature with no telegraph armed a rebuke it cannot deliver"
+        );
+    }
+
+    /// A gauge reaching zero the NORMAL way — spending a turn, or a fight starting — is not
+    /// a knock and must not raise the guard. Otherwise the opening exchange of every fight
+    /// would hand out immunity for free, and the first knock of a fight would bounce.
+    #[test]
+    fn a_gauge_emptied_naturally_never_raises_the_guard() {
+        let b = Balance::load_default().unwrap();
+        let mut bt = Battle::new(
+            "b".into(),
+            EncounterClass::Standard,
+            vec![player("h", 40)],
+            vec![monster("m", 500, 40)],
+            &b,
+            7,
+        );
+        let m = bt.idx("m").unwrap();
+        // A fight STARTS with gauges at zero. Nobody is guarded, so the opening knock lands.
+        assert_eq!(bt.fighters[m].gauge_guard_turns, 0, "a fight began with someone guarded");
+        assert!(!bt.fighters[m].staggered, "a fight began with someone already staggered");
+        bt.fighters[m].gauge = 0.9;
+        assert!(bt.deny_gauge(m, None), "the first knock of the fight bounced");
+
+        // And SPENDING a turn clears rather than sets it: acting is what lifts the guard.
+        bt.reset_gauge(m);
+        assert!(!bt.fighters[m].staggered, "spending a turn left it staggered");
+        // The guard is still up though — it outlives the recovery turn on purpose. So the
+        // knock that follows bounces, and only a knock after the guard's turns are spent
+        // lands. (The stagger and the guard are two windows, and this is the difference.)
+        assert!(!bt.deny_gauge(m, None), "the guard lapsed the moment it stood up");
+        for _ in 0..b.battle.gauge_guard_turns {
+            bt.reset_gauge(m);
+        }
+        assert!(
+            !bt.fighters[m].statuses.iter().any(|s| s == GAUGE_GUARD_STATUS),
+            "the guard token outlived the turns that cleared it"
+        );
+        bt.fighters[m].gauge = 0.9;
+        assert!(bt.deny_gauge(m, None), "a knock after the guard cleared bounced");
+    }
+
+    /// A drain that takes nothing must not buy a free immunity window — otherwise touching an
+    /// empty gauge is the cheapest way to protect the thing you are fighting.
+    #[test]
+    fn denying_an_empty_gauge_guards_nothing() {
+        let b = Balance::load_default().unwrap();
+        let mut bt = Battle::new(
+            "b".into(),
+            EncounterClass::Standard,
+            vec![player("h", 10)],
+            vec![monster("m", 500, 10)],
+            &b,
+            7,
+        );
+        let m = bt.idx("m").unwrap();
+        bt.fighters[m].gauge = 0.0;
+        assert!(!bt.deny_gauge(m, None), "zeroing an empty gauge reported a landing");
+        assert_eq!(bt.fighters[m].gauge_guard_turns, 0, "an empty gauge bought a guard");
+        // So a real knock a moment later still works.
+        bt.fighters[m].gauge = 0.8;
+        assert!(bt.deny_gauge(m, Some(0.3)));
+    }
+
     #[test]
     fn the_deep_manifestations_each_do_their_own_thing() {
         let b = balance();
@@ -6065,12 +6468,37 @@ mod tests {
         assert!(diss.fighters[i].def < armour_before, "armour was not corroded");
         assert!(player_hp(&diss, "m1") < 100000, "matter_dissolution dealt no damage");
 
-        // Dominate Mind takes the turn outright, rather than merely slowing it.
+        // Dominate Mind takes the turn outright, rather than merely slowing it — and then
+        // the GUARD comes up, so the second cast bounces. It used to take the turn EVERY
+        // turn it was held, which is the unbounded lock `gauge_guard` exists to end: a
+        // creature that never acts makes a boss fight free and endless, and the rule the
+        // repo already wrote for `hallowed_ground` and Event Horizon applies to the Psyker's
+        // capstone too. Still the strongest control in the game, now with a window in it.
         let mut dom = mk();
         let i = dom.fighters.iter().position(|f| f.combatant_id == "m1").unwrap();
         dom.fighters[i].gauge = 0.95;
         cast(&mut dom, "dominate_mind");
         assert_eq!(gauge_of(&dom, "m1"), 0.0, "dominate_mind left it a turn");
+        dom.fighters[i].gauge = 0.95;
+        // A distinct action id: the helper derives one from the skill name, and the engine
+        // refuses a repeat. This is the SECOND cast of the same ability, which is the whole
+        // point of the assertion.
+        tick_to_ready(&mut dom, "p");
+        dom.submit(
+            "p",
+            "op:dominate_mind:again".into(),
+            BattleActionKind::Skill,
+            Some(vec!["m1".into()]),
+            Some("cast:dominate_mind".into()),
+            None,
+        )
+        .expect("the second cast resolves");
+        // Still where it was (drifting UP as it fills, not knocked down): the knock bounced.
+        assert!(
+            gauge_of(&dom, "m1") >= 0.95,
+            "a guarded target had its gauge taken again - the lock is back: {}",
+            gauge_of(&dom, "m1")
+        );
 
         // Phase Shift is the Psyker's own defence: Evasion it keeps topping up.
         let mut phase = mk();

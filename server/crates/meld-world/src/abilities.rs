@@ -817,6 +817,42 @@ mod tests {
         assert_eq!(at(99), pool.len());
     }
 
+    /// A REBUKE IS NOT ALWAYS A BLOW. The rebuke is a creature's rarest ability
+    /// (`Battle::signature_ability`), so what a staggered boss answers with comes out of the
+    /// kits already authored — and across the roster that has to include boss that MEND,
+    /// SHIELD or hurry themselves as well as ones that swing. A roster whose every scarcest
+    /// entry is damage makes the mechanic one note.
+    #[test]
+    fn the_rarest_thing_in_a_boss_book_is_not_always_damage() {
+        use meld_proto::abilities::AbilityEffectKind as K;
+        let mut kinds: std::collections::HashSet<&'static str> = Default::default();
+        let mut bosses = 0;
+        for key in meld_proto::bosses::keys() {
+            let pool = creature_abilities(key);
+            if pool.is_empty() {
+                continue;
+            }
+            bosses += 1;
+            // The same pick `signature_ability` makes: the rarest it could ever use.
+            let rarest = pool.iter().min_by_key(|a| a.weight).expect("a non-empty kit");
+            for e in &rarest.effects {
+                kinds.insert(match e.effect_kind {
+                    K::Damage => "damage",
+                    K::Heal => "heal",
+                    K::AtbManipulation => "atb",
+                    K::Status => "status",
+                    K::Steal => "steal",
+                });
+            }
+        }
+        assert!(bosses > 0, "no boss kits to check");
+        assert!(
+            kinds.len() > 1,
+            "every boss's rarest ability does the same one thing ({kinds:?}) - the rebuke has \
+             no variety in it, so staggering anything always means the same answer"
+        );
+    }
+
     /// FS-4: every named boss carries its own kit, distinct from any of the 15
     /// biome creatures, plus a signature telegraphed attack (not just a plain
     /// instant like the base creature kits mostly are).

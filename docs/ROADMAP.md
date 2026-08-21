@@ -2465,6 +2465,47 @@ CONDITION rather than a checklist, and two menders can raise the fallen at a rea
     method (`WorldActor::forget_player`) with a test, because it is a LIST and a list is what
     gets an entry left off it. Clearing on extraction too, for the same reason: both ways out
     end the run.
+- [x] **CN-7 — A gauge knock costs ONE turn, and the boss answers.** Gauge denial was
+  fourteen hand-written subtractions across every resolver and nothing checked what chaining
+  them did. Measured through `mcp/`: a party's Ransack (116 casts) and Holy Censure (34) held
+  a **66,792 HP** gatekeeper at 29% gauge for **464 hero-turns** — it never acted once, so a
+  boss fight cost the party zero HP and ran forever. The repo already knew the shape:
+  `hallowed_ground` is gated once-a-fight with the comment that a deep Phoenix Guard casting
+  it on repeat "means nothing on the other side ever acts again". Against ONE enemy, Censure
+  is that ability four rungs earlier and unrestricted.
+  - **One funnel** (`deny_gauge`), because a rule at fourteen call sites is the drift this
+    repo has been bitten by twice.
+  - **The knock still works** — taking a turn is the play those abilities are for — and then
+    the guard comes up. **TWO WINDOWS:** `staggered` from the knock until it next acts, and
+    `gauge_guard_turns` counting down as it ACTS, so the guard outlives the recovery turn.
+    One flag was wrong: cleared by acting, the party re-knocked the instant the boss stood
+    and *every* boss turn became a rebuke. Counted in turns rather than ticks, because
+    creature `speed_stat` is a fixed 40-125 while a hero's climbs with Dex — a timer can
+    lapse before a slow creature's gauge refills and the lock resumes, while "it always gets
+    turns" is unconditional.
+  - **Down means open.** A staggered fighter takes `staggered_damage_mult` (1.35) more from
+    everything, applied in `apply_damage_reaching` — the one point every hit passes through,
+    where the blaze bonus already lives. That is what a knock BUYS beyond tempo; without it,
+    spending a turn on denial is thin for an ability that could have been damage.
+  - **THE REBUKE:** a creature whose turn was taken answers with the **rarest thing in its
+    book** — its lowest-weight eligible ability — next turn, past its cooldown. So leaning on
+    denial means eating something it would not normally do. **Rarest rather than biggest** is
+    the design: that phrase IS the low-weight entry, so the variety comes out of the 52 kits
+    already authored rather than a new field on all of them, and a boss whose scarcest entry
+    is a self-heal comes back up and MENDS while one whose scarcest is a telegraphed ruin
+    comes back swinging. Both announce themselves (a telegraph shouts; an instant has its own
+    callout). `the_rarest_thing_in_a_boss_book_is_not_always_damage` holds the roster to
+    actually having that variety — if every boss's scarcest ability were damage the mechanic
+    would be one note. **Not a reaction:** this engine has none by design, so it is a flag
+    consumed on the creature's own turn.
+  - A gauge emptied **naturally** arms none of it — not a fight's opening, not a spent turn,
+    not a drain that takes nothing — or the first knock of every fight would bounce.
+  - ⚠️ **Dominate Mind's authored permanent lock is gone.** Its own comment said "takes the
+    turn outright, every turn it is held" — the same unbounded lock at level 150, where its
+    senior Event Horizon slows the RATE precisely to avoid it. It now takes a turn and waits
+    one. The comment and its test were updated rather than left lying.
+  - **Not measured in play:** whether a signature every other turn is too punishing. The lever
+    is whether the rebuke bypasses the cooldown.
 - [x] **CN-4 — The conditions themselves, as designed.** `dread` was applied by six boss
   abilities and **did nothing at all**; `frenzied` was never applied by anything. Both are now
   specified:

@@ -1260,6 +1260,42 @@ shared interest cull, which would show everyone everything. Both harvest perks r
 `hash_str(node) ^ hash_str(player) ^ tick` so the outcome is reproducible rather than
 wall-clock.
 
+**A GAUGE KNOCK COSTS ONE TURN, AND THE BOSS ANSWERS.** Gauge denial was implemented by hand
+at **fourteen** call sites and nothing checked what chaining them did: measured, a party's
+Ransack (116 casts) and Holy Censure (34) held a 66,792 HP gatekeeper at 29% gauge for **464
+hero-turns** — it never acted once, so a boss fight cost zero HP and ran forever. Three rules
+now, all through the one funnel `deny_gauge`:
+
+- **The knock works.** Taking a turn is the play those abilities are for.
+- **TWO WINDOWS, not one.** `staggered` runs from the knock until it next acts; the
+  `gauge_guard_turns` countdown comes up as it DOES and outlives the recovery turn. One flag
+  was wrong: cleared by acting, the party re-knocked the instant the boss stood and *every*
+  boss turn became a rebuke. Counted in TURNS rather than ticks because creature `speed_stat`
+  is a fixed 40-125 while a hero's climbs with Dex — a timer can lapse before a slow
+  creature's gauge refills and the lock resumes, while "it always gets turns" is
+  unconditional (`a_creature_keeps_getting_turns_however_hard_the_party_denies_it`).
+- **DOWN MEANS OPEN.** A staggered fighter takes `staggered_damage_mult` more from
+  everything, in `apply_damage_reaching` — the one point every hit passes through, where the
+  blaze bonus already lives. Without it a knock buys only tempo, which is thin for an ability
+  that could have been damage.
+- **THE REBUKE:** a creature whose turn was taken answers with the **rarest thing in its
+  book** — its lowest-weight eligible ability — on its next turn, past its cooldown (the
+  cooldown paces a boss's own rhythm; this is the fight answering an interruption). Rarest
+  rather than biggest is the design: "an attack it would not normally do" IS the low-weight
+  entry, so the variety falls out of the 52 kits already authored instead of a new field on
+  all of them, and a boss whose scarcest entry is a self-heal comes back up and MENDS
+  (`the_rarest_thing_in_a_boss_book_is_not_always_damage` holds the roster to that variety).
+  Armed only where a kit EXISTS, so the rule is universal while the effect stays a boss
+  mechanic and nothing needs a flag saying it is one. It is **not a reaction** (this engine deliberately has none — the Psyker doc's Dampen/
+  Static/Vent are left unbuilt rather than reinvented wearing the name): a flag consumed when
+  the creature takes its OWN turn.
+
+A gauge emptied NATURALLY never arms any of it — not a fight's opening (everyone starts at 0),
+not a spent turn, not a drain that takes nothing from an empty gauge — or the first knock of
+every fight would bounce. ⚠️ **Dominate Mind's authored permanent lock is gone**: its comment
+said "takes the turn outright, every turn it is held", which is the same unbounded lock at
+level 150, and Event Horizon at 255 slows the RATE for exactly that reason.
+
 **A gauge CAP is a soft-lock; slow the RATE instead.** Creature `speed_stat` is a fixed
 constant (40–125) that never scales with distance, while a hero's climbs with Dex — so a
 deep hero takes several turns per creature turn. Anything that pins a creature's gauge to a

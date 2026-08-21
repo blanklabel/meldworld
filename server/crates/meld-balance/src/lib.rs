@@ -256,6 +256,10 @@ pub struct Battle {
     pub phoenix_guard_shock_mult: f64,
     pub phoenix_guard_toll_mult: f64,
     pub phoenix_guard_undead_mult: f64,
+    /// How many of its OWN turns a fighter must take before its gauge can be knocked again.
+    pub gauge_guard_turns: u8,
+    /// What a knocked-down fighter takes from everything until it is back up.
+    pub staggered_damage_mult: f64,
     pub phoenix_guard_vigil_barrier_fraction: f64,
     pub phoenix_guard_eradication_mult: f64,
     pub phoenix_guard_eradication_missing_bonus: f64,

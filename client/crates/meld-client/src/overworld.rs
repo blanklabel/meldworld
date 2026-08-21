@@ -107,21 +107,60 @@ pub(crate) struct HurtWash {
     pub(crate) last_total: Option<i32>,
     /// Seconds of wash left.
     pub(crate) left: f32,
+    /// How hard this wash goes, 0..1 — set from the share of the party's health the hit
+    /// took, so a per-step venom nibble and a sprung trap do not look identical.
+    pub(crate) peak: f32,
 }
 
 /// The wash is a QUICK one — long enough to catch the eye, short enough not to sit over the
 /// world while you walk. A reminder, not a state.
 const HURT_FLASH_SECS: f32 = 0.28;
-/// How red it gets at its peak. Well under half, because it covers the whole screen and you
-/// are still steering through it.
+/// How red it gets at its peak, for a blow that takes a QUARTER of the party. Well under
+/// half, because it covers the whole screen and you are still steering through it.
+///
+/// Scaled by how much was actually lost (see [`update_hurt_flash`]), because the same wash
+/// served a sprung trap and a venom nibble: venom bites once every few STEPS, so walking
+/// poisoned washed the whole screen over and over at full strength. A reminder that fires
+/// constantly at catastrophe volume stops reading as a warning and starts reading as a fault.
 const HURT_FLASH_ALPHA: f32 = 0.34;
+/// The share of the party's health a hit has to take to earn the full wash.
+const HURT_FLASH_FULL_AT: f32 = 0.25;
+/// The faintest a real hit is allowed to be — a one-HP nibble still has to register, or the
+/// player learns nothing from the thing that is slowly killing them.
+const HURT_FLASH_MIN: f32 = 0.06;
+
+/// How hard a wash goes for losing `lost` of a `pool`-sized party: 0..1, full at
+/// [`HURT_FLASH_FULL_AT`].
+///
+/// Pulled out as a function so the RULE can be tested — the bug it exists for was a venom
+/// nibble and a sprung trap rendering identically, and "identically" is not something a
+/// screenshot of one of them can catch.
+pub(crate) fn wash_peak(lost: i32, pool: i32) -> f32 {
+    if lost <= 0 || pool <= 0 {
+        return 0.0;
+    }
+    ((lost as f32 / pool as f32) / HURT_FLASH_FULL_AT).clamp(0.0, 1.0)
+}
 
 /// Spawn the wash once, transparent.
 ///
 /// Idempotent, because this runs on every `OnEnter(Overworld)` and the overworld is entered
 /// again after every battle. A second panel would not be a second wash — the two alphas
 /// multiply, so the flash would read darker each dive until it blacked the screen out.
-pub(crate) fn spawn_hurt_flash(mut commands: Commands, existing: Query<Entity, With<HurtFlash>>) {
+pub(crate) fn spawn_hurt_flash(
+    mut commands: Commands,
+    mut wash: ResMut<HurtWash>,
+    existing: Query<Entity, With<HurtFlash>>,
+) {
+    // RE-BASELINE on arrival, so the fight's own cost does not wash the screen on the way
+    // out. The roster that lands when you return carries POST-fight HP, which is lower than
+    // the pre-fight total this resource last saw — so the drop-detector fired after every
+    // battle anybody was hurt in, replaying a whole fight's damage as one red flash over the
+    // overworld. The damage was already shown hit by hit on the battle screen; this wash is
+    // for being hurt OUT HERE. Dropping the baseline makes the next roster re-seed it
+    // silently (a `None` cannot read as a drop), which is the same guard a first roster gets.
+    wash.last_total = None;
+    wash.left = 0.0;
     if !existing.is_empty() {
         return;
     }
@@ -153,7 +192,15 @@ pub(crate) fn update_hurt_flash(
         match wash.last_total {
             // Only a DROP. Healing, levelling and a hero joining all move this number, and
             // none of them should flash.
-            Some(was) if total < was => wash.left = HURT_FLASH_SECS,
+            Some(was) if total < was => {
+                // How BADLY, as a share of what the party can hold. A venom bite is a
+                // nibble and reads as one; a trap or a Shift's Force blast still fills the
+                // screen. One mechanism, proportionate — rather than a second flash for
+                // small damage, which is two rules for one fact.
+                let pool: i32 = roster.heroes.iter().map(|h| h.max_hp.max(1)).sum();
+                wash.peak = wash_peak(was - total, pool);
+                wash.left = HURT_FLASH_SECS;
+            }
             _ => {}
         }
         wash.last_total = Some(total);
@@ -167,8 +214,10 @@ pub(crate) fn update_hurt_flash(
         return;
     }
     wash.left = (wash.left - time.delta_secs()).max(0.0);
-    // Fade out over the window, so the brightest instant is the moment it landed.
-    let a = HURT_FLASH_ALPHA * (wash.left / HURT_FLASH_SECS);
+    // Fade out over the window, so the brightest instant is the moment it landed, and cap
+    // the peak by how much the hit actually cost.
+    let scale = wash.peak.max(HURT_FLASH_MIN / HURT_FLASH_ALPHA);
+    let a = HURT_FLASH_ALPHA * scale * (wash.left / HURT_FLASH_SECS);
     for mut c in &mut q {
         c.0.set_alpha(a);
     }
@@ -3481,6 +3530,28 @@ pub(crate) fn overworld_camera_control(
 
 #[cfg(test)]
 mod tests {
+    /// A NIBBLE MUST NOT LOOK LIKE A CATASTROPHE. One wash served both a sprung trap and a
+    /// venom bite — and venom bites once every few STEPS, so walking poisoned filled the
+    /// screen red over and over at full strength. A warning that fires constantly at maximum
+    /// volume stops being a warning.
+    #[test]
+    fn the_hurt_wash_is_proportionate_to_what_was_taken() {
+        use super::wash_peak;
+        let pool = 1000;
+        let nibble = wash_peak(3, pool); // a venom step
+        let blow = wash_peak(120, pool); // a trap
+        let ruin = wash_peak(600, pool); // a Shift's Force blast
+        assert!(nibble > 0.0, "a real hit must still register");
+        assert!(nibble < blow, "a venom nibble washes as hard as a trap: {nibble} vs {blow}");
+        assert!(blow < ruin || ruin >= 1.0, "a bigger blow must not wash softer");
+        assert_eq!(ruin, 1.0, "past the threshold it is simply the full wash");
+        // Healing, levelling and a joining hero all move the total; none is a hit.
+        assert_eq!(wash_peak(0, pool), 0.0);
+        assert_eq!(wash_peak(-50, pool), 0.0);
+        // A pool that has not arrived yet cannot be divided by.
+        assert_eq!(wash_peak(10, 0), 0.0);
+    }
+
 
     /// The halo has to know WHICH thing it belongs on. `JoinFight` and `Extract` aim at a
     /// place rather than a thing, so they light nothing — and every other action names its

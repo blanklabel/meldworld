@@ -93,6 +93,10 @@ pub(crate) fn mock_battle_setup(
     hit(&mut hitfx, "grendel", "-9", red, 0.06);
     hit(&mut hitfx, "wight", "-23", red, 0.06);
     hit(&mut hitfx, "h3", "+12", Color::srgb(0.5, 1.0, 0.6), 0.0);
+    // A KO, because EVERY fight ends with one and nothing could screenshot it: the killing
+    // blow's own text is the last thing on screen before the tally, so what it looks like is
+    // what "the end of a fight" looks like.
+    hit(&mut hitfx, "wight", "KO!", Color::srgb(1.0, 0.35, 0.35), 0.05);
     // CR-9: a ganging pack shouts its mark. Seeded so the bubble is screenshottable
     // without standing up a server and waiting for a pack to converge on someone.
     hitfx.callouts.push(Callout {
