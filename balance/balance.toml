@@ -1459,10 +1459,23 @@ player_radius = 0.5              # the avatar's collision radius vs obstacles
 terraces_per_area = 0.0          # discrete blocky terraces retired — the continuous heightmap (client terrain_height) is the new natural elevation (Phase A). Peak rewards + slope-walking return via the heightmap in Phase B/C.
 max_level = 0                    # no discrete cliffs; elevation is the smooth heightmap now
 # WG-4: the generated corridor is bent into a radial ARC of this many degrees around
-# the hub — the world fans out from the Center Hub, leaving the western sliver for
-# Last City. `x` becomes radius (distance = difficulty, unchanged), lateral `y`
-# becomes angle. 340 keeps a ~20° gap to the west for the city + its wall.
-radial_arc_degrees = 340.0
+# the hub — the world fans out from the Center Hub, leaving the western gap for Last
+# City. `x` becomes radius (distance = difficulty, unchanged), lateral `y` becomes angle.
+#
+# ⚠️ WIDENED FROM 340° (a 20° gap) TO 300° (a 60° gap), because a PENINSULA IS NOT
+# EXPRESSIBLE AT 340°. The gap's half-width is `r · tan(gap_half)`, so at 340° it is
+# 30·tan(10°) ≈ **5.3 units** at r=30: the fan came around to within a few units of due
+# west and there was simply no room for a sea beside the neck. At 300° the same point has
+# 17.3 units, and the channel beside the spit is guaranteed by construction
+# (`coast::CHANNEL_LAND_SHARE`) rather than by this number.
+#
+# What it costs: the world loses 12% of its angular extent, so a ring holds proportionally
+# fewer creatures and props — but DENSITY per unit area is preserved, because
+# `maze_fill_scale`/`creature_radial_lane_cap` compensate against the arc. It is in fact a
+# small density WIN at depth: a narrower fan means less arc-stretch, so the compensation
+# cap binds later. Nothing currently draws a player sideways, so the lost lateral room is
+# the cheapest thing in the world to spend. [TUNABLE]
+radial_arc_degrees = 300.0
 terrace_min_size = 6.0           # smallest terrace footprint side (tiles)
 terrace_max_size = 14.0          # largest terrace footprint side (tiles)
 terrain_cell = 2.0               # elevation-grid resolution (tiles per cell)

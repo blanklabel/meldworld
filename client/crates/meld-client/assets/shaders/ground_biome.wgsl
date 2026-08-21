@@ -51,6 +51,13 @@ struct BiomeParams {
     peaks: array<vec4<f32>, 24>,           // authored mountains [cx, cz, radius, height]
     peak_count: u32,
     _pad_pc0: u32, _pad_pc1: u32, _pad_pc2: u32,
+    // The COASTLINE (`meld_proto::coast`): (arc_half_rad, neck_reach, peninsula_length,
+    // channel_land_share). Passed in rather than baked, so the sea the player SEES is the
+    // sea the server collides with — the shoreline is authored in two scenes that cannot
+    // see each other, and two hand-placed shorelines drift.
+    coast: vec4<f32>,
+    // Peninsula widths: (neck_half, city_half, tip_taper, sea_depth).
+    coast_w: vec4<f32>,
     // The Shift's tell (CANON D20/§W2): (inner_radius, outer_radius, intensity, 0).
     // A region is a radius ring in the WG-4 fan and this ground is already painted in
     // rings, so the doomed region draws as an annulus in the same frame as everything
@@ -65,6 +72,38 @@ struct BiomeParams {
 @group(2) @binding(104) var t_mire: texture_2d<f32>;
 @group(2) @binding(105) var samp: sampler;
 @group(2) @binding(106) var<uniform> params: BiomeParams;
+
+// Half-width of the land on the western spit at `d` units west of the hub. MUST match
+// `meld_proto::coast::peninsula_half_width`.
+fn spit_half_width(d: f32) -> f32 {
+    let neck_reach = params.coast.y;
+    let penin_len = params.coast.z;
+    let neck_half = params.coast_w.x;
+    let city_half = params.coast_w.y;
+    let tip_taper = params.coast_w.z;
+    if (d <= neck_reach) { return neck_half; }
+    if (d >= penin_len) { return 0.0; }
+    let t = (d - neck_reach) / (penin_len - neck_reach);
+    let swell = sin(3.14159265 * t);
+    var w = neck_half + (city_half - neck_half) * swell;
+    w = w * smoothstep(1.0, 1.0 - tip_taper, t);
+    let gap_half = max(3.14159265 - params.coast.x, 0.0);
+    return min(w, d * tan(gap_half) * params.coast.w);
+}
+
+// How far INTO the sea a point is, in world units (negative on land). Mirrors
+// `meld_proto::coast::is_ocean` but signed, so the shoreline can fade instead of snapping
+// to a hard edge one texel wide.
+fn sea_depth_at(wxz: vec2<f32>) -> f32 {
+    let arc_half = params.coast.x;
+    if (arc_half <= 0.0) { return -1000.0; }          // corridor mode: no gap, no sea
+    let theta = abs(atan2(wxz.y, wxz.x));
+    if (theta <= arc_half) { return -1000.0; }        // inside the fan: land, always
+    let d = length(wxz);
+    let inland = params.coast.y - d;                  // the neck's land bridge
+    if (inland >= 0.0) { return -max(inland, 0.001); }
+    return abs(wxz.y) - spit_half_width(d);
+}
 
 // Authored CLIMBABLE peaks: smooth raised-cosine domes summed onto the ground — MUST
 // match `meld_proto::terrain::peak_height`. World-space (NOT offset-shifted).
@@ -88,7 +127,12 @@ fn peak_dome(wxz: vec2<f32>) -> f32 {
 // authored peak domes, all scaled by `terrain_amp` (0 flattens City/menus). This is the
 // single source the vertex displaces by and the normal differentiates.
 fn total_height(wxz: vec2<f32>) -> f32 {
-    return params.terrain_amp * (terrain_height_wgsl(wxz + params.terrain_off) + peak_dome(wxz));
+    let land = terrain_height_wgsl(wxz + params.terrain_off) + peak_dome(wxz);
+    // The sea bed falls away from the shoreline, so water sits visibly BELOW the land and
+    // the coast reads as a beach rather than a colour change on a flat plane.
+    let sea = sea_depth_at(wxz);
+    let drop = params.coast_w.w * smoothstep(0.0, 26.0, max(sea, 0.0));
+    return params.terrain_amp * (land - drop);
 }
 
 // Surface normal by finite differences over `total_height`, so both the rolling base and
@@ -181,6 +225,24 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         var c = mix(biome_color(prev, uv), biome_color(here, uv), s_in);
         c = mix(c, biome_color(next, uv), s_out);
         blended = c;
+    }
+
+    // THE SEA. Painted over whatever biome the ring says, because the coast is a fact
+    // about the world rather than a property of the biome it borders — a tundra shore and
+    // a forest shore are the same water. Shallows near the shoreline read lighter and let
+    // the ground beneath show through, so the beach is a gradient rather than a hard
+    // outline; open water deepens and hides it. Mirrors `meld_proto::coast`, which is what
+    // movement and path routing collide against.
+    let sea = sea_depth_at(in.world_position.xz);
+    if (sea > -0.5) {
+        let shallow = vec4<f32>(0.24, 0.52, 0.60, 1.0);
+        let deep = vec4<f32>(0.05, 0.16, 0.31, 1.0);
+        let t = smoothstep(0.0, 60.0, max(sea, 0.0));
+        let water = mix(shallow, deep, t);
+        // A pale line right at the waterline, so the shore is a place you can aim at.
+        let surf = 1.0 - smoothstep(0.0, 3.5, abs(sea));
+        let wet = mix(water, vec4<f32>(0.72, 0.86, 0.88, 1.0), surf * 0.45);
+        blended = mix(blended, wet, clamp(smoothstep(-0.5, 2.5, sea), 0.0, 1.0));
     }
 
     // The tell. The ground inside the doomed ring burns, brightest at the two edges so

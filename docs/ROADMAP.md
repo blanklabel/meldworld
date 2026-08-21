@@ -1731,6 +1731,47 @@ design for this epic: [`proposals/worldgen-wg.md`](proposals/worldgen-wg.md).
     the fan and the clear path runs radially, so nothing draws a player sideways. Behind the
     city it pays immediately; along the arc edges it only pays once this item's angular
     structure gives a reason to travel laterally. Ocean and wedges are complements.
+  - [x] *SHIPPED — the coastline and the peninsula, as one shared constant.*
+    [`meld_proto::coast`](../shared/meld-proto/src/coast.rs) owns the shoreline **and the
+    neck**, because the geometry is authored in two scenes that cannot see each other (the
+    arena is server truth; Last City is a separate `Screen`) and two hand-placed shorelines
+    drift exactly the way every other duplicated rule in this repo has. The sea is an
+    **analytic boundary, never colliders** — so it is O(1) to ask, and it never touches
+    `BlockField`, whose cell is sized from the largest radius in the world (one r=150 disc,
+    parked where it blocked nothing, measured **+63%** on the creature tick; an ocean made
+    of geometry would have been the most expensive object in the game).
+    - *The neck is not authored as a width — it falls out of the geometry.* Near the hub
+      the western gap is a narrow wedge, too tight to hold a channel, so the land closes
+      across it. That bridge IS the neck, it is the only way in or out on foot, and it is
+      why the city is defensible — a siege (`BD-4`/`BD-8`) has exactly one axis.
+    - ⚠️ *The arc had to widen, 340° → 300°.* **A peninsula is not expressible at 340°**:
+      the gap's half-width is `r·tan(gap_half)`, so at r=30 it was `30·tan(10°)` ≈ **5.3
+      units** — the fan came around to within a few units of due west and there was no room
+      for a sea beside the neck at all. The world loses 12% of its angular extent; density
+      per unit area is preserved (the compensation rides the arc) and is in fact a small
+      **win** at depth, since a narrower fan means less arc-stretch and the cap binds later.
+    - *The channel is a guarantee, not a tuning accident.* The spit is bounded to
+      `CHANNEL_LAND_SHARE` of the local gap, so there is open water on both flanks at every
+      depth it exists — whatever the arc is retuned to. The first draft authored a fixed
+      width and silently swallowed the sea near the neck (7.6 units of water at d=50); the
+      test caught it. Same discipline as the clear path's guaranteed route and the `Seam`'s
+      guaranteed door.
+    - *Placement needs no rejection pass.* `radialize` clamps every bent position to
+      `|theta| <= arc_half`, and the fan is land by definition — so nothing the world places
+      can land in the sea **by construction**. Held by test anyway.
+    - *Movement and routing go through the one funnel:* `t_walkable` gains `on_land`, and
+      `astar_route`'s cell and edge tests gain the same predicate, so the guaranteed
+      backbone bends around water exactly as it bends around cliffs. No second copy of
+      "what blocks".
+    - *The client mirrors it from the same module* — the ground shader carries `coast` /
+      `coast_w` in its uniform (fed from the server's own arc) rather than baking the
+      numbers, so **the sea the player sees is the sea the server collides with**. The sea
+      bed drops away from the shore so water sits visibly below land, with a pale surf line
+      at the waterline so the shore is something you can aim at.
+    - 🟡 *Not done: Last City's own scene has no coast yet.* It is laid out in its own
+      coordinates, so painting the world's sea into it would put water through the plaza.
+      The neck and the channel are walked in the ARENA, which is where this ships; giving
+      the city scene its matching shore is follow-up.
   - *And the form the ocean should take: **Last City as a PENINSULA**.* Strictly better
     than "water behind the city", because it answers that idea's own objection — a coast
     along the arc edges would be seen by almost nobody, while a peninsula puts the coast
