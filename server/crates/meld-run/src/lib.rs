@@ -2119,7 +2119,36 @@ mod tests {
         assert_eq!(f.barrier, 12);
         assert!(f.regen >= 3);
         assert!((f.evasion - 0.10).abs() < 1e-9, "evasion {}", f.evasion);
-        // "of Fury": Adrenaline banked before the first turn, capped by the max.
+    }
+
+    /// A class-locked affix has to be spendable BY that class, and "of Fury" was not: it
+    /// banks Adrenaline and was restricted to the **Explorer**, which has no Adrenaline at
+    /// all — so the one class that could roll it was the one class it did nothing for, and
+    /// `furys_yoke` (which pays 25 max HP for it) was a pure downgrade for its own wearer.
+    /// Two copies of one rule: the engine moved Adrenaline to the Hunter, the affix table
+    /// did not, and the proto-side test compared the two wrong values against each other.
+    /// Asserted through the ENGINE rather than the table, so the check is "does the grant
+    /// land" and not "do two constants match".
+    #[test]
+    fn a_keyword_affix_lands_on_the_class_it_is_locked_to() {
+        let b = Balance::load_default().unwrap();
+        let owner = meld_proto::affixes::find("adrenaline_primed")
+            .and_then(|a| a.only_class)
+            .expect("of Fury is class-locked");
+        let mut runs = InstanceRun::new("i".into(), 0, &b, 0);
+        runs.add_party(vec![("p".into(), "u".into(), owner, "r".into())]);
+        let primed: Vec<PartyMember> = vec![(
+            "p".into(),
+            "c".into(),
+            owner,
+            GearBonus { adrenaline: 4, ..Default::default() },
+        )];
+        let f = party_fighters(&primed, &runs, &b, &[]).pop().unwrap();
+        assert!(
+            f.adrenaline_max > 0,
+            "of Fury is locked to a class that banks no Adrenaline - the affix is inert \
+             wherever it can roll"
+        );
         assert_eq!(f.adrenaline, 4.min(f.adrenaline_max));
     }
 

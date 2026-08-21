@@ -103,11 +103,16 @@ pub const AFFIXES: &[AffixDef] = &[
     def("barrier", AffixClass::Ward, 2.0, None, "of the Bulwark"),
     def("regen", AffixClass::Ward, 0.5, None, "of Mending"),
     def("evasion", AffixClass::Ward, 0.5, None, "of the Ghost"),
+    // Adrenaline belongs to the HUNTER — it is the class that banks it and the only class
+    // whose abilities spend it. This said Explorer, which made "of Fury" the one affix that
+    // could only roll for a class with no Adrenaline at all: a dead roll wherever it landed.
+    // The engine had already moved the resource (`party_fighters` sets `adrenaline_max` for
+    // the Hunter and nobody else); the affix table was the second copy nobody moved.
     def(
         "adrenaline_primed",
         AffixClass::Keyword,
         1.5,
-        Some(CharacterClass::Explorer),
+        Some(CharacterClass::Hunter),
         "of Fury",
     ),
     def(
@@ -251,8 +256,10 @@ mod tests {
 
     #[test]
     fn keyword_affixes_are_inert_on_the_wrong_class() {
+        // Adrenaline is the Hunter's, so "of Fury" is the Hunter's.
         let fury = affix("adrenaline_primed", 4);
-        assert!(fury.applies_to(CharacterClass::Explorer));
+        assert!(fury.applies_to(CharacterClass::Hunter));
+        assert!(!fury.applies_to(CharacterClass::Explorer));
         assert!(!fury.applies_to(CharacterClass::Psyker));
         let mind = affix("focus_slot", 1);
         assert!(mind.applies_to(CharacterClass::Psyker));

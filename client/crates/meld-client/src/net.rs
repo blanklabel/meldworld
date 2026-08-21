@@ -641,7 +641,7 @@ pub enum ServerMsg {
     Error { message: String },
     /// `run.started` — carries this run's terrain offset so the bin can seed the ground
     /// shader + entity Y (the lib netcode can't reach the render module directly).
-    RunStarted { terrain_off: (f32, f32), peaks: Vec<[f32; 4]> },
+    RunStarted { terrain_off: (f32, f32), peaks: Vec<[f32; 4]>, tutorial: bool },
     /// The caller's hero roster (name/class/level/stats) for the party panel.
     Party {
         heroes: Vec<HeroLine>,
@@ -2279,7 +2279,11 @@ impl Inner {
                             .collect()
                     })
                     .unwrap_or_default();
-                self.out.push_back(ServerMsg::RunStarted { terrain_off, peaks });
+                // Whether this WORLD is the guided one — the server's fact, not our own
+                // keypress. An older server omits it and it reads false, which is the safe
+                // way round: no walkthrough over a run that may not be guided.
+                let tutorial = raw.payload["tutorial"].as_bool().unwrap_or(false);
+                self.out.push_back(ServerMsg::RunStarted { terrain_off, peaks, tutorial });
                 self.emit_backpack();
                 if let Some(pts) = raw.payload["path"].as_array() {
                     let points: Vec<(f64, f64)> = pts

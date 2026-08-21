@@ -711,7 +711,7 @@ pub(crate) fn city_input(
     // No `UnlocksRes` here any more: its only reader was the unreachable Drill-Yard branch
     // this system returns above (see the note further down). `pick` rides this tuple because
     // the system is at Bevy's 16-param ceiling.
-    (tutorial, mut tutorial_run, mut pick): (Res<Tutorial>, ResMut<TutorialRun>, ResMut<CounterPick>),
+    (tutorial, mut pick): (Res<Tutorial>, ResMut<CounterPick>),
     mut next: ResMut<NextState<Screen>>,
 ) {
     let (hunts, bounties) = (&mut boards.0, &boards.1);
@@ -750,9 +750,6 @@ pub(crate) fn city_input(
         } else {
             "stepping through The Threshold...".to_string()
         };
-        if tutorial_dive {
-            tutorial_run.pending_arm = true;
-        }
         net.0.send(ClientCmd::EnterMaze {
             party: session.party.clone(),
             tutorial: tutorial_dive,
@@ -1037,6 +1034,20 @@ pub(crate) fn city_input(
 /// Walk the avatar around the plaza with WASD/arrows (camera-relative), softly
 /// colliding out of building anchors and clamped to the plaza. Client-local — the
 /// city has no server-side simulation (see docs/proposals/last-city.md).
+/// The camera-relative planar basis for town walking: `(forward, right)` in world xz,
+/// for a camera yaw in DEGREES (at yaw 0 the camera looks toward -z).
+///
+/// `right` is `fwd` rotated +90° in the xz plane — at yaw 0 that is `(1, 0)` = +x = east,
+/// which is where the screen's right edge actually is. It used to be `(fwd.y, -fwd.x)`,
+/// the opposite, so A/D **and** the walk-facing derived from the motion vector both came
+/// out mirrored in town (`LC-2`). The overworld's own mover has always used this handedness;
+/// the two screens agreeing is the whole point of naming it once.
+pub(crate) fn planar_basis(yaw_deg: f32) -> (Vec2, Vec2) {
+    let yaw = yaw_deg.to_radians();
+    let fwd = Vec2::new(-yaw.sin(), -yaw.cos()); // W = into the screen
+    (fwd, Vec2::new(-fwd.y, fwd.x))
+}
+
 pub(crate) fn city_move(
     time: Res<Time>,
     keys: Res<ButtonInput<KeyCode>>,
@@ -1053,14 +1064,7 @@ pub(crate) fn city_move(
     if city.party_open {
         return;
     }
-    // Camera-relative planar basis (at yaw 0 the camera looks toward -z).
-    let yaw = look.cam_yaw.to_radians();
-    let fwd = Vec2::new(-yaw.sin(), -yaw.cos()); // W = into the screen
-    // D = screen-right. The camera's right is `fwd` rotated +90° in the xz plane
-    // (at yaw 0: fwd=(0,-1) → right=(1,0)=+x=east). The previous `(fwd.y,-fwd.x)`
-    // gave the opposite (-x), so A/D — and the walk-facing derived from motion —
-    // came out mirrored in town.
-    let right = Vec2::new(-fwd.y, fwd.x);
+    let (fwd, right) = planar_basis(look.cam_yaw);
     let mut m = Vec2::ZERO;
     if keys.pressed(KeyCode::KeyW) || keys.pressed(KeyCode::ArrowUp) {
         m += fwd;
@@ -1246,6 +1250,30 @@ pub(crate) fn city_vault_text(inv: &InventoryData) -> String {
 
 #[cfg(test)]
 mod tests {
+    use super::planar_basis;
+    use bevy::math::Vec2;
+
+    /// A sign error in this basis is invisible in a still frame — it only shows as motion —
+    /// so the guard is a test. W walks into the screen and D walks screen-right, which at
+    /// yaw 0 is EAST. Getting `right` backwards is `LC-2`: the town walked you the wrong way.
+    #[test]
+    fn town_walking_is_not_mirrored() {
+        let (fwd, right) = planar_basis(0.0);
+        assert!((fwd - Vec2::new(0.0, -1.0)).length() < 1e-5, "W at yaw 0 must go -z: {fwd:?}");
+        assert!((right - Vec2::new(1.0, 0.0)).length() < 1e-5, "D at yaw 0 must go +x: {right:?}");
+
+        // And at every yaw: orthonormal, and `right` is `fwd` turned the SAME way round
+        // (a cross product with a consistent sign), not its mirror.
+        for deg in (0..360).step_by(15) {
+            let (f, r) = planar_basis(deg as f32);
+            assert!((f.length() - 1.0).abs() < 1e-5 && (r.length() - 1.0).abs() < 1e-5);
+            assert!(f.dot(r).abs() < 1e-5, "{deg}deg: basis is not orthogonal");
+            // xz cross product f x r, same sign at every yaw.
+            let cross = f.x * r.y - f.y * r.x;
+            assert!((cross - 1.0).abs() < 1e-5, "{deg}deg: handedness flipped ({cross})");
+        }
+    }
+
 
     /// Travel has to leave you where [E] works, or the button is a worse version of walking.
     #[test]

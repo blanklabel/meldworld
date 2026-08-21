@@ -123,7 +123,18 @@ through feel & clarity, not more mechanics.
     second **live** enemy that is not `enemies.first()`, and two numbers on one target).
 - [ ] **P1-3 — New-player onboarding & progression legibility.** The first hour: teach the
   loop, and make "am I getting stronger?" legible (gear power, level, what to do next).
-- → **LC-2** (fix the reversed-walk bug — a visible rough edge new players hit).
+  - ✅ *One bug off it: **the tutorial is a property of the WORLD and it never said so.***
+    `wants_tutorial` is read only when a world is CREATED, so a player who pressed ENTER
+    landed in whatever world was live — a guided one if anyone else was mid-tutorial — and
+    the client armed its walkthrough off **its own `[T]` keypress** instead. Two ways to end
+    up apparently stuck in the tutorial: a `[T]` dive whose `enter_maze` was refused left
+    the arm flag set and put a walkthrough over the NEXT, randomized dive; and a normal dive
+    that joined a live tutorial world got the guided world with no walkthrough and no
+    explanation. `run.started` now carries `tutorial` (additive, defaults false) and the
+    client arms from that fact alone; the intent flag is gone. **The deeper cause is
+    single-world:** while `GameState` holds one `Option<WorldActor>`, "give me a normal run"
+    cannot be honoured while a tutorial world is up — that is `SC-3`'s multi-world.
+- → **LC-2** (fix the reversed-walk bug — a visible rough edge new players hit). ✅ *done.*
 
 **Definition of done (Phase 1):** a new player can — with a friend — dive, get *exciting*
 loot, come home to **craft/upgrade and spend**, chase a **scoreboard + a couple of
@@ -133,6 +144,18 @@ entirely on today's build, **before** any ecology, building, persistence, bosses
 **Explicitly deferred (the vision — later phases):** `CR` (living ecology), `BD` (building
 & sieges), `SC-3` (world persistence), `EW` (end-world bosses), `SOC` (guilds), the Shift,
 `MON`. They layer on *after* Phase 1 proves the core is fun.
+
+> **Where Phase 1 stands (audited against the code, 2026-08-20).** ① is **in** — `AD-1`,
+> `GR-1`, `GR-2`, `GR-3`, `GR-5` all verified and closed; only `GR-6`'s wording tail is
+> open (the loot report still shows gear as bare names, and the Ephemeral tooltip is
+> hover-only, so **touch has no path to it at all**). ② is **in** bar the multiplier —
+> `MS-1`'s crafting/Forge/Broker and `LC-4`'s in-town inventory ship; `EC-1` player stalls
+> is the one untouched piece, and Phase 1 itself says it may trail. ③ is **in** — the
+> Vanguard board (`P1-1`) plus the light Hunt Board cut (`AD-4`). ④ is where the gap is:
+> `P1-2`'s feel pass and `LC-2` are done, and **`P1-3` — onboarding and progression
+> legibility — has not been started.** Two of the six 🟡 tails outside Phase 1 are also
+> genuinely small: `PG-1` wants Psi Points + the Shifter's entrance beacon, and `DG-4`
+> wants a player verb that reaches `attempt_disarm`, which is written and unreachable.
 
 ---
 
@@ -163,11 +186,18 @@ the dive→extract→dive loop. This epic finishes M1–M3.
     AX-1's `say` / `chat` tools, so an agent and a human in one world can actually talk.
     **Remains:** the town presence loop, proximity scoping, emotes, and rendering other
     players in The Commons.
-- [ ] **LC-2 — Fix the reversed walk direction.** In Last City the hero sprite
-  walks *opposite* the pressed arrow (push one way → walk the other). Camera-
-  relative movement sign/axis bug in the city controller (client
-  [`main.rs`](../client/crates/meld-client/src/main.rs) `Screen::City` movement).
-  Screenshot/verify the four directions.
+- [x] **LC-2 — Fix the reversed walk direction.** In Last City the hero sprite walked
+  *opposite* the pressed arrow. The camera-relative basis in `city::city_move` took the
+  screen-right vector as `(fwd.y, -fwd.x)`, which at yaw 0 is **-x** (west) where the
+  camera's right is +x — so A/D, and the walk-facing derived from the motion vector,
+  both came out mirrored. It is `(-fwd.y, fwd.x)` now, the same convention
+  `overworld`'s own mover has always used, so the two screens cannot disagree about
+  which way is right.
+  - The basis is a **tested function** rather than four lines inside a system
+    (`planar_basis`): W at yaw 0 points into the screen (-z), D points east (+x), and
+    the pair stays orthonormal and correctly handed at every yaw. A sign error here is
+    invisible in a still screenshot — it only shows as motion — so the guard has to be
+    a test, not a captured frame.
 - [x] **LC-3 — Adopt "The Last City" as the canonical name.** Renamed "The Weld" in
   all in-game UI/labels + client code, the proposal's name line, and added a CANON
   glossary entry (§G) for **The Last City**. District names kept.
@@ -284,11 +314,20 @@ burns on death/leave; some is single-use. See
 [`interfaces/data-models/gear-item-models.md`](interfaces/data-models/gear-item-models.md)
 (blue/red gear, durability, gems, consumables already sketched).
 
-- [ ] **GR-1 — Full equipment slot system.** Seven slots per hero: **Head, two
-  Hands, Chest, Legs, two Accessory** slots. Extends today's single-slot
-  per-character equip; server derives stat bonuses from the full set; the tabbed
-  inventory UI grows to the slot grid. Add the slot enum to `meld-proto`
-  (additive), the persistence, and the derivation in `meld-run::party_fighters`.
+- [x] **GR-1 — Full equipment slot system.** Seven slots per hero — **Head, two Hands,
+  Chest, Legs, two Accessory** — shipped as **six categories** with a per-category
+  capacity, which is the same loadout in one fewer concept: `meld_proto::equipment::SLOTS`
+  is `main_hand / off_hand / head / chest / legs / accessory`, and `category_capacity`
+  gives `accessory` **2** (ACCESSORY_1/2) and everything else 1. One list, so "equip best",
+  the client's category columns and the server's checks cannot disagree about what a hero
+  wears.
+  - Persistence is an **idempotent, additive** migration rather than a new table: the old
+    three-category rows map forward in place (`weapon → main_hand`, `armor → chest`,
+    `accessory` keeps its name), so no Vault breaks and re-running the migration matches
+    nothing. Derivation reads the whole set (`equipped_gear_bonuses`, and
+    `meld-run::party_fighters` through it); the equip flow SWAPS a full capacity-1 slot
+    and only refuses a full multi-capacity category, where the player is genuinely choosing
+    which ring comes off (`LC-4`).
 - [x] **GR-2 — Durability & the wipe.** The stakes engine's other half: gear that
   wears out, and a wipe that costs you. Ties to the crafter repair economy (MS-1)
   and GDD §7 "Durability Sink."
@@ -362,7 +401,7 @@ burns on death/leave; some is single-use. See
     counter tests, `meld-db`'s `a_hero_falling_taxes_that_heros_gear_and_nobody_elses`,
     and `meld-server`'s `hero_fall_tax_tests` (the headline one being *a hero that
     fell pays even when the party wins*).
-- [ ] **GR-5 — Class-locked equipment & two-handed weapons.** Every equippable item
+- [x] **GR-5 — Class-locked equipment & two-handed weapons.** Every equippable item
   declares a **family** (sword/shield/spear/staff/globe/gauntlet/dagger/parry_blade)
   and every class declares which families it may wear, so classes read as classes:
   Explorer sword+shield *or* two-handed spear, Resonant staff (2H), Psyker globe (2H),
@@ -392,8 +431,18 @@ burns on death/leave; some is single-use. See
     never disagree with it; and picking a two-handed weapon **puts the off-hand away for
     you** instead of returning a 409. Screenshot-verifiable via
     `MELD_INVENTORY_TAB=equip`.
-  - **Remains:** authoring signature pieces (the class-exclusive armor `AD-1` uniques
-    hang off), and a stray-descriptor audit once loot tables grow.
+  - **Signature pieces are authored, which was the last named gap.** Two ladders, not one:
+    the 30-relic **class-signature** catalog (`class_signature_name`, gated behind
+    `class_signature_min_tier` and rolled independently of rarity, so a signature can itself
+    come up Legendary) and the `AD-1` **uniques**, three of which are class-exclusive ARMOR
+    carrying a class-flavoured keyword affix — Fury's Yoke (chest), Hollow Crown (head, two
+    extra Focus slots), Gutterstep (legs). A class-locked unique never lands on another
+    class's drop, held by test.
+  - **One deviation, on purpose:** a signature piece does **not** bypass `ArmorWeight` — it
+    is class-*locked* and its weight is rolled class-appropriately, which reaches the same
+    place (the piece is wearable by exactly the class it was authored for) without a second
+    legality path for `check_equip` to disagree with. The stray-descriptor audit is a
+    standing maintenance clause, not undone work.
 - [x] **GR-7 — Persist a hero's class per slot.** Today the party is chosen per dive and
   gear equips to a *slot*, so in town the server cannot say what class hero 2 is — which
   is why `GR-5` can only enforce at derivation. Persist a class per hero row (the
@@ -423,13 +472,23 @@ burns on death/leave; some is single-use. See
     **Ephemeral — "Vanishes when the run ends - win or lose."** on its own amber line
     (an unparseable word reads as Ephemeral: wrongly believing an item is safe costs the
     player the item).
-  - **Remains:** the same wording in the run-loot/backpack HUD and the end-of-run
-    summary, and press-and-hold on touch.
-- [ ] **GR-3 — Ephemeral items/gear.** A distinct class of items (incl. Red-Chest
-  gear) that **always** vanish on death *or* on voluntarily leaving Meldworld —
-  they never bank to the Vault, only matter for the current dive. Model as an
-  ephemeral flag on the item / backpack-only class; enforce at extraction banking
-  (they don't transfer) and on run end. Contrast with insured Blue-Chest (GR-2).
+  - **Remains, and both halves were re-checked against the code:** the loot report /
+    end-of-run summary carries gear as bare names (`LootReport.gear: Vec<String>`), so the
+    one surface that appears at the exact moment a player is deciding what to risk is the
+    one surface that does not say the word; and the tooltip fires on
+    `Interaction::Hovered`, which **touch never reports** — so on a phone there is no path
+    to the sentence at all. The word is only ever a hover away on desktop.
+- [x] **GR-3 — Ephemeral items/gear.** `Insurance::Ephemeral` is the flag, and it is
+  enforced on **every** way a dive can end rather than at one chokepoint —
+  `db.burn_ephemeral_gear` fires from `DbWrite::Death` (a wipe takes it exactly as any
+  other trip home would), from extraction, from **walking** into the city wedge, and from
+  abandoning a run mid-dive. It is the strongest gear in the game *because* it can never be
+  banked; surviving extraction would make it merely the best loot.
+  - The rule is spoken where a player would otherwise be surprised by it: a Forge reroll on
+    an ephemeral piece is **refused with the reason** ("Ephemeral gear burns when you reach
+    the city — a reroll would burn with it") rather than sold and then burned.
+  - The word itself is `GR-6`, which is still open: the tooltip says Ephemeral, the loot
+    report does not.
 - [x] **GR-4 — Consumable potions that do more than heal.** Six potions
   (`meld_proto::consumables`), each reusing a state the ATB engine already models so a
   potion is content rather than new machinery: **Bloom Salve** (part heal), **Elixir**
@@ -920,13 +979,25 @@ burns on death/leave; some is single-use. See
     is won: the Pacifist is people who were never seen, not people who ran.
   - The milestone rides the same high-water mark as the depth hunt, so both are asked once
     per new deepest tile rather than on every step of the walk out.
-- [ ] **CL-1 — Class unlock system.** Classes become account-persistent unlocks
-  rather than always-available. Ship the unlock model (which classes an account
-  owns), gate party building to owned classes, and wire the two sources: **Gatekeeper
-  emblem drops** (GDD §4; FS-4) and **hiring at a town vendor** (EC-2). See
-  [`behaviors/meta-progression.md`](behaviors/meta-progression.md) "class unlocks
-  via ClassEmblem." Existing classes (Explorer/Psyker/Resonant/Shifter/Phoenix Guard)
-  define the taxonomy — see [`CLAUDE.md`](../CLAUDE.md) "Combat & class taxonomy."
+- [x] **CL-1 — Class unlock system.** Classes are account-persistent unlocks.
+  [`meld_proto::unlocks`](../shared/meld-proto/src/unlocks.rs) is the one registry both
+  sides read — every unlock carries its trigger, the line a locked party-builder row shows
+  ("how do I earn this") and the line its banner shows ("what does it mean for me"), so the
+  UI can never promise a condition the server does not check. A new account starts with ONE
+  slot and the Explorer; slots open at 1xL10 / 2xL20 / 3xL30 counted *simultaneously* in a
+  dive, and each earned class waits on the slot that seats it (a class you cannot field is
+  not a reward). `WorldEffect::Milestone` reports the fact, the **Router** grants it against
+  the session's in-memory set (so a milestone fired every tick still grants once),
+  `DbWrite::Unlocks` persists it off the tick, and `run.enter_maze` **clamps** a requested
+  party to what the account owns rather than rejecting it — an unowned class becomes an
+  Explorer instead of a failed dive.
+  - **The two designed sources were replaced by triggers, deliberately.** Rather than
+    Gatekeeper emblems and an `EC-2` hire, an unlock hangs off something the player was
+    going to do anyway — extract once (Hunter), lose a run to a wipe (Resonant: the wipe IS
+    the lesson, so it pays out on the first one), enter a dungeon (Shifter), survive the
+    undead rite (Phoenix Guard), forge a piece (Smithwright) — so an unlock reads as
+    recognition rather than a chore. The emblem faucet is still tracked, as the
+    `class_emblem_drops` gap under `GR-8` / `FS-4`; nothing about it blocks the system.
 - [ ] **CL-2 — Overworld class perks ("party sense") — deepen the system.** 🟡
   *Partial:* an overworld class-perk system already ships (`[perks]` in balance;
   `game.rs::compute_perks`) — each class's *presence* in the party grants an
@@ -1369,8 +1440,12 @@ design for this epic: [`proposals/worldgen-wg.md`](proposals/worldgen-wg.md).
     (the **Dex check the Shifter is far better at**; failure springs it;
     non-disarmable traps must be routed around). Pure, 7 tests. **Remaining —
     DG-4b:** the `spawn`/`mover`/`timer` receivers (need model additions), the
-    `run.interact` wire message, and applying trap hits / interact dispatch in the
-    loop — with DG-3b.
+    `run.interact` wire message, and interact dispatch in the loop — with DG-3b.
+    *Applying trap hits landed:* movement calls `spring_trap` and `apply_trap_hit` is in
+    the loop (a trap can kill a party, through `world_death`). What is still unreachable is
+    `attempt_disarm` — the Dex check exists, pure and tested, with **no player verb that
+    calls it**, so every trap is currently a hazard to route around and the Shifter's edge
+    at them is unspendable.
   - [x] **DG-5** — loot: `DungeonInstance::resolve_chest` turns a chest's
     `ChestLoot` into a reward scaled by the floor's `effective_distance` (deeper =
     richer, off the *stamped* distance not local position) — **rolled** (reuses
@@ -1481,11 +1556,23 @@ Make time in the field a living, dangerous place worth screenshotting.
   modifiers, elemental interactions) and be **biome-appropriate** — deserts should
   rarely rain; each biome gets its own weather table. Seeded + server-authoritative
   so it's fair. New `[worldgen]`/`[weather]` tunables.
+  - ⚠️ **There IS rain, and it is none of this.** `SL-4` tuned a **client-side** storm
+    cycle (`world_render::advance_sky`, magnitudes in `WorldFeel`) — it is a *look*, so it
+    lives client-side on `BattleFeel`'s precedent: not seeded, not on the wire, not
+    per-biome, and with no mechanical effect whatsoever. Two clients in the same world can
+    disagree about whether it is raining. This item is the whole of the mechanical half,
+    and it starts by moving the clock server-side (`FS-5`).
 - [ ] **FS-3 — Richer environmental effects (and they emit light).** Expand ambient
   HD-2D life like the **night fireflies**, and make such effects **light sources**
   (the fireflies should actually emit light), plus more per-biome/per-time-of-day
   flourishes. Client HD-2D pass — see the HD-2D pipeline notes; verify by native
   screenshot at night.
+  - 🟡 *The named half shipped:* **fireflies emit light** — every fourth mote carries a warm
+    `PointLight` (few and short-range on purpose: overflowing the light clusters flickers),
+    so they cast a real glow instead of only being emissive. Stars fade in at night, a dim
+    cool moon replaces the sun's directional fill, Ashfall sifts ash, and ground detail is
+    biome-gated. What is left is the open-ended part — *more* flourishes, and hanging them
+    off a real time-of-day (`FS-5`) rather than each client's own sky.
 - [ ] **FS-4 — Gatekeepers & unique bosses.** 🟡 *Shipped Elites + Gatekeepers:* the
   (previously dormant) `EncounterClass` pipeline is now live — a fraction of creatures
   roll **Elite** champions (tougher, ~3× loot) and a **Gatekeeper** boss guards every
@@ -1515,8 +1602,11 @@ Make time in the field a living, dangerous place worth screenshotting.
     placements now go through `become_boss` — writing `boss_kind` directly had left
     every gate boss wearing its host's LINEAGE, which is the bug `become_boss` exists
     to prevent.
-- [ ] **FS-5 — Day/night cycle as a first-class system.** A seeded, server-
-  authoritative time-of-day clock that other systems read: it drives the fireflies
+- [ ] **FS-5 — Day/night cycle as a first-class system.** ⚠️ *The sun already rises —
+  client-side only.* `advance_sky` runs a 10-minute day per client with stars, a moon fill
+  and a wind/rain phase machine; nothing about it is seeded, authoritative or on the wire,
+  so it cannot yet gate anything. This item is the **clock**, and everything below waits on
+  it. A seeded, server-authoritative time-of-day clock that other systems read: it drives the fireflies
   and night lighting (FS-3), gates creature sleep/activity (CR-3), and modulates
   weather and encounter tables (FS-2). One source of truth for "what time is it in
   this instance," on the wire so every client agrees.
@@ -2005,8 +2095,20 @@ same always-running-when-unwatched spatial workload as the ecology).
     broken instrument.
 - [ ] **BD-6 — Field crafting & storage.** `stash` (siege-able field storage),
   `workshop` (`MS-1` Forge/Alembic in the field), `hearth` (respawn/rally aura).
-- [ ] **BD-7 — Persistence wiring (rides `SC-3`).** Structures / anchor-altered Shifts /
-  harvest state into the §W5 event log; hibernate/reload; **season GC**. No sim rework.
+- [ ] **BD-7 — Persistence wiring.** Structures / anchor-altered Shifts / harvest state
+  into the §W5 event log; hibernate/reload; **season GC**. No sim rework.
+  - 🟡 **Nearly all of it landed on `SL-1`, not on `SC-3`** — worth knowing before anyone
+    plans around the old dependency. `worlds` in Postgres stores seed + `tick_count` +
+    `shift_generation` + section count + one JSON `delta`, and the delta already carries
+    **structures** (`StructureDto`: function, owner, position, elevation, hp/max_hp,
+    placed_tick), the **landed-Shift log** as `(generation, first_section, last_section)`
+    spans, node stock, opened chests, fallen ground and field stations. `restore_world`
+    regenerates the baseline from the seed, streams the frontier back out, replays the
+    Shifts and re-applies the delta; a world hibernates when empty and reloads on its
+    first joiner.
+  - **Remains:** **season GC** (nothing ever prunes a `worlds` row), and more than one
+    world key — persistence is wired for the single `WORLD_KEY`, and multi-world is still
+    `SC-3`'s.
 - [ ] **BD-8 — Sieges at scale & world bosses.** Mega-siege bounded by the realm cap;
   world-boss town sieges; **AX-3** agent garrisons hold towns while owners are offline.
   Endgame.
@@ -2309,6 +2411,15 @@ CONDITION rather than a checklist, and two menders can raise the fallen at a rea
   - ⚠️ Venom floors at **1 HP** rather than killing: ending a run needs a
     `WorldEffect::ReleaseFromRun` and `handle_move` returns messages, not effects. A poison that
     can finish a party should go through the same teardown a defeat uses.
+  - ✅ **Coming home is a cure, and it was leaking.** Run-scoped means the RUN — but
+    `remove_from_instance` cleared `hero_hp`, `party_classes`, `hero_names`, `hero_rows` and
+    `extraction` and **not `hero_afflictions`**, and since `SL-1` the world outlives its
+    divers, so the map outlived the run that filled it: a party that died poisoned came home,
+    dived again and **started the next run still poisoned** — with no creature to blame and
+    nothing to lift it, because afflictions do not expire. The whole list is now one named
+    method (`WorldActor::forget_player`) with a test, because it is a LIST and a list is what
+    gets an entry left off it. Clearing on extraction too, for the same reason: both ways out
+    end the run.
 - [x] **CN-4 — The conditions themselves, as designed.** `dread` was applied by six boss
   abilities and **did nothing at all**; `frenzied` was never applied by anything. Both are now
   specified:
@@ -2393,6 +2504,20 @@ the current build.
   - *Complete:* affix rerolling landed with the Forge (`MS-1`), and the elemental half
     with the `brand` affix (`AD-3`). Affixes, uniques, sets, damage types and rerolling
     are all live.
+  - ⚠️ **Fixed after the fact: "of Fury" was locked to a class with no Adrenaline.**
+    `adrenaline_primed` banks Adrenaline and its `only_class` said **Explorer** — but
+    `party_fighters` grants `adrenaline_max` to the **Hunter** and nobody else, so the one
+    class the affix could roll for was the one class it did nothing for, and `furys_yoke`
+    (a class-exclusive chase unique that pays **25 max HP** for it) was a strict downgrade
+    for its own wearer. The engine had moved Adrenaline off the Explorer a while ago with a
+    comment explaining why; the affix table was the second copy nobody moved.
+  - **How it survived is the lesson, again.** Two tests covered it and both compared the
+    wrong values with each other: proto's asserted the unique's `only_class` matched its
+    affix's (Explorer == Explorer), and `meld-run`'s asserted
+    `f.adrenaline == 4.min(f.adrenaline_max)` on an **Explorer**, i.e. `0 == 0`, under the
+    name "keyword affixes reach the fighter". The guard is now asked of the ENGINE — build
+    the affix's own owning class and assert the grant actually lands — and the proto-side
+    check walks every class-locked unique in the table instead of two named ones.
 - [x] **AD-2 — Party synergies + surfacing.** Class-pair + affix-driven synergies; the
   party screen shows **active synergies** (the build feedback loop). Depends on AD-1 + `PT-1`.
   Three layers, all live (`meld_proto::synergies`; magnitudes in `[adventure]`):

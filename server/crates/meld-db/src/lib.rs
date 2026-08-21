@@ -5015,7 +5015,10 @@ mod tests {
         }
         db.set_equipped(p, gid, Some(0)).await.unwrap();
 
-        let classes: Vec<String> = ["explorer", "psyker", "resonant", "explorer"]
+        // Slot 0 is the HUNTER, because "of Fury" is the Hunter's: it banks Adrenaline and
+        // the Hunter is the only class that has any. (This read `explorer` while the affix
+        // did too — and the affix was wrong, so the test agreed with it.)
+        let classes: Vec<String> = ["hunter", "psyker", "resonant", "explorer"]
             .iter()
             .map(|s| s.to_string())
             .collect();
@@ -5025,9 +5028,9 @@ mod tests {
         assert_eq!(b.barrier, 12);
         assert_eq!(b.regen, 3);
         assert_eq!(b.evasion, 7);
-        // The Explorer keyword lands; the Psyker one does not (wrong wearer).
+        // The Hunter keyword lands; the Psyker one does not (wrong wearer).
         assert_eq!(b.adrenaline, 5);
-        assert_eq!(b.focus_slots, 0, "a Psyker affix is inert on an Explorer");
+        assert_eq!(b.focus_slots, 0, "a Psyker affix is inert on a Hunter");
         // A resist affix becomes a damage multiplier (25% resisted -> 0.75).
         assert!(b.modifiers.iter().any(|(el, m)| el == "FIRE" && (*m - 0.75).abs() < 1e-9));
         // Synergy is deferred to battle assembly, which knows the party.

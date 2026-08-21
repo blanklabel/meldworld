@@ -78,7 +78,9 @@ pub const UNIQUES: &[UniqueDef] = &[
         key: "furys_yoke",
         name: "Fury's Yoke",
         slot: "chest",
-        only_class: Some(CharacterClass::Explorer),
+        // The Hunter's, because Adrenaline is. Locked to the Explorer this was a chase item
+        // that cost 25 max HP for a keyword its own wearer could not spend.
+        only_class: Some(CharacterClass::Hunter),
         affixes: &[("adrenaline_primed", 12), ("atk", 8)],
         drawback: Drawback::MaxHp(25),
         flavour: "The rage arrives before the fight does.",
@@ -194,18 +196,28 @@ mod tests {
         }
     }
 
+    /// Every class-locked unique, not a hand-written pair of them — a unique added to the
+    /// table and left off a list is a chase item whose signature keyword is inert on the
+    /// only class allowed to wear it. (Whether the class can actually SPEND the keyword is
+    /// the other half, and lives in `meld-run`, which is the crate that knows the engine:
+    /// this pair agreed with each other while both naming the wrong class.)
     #[test]
     fn a_class_locked_unique_only_carries_its_own_class_keywords() {
-        let yoke = unique("furys_yoke").unwrap();
-        assert_eq!(yoke.only_class, Some(CharacterClass::Explorer));
-        for a in yoke.rolled() {
-            assert!(a.applies_to(CharacterClass::Explorer));
+        let mut locked = 0;
+        for u in UNIQUES {
+            let Some(class) = u.only_class else { continue };
+            locked += 1;
+            for a in u.rolled() {
+                assert!(
+                    a.applies_to(class),
+                    "{}: {} cannot use its own signature affix {}",
+                    u.key,
+                    crate::equipment::class_key(class),
+                    a.key
+                );
+            }
         }
-        let crown = unique("hollow_crown").unwrap();
-        assert_eq!(crown.only_class, Some(CharacterClass::Psyker));
-        for a in crown.rolled() {
-            assert!(a.applies_to(CharacterClass::Psyker));
-        }
+        assert!(locked >= 3, "the class-exclusive uniques are the armour arm of AD-1's chase");
     }
 
     #[test]

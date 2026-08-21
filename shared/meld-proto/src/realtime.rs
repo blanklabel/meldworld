@@ -642,6 +642,17 @@ pub mod run {
         /// position otherwise). `[0, 0]` = the un-shifted hand-tuned field.
         #[serde(default)]
         pub terrain_offset: [f32; 2],
+        /// Whether the world this run entered is the guided **tutorial** world (a fixed
+        /// biome order, a centred obstacle-free area 0, one hand-placed dungeon entrance).
+        ///
+        /// It is a property of the WORLD, not of the request: the flag is decided only when
+        /// a world is created, so a diver who asked for a normal run and joined a live
+        /// tutorial world gets the tutorial, and a diver who asked for the tutorial while a
+        /// normal world was up does not. It never left the server, so the client had to
+        /// guess from its own keypress — which is how a walkthrough ended up armed over a
+        /// randomized dive. Say it, and the client can stop guessing.
+        #[serde(default)]
+        pub tutorial: bool,
         /// Authored CLIMBABLE landmark peaks (mountains), each `[cx, cz, radius, height]`
         /// in world space (see `terrain::peak_height`). The client sums them onto the
         /// ground so each mountain renders + you climb it; a boss or treasure sits on the
