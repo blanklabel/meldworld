@@ -215,6 +215,7 @@ fn main() {
         .init_resource::<CityUi>()
         .init_resource::<LobbyData>()
         .init_resource::<LootReport>()
+        .init_resource::<GearHold>()
         .add_systems(
             Startup,
             (setup, load_ui_font, apply_class_flag, mock_battle_setup, mock_overlay_setup, ambient::setup_ambient, music::setup_music),
@@ -486,6 +487,9 @@ fn main() {
                 category_button_click,
                 picker_unequip_click,
                 picker_back_click,
+                // Before the render, so a hold that crosses the threshold this frame opens
+                // the panel on THIS frame rather than the next one.
+                track_gear_hold,
                 render_gear_tooltip,
             )
                 .run_if(in_state(Screen::Overworld)),
@@ -520,6 +524,9 @@ fn main() {
                 category_button_click,
                 picker_unequip_click,
                 picker_back_click,
+                // Before the render, so a hold that crosses the threshold this frame opens
+                // the panel on THIS frame rather than the next one.
+                track_gear_hold,
                 render_gear_tooltip,
             )
                 .run_if(in_state(Screen::City)),
@@ -1883,10 +1890,10 @@ struct EndInfo {
     chits: i64,
     /// Count of red-chest gear banked to the Vault on extraction.
     gear: usize,
-    /// What the last fight cost in gear durability, `(hero name, points)` per hero
-    /// that fell (GR-2). Shown on the DEATH screen above all: a wipe is where the
-    /// bill is largest, so it is where the player most needs to see it.
-    worn: Vec<(String, i32)>,
+    /// What the last fight cost in gear durability, `(hero name, points, ephemeral pieces
+    /// burned)` per hero that fell (GR-2). Shown on the DEATH screen above all: a wipe is
+    /// where the bill is largest, so it is where the player most needs to see it.
+    worn: Vec<(String, i32, Vec<String>)>,
 }
 
 /// A loot report banner shown for a few seconds after a battle victory or a
@@ -1899,10 +1906,15 @@ struct LootReport {
     xp: Option<i64>,
     chits: i64,
     items: Vec<(String, i32)>,
-    gear: Vec<String>,
-    /// The COST half of the card: `(hero name, durability points)` per hero that fell.
-    /// A report that lists only what you gained is a report that hides the price.
-    worn: Vec<(String, i32)>,
+    /// `(name, insurance)` per piece. The WORD travels with the name because this card is
+    /// where a player decides what to risk next, and an Ephemeral piece that reads as an
+    /// ordinary drop is an item they will lose without ever having been told it was
+    /// temporary (`GR-6`).
+    gear: Vec<(String, meld_proto::enums::Insurance)>,
+    /// The COST half of the card: `(hero name, durability points, ephemeral pieces burned)`
+    /// per hero that fell. A report that lists only what you gained is a report that hides
+    /// the price — and the ephemeral half of that price can be a whole build.
+    worn: Vec<(String, i32, Vec<String>)>,
     elapsed: f32,
     /// This report is the end of a FIGHT, so it is shown on the battle screen and
     /// the walk back to the overworld waits for it to be dismissed. The tally for a
@@ -1924,7 +1936,7 @@ impl LootReport {
         xp: Option<i64>,
         chits: i64,
         items: Vec<(String, i32)>,
-        gear: Vec<String>,
+        gear: Vec<(String, meld_proto::enums::Insurance)>,
     ) {
         *self = LootReport {
             active: true,

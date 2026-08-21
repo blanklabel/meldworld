@@ -300,6 +300,20 @@ counts a party that **fled** as dead, since fleeing clears `alive` with everyone
 two deaths with no battle to end — a dungeon trap and a Shift's Force blast — credit the
 same tax through the same write.
 
+**EPHEMERAL IS THE BUILD-DEFINING TIER, AND IT BURNS TWICE.** It goes when you reach the
+city (any way home — extract, walk in, or abandon) **and when the hero wearing it falls**,
+which is the same trigger `GR-2`'s durability tax uses. That double risk is what pays for
+what it grants: `[affix] count_ephemeral_bonus` extra affixes on top of its rarity's count,
+so the tier's gift is **width** — the widest build in the game, holdable for one dive, on a
+hero that survives — rather than the bigger single number `ephemeral_power_mult` already
+gave it. An ephemeral piece is **never Common** (structural, not a tunable: a common carries
+zero affixes, and a piece that burns twice for one inflated stat is worse than the drop
+beside it). The per-fall burn is RUN-side (`PlayerRun::burn_equipped_ephemeral`) because gear
+found this dive does not reach the `gear` table until extraction — the piece it matters most
+for lives only in the run — and it takes **that hero's own equipped pieces only**. Every
+surface that reports a fall names what burned (`GearWorn.ephemeral_burned`): a cost the
+player is never shown reads as the game cheating, and this is the largest one in the game.
+
 **A GEAR DROP IS ROLLED FOR A CLASS SOMEBODY CAN PLAY.** `meld_world::CLASS_KEYS` is the pool
 `roll_creature_loot` picks a drop's `class_key` from, and every drop is class-LOCKED
 (`can_wear` refuses another class's piece), so the pool and the fieldable roster have to be

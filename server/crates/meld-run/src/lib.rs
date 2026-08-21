@@ -14,7 +14,8 @@ use meld_balance::Balance;
 use meld_battle::{Battle, Fighter};
 use meld_proto::common::{ItemStack, LootGear};
 use meld_proto::enums::{
-    CharacterClass, CombatantKind, DamageType, EncounterClass, RunResult, TargetProfile,
+    CharacterClass, CombatantKind, DamageType, EncounterClass, Insurance, RunResult,
+    TargetProfile,
 };
 use meld_proto::Id;
 use meld_world::MonsterSpawn;
@@ -182,6 +183,32 @@ pub struct PlayerRun {
 impl PlayerRun {
     pub fn is_terminal(&self) -> bool {
         self.result.is_some()
+    }
+
+    /// Burn the EPHEMERAL pieces `hero_slot` was wearing when it fell, returning their
+    /// names so the loss can be reported. Insured and standard kit is untouched.
+    ///
+    /// Ephemeral gear is the widest build in the game (`count_ephemeral_bonus` extra
+    /// affixes on top of its rarity) and this is what it is priced against: it does not
+    /// merely fail to come home, it goes when **the hero wearing it** goes. So a run built
+    /// around one is a run a single bad turn can unmake — which is the trade that makes the
+    /// tier interesting rather than just strong.
+    ///
+    /// Run-side rather than in the DB on purpose: gear found this dive does not reach the
+    /// `gear` table until extraction, so the piece a hero found an hour ago and is wearing
+    /// right now lives ONLY here. The DB call of the same name is the backstop for a red
+    /// row that somehow outlived a previous run.
+    pub fn burn_equipped_ephemeral(&mut self, hero_slot: i32) -> Vec<String> {
+        let mut burned = Vec::new();
+        self.looted_gear.retain(|g| {
+            let doomed =
+                g.insurance == Insurance::Ephemeral && g.equipped_hero_slot == Some(hero_slot);
+            if doomed {
+                burned.push(g.name.clone());
+            }
+            !doomed
+        });
+        burned
     }
 
     /// Apply victory XP, leveling up as thresholds are crossed. Returns the
@@ -2095,6 +2122,58 @@ mod tests {
         let fire = f.damage_modifiers[&DamageType::Fire];
         assert!(fire < 0.5, "four quarter-resist wards left fire at {fire}");
         assert!(fire >= 0.0, "a ward went NEGATIVE, which is absorption, not resistance");
+    }
+
+    /// A FALL BURNS THAT HERO'S EPHEMERAL KIT — and only that hero's, and only the
+    /// ephemeral tier. This is what the tier's extra affixes are priced against: the widest
+    /// build in the game is also the one a single bad turn can end. It has to be run-side,
+    /// because gear found this dive does not reach the `gear` table until extraction.
+    #[test]
+    fn a_fallen_hero_burns_its_own_ephemeral_kit_and_nobody_elses() {
+        let b = Balance::load_default().unwrap();
+        let mut runs = InstanceRun::new("i".into(), 0, &b, 0);
+        runs.add_party(vec![("p".into(), "u".into(), CharacterClass::Hunter, "r".into())]);
+        let piece = |name: &str, ins: Insurance, slot: Option<i32>| LootGear {
+            gear_id: name.into(),
+            name: name.into(),
+            rarity: "epic".into(),
+            slot: "chest".into(),
+            class_key: "hunter".into(),
+            insurance: ins,
+            tier: 12,
+            atk_bonus: 0,
+            def_bonus: 9,
+            spd_bonus: 0,
+            base_max_durability: 70,
+            max_durability: 70,
+            equipped_hero_slot: slot,
+            damage_modifiers: Vec::new(),
+            family: String::new(),
+            armor_weight: "medium".into(),
+            affixes: Vec::new(),
+            unique_key: String::new(),
+            set_key: String::new(),
+        };
+        let run = &mut runs.runs[0];
+        run.looted_gear = vec![
+            piece("Doomed", Insurance::Ephemeral, Some(0)),
+            piece("Someone Else's", Insurance::Ephemeral, Some(1)),
+            piece("In the Bag", Insurance::Ephemeral, None),
+            piece("Insured", Insurance::Insured, Some(0)),
+            piece("Standard", Insurance::Standard, Some(0)),
+        ];
+
+        let burned = run.burn_equipped_ephemeral(0);
+
+        assert_eq!(burned, vec!["Doomed".to_string()], "the wrong pieces burned");
+        let left: Vec<&str> = run.looted_gear.iter().map(|g| g.name.as_str()).collect();
+        assert_eq!(
+            left,
+            vec!["Someone Else's", "In the Bag", "Insured", "Standard"],
+            "a hero's death took another hero's kit, the backpack, or a tier that survives"
+        );
+        // Nothing to burn is not an error, and reports nothing rather than something.
+        assert!(run.burn_equipped_ephemeral(0).is_empty());
     }
 
     #[test]

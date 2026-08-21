@@ -799,6 +799,7 @@ pub struct Affix {
     pub count_epic: usize,
     pub count_legendary: usize,
     pub count_signature_bonus: usize,
+    pub count_ephemeral_bonus: usize,
     pub magnitude_per_tier: f64,
     pub magnitude_jitter: f64,
     pub tier_floor_stat: i32,
@@ -820,14 +821,16 @@ pub struct Affix {
 
 impl Affix {
     /// How many affixes a drop of this rarity rolls.
-    pub fn count_for(&self, rarity: &str, signature: bool) -> usize {
+    pub fn count_for(&self, rarity: &str, signature: bool, ephemeral: bool) -> usize {
         let base = match rarity {
             "legendary" => self.count_legendary,
             "epic" => self.count_epic,
             "rare" => self.count_rare,
             _ => self.count_common,
         };
-        base + if signature { self.count_signature_bonus } else { 0 }
+        base
+            + if signature { self.count_signature_bonus } else { 0 }
+            + if ephemeral { self.count_ephemeral_bonus } else { 0 }
     }
 
     /// The tier a given affix class unlocks at, keyed by its wire word — so this

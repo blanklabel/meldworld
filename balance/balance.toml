@@ -579,9 +579,14 @@ potion_drop_chance = 0.18
 # standard, at any depth. The two chances are cumulative slices of one roll, so they
 # must sum to well under 1.
 #
-# Ephemeral is the STRONGEST gear in the game and burns the moment you reach the
-# city — power you can only spend inside the run that found it. Insured sits above
-# ordinary kit, survives a wipe, and erodes until it breaks. [TUNABLE]
+# Ephemeral is the STRONGEST gear in the game and it burns twice over: the moment you
+# reach the city, AND when the hero wearing it goes down (not merely on a wipe — a fall,
+# the same trigger the insured durability tax uses). So it is power you can only spend
+# inside the run that found it, on a hero that survives. What it buys is not only a bigger
+# number (`ephemeral_power_mult`) but a wider BUILD — see `[affix] count_ephemeral_bonus`.
+# An ephemeral piece is also never Common, structurally: a common carries no affixes, and
+# a piece that burns twice for one inflated stat is worse than the drop beside it.
+# Insured sits above ordinary kit, survives a wipe, and erodes until it breaks. [TUNABLE]
 ephemeral_gear_chance = 0.10
 ephemeral_power_mult = 1.60
 permanent_gear_chance = 0.15
@@ -815,6 +820,13 @@ count_rare = 1
 count_epic = 2
 count_legendary = 3
 count_signature_bonus = 1        # a class-signature piece rolls one extra [TUNABLE]
+# EPHEMERAL pieces roll extra affixes on top of their rarity's count, which is what makes
+# them the gear that DEFINES a run's build rather than merely the biggest numbers in it: an
+# ephemeral legendary carries 5 lines where the insured legendary beside it carries 3, so the
+# strongest synergies in the game are the ones you can only assemble for a single dive. It
+# earns the size: the piece burns when you reach the city AND when the hero wearing it goes
+# down, so a build hung off one is a build you can lose mid-fight. [TUNABLE]
+count_ephemeral_bonus = 2
 magnitude_per_tier = 1.6         # base magnitude = this x tier x the affix's own scale [TUNABLE]
 magnitude_jitter = 0.25          # +/- fraction on each roll [TUNABLE]
 # Tier floors per affix class: the early game stays legible (P1-3), builds bloom deep.

@@ -266,6 +266,19 @@ async fn run_db_writer(db: Db, balance: Arc<Balance>, mut rx: mpsc::UnboundedRec
                     if let Err(e) = db.apply_hero_fall_durability(uid, slot, falls, per_fall).await {
                         tracing::error!("fall durability failed for {pid} hero {slot}: {e}");
                     }
+                    // A FALL BURNS THAT HERO'S EPHEMERAL KIT. The two tiers pay for a death
+                    // in the two ways they can: insured gear pays durability and can be
+                    // repaired, ephemeral gear is simply gone. It is what prices the extra
+                    // affixes an ephemeral piece rolls — the strongest build in the game is
+                    // also the one a single bad turn can take off you, rather than something
+                    // you merely have to walk home carefully.
+                    match db.burn_hero_ephemeral_gear(uid, slot).await {
+                        Ok(n) if n > 0 => {
+                            tracing::info!("hero {slot} fell: {n} ephemeral piece(s) burned")
+                        }
+                        Ok(_) => {}
+                        Err(e) => tracing::error!("ephemeral burn failed for {pid} hero {slot}: {e}"),
+                    }
                 }
             }
             DbWrite::Death(pid) => {
@@ -10071,11 +10084,24 @@ impl WorldActor {
                 .and_then(|names| names.get(*slot as usize))
                 .cloned()
                 .unwrap_or_else(|| generated_hero_name(pid, *slot as usize));
+            // The other half of what a fall costs: the EPHEMERAL kit that hero was wearing
+            // burns with it. Insured gear pays durability and can be repaired; ephemeral
+            // gear is gone, which is exactly what its extra affixes are priced against.
+            // Taken from the RUN, because gear found this dive does not reach the `gear`
+            // table until extraction — the piece it matters most for lives only here.
+            let ephemeral_burned = inst
+                .run
+                .runs
+                .iter_mut()
+                .find(|r| &r.player_id == pid)
+                .map(|r| r.burn_equipped_ephemeral(*slot))
+                .unwrap_or_default();
             worn.entry(pid.clone()).or_default().push(wb::GearWorn {
                 hero_slot: *slot,
                 hero_name,
                 falls: *n,
                 durability_lost: per_fall.saturating_mul(*n as i32),
+                ephemeral_burned,
             });
         }
 

@@ -756,11 +756,12 @@ pub enum ServerMsg {
         xp: i64,
         chits: i64,
         items: Vec<(String, i32)>,
-        gear_drops: Vec<String>,
+        gear_drops: Vec<(String, meld_proto::enums::Insurance)>,
         /// What the fight COST: `(hero name, points off each insured piece they wore)`
         /// for every hero of ours that fell (GR-2). Reported on every outcome, because
         /// a hero that went down in a fight you won still went down.
-        worn: Vec<(String, i32)>,
+        /// `(hero name, durability points, ephemeral pieces burned)` per hero that fell.
+        worn: Vec<(String, i32, Vec<String>)>,
     },
     /// Ground loot a creature left behind, just walked over and banked (`CR-2`). Feeds
     /// the same report banner as a chest — the loot a kill leaves is as much a payout as
@@ -776,7 +777,7 @@ pub enum ServerMsg {
     ChestOpened {
         chits: i64,
         items: Vec<(String, i32)>,
-        gear: Vec<String>,
+        gear: Vec<(String, meld_proto::enums::Insurance)>,
     },
     /// An extraction channel began / broke.
     ChannelStarted { completes_at: u64, fill_ms: u64, method: String },
@@ -2409,11 +2410,18 @@ impl Inner {
                 if self.run_chits < 0 {
                     self.run_chits = 0;
                 }
-                let mut chest_gear: Vec<String> = Vec::new();
+                let mut chest_gear: Vec<(String, meld_proto::enums::Insurance)> = Vec::new();
                 for g in raw.payload["gear_added"].as_array().into_iter().flatten() {
                     let name = g["name"].as_str().unwrap_or("gear").to_string();
                     if is_chest {
-                        chest_gear.push(name.clone());
+                        // An unparseable word reads as Ephemeral, the same way the gear
+                        // tooltip resolves it: believing a temporary piece is safe costs
+                        // the player the piece, and the reverse costs them nothing.
+                        let ins = g["insurance"]
+                            .as_str()
+                            .and_then(meld_proto::enums::Insurance::from_wire)
+                            .unwrap_or(meld_proto::enums::Insurance::Ephemeral);
+                        chest_gear.push((name.clone(), ins));
                     }
                     let atk = g["atk_bonus"].as_i64().unwrap_or(0) as i32;
                     self.run_gear.push((name, atk));
@@ -2976,11 +2984,14 @@ impl Inner {
                         .into_iter()
                         .map(|i| (i.item_kind, i.quantity))
                         .collect();
-                    let gear_drops = e.gear_drops.into_iter().map(|g| g.name).collect();
+                    // Carry the insurance with the name: the tally is the last thing a
+                    // player reads before deciding what to take back out (`GR-6`).
+                    let gear_drops =
+                        e.gear_drops.into_iter().map(|g| (g.name, g.insurance)).collect();
                     let worn = e
                         .gear_worn
                         .into_iter()
-                        .map(|w| (w.hero_name, w.durability_lost))
+                        .map(|w| (w.hero_name, w.durability_lost, w.ephemeral_burned))
                         .collect();
                     self.out.push_back(ServerMsg::BattleEnded {
                         outcome,

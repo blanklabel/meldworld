@@ -250,8 +250,17 @@ pub(crate) fn mock_tally_setup(mut report: ResMut<LootReport>) {
             ("myconid_cap".to_string(), 2),
             ("town_portal".to_string(), 1),
         ],
-        gear: vec!["Rare Dune Ingot Blade".to_string()],
-        worn: vec![("Kestrel".to_string(), 30)],
+        // One of each tier, so `?tally` shows what the two words look like side by side —
+        // the whole point of the screenshot flag is catching a warning that reads wrong.
+        gear: vec![
+            ("Rare Dune Ingot Blade".to_string(), meld_proto::enums::Insurance::Ephemeral),
+            ("Epic Warden's Cuirass".to_string(), meld_proto::enums::Insurance::Insured),
+        ],
+        worn: vec![(
+            "Kestrel".to_string(),
+            30,
+            vec!["Legendary Ashfall Warblade of Fury".to_string()],
+        )],
         elapsed: 0.0,
         gate_return: false,
     };

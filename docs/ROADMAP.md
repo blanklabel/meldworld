@@ -458,7 +458,7 @@ burns on death/leave; some is single-use. See
     `TwoHandedConflict` enforces both-hands-or-neither in either equip order. A hero with
     no recorded class is never locked out (derivation stays the backstop). The starter kit
     no longer hands a buckler to a two-handed class.
-- [ ] **GR-6 — "Red" becomes "Ephemeral" (and says so).** Rename `Insurance::Red` →
+- [x] **GR-6 — "Red" becomes "Ephemeral" (and says so).** Rename `Insurance::Red` →
   **`Ephemeral`** and `Blue` → **`Insured`** on the wire (serde alias keeps old
   payloads parsing) and in every player-facing string; the Blue-Chest/Red-Chest
   *fiction* stays in CANON §G but stops being the label a player must decode. Every
@@ -472,12 +472,23 @@ burns on death/leave; some is single-use. See
     **Ephemeral — "Vanishes when the run ends - win or lose."** on its own amber line
     (an unparseable word reads as Ephemeral: wrongly believing an item is safe costs the
     player the item).
-  - **Remains, and both halves were re-checked against the code:** the loot report /
-    end-of-run summary carries gear as bare names (`LootReport.gear: Vec<String>`), so the
-    one surface that appears at the exact moment a player is deciding what to risk is the
-    one surface that does not say the word; and the tooltip fires on
-    `Interaction::Hovered`, which **touch never reports** — so on a phone there is no path
-    to the sentence at all. The word is only ever a hover away on desktop.
+  - **The tally says it now.** `LootReport.gear` was `Vec<String>` — bare names — so the one
+    surface that appears at the exact moment a player is deciding what to risk was the one
+    surface that did not say the word. It carries `(name, Insurance)` off the wire (which
+    had it all along and the client was throwing away), each row wears the tier in its own
+    colour, and the full sentence is spelled out **once** under a haul that contains
+    anything ephemeral rather than per row. The death screen and the flee status line report
+    it too, because a hero falling now BURNS its ephemeral kit and that is the moment the
+    word matters most.
+  - **And a phone can finally read it.** The tooltip fired on `Interaction::Hovered`, which
+    touch never reports — so on a phone there was no path to the sentence at all, for the
+    one warning in the game a player cannot afford to miss. A **press-and-hold**
+    (`GEAR_HOLD_SECS`, 0.3s) opens the same panel, anchored to the ROW rather than to a
+    cursor (a finger is already covering the row) and flipped above it in the lower half of
+    the screen so a list near the bottom does not open its detail off-screen. Hover still
+    wins where both exist, and the two anchor differently on purpose.
+  - One `insurance_color` for every surface that speaks a tier, so the amber that means
+    "this burns" cannot drift between the tooltip, the tally and the death screen.
 - [x] **GR-3 — Ephemeral items/gear.** `Insurance::Ephemeral` is the flag, and it is
   enforced on **every** way a dive can end rather than at one chokepoint —
   `db.burn_ephemeral_gear` fires from `DbWrite::Death` (a wipe takes it exactly as any
@@ -2504,6 +2515,30 @@ the current build.
   - *Complete:* affix rerolling landed with the Forge (`MS-1`), and the elemental half
     with the `brand` affix (`AD-3`). Affixes, uniques, sets, damage types and rerolling
     are all live.
+  - ✅ **EPHEMERAL IS THE BUILD-DEFINING TIER, and it is now priced like one.** It was the
+    strongest *number* in the game (`ephemeral_power_mult` 1.6) and nothing else — affix
+    count came from rarity alone, and rarity is rolled INDEPENDENTLY of insurance, so an
+    ephemeral **common** was reachable: a piece that burns on the way home, carries zero
+    affixes, and is strictly worse than the standard drop beside it. Three changes make the
+    tier what it was described as:
+    - **Never common** (structural, not a tunable): the tier that defines a run always
+      carries a build.
+    - **`[affix] count_ephemeral_bonus`** — two extra lines on top of its rarity's count, so
+      an ephemeral legendary reads 5 affixes where the insured legendary beside it reads 3.
+      What the tier buys is WIDTH, which is what a build is; a bigger single number is what
+      `ephemeral_power_mult` was already for. The strongest synergies in the game are now
+      ones you can only hold together for a single dive.
+    - **It burns when its WEARER falls**, not only when the run ends — the same trigger
+      `GR-2`'s durability tax uses, and the thing that prices the extra affixes: a build hung
+      off an ephemeral piece is a build a single bad turn can unmake. Run-side
+      (`PlayerRun::burn_equipped_ephemeral`), because gear found this dive does not reach the
+      `gear` table until extraction — the piece it matters most for lives only in the run —
+      with `Db::burn_hero_ephemeral_gear` as the backstop for a red row that outlived an
+      earlier run. It takes **that hero's own equipped pieces only**: a party losing its
+      Shifter does not burn what the Resonant is wearing.
+    - The loss is **named** on the wire (`GearWorn.ephemeral_burned`) and on every surface
+      that reports a fall, because "you lost some gear" does not tell a player which build
+      just ended.
   - ⚠️ **Fixed after the fact: "of Fury" was locked to a class with no Adrenaline.**
     `adrenaline_primed` banks Adrenaline and its `only_class` said **Explorer** — but
     `party_fighters` grants `adrenaline_max` to the **Hunter** and nobody else, so the one
