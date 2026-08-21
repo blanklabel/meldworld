@@ -2446,6 +2446,18 @@ impl Arena {
     }
     fn t_walkable(&self, x: f64, z: f64) -> bool {
         meld_proto::terrain::walkable(x as f32, z as f32, self.terrain_off.0, self.terrain_off.1)
+            && self.on_land(x, z)
+    }
+
+    /// Is this world position dry ground? The sea is an ANALYTIC boundary
+    /// ([`meld_proto::coast`]) rather than colliders, so asking is O(1) and it never
+    /// touches `BlockField` — whose cell is sized from the largest radius in the world, so
+    /// an ocean made of geometry would have coarsened the collision grid for every prop in
+    /// the game (measured: one r=150 disc, parked where it blocked nothing, cost +63% on
+    /// the creature tick). Routed through the same `coast` module the client renders from,
+    /// so the shoreline the player sees is the shoreline they collide with.
+    pub fn on_land(&self, x: f64, z: f64) -> bool {
+        meld_proto::coast::is_land(x as f32, z as f32, self.radial_half as f32)
     }
 
     /// Like [`Self::generate`], but with a DEV/QA `force_biome` override (from the
@@ -3848,6 +3860,7 @@ impl Arena {
         let walk = |c: (i64, i64)| -> bool {
             let w = radial_tf(Position::new(c.0 as f64 * CELL, c.1 as f64 * CELL), half, lat);
             meld_proto::terrain::routable(w.x as f32, w.y as f32, ox, oz)
+                && meld_proto::coast::is_land(w.x as f32, w.y as f32, half as f32)
         };
         // The radial bend makes a 1-cell corridor step span many WORLD units tangentially
         // at large radius, so checking only cell centres would leap over buttes. Check the
@@ -3866,7 +3879,9 @@ impl Arena {
                 let t = s as f64 / steps as f64;
                 let c = Position::new(ca.x + (cb.x - ca.x) * t, ca.y + (cb.y - ca.y) * t);
                 let w = radial_tf(c, half, lat);
-                if !meld_proto::terrain::routable(w.x as f32, w.y as f32, ox, oz) {
+                if !meld_proto::terrain::routable(w.x as f32, w.y as f32, ox, oz)
+                    || !meld_proto::coast::is_land(w.x as f32, w.y as f32, half as f32)
+                {
                     return false;
                 }
             }
@@ -7112,6 +7127,77 @@ mod tests {
         assert!(
             arena.monsters[0].position.distance_to(&home) <= arena.leash_radius + 1.0,
             "passive creature should stay leashed to home"
+        );
+    }
+
+    #[test]
+    fn nothing_the_world_places_ever_lands_in_the_sea() {
+        // Content is laid out in CORRIDOR space and bent by `radialize`, whose
+        // `theta = (y / lat).clamp(-1, 1) * half` pins every bent position inside the fan
+        // — and the fan is land by definition. So the coastline cannot strand a creature,
+        // a node or a chest on the wrong side of the water, BY CONSTRUCTION rather than by
+        // a rejection pass. This pins that property: if placement ever stops going through
+        // the bend, or the sea ever grows into the fan, something will wash up here.
+        let b = Balance::load_default().unwrap();
+        let mut a = Arena::generate(&b, 424242, false);
+        let mut reach = 0.0_f64;
+        while reach < 700.0 {
+            reach += 40.0;
+            a.ensure_frontier(&b, reach);
+        }
+        let drowned = |p: &Position| !a.on_land(p.x, p.y);
+        assert!(
+            !a.monsters.iter().any(|m| drowned(&m.position)),
+            "a creature is standing in the sea"
+        );
+        assert!(
+            !a.obstacles.iter().any(|o| drowned(&o.position)),
+            "a prop is standing in the sea"
+        );
+        assert!(
+            !a.resources.iter().any(|r| drowned(&r.position)),
+            "a harvest node is standing in the sea"
+        );
+        assert!(!a.chests.iter().any(|c| drowned(&c.position)), "a chest is in the sea");
+        assert!(
+            a.path.iter().all(|p| !drowned(p)),
+            "the guaranteed route must stay on dry land"
+        );
+    }
+
+    #[test]
+    fn you_cannot_walk_into_the_sea_but_you_can_always_walk_home() {
+        // The two halves of a coastline that means anything: the water stops you, and the
+        // NECK does not. The neck is not authored as a width — near the hub the western
+        // gap is too narrow to hold a channel, so the land closes across it — which is
+        // exactly the property that would break silently if the arc were retuned.
+        let b = Balance::load_default().unwrap();
+        let mut a = Arena::generate(&b, 424242, false);
+        a.add_avatar("p".into(), 6.0);
+
+        // Walk WEST from the hub along the neck: the way home is never blocked.
+        let start = a.avatar("p").unwrap().position;
+        for _ in 0..400 {
+            a.apply_move("p", -1.0, 0.0, 0);
+        }
+        let west = a.avatar("p").unwrap().position;
+        assert!(
+            west.x < start.x - 15.0,
+            "the neck must let a player walk west toward the city (got x={:.1})",
+            west.x
+        );
+        assert!(a.on_land(west.x, west.y), "the walk home never enters the water");
+
+        // Now push NORTH-WEST, off the spit and into the channel: the sea holds.
+        for _ in 0..600 {
+            a.apply_move("p", -0.4, 1.0, 0);
+        }
+        let p = a.avatar("p").unwrap().position;
+        assert!(
+            a.on_land(p.x, p.y),
+            "a player must never end up standing in the sea (ended at {:.1},{:.1})",
+            p.x,
+            p.y
         );
     }
 

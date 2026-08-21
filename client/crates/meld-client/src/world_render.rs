@@ -8,6 +8,11 @@ use bevy::gltf::GltfAssetLabel;
 use bevy::pbr::{ExtendedMaterial, MaterialExtension};
 use bevy::render::render_resource::{AsBindGroup, ShaderRef};
 
+/// How far the sea bed falls away from the shoreline, in world units. Presentation only —
+/// the server's coastline is a flat predicate, and nothing swims — so this lives here
+/// rather than in `meld_proto::coast`: it decides how water LOOKS, not where it is.
+pub(crate) const SEA_DEPTH: f32 = 7.0;
+
 use meld_client::hd2d::{self, CharacterFrames};
 
 use super::*;
@@ -72,6 +77,16 @@ mod biome_params {
         pub(crate) _pad_pc0: u32,
         pub(crate) _pad_pc1: u32,
         pub(crate) _pad_pc2: u32,
+        /// The COASTLINE, straight from [`meld_proto::coast`]:
+        /// `(arc_half_rad, neck_reach, peninsula_length, channel_land_share)`. Carried in
+        /// the uniform rather than baked into the shader so **the sea the player sees is
+        /// the sea the server collides with** — the shoreline is authored in two scenes
+        /// that cannot see each other (the arena and `Screen::City`), and two hand-placed
+        /// shorelines drift the way every other duplicated rule in this repo has.
+        pub(crate) coast: Vec4,
+        /// Peninsula widths, also from `coast`:
+        /// `(neck_half_width, city_half_width, tip_taper, sea_depth)`.
+        pub(crate) coast_w: Vec4,
         /// The Shift's tell: `(inner_radius, outer_radius, intensity, 0)`. A region is a
         /// radius ring in the WG-4 fan and this ground is already painted in rings, so
         /// the doomed annulus needs no second coordinate system. `intensity == 0` is the
@@ -91,6 +106,13 @@ mod biome_params {
                 terrain_amp: 0.0,
                 terrain_off: Vec2::ZERO,
                 _pad_peaks: Vec2::ZERO,
+                coast: Vec4::ZERO,
+                coast_w: Vec4::new(
+                    meld_proto::coast::NECK_HALF_WIDTH,
+                    meld_proto::coast::CITY_HALF_WIDTH,
+                    meld_proto::coast::TIP_TAPER,
+                    super::SEA_DEPTH,
+                ),
                 shift: Vec4::ZERO,
                 peaks: [Vec4::ZERO; PEAK_SLOTS],
                 peak_count: 0,
@@ -1363,11 +1385,26 @@ pub(crate) fn update_ground_biome_rings(
     state: Res<State<Screen>>,
     tell: Res<crate::ShiftTell>,
     clock: Res<Time>,
+    frame: Res<crate::WorldFrame>,
     ground_q: Query<&MeshMaterial3d<GroundMat>, With<WorldGround>>,
     mut mats: ResMut<Assets<GroundMat>>,
 ) {
     let Ok(handle) = ground_q.single() else { return };
     let Some(mat) = mats.get_mut(&handle.0) else { return };
+    // THE COASTLINE, from the server's own arc. Zeroed off the Overworld: Last City is a
+    // separate scene laid out in its own coordinates, so painting the world's sea into it
+    // would put water through the plaza. Giving the city its own shore is follow-up work —
+    // the neck and the channel are walked HERE, in the arena.
+    mat.extension.params.coast = if *state.get() == Screen::Overworld && frame.have {
+        Vec4::new(
+            (frame.radial_arc_degrees.to_radians() * 0.5).max(0.0),
+            meld_proto::coast::NECK_REACH,
+            meld_proto::coast::PENINSULA_LENGTH,
+            meld_proto::coast::CHANNEL_LAND_SHARE,
+        )
+    } else {
+        Vec4::ZERO
+    };
     // The Shift's tell rides the same uniform as the biome rings because it IS a ring —
     // see `BiomeParams::shift`. Zero intensity is the resting state, so a world with no
     // Shift pending pays one compare per fragment.

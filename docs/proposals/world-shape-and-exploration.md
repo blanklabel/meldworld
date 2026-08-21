@@ -280,9 +280,88 @@ later."* So the blocker to `WG-7`'s barrier half is **how a vertical face is dra
 that is worth stating plainly because it is a much smaller problem than "the world needs
 new geometry."
 
-### 4.1 Rivers are the better primitive, and they dodge the art bug
+### 4.1 Water first — and LAKES before rivers
 
-A **river** should land before a mountain range, for three reasons:
+⚠️ **This reverses the ordering an earlier draft of this section gave.** Rivers were put
+first because they dodge the cliff-face rendering bug. Lakes are cheaper still, and the
+reason is worth stating precisely.
+
+**Ponds already exist.** `pond` / `bog_pool` / `frozen_pond` are real obstacle kinds that
+the world already places: the field/forest scatter list is `["tree", "boulder", "pond"]`,
+the tundra's is `frozen_pond`, and the **mire's entire maze fill is `bog_pool`** at
+`mire_obstacle_mult = 7.5`. So impassable water as *terrain* is shipped, played, and it
+already reads well — the flooded mire is the existing proof that this works.
+
+**But every body of water in the game is at most 5.6 units across.** Both the sparse
+scatter and the dense fill draw `radius = obstacle_min_radius + u·(obstacle_max_radius −
+obstacle_min_radius)` = **1.1 … 2.8**. So "add ponds" is really *let a pond be
+pond-sized*, and a lake is a pond whose radius was allowed to grow.
+
+**And that costs almost nothing to draw.** A water obstacle is already an *organic blob*
+mesh — `hd2d::blob_mesh(28)`, commented "organic pool outline, not a circle" — scaled by
+`Vec3::splat(r * 2.0)` and painted with the animated per-biome water material. A lake is
+that same primitive with a bigger `r`: **no new mesh, no new material, no new shader, no
+new collision path.** A river is *not* free in the same way — the blob is scaled
+uniformly, so an elongated channel needs its own geometry. Hence: lakes, then rivers.
+
+**A lake is also the best-behaved barrier for the detour budget (§4.3).** It is convex, so
+routing around one costs the semicircle against the chord — `πr / 2r` = **π/2 ≈ 1.57×** the
+straight line, *bounded*. A ridge or a river can force an arbitrarily long detour. So a
+lake is simultaneously the cheapest barrier to build, the cheapest to draw, and the one
+whose cost to the player is provably small.
+
+#### ⚠️ You cannot just raise the radius — measured
+
+`BlockField::new` sets its spatial-hash cell from the **largest radius in the world**:
+`cell = (max_radius * 2).max(8.0)`, and `blocks()` sweeps `±ceil((max_radius + radius) /
+cell)` cells. That maximum is **global**, so one large body of water coarsens the grid for
+every prop everywhere and pushes the per-query scan back toward the linear one whose
+removal is documented three lines above it (the O(creatures × props) pass that cost
+**1.7 s a tick**).
+
+Measured on a world streamed to d1300 — 23,069 props, 11,836 creatures — adding **one**
+water body parked at (9000, 9000), where it blocks nothing and nobody can ever reach it:
+
+| | per-tick `step_creatures` |
+|---|---|
+| baseline (largest prop radius 2.80) | **15.8 ms** |
+| + one r=30 body | 15.5 ms (free) |
+| + one r=80 body | 18.0 ms (+14%) |
+| + one r=150 body | **23.6 ms (+50%)** |
+
+So **water up to ~60 units across is free today**, which is already a real lake at shallow
+depth. Anything larger needs `BlockField` to bucket by **radius tier** first — small props
+in a fine grid, large bodies in a coarse one — which is a contained change and the obvious
+prerequisite. And it *is* required for the deep world: at r=1200 the ring's arc is ~7,000
+units, so a lake that actually gates a route out there is hundreds of units across. That is
+the same shape of bug as §1a — **a fixed size in a world whose scale keeps growing** — and
+it will bite lakes exactly as it bit the maze fill.
+
+#### And a lake has to be placed BEFORE the path
+
+Today obstacles are *rejected* from the clear-path tube, so a lake placed by the ordinary
+scatter would never cross your route and would never make you turn. Barriers must be placed
+first and the route drawn around them (the inversion §3 and §4.0 both call for). Otherwise
+a lake is scenery you walk past, which is what a pond already is.
+
+#### Water as the region boundary
+
+Worth considering while both are on the table: a connected **lake + river network
+partitions the ring**, which is `WG-7`'s "regions with shapes" (§4.2) achieved through
+*topology* rather than through a separate biome field — one system doing two jobs, with the
+boundary being a thing you can see and stand on rather than a texture cross-fade.
+
+That is also the feasibility hazard, and it is sharper here than for mountains:
+connectedness is what water *is*, and a connected impassable network is precisely what
+disconnects a graph. The measured mesa experiment (§4.0a) already showed an isotropic mask
+starting to seal routes at ~7% coverage; water wants to be connected on purpose. So fords
+and isthmuses have to be **generator-level guarantees**, not repairs after the fact — the
+`Seam` contract, applied to a shape that genuinely tries to cut the world in half.
+
+### 4.1a Rivers, and why they still dodge the art bug
+
+A **river** should land after lakes (§4.1) but before a mountain range, for three
+reasons:
 
 1. **The art already ships, and it is a SURFACE rather than a billboard.** A river is a
    depression, a water plane and a crossing — it never asks the coarse ground grid to
@@ -370,6 +449,89 @@ Two costs to see before committing:
   `resources_for_biome` / `fill_kind_for_biome` get asked per *placement* rather than per
   section. That is mechanical, but it is every placement site.
 
+### 4.2a The ocean: give the fan a coastline
+
+Measured first, seed 424242 streamed to d600. The arc is **340°**, so the wedge behind
+Last City spans **20°** — and:
+
+- content outside the fan: **0 obstacles, 0 creatures, 0 nodes** (of 11,704 / 3,745 / 36)
+- the movement clamp is a **SQUARE** (`x_min`/`x_max`/`lateral` = ±rmax), **not the arc**
+
+So a player can walk off the side of the world into entirely empty walkable ground and keep
+going until an invisible rectangle stops them. That is the same class of problem as a token
+nothing renders: **a boundary the player cannot see does not exist to them.**
+
+**The version worth building is the fan's COASTLINE, not a backdrop behind town.** The fan
+has two edges and they exist at *every* radius; "behind the city" only anchors you near
+home, and the orientation problem is worst deep. One body of water runs out along both
+edges and closes behind the city where they meet — Last City at the head of a bay.
+
+Why it is close to free:
+
+- **An ocean is pure boundary.** You never need its interior, only its shore — the
+  strongest possible case for the edge representation measured in §4.1 (2,110 rim colliders
+  **+3%**; one filled disc **+63%**).
+- The rendering already ships, animated, in three biome-keyed variants, so a tundra coast is
+  `water_ice` and a mire coast is `water_bog` for nothing.
+- Coastline length grows linearly with reach and streams like everything else.
+
+It also retires a magic number: `west_return_border = -20.0` is an invisible line in an
+empty field today. **Make the shore the return** — walk to the coast and the city is there.
+
+⚠️ **Two honest limits.**
+
+1. **It does not solve `WG-7`.** It is a *frame*, not a destination: it tells you which way
+   is out, but there is still nothing to walk *toward*. Wedges and landmarks remain the work.
+2. **The coastline may never be seen.** All content is inside the fan and the clear path runs
+   radially, so nothing draws a player sideways; a coast at ±170° would be visited by almost
+   nobody. So: **behind the city it pays immediately** (you go there every run), while
+   **along the arc edges it only pays once `WG-7` gives a reason to travel laterally.** Ocean
+   and angular structure are complements. Building the ocean alone means building the part
+   behind the city. (Narrowing the arc with depth would make the coast unavoidable instead —
+   but that is a real difficulty-curve change, not a free one.)
+
+### 4.2b Make Last City a PENINSULA
+
+This is the form the ocean should take, and it is strictly better than "water behind the
+city" because it answers §4.2a's own objection. The problem with a coastline along the arc
+edges is that **nobody would ever see it** — all content is inside the fan, the clear path
+runs radially, and nothing draws a player sideways. A peninsula **puts the coast where the
+player stands every single run.**
+
+**The geometry already almost is one.** The fan is 340° centred east and the gap is 20°
+centred west, so the city already sits in a *notch with world on both sides*. Fill that
+wedge — and everything beyond the fan's radius — with water, and the city becomes a spit of
+land reaching west into open sea, with the fan's two edges (±170°) as its coastline.
+
+**And the neck is the hub itself**, which is already where every run begins. The Threshold
+stops being a UI affordance and becomes a geographic fact: the single land route out.
+
+**The fiction pays for the geometry.** A peninsula is *defensible* — water on three sides,
+one landward approach — which is a reason for this to be the *Last* city rather than a
+coincidence. It also pre-loads `BD-4`/`BD-8`: when creatures siege the city, the neck is
+the front and the only axis an assault can come from. And it gives **both** spaces an edge
+they currently lack — the arena ends at an invisible square with zero content outside the
+fan (§4.2a), and the city scene has no bound at all.
+
+⚠️ **The structural caveat: the city is a SEPARATE SCENE, not continuous world.**
+`Screen::City` has its own `city_scene` / `city_move` / `city_camera`, and `EnterMaze` is a
+screen transition. So the peninsula is authored **twice** — once as the city's ground and
+coast, once as the arena's western water — and the two must agree or the illusion breaks
+the instant you dive. Cheap (a transition, not a seam), but exactly the kind of duplicated
+fact that drifts silently: the same shape as the `terrain.rs` ↔ WGSL mirror the repo
+already hand-maintains. **Put the coastline behind one shared constant** rather than two
+hand-placed shorelines.
+
+Two calls to make:
+
+- **Is the neck a walk you make every run?** Today `Enter` dives from anywhere in town.
+  Proposed: keep that as the fast path and let the neck be the *diegetic* route — exactly
+  how the Threshold district already works (`E` there, or `Enter` anywhere). A mandatory
+  walk taxes every single run.
+- **A city on a peninsula is a PORT.** Boats become an obvious affordance and someone will
+  ask. Out of scope — but say no on purpose rather than by omission, because the geometry
+  invites it.
+
 ### 4.3 The constraint I would insist on: a detour budget
 
 If barriers lengthen the walk to depth *d* without bound, "walk around the mountain" stops
@@ -399,7 +561,91 @@ things on it, and the ground makes you turn.
   a category error; retire `dungeon_every`, or make a procedural dungeon a *local*
   enclosure placed on the route the way a DG-3 entrance is.
 
-## 5. What shipped alongside this
+## 5. `WG-8` — overworld dungeons: maze regions assembled from authored parts
+
+A maze does not have to be a global property of a biome. §4.1's pushback was that making
+dense fill *impassable* turns the whole overworld into corridors — but that objection only
+holds if density is global. **Bounded regions with derived openings** answer it: a biome
+can feel like a maze *in some spots*, and be open everywhere else.
+
+The shape: a region of the overworld assembled from **authored design parts**, laid out so
+it can only be entered and left through a **few openings derived when it is put together**
+— Diablo's trick, where preset pieces give a place authored legibility while derived
+connections keep it from being the same twice. Crucially it is **not a sublayer**: you do
+not descend into it, and the rest of the world does not unload.
+
+### 5.1 The substrate already exists, and it already makes the right guarantee
+
+`server/crates/meld-dungeon/` is a glyph-grid + legend format with a parser
+(`parse.rs`), semantic checks (`validate.rs`), and a **build-time-compiled content pool**
+(`meld-dungeon-content`, with a `build.rs`). Its headline check is a bounded fixpoint that
+grows two monotone sets — `active` (emitters reached, hence operable) and `open` (barriers
+whose condition now holds) — re-flooding reachability until nothing changes, proving that
+*some* order of operations a party can perform opens a route from the entrance to an exit.
+
+Its stated reason is exactly this design's reason:
+
+> *"a dungeon is a committed space (no Town Portal — design §4), so an unsolvable dungeon
+> would be a trap with no way out, so this is a hard gate."*
+
+"Only a couple of defined ways in and out, guaranteed to connect" is therefore **already
+built and already enforced**. `WG-8` reuses it rather than inventing it.
+
+### 5.2 What changes for an overworld piece
+
+1. **Openings replace stairs.** The structural glyphs today are `#` / `.` / space / `>` /
+   `<`, and the validator requires exactly one `Down` on floor *n* and one `Up` on floor
+   *n+1*. An overworld region has no floor stack — it has **boundary openings**, and per the
+   design they are *derived at assembly* rather than authored into each part.
+2. **The guarantee gets STRONGER.** A descent dungeon is **directed** (enter → clear →
+   exit). An overworld maze region is **permeable**: a player may enter from the north
+   meaning to leave west, or cut through it as a shortcut. So the fixpoint's query becomes
+   **all-pairs reachability between openings**, not entrance→exit. Same machinery, harder
+   question — and it must be a hard gate for the same reason, because a region that can be
+   entered and not left is a trap in the middle of the overworld.
+3. ⚠️ **Prefabs are rectangular and this world bends.** A glyph grid is an array in some
+   frame; corridor `y` is an **ANGLE**. A piece laid out naively at r=1200 is smeared into
+   an arc. This is the same mistake the repo has now made three times — the tree spacing
+   that asked for 392 and placed 90, the creature grouping, and (§1b) the dungeon divider
+   walls that are currently a line of rocks ~250 world units apart. **The assembler must lay
+   parts out in WORLD space, or bend per cell.** Write it into the design before the code.
+
+### 5.3 Two properties that are easy to miss
+
+- **Co-op works inside it, with no instance transition.** Because a maze region is just
+  world, it is in the snapshot, the interest cull and `check_touch` — so `run.join_battle`,
+  `run.watch_battle`, clash markers and everything else already apply. A `DG-3` descent
+  dungeon is its own space: a teammate standing outside cannot see or join you. This is a
+  gameplay advantage, not only a loading one.
+- **"In some spots" is load-bearing for PERFORMANCE, not just for feel.** A maze region is
+  far denser in blocking props than open ground, and §2 measured that prop density is what
+  makes `blocks()` expensive. Bounded regions are affordable; carpeting the world in them
+  would not be. The design instinct and the perf envelope agree, which is a good sign.
+
+### 5.4 It replaces something broken rather than adding a system
+
+`dungeon_every = 4` makes every **fourth ring** of the world a procedural "dungeon" whose
+divider walls are a rounding error across 340° of arc — §1b measured those rings at 30x
+emptier than ordinary ones, and §1b concluded that a ring-scale "room" is a category error
+whose fix is *retire it, or make it a LOCAL enclosure placed on the route*. `WG-8` is that
+second option, done properly. So this is not a new system beside the old one: **retire the
+ring-dungeon and put prefab maze regions in its place.**
+
+### 5.5 Open
+
+- **On the clear path, or off it?** On-path makes a region a **gate**: mandatory, so it must
+  be tuned for every party that passes. Off-path makes it **optional** content that can be
+  harder and pay better, consistent with how side terraces and treasure already work.
+  Default proposed: *off-path and optional*, with the option of a mandatory one at a biome
+  seam later, where a pass already exists and a Gatekeeper already stands.
+- **How big, and does size ride depth?** The same trap as §1a and §4.1: a fixed-size region
+  in a world whose scale grows becomes negligible at depth. At r=1200 the ring's arc is
+  ~7,000 units.
+- **Do parts carry their own encounters, or are creatures placed by the normal pass?**
+  Authored encounters make a place memorable; procedural placement keeps difficulty riding
+  distance, which CANON §B requires.
+
+## 6. What shipped alongside this
 
 - **`CR-10`** — the wander fix (§1c), with `[ai] wander_leg_seconds` /
   `wander_arrive_radius` / `wander_pause_chance` / `wander_pause_seconds`.
