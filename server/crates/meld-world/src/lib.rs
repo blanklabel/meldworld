@@ -283,6 +283,45 @@ fn resources_for_biome(biome: &str) -> &'static [&'static str] {
 
 /// Impassable terrain feature kinds per biome (drives client rendering; all block
 /// movement identically). Structural content.
+/// How much a section's maze-fill count must be multiplied to hold its DESIGNED density
+/// (`obstacles_per_area` over one base-length corridor) at this section's radius and size.
+///
+/// **This rule has two call sites — `push_section` when a section is generated and
+/// `reroll_props` when a Shift retiles one — and it lived twice.** That is the exact drift
+/// this repo has been bitten by three times now (the wall-collision line that went into one
+/// mover and not the other, the creature damage pass that kept the O(n²) scan the movement
+/// pass above it had already lost, and this). A Shift re-scattering at a stale density is
+/// invisible until someone measures the ring it landed on.
+///
+/// Density thins along TWO axes and only the first was ever compensated:
+/// - the WG-4 fan bends a fixed corridor width into an arc that grows with radius, and
+/// - `obstacles_per_area` is a count per SECTION, but sections grow with depth
+///   (`area_length_growth`) — 13 units thick near the hub against 184 by d1560 — so the
+///   same count also spreads over ever more radial extent.
+///
+/// Their product is exactly the section's world area over the base area's. Capped by
+/// `maze_radial_scale_cap`, because the true stretch grows without bound in a world that
+/// streams outward forever and every prop is rebuilt into the blocking field every tick.
+/// Holding the designed density at every depth is NOT affordable under eager per-section
+/// fill — see the note on that cap in `balance.toml`.
+fn maze_fill_scale(
+    wg: &meld_balance::WorldGen,
+    radial_half: f64,
+    lateral: f64,
+    start_x: f64,
+    end_x: f64,
+) -> f64 {
+    let length = (end_x - start_x).max(1.0);
+    let r_mid = (start_x + end_x) * 0.5;
+    let arc_stretch = if radial_half > 0.0 {
+        (r_mid * radial_half / lateral.max(1.0)).max(1.0)
+    } else {
+        1.0
+    };
+    let thickness_scale = (length / wg.base_area_length.max(1.0)).max(1.0);
+    (arc_stretch * thickness_scale).min(wg.maze_radial_scale_cap.max(1.0))
+}
+
 fn obstacles_for_biome(biome: &str) -> &'static [&'static str] {
     match biome {
         "field" | "forest" => &["tree", "boulder", "pond"],
@@ -1547,6 +1586,28 @@ pub struct MonsterSpawn {
     /// which is every creature in the on-ramp. Same reason the Resonant's overworld regen
     /// banks its own remainder.
     regen_accum: f64,
+    /// Where this creature is currently walking while it has nothing to chase, or
+    /// `None` before it has picked its first destination.
+    ///
+    /// A WANDER DESTINATION HAS TO OUTLIVE THE TICK THAT PICKED IT. This used to be
+    /// re-rolled inside [`Arena::step_creatures_with_aggro`] on every pass — a fresh
+    /// angle ten times a second at the 100 ms authoritative tick — so every creature
+    /// in the overworld was chasing a point that teleported around its leash faster
+    /// than it could walk. Measured over 30 s of wander: 47.8 tiles of path walked
+    /// (full speed the whole time) for **0.87 tiles** of net displacement, never more
+    /// than 1.93 tiles from where it started. 98% of the motion cancelled, so the
+    /// whole world read as vibrating in place — and because the client picks its 8-way
+    /// facing off frame-to-frame movement (`hd2d::animate_chars`), the sprites spun on
+    /// the spot as well.
+    wander_to: Option<Position>,
+    /// Seconds left to pursue [`Self::wander_to`] before giving up and picking another.
+    /// A creature can be walked into a rock by its own destination (the mover slides
+    /// per-axis and then stops), so a leg is time-bounded as well as arrival-bounded —
+    /// without it, a blocked creature grinds against the same tree for the whole dive.
+    wander_left: f64,
+    /// Seconds left standing still before the next leg. A creature that walks without
+    /// ever stopping reads as machinery; the pause is what makes it read as grazing.
+    wander_wait: f64,
     /// Per-creature PRNG state for deterministic wander.
     rng: u64,
 }
@@ -1599,6 +1660,9 @@ impl MonsterSpawn {
             in_battle: false,
             skirmish_cd: 0.0,
             regen_accum: 0.0,
+            wander_to: None,
+            wander_left: 0.0,
+            wander_wait: 0.0,
             rng: seed | 1,
         }
     }
@@ -2219,6 +2283,10 @@ pub struct Arena {
     world_margin: f64,
     // Creature-AI tunables (snapshot from balance).
     wander_speed: f64,
+    wander_leg_seconds: f64,
+    wander_arrive_radius: f64,
+    wander_pause_chance: f64,
+    wander_pause_seconds: f64,
     chase_speed: f64,
     aggro_radius: f64,
     territorial_aggro_radius: f64,
@@ -2503,6 +2571,10 @@ impl Arena {
             path_clear_radius: wg.path_clear_radius,
             world_margin: wg.world_margin,
             wander_speed: balance.ai.wander_speed,
+            wander_leg_seconds: balance.ai.wander_leg_seconds,
+            wander_arrive_radius: balance.ai.wander_arrive_radius,
+            wander_pause_chance: balance.ai.wander_pause_chance,
+            wander_pause_seconds: balance.ai.wander_pause_seconds,
             chase_speed: balance.ai.chase_speed,
             aggro_radius: balance.ai.aggro_radius,
             territorial_aggro_radius: balance.ai.territorial_aggro_radius,
@@ -3573,8 +3645,18 @@ impl Arena {
         // Ground level only (nothing floating on a terrace/plateau), and never buries
         // the path/creatures/nodes/chests.
         let maze_mult = biome_obstacle_mult(wg, biome);
-        // A dungeon lays out rooms-and-corridors instead of the scattered maze fill.
-        if maze_mult > 0.0 && !is_dungeon {
+        // A DUNGEON SECTION IS STILL A BIOME SECTION. Its divider walls used to be laid
+        // INSTEAD of the maze fill ("rooms-and-corridors instead of the scattered fill"),
+        // which was true when a section was a 20-tile corridor with three rooms in it.
+        // After WG-4 a section is an annular band spanning the whole 340° arc, so the two
+        // walls are a rounding error across it and `dungeon_every = 4` meant EVERY FOURTH
+        // RING OF THE WORLD was a featureless plain. Measured at seed 424242 out to d1700:
+        // dungeon sections averaged 0.167 obstacles per 1000 u² against 4.92 for ordinary
+        // ones — a 30x gap — and section 16 (forest, `forest_obstacle_mult = 7.0`, "a
+        // THICK wood") held 29 obstacles across 900,893 u², a mean prop spacing of 88
+        // tiles. The walls are laid OVER the biome now; they still leave their door gaps
+        // on the clear path, so connectivity is untouched.
+        if maze_mult > 0.0 {
             let mut frng = Rng(section_seed(self.seed_base, i) ^ 0x7EE5_7EE5_7EE5_7EE5);
             // Radial density compensation: the fan bends the fixed-width corridor into an
             // arc that widens with radius, so a per-area count spreads ever thinner at
@@ -3583,13 +3665,8 @@ impl Arena {
             // areas stay renderable — so the maze holds its density instead of thinning
             // into an open field. Obstacles are still placed across the corridor lateral
             // and bent, so the extra count fills the widened arc.
-            let r_mid = (start_x + end_x) * 0.5;
-            let arc_stretch = if self.radial_half > 0.0 {
-                (r_mid * self.radial_half / self.lateral.max(1.0)).max(1.0)
-            } else {
-                1.0
-            };
-            let radial_scale = arc_stretch.min(wg.maze_radial_scale_cap.max(1.0));
+            let radial_scale =
+                maze_fill_scale(wg, self.radial_half, self.lateral, start_x, end_x);
             let extra = (maze_mult * wg.obstacles_per_area * radial_scale).round().max(0.0) as usize;
             let fill_kind = fill_kind_for_biome(biome);
             // Density taper: near each edge, blend toward the NEIGHBOUR section's
@@ -4023,6 +4100,9 @@ impl Arena {
             }
         };
         let (wander, chase) = (self.wander_speed, self.chase_speed);
+        let (wander_leg, wander_arrive) = (self.wander_leg_seconds, self.wander_arrive_radius);
+        let (wander_pause_chance, wander_pause) =
+            (self.wander_pause_chance, self.wander_pause_seconds);
         let (aggro, terr_aggro, leash) = (self.aggro_radius, self.territorial_aggro_radius, self.leash_radius);
         let (skirmish_aggro, skirmish_range) = (self.skirmish_aggro, self.skirmish_range);
         let interval = self.skirmish_interval;
@@ -4143,11 +4223,46 @@ impl Arena {
                     }
                 }
                 None => {
-                    // Wander: drift toward a seeded random point within the leash.
-                    let ang = next_unit(&mut m.rng) * std::f64::consts::TAU;
-                    let target_x = m.home.x + ang.cos() * leash;
-                    let target_y = m.home.y + ang.sin() * leash * 0.4; // corridor is wider in x
-                    (target_x - m.position.x, target_y - m.position.y, wander)
+                    // Wander: walk to a destination that OUTLIVES THIS TICK. Standing
+                    // still counts down first — a creature that never stops reads as
+                    // machinery rather than as something grazing.
+                    if m.wander_wait > 0.0 {
+                        m.wander_wait -= dt;
+                        (0.0, 0.0, wander)
+                    } else {
+                        m.wander_left -= dt;
+                        let arrived = m
+                            .wander_to
+                            .is_some_and(|t| m.position.distance_to(&t) <= wander_arrive);
+                        // Repick on arrival OR on the leg timing out: a destination can
+                        // walk a creature into a rock, where the per-axis slide leaves it
+                        // grinding against the same tree for the rest of the dive.
+                        if m.wander_to.is_none() || arrived || m.wander_left <= 0.0 {
+                            // A point in the leash DISC, not on its rim — sqrt for a
+                            // uniform draw over the area, so a creature crosses its
+                            // territory instead of only ever visiting the edge. No axis
+                            // squash: `home` is world-space, and in the radial fan a
+                            // squashed y biased every creature into walking radially
+                            // (in/out) when tangential movement is what reads as roaming.
+                            let ang = next_unit(&mut m.rng) * std::f64::consts::TAU;
+                            let rad = leash * next_unit(&mut m.rng).sqrt();
+                            m.wander_to = Some(Position::new(
+                                m.home.x + ang.cos() * rad,
+                                m.home.y + ang.sin() * rad,
+                            ));
+                            m.wander_left = wander_leg;
+                            if next_unit(&mut m.rng) < wander_pause_chance {
+                                m.wander_wait =
+                                    wander_pause * (0.5 + next_unit(&mut m.rng));
+                            }
+                        }
+                        match m.wander_to {
+                            Some(t) => {
+                                (t.x - m.position.x, t.y - m.position.y, wander)
+                            }
+                            None => (0.0, 0.0, wander),
+                        }
+                    }
                 }
             };
             let mag = (dx * dx + dy * dy).sqrt();
@@ -5117,16 +5232,11 @@ impl Arena {
         for i in first..=last.min(self.areas.len().saturating_sub(1)) {
             let (start_x, end_x) = (self.areas[i].start_x, self.areas[i].end_x);
             let length = (end_x - start_x).max(1.0);
-            // The same fan compensation `push_section` applies: a fixed corridor width
-            // bends into an arc that grows with radius, so a per-section count placed
-            // without it thins to nothing outward.
-            let r_mid = (start_x + end_x) * 0.5;
-            let arc_stretch = if self.radial_half > 0.0 {
-                (r_mid * self.radial_half / self.lateral.max(1.0)).max(1.0)
-            } else {
-                1.0
-            };
-            let radial_scale = arc_stretch.min(wg.maze_radial_scale_cap.max(1.0));
+            // The SAME rule `push_section` uses, from the one place it lives — a Shift
+            // that re-scatters at a stale density is invisible until someone measures
+            // the ring it landed on.
+            let radial_scale =
+                maze_fill_scale(wg, self.radial_half, self.lateral, start_x, end_x);
             let sparse = wg.obstacles_per_area.max(0.0).round() as usize;
             let dense = (biome_obstacle_mult(wg, biome) * wg.obstacles_per_area * radial_scale)
                 .round()
@@ -7006,6 +7116,109 @@ mod tests {
     }
 
     #[test]
+    fn a_wandering_creature_actually_goes_somewhere() {
+        // Reported from play: "creature movement in the overworld makes no sense
+        // whatsoever." The wander DESTINATION was re-rolled inside the movement pass on
+        // every tick — a fresh angle ten times a second — so a creature was chasing a
+        // point that teleported around its leash faster than it could walk. It walked at
+        // full speed and stayed put: 47.8 tiles of path for 0.87 tiles of net
+        // displacement over 30 s, never more than 1.93 tiles from where it started, with
+        // 98% of the motion cancelling itself out. The client picks its 8-way facing off
+        // frame-to-frame movement, so the sprites spun on the spot too.
+        //
+        // This pins the OUTCOME rather than the mechanism: a creature with nothing to
+        // chase must cover a real share of its own leash. Anything that reintroduces
+        // per-tick destination churn fails here however it is written.
+        let b = Balance::load_default().unwrap();
+        let mut arena = Arena::generate(&b, 424242, false);
+        // No avatars: nothing to chase, so every creature is on the wander path.
+        arena.avatars.clear();
+        let sample: Vec<usize> = (0..arena.monsters.len().min(200)).collect();
+        let start: Vec<Position> = sample.iter().map(|&i| arena.monsters[i].position).collect();
+        let mut reach: Vec<f64> = vec![0.0; sample.len()];
+        // 30 s at the 100 ms authoritative tick.
+        for _ in 0..300 {
+            arena.step_creatures(0.1);
+            for (k, &i) in sample.iter().enumerate() {
+                reach[k] = reach[k].max(arena.monsters[i].position.distance_to(&start[k]));
+            }
+        }
+        let mean = reach.iter().sum::<f64>() / reach.len() as f64;
+        // Half its own leash is a low bar deliberately: the destination is drawn inside
+        // the leash disc, so the EXPECTED excursion is well under the full radius, and
+        // terrain legitimately blocks some legs. The bug sat at 1.93.
+        assert!(
+            mean > arena.leash_radius * 0.5,
+            "a wandering creature should cover a real share of its leash \
+             (mean furthest excursion {mean:.2} of leash {:.1})",
+            arena.leash_radius
+        );
+        // ...and it must still be a LEASH, not a migration: the fix must not let
+        // anything walk off into the next biome.
+        for (k, &i) in sample.iter().enumerate() {
+            assert!(
+                reach[k] <= arena.leash_radius * 2.5,
+                "creature {i} wandered {:.1} from home — the leash still has to hold",
+                reach[k]
+            );
+        }
+        // ...and the measurement above is not vacuous: put the destination back on a
+        // per-tick re-roll (leg length 0, no pauses) and the world really does go back
+        // to vibrating in place, which is the bug as it shipped.
+        let mut churn = b.clone();
+        churn.ai.wander_leg_seconds = 0.0;
+        churn.ai.wander_pause_chance = 0.0;
+        let mut arena = Arena::generate(&churn, 424242, false);
+        arena.avatars.clear();
+        let start: Vec<Position> = sample.iter().map(|&i| arena.monsters[i].position).collect();
+        let mut reach: Vec<f64> = vec![0.0; sample.len()];
+        for _ in 0..300 {
+            arena.step_creatures(0.1);
+            for (k, &i) in sample.iter().enumerate() {
+                reach[k] = reach[k].max(arena.monsters[i].position.distance_to(&start[k]));
+            }
+        }
+        let churned = reach.iter().sum::<f64>() / reach.len() as f64;
+        assert!(
+            churned < arena.leash_radius * 0.35,
+            "with a per-tick re-roll the creature should barely leave its own tile \
+             (mean furthest excursion {churned:.2})"
+        );
+    }
+
+    #[test]
+    fn a_wandering_creature_stands_still_sometimes() {
+        // A creature that walks every single tick reads as machinery. The pause is the
+        // other half of what makes the overworld look inhabited, and it is cheap to lose
+        // in a refactor because nothing else observes it.
+        let b = Balance::load_default().unwrap();
+        let mut arena = Arena::generate(&b, 424242, false);
+        arena.avatars.clear();
+        let sample: Vec<usize> = (0..arena.monsters.len().min(200)).collect();
+        let mut still = 0usize;
+        let mut total = 0usize;
+        let mut prev: Vec<Position> = sample.iter().map(|&i| arena.monsters[i].position).collect();
+        for _ in 0..300 {
+            arena.step_creatures(0.1);
+            for (k, &i) in sample.iter().enumerate() {
+                let now = arena.monsters[i].position;
+                if now.distance_to(&prev[k]) < 1e-9 {
+                    still += 1;
+                }
+                total += 1;
+                prev[k] = now;
+            }
+        }
+        let share = still as f64 / total as f64;
+        assert!(
+            share > 0.10 && share < 0.80,
+            "wandering creatures should pause sometimes and walk sometimes \
+             (standing still {:.0}% of ticks)",
+            share * 100.0
+        );
+    }
+
+    #[test]
     fn group_around_pulls_in_close_creatures() {
         let b = Balance::load_default().unwrap();
         let mut arena = Arena::generate(&b, 5, true);
@@ -8384,6 +8597,152 @@ mod tests {
                 n / ((hi * hi - lo * lo) * half)
             })
             .collect()
+    }
+
+    /// Obstacles per 1000 u² of world in a radius ring, over a world streamed out well
+    /// past the point where `maze_radial_scale_cap` starts to bind. A per-section COUNT is
+    /// not a density, and the ring's area grows quadratically — this is what a player
+    /// walking out there actually experiences.
+    fn obstacle_density_by_ring(b: &Balance, seed: u64, rings: &[(f64, f64)]) -> Vec<f64> {
+        // ONE biome for every section. Each biome has its own fill multiplier (forest 7.0
+        // against tundra 1.6), and which biome a ring happens to draw is a per-seed
+        // accident — so an unpinned ratio measures the biome lottery as much as the
+        // compensation, and a deep tundra ring is *correctly* thinner than a shallow
+        // forest one. Pinning it is what makes this a measurement of the thing under test.
+        let mut a = Arena::generate_with(b, seed, false, Some("forest"));
+        let mut reach = 0.0_f64;
+        let far = rings.last().map(|r| r.1).unwrap_or(0.0);
+        while reach < far {
+            reach += 40.0;
+            a.ensure_frontier(b, reach);
+        }
+        let half = a.radial_half();
+        rings
+            .iter()
+            .map(|&(lo, hi)| {
+                let n = a
+                    .obstacles
+                    .iter()
+                    .filter(|o| {
+                        let r = o.position.x.hypot(o.position.y);
+                        r >= lo && r < hi
+                    })
+                    .count() as f64;
+                n / ((hi * hi - lo * lo) * half) * 1000.0
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_dungeon_ring_is_not_a_featureless_plain() {
+        // Reported from play: "every biome just kinda looks like a big open field."
+        // `dungeon_every = 4` marks every 4th section a procedural dungeon, and the maze
+        // fill used to be skipped entirely for one ("rooms-and-corridors INSTEAD of the
+        // scattered fill"). That was true when a section was a 20-tile corridor with three
+        // rooms in it; after WG-4 a section is an annular band spanning the whole 340° arc,
+        // so its two divider walls are a rounding error across it. Measured at seed 424242
+        // out to d1700: dungeon sections averaged 0.167 obstacles per 1000 u² against 4.92
+        // for ordinary ones, and section 16 (forest, the DENSEST fill multiplier in the
+        // table) held 29 props across 900,893 u² — a mean spacing of 88 tiles. A quarter of
+        // the world was open ground, and you cross one every fourth section.
+        let b = Balance::load_default().unwrap();
+        let mut a = Arena::generate(&b, 424242, false);
+        let mut reach = 0.0_f64;
+        while reach < 1700.0 {
+            reach += 40.0;
+            a.ensure_frontier(&b, reach);
+        }
+        let half = a.radial_half();
+        let density = |ar: &Area| {
+            let (lo, hi) = (ar.start_x, ar.end_x);
+            let n = a
+                .obstacles
+                .iter()
+                .filter(|o| {
+                    let r = o.position.x.hypot(o.position.y);
+                    r >= lo && r < hi
+                })
+                .count() as f64;
+            n / ((hi * hi - lo * lo) * half) * 1000.0
+        };
+        // Skip the spawn section: it is a 13-unit ring the path tube almost entirely
+        // fills, and it is deliberately gentle.
+        let (mut dgn, mut normal) = (Vec::new(), Vec::new());
+        for ar in a.areas.iter().filter(|ar| ar.index > 0) {
+            if ar.dungeon {
+                dgn.push(density(ar));
+            } else {
+                normal.push(density(ar));
+            }
+        }
+        assert!(!dgn.is_empty(), "the sweep has to actually contain a dungeon section");
+        let mean = |v: &[f64]| v.iter().sum::<f64>() / v.len() as f64;
+        let (d, n) = (mean(&dgn), mean(&normal));
+        // A dungeon section may legitimately differ from an ordinary one — it packs
+        // creatures denser and holds a guaranteed chest — but it is still a section of its
+        // own biome, and it must not be an order of magnitude emptier. The bug sat at 30x.
+        assert!(
+            d > n * 0.5,
+            "a dungeon ring keeps its biome's terrain \
+             (dungeon {d:.3} vs ordinary {n:.3} obstacles per 1000 u²)"
+        );
+    }
+
+    #[test]
+    fn the_maze_holds_its_terrain_past_the_compensation_cap() {
+        // The density guard that already existed (`the_world_does_not_empty_out_as_it_fans
+        // _open`) samples out to r=280 — INSIDE the radius where the arc compensation still
+        // holds — so everything past it was unguarded, which is where the whole game
+        // actually takes place. Two axes thin the fill and only the arc was ever
+        // compensated: `obstacles_per_area` is a count per SECTION, and sections grow from
+        // 13 units thick near the hub to 184 by d1560, so the same count also spread over
+        // ever more radial extent (`maze_fill_scale` is now the one place both live).
+        //
+        // Asserted as MEAN PROP SPACING IN TILES rather than as a ratio, for two reasons:
+        // spacing is the thing a player actually experiences (a forest with trunks 4 tiles
+        // apart is a wood; at 50 it is a plain), and a ratio against the shallow ring
+        // measures the deliberate compromise in `maze_radial_scale_cap` rather than the
+        // bug. Measured, pinned to forest, mean spacing shallow / mid / deep:
+        //
+        //   no compensation | 12.3 | 37.8 | 47.2   ← what the arithmetic bug produced
+        //   now, cap 24     |  3.0 |  6.5 |  9.4
+        //   cap 60          |  3.0 |  4.1 |  6.0   ← not taken; see balance.toml
+        //
+        // The cap stays at 24 because `ensure_frontier` runs inside the authoritative tick
+        // and streaming one deep section is already a 181 ms stall on a 100 ms tick — a
+        // bigger cap doubles a stall that is over budget before we touch it. So the deep
+        // ring is knowingly still short of the shallow one, and the bar below is a FLOOR
+        // that has to hold until `WG-6` spends the fill along the route network instead of
+        // across the whole ring. The measured curve lives in balance.toml, once.
+        let b = Balance::load_default().unwrap();
+        let rings = [(40.0, 100.0), (400.0, 700.0), (900.0, 1200.0)];
+        // Mean nearest-neighbour spacing of a Poisson field of density `d` per u².
+        let spacing = |per_1k: f64| 0.5 / (per_1k / 1000.0).sqrt();
+        // ONE seed, deliberately. Each case streams a world out past the cap's holding
+        // radius, which is the most expensive thing in this file — and pinning the biome
+        // has already removed the variance a seed sweep would be buying (what a ring
+        // draws is the lottery this test exists to hold constant).
+        for seed in [424242_u64] {
+            for (k, &d) in obstacle_density_by_ring(&b, seed, &rings).iter().enumerate() {
+                let sp = spacing(d);
+                assert!(
+                    sp < 14.0,
+                    "seed {seed} ring {k}: a forest has to keep enough trunks to read as \
+                     terrain at every depth \
+                     (mean prop spacing {sp:.1} tiles, {d:.2} per 1000 u²)"
+                );
+            }
+        }
+        // ...and none of that is vacuous: drop the compensation and the deep forest really
+        // does open out into a field you can see across, which is the bug as it shipped.
+        let mut off = b.clone();
+        off.worldgen.maze_radial_scale_cap = 1.0;
+        let d = obstacle_density_by_ring(&off, 424242, &rings);
+        assert!(
+            spacing(d[2]) > 30.0,
+            "uncompensated, the deep ring is a plain (mean prop spacing {:.1} tiles)",
+            spacing(d[2])
+        );
     }
 
     #[test]
