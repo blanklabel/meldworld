@@ -258,6 +258,8 @@ pub fn creature_abilities(kind: &str) -> Vec<MonsterAbility> {
                 vec![status("chill", 50, SingleEnemy), atb(-0.2, SingleEnemy)]),
             ability("umbral_pounce", "Umbral Pounce!", 2, 180, 12, 16, None,
                 vec![dmg(Magic, 1.6, Shadow, SingleEnemy)]),
+            ability("gloom_bay", "GLOOM BAY!", 2, 240, 24, 12, None,
+                vec![dmg(Magic, 1.0, Shadow, AllEnemies), status("chill", 60, AllEnemies)]),
             ability("umbral_pack", "UMBRAL PACK!", 2, 300, 30, 45, None,
                 vec![dmg(Attack, 1.45, Shadow, AllEnemies), status("dread", 80, AllEnemies)]),
         ],
@@ -268,6 +270,8 @@ pub fn creature_abilities(kind: &str) -> Vec<MonsterAbility> {
                 vec![dmg(Magic, 0.8, Lightning, SingleEnemy), atb(0.2, SelfCast)]),
             ability("overdrive_maul", "Overdrive Maul!", 2, 200, 14, 16, Some(0.5),
                 vec![dmg(Attack, 1.7, Lightning, SingleEnemy)]),
+            ability("scrapstorm", "SCRAPSTORM!", 2, 250, 24, 12, None,
+                vec![dmg(Attack, 1.0, Pierce, AllEnemies), status("corrode", 60, AllEnemies)]),
             ability("corrosion_bloom", "CORROSION BLOOM!", 2, 300, 30, 45, None,
                 vec![dmg(Magic, 1.35, Water, AllEnemies), status("corrode", 90, AllEnemies)]),
         ],
@@ -298,6 +302,13 @@ pub fn creature_abilities(kind: &str) -> Vec<MonsterAbility> {
                 vec![dmg(Magic, 0.9, Shadow, SingleEnemy), heal(MaxHp, 0.12, SelfCast)]),
             ability("epitaph_of_ruin", "EPITAPH OF RUIN!", 1, 300, 28, 14, Some(0.45),
                 vec![dmg(Magic, 1.5, Ethereal, SingleEnemy), status("dread", 70, SingleEnemy)]),
+            // Its mid-tier WIDE row. Every other boss has one around this rung; these three
+            // (sepulcher, rustfang, gloamhound) had their only party-wide ability gated at
+            // level 45, and a gatekeeper stands at `gatekeeper_min_distance` = level 24 — so
+            // for three bosses in ten a Worldbreaker label sat on a creature that could only
+            // ever hit one hero at a time, which at sixteen heroes is a sixteenth of a fight.
+            ability("grave_pall", "GRAVE PALL!", 2, 250, 24, 12, None,
+                vec![dmg(Magic, 1.0, Ethereal, AllEnemies), status("dread", 60, AllEnemies)]),
             ability("mausoleum_collapse", "MAUSOLEUM COLLAPSE!", 2, 330, 34, 45, None,
                 vec![dmg(Attack, 1.6, Earth, AllEnemies), status("dread", 90, AllEnemies)]),
         ],
@@ -414,6 +425,63 @@ pub fn bosses_of_faction(faction: &str) -> Vec<&'static str> {
     .into_iter()
     .filter(|k| boss_faction(k) == Some(faction))
     .collect()
+}
+
+/// Size a raid boss's KIT to the crowd it is sized for (`FS-4`).
+///
+/// A raid boss's HP and XP ride its declared party count and its ATTACK deliberately does
+/// not, on the grounds that scaling a blow which lands on ONE hero would one-shot whoever
+/// arrived before the merge filled. That argument is entirely about single targets — and
+/// followed through, it demands the opposite conclusion for a WIDE ability, which was the
+/// half nobody drew.
+///
+/// **A single-target blow is divided by the crowd; a wide one is not.** So the shipped raid
+/// boss got *less* threatening per hero the more people brought, not more. Measured over five
+/// world seeds, **12.5%** of an unlabelled gatekeeper's turns go wide, which puts a
+/// Worldbreaker at sixteen heroes on **52%** of the per-hero pressure that same boss applies
+/// to a lone party — while carrying 20x the health. Four times the damage went in and each
+/// hero felt half the answer back: "sized for four parties" meant a longer fight, and an
+/// *easier* one.
+///
+/// The fix is CADENCE, never magnitude: the abilities that reach the whole party come round
+/// sooner and are picked more often, and every number a hero actually takes is the one an
+/// ordinary gatekeeper would have dealt. That is what keeps this safe where scaling attack
+/// is not — nothing here can turn a hit into a one-shot, so the party that touches it first
+/// is threatened over time rather than deleted on arrival. It also reuses each boss's OWN
+/// authored signature (a Cinder Wave, a SCRAP AVALANCHE) rather than bolting a generic raid
+/// nuke onto ten different kits.
+///
+/// Single-target rows are left exactly alone. Raising them would be the attack-scaling
+/// mistake wearing a cooldown's clothes.
+pub fn widen_for_warband(
+    pool: Vec<MonsterAbility>,
+    parties: u8,
+    weight_per_party: f64,
+    cooldown_per_party: f64,
+) -> Vec<MonsterAbility> {
+    if !meld_proto::warbands::is_raid(parties) {
+        return pool;
+    }
+    // Extra parties past the first, which is what the escalation is priced in.
+    let extra = f64::from(parties.saturating_sub(1));
+    let weight_mult = 1.0 + weight_per_party.max(0.0) * extra;
+    let cooldown_div = 1.0 + cooldown_per_party.max(0.0) * extra;
+    pool.into_iter()
+        .map(|mut a| {
+            if !a.reaches_the_whole_party() {
+                return a;
+            }
+            a.weight = ((f64::from(a.weight.max(1)) * weight_mult).round() as i32).max(1);
+            // A telegraph is the fight's readability and is NOT shortened — a raid blow
+            // still announces itself for as long, it simply comes back sooner. Floored at
+            // the telegraph so an ability can never be ready again before the last cast has
+            // even landed.
+            let floor = a.telegraph_ticks.max(1);
+            a.cooldown_ticks =
+                ((f64::from(a.cooldown_ticks) / cooldown_div).round() as i32).max(floor);
+            a
+        })
+        .collect()
 }
 
 /// A boss's PALETTE band, from the monster level it is met at. A boss encountered
@@ -890,5 +958,108 @@ mod tests {
         let spore: std::collections::HashMap<_, _> =
             creature_damage_modifiers("sporeling").into_iter().collect();
         assert!(spore[&Fire] > 1.0);
+    }
+
+    /// The wide half escalates and the single-target half does not — which is the whole
+    /// claim. Raising a single-target row would be the attack-scaling mistake this module
+    /// exists to avoid, wearing a cooldown's clothes.
+    #[test]
+    fn a_raid_tier_widens_the_kit_and_leaves_the_single_target_half_alone() {
+        let base = creature_abilities("ironmaw");
+        assert!(base.iter().any(|a| a.reaches_the_whole_party()), "the fixture has no wide row");
+        assert!(base.iter().any(|a| !a.reaches_the_whole_party()), "the fixture has no single row");
+        let raid = widen_for_warband(base.clone(), 4, 0.6, 0.4);
+        assert_eq!(raid.len(), base.len(), "a raid tier must not add or drop rows");
+        for (b, r) in base.iter().zip(raid.iter()) {
+            assert_eq!(b.ability_kind, r.ability_kind, "the pool was reordered");
+            // MAGNITUDES ARE UNTOUCHED. This is the property that makes the lever safe: no
+            // number a hero takes changes, so no hit can become a one-shot for the party
+            // that arrives before the merge fills.
+            assert_eq!(b.effects, r.effects, "{} changed what it does, not how often", b.ability_kind);
+            assert_eq!(b.telegraph_ticks, r.telegraph_ticks, "{} stopped announcing itself", b.ability_kind);
+            assert_eq!(b.min_level, r.min_level);
+            assert_eq!(b.hp_threshold_pct, r.hp_threshold_pct);
+            if b.reaches_the_whole_party() {
+                assert!(r.weight > b.weight, "{} is no likelier at four parties", b.ability_kind);
+                assert!(r.cooldown_ticks < b.cooldown_ticks, "{} is no sooner", b.ability_kind);
+            } else {
+                assert_eq!(b.weight, r.weight, "{} was widened", b.ability_kind);
+                assert_eq!(b.cooldown_ticks, r.cooldown_ticks, "{} was widened", b.ability_kind);
+            }
+        }
+    }
+
+    /// A bigger raid is a wider fight at every rung, and an ordinary encounter is untouched
+    /// — a boss nobody labelled must fight exactly as it always has.
+    #[test]
+    fn the_escalation_is_monotonic_and_one_party_is_left_exactly_alone() {
+        let base = creature_abilities("ashenleviathan");
+        assert_eq!(widen_for_warband(base.clone(), 1, 0.6, 0.4), base, "an ordinary boss changed");
+        let wide = |parties: u8| {
+            widen_for_warband(base.clone(), parties, 0.6, 0.4)
+                .into_iter()
+                .filter(|a| a.reaches_the_whole_party())
+                .map(|a| (a.weight, a.cooldown_ticks))
+                .collect::<Vec<_>>()
+        };
+        for parties in 2..=meld_proto::warbands::max_parties() {
+            for ((w, cd), (pw, pcd)) in wide(parties).into_iter().zip(wide(parties - 1)) {
+                assert!(w >= pw, "{parties} parties is not likelier to go wide than {}", parties - 1);
+                assert!(cd <= pcd, "{parties} parties does not come round sooner");
+            }
+        }
+    }
+
+    /// A shortened cooldown may never dip below the telegraph, or a raid blow becomes ready
+    /// again before the last one has even landed — the shout would stop meaning anything.
+    #[test]
+    fn a_widened_cooldown_never_undercuts_its_own_telegraph() {
+        for kind in all_bosses() {
+            // Far past anything tunable, to prove the floor rather than the current numbers.
+            for a in widen_for_warband(creature_abilities(kind), 4, 50.0, 500.0) {
+                if a.reaches_the_whole_party() {
+                    assert!(
+                        a.cooldown_ticks >= a.telegraph_ticks.max(1),
+                        "{kind}/{} is ready before it lands",
+                        a.ability_kind
+                    );
+                }
+            }
+        }
+    }
+
+    /// Every named boss must be able to go WIDE at the shallowest level a gatekeeper is ever
+    /// met at — not merely somewhere in its pool.
+    ///
+    /// A raid tier is expressed entirely through the wide half, so a boss that cannot reach
+    /// any of it is labelled a Worldbreaker and fights exactly like an ordinary gatekeeper:
+    /// one hero at a time, which at sixteen heroes is a sixteenth of a fight. That is the
+    /// FS-4 bug over again, one layer down, and existence alone does not catch it — three
+    /// bosses in ten (sepulcher, rustfang, gloamhound) HAD a party-wide ability and had it
+    /// gated at level 45, while `gatekeeper_min_distance` puts the first gate boss at 24.
+    ///
+    /// The threshold is derived from balance rather than written down, so retuning where
+    /// gatekeepers start retunes what a boss must be able to do when it gets there.
+    #[test]
+    fn every_boss_can_go_wide_at_the_level_a_gatekeeper_is_first_met() {
+        let b = meld_balance::Balance::load_default().unwrap();
+        let first_gate =
+            crate::Scaling::new(&b).mlevel(b.encounters.gatekeeper_min_distance);
+        for kind in all_bosses() {
+            let pool = creature_abilities(kind);
+            assert!(
+                pool.iter().any(|a| a.reaches_the_whole_party()),
+                "{kind} has no party-wide ability, so a raid tier cannot reach it"
+            );
+            // An hp_threshold row does not count: a boss that can only go wide once it is
+            // nearly dead spends the whole fight unable to answer a crowd.
+            assert!(
+                pool.iter().any(|a| a.reaches_the_whole_party()
+                    && a.min_level <= first_gate
+                    && a.hp_threshold_pct.is_none()),
+                "{kind} cannot go wide at level {first_gate}, where the first gatekeeper \
+                 stands - a raid tier has nothing to escalate"
+            );
+        }
     }
 }

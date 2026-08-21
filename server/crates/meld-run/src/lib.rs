@@ -1079,7 +1079,20 @@ pub fn build_battle(
             // named boss identity (FS-4), which gets its own bespoke kit.
             let ability_key = if m.boss_kind.is_empty() { &m.monster_kind } else { &m.boss_kind };
             f.boss_kind = m.boss_kind.clone();
-            f.abilities = meld_world::abilities::creature_abilities(ability_key);
+            // A RAID boss answers the crowd it is sized for with its WIDE half (FS-4): its
+            // party-wide rows come round sooner and are rolled oftener, at unchanged
+            // magnitudes. A single-target blow is divided by however many heroes turned up
+            // and an all-enemy one is not, so cadence on the wide half is the only lever that
+            // makes "sized for four parties" mean a harder fight rather than merely a longer
+            // one — and the only one that cannot one-shot the party that arrives first.
+            // Applied here for the same reason the group is derived here: sixteen places
+            // create a spawn, exactly one assembles a battle.
+            f.abilities = meld_world::abilities::widen_for_warband(
+                meld_world::abilities::creature_abilities(ability_key),
+                m.expects_parties,
+                balance.encounters.raid_wide_weight_per_party,
+                balance.encounters.raid_wide_cooldown_per_party,
+            );
             // A creature's elemental resistance rides its defence curve, since it has no Mnd
             // to grow one from — kept under 1.0 so casting stays the answer to armour.
             f.ward = ((m.def as f64) * balance.armor_resist.creature_ward_fraction).round() as i32;
@@ -3003,5 +3016,153 @@ mod tests {
             "the party ramp is scaling something it should not: {hp1} -> {hp4}"
         );
         let _ = base_atk;
+    }
+
+    /// FS-4: a raid boss answers a CROWD with its wide half — played out, not asserted.
+    ///
+    /// The bug this closes is arithmetic. A raid boss's HP rides its declared party count and
+    /// its attack deliberately does not, because a swing lands on ONE hero and scaling it
+    /// would delete whoever arrives before the merge fills. But that reasoning is *about*
+    /// single targets: a single-target blow is divided by however many heroes turned up (a
+    /// quarter of a lone party's incoming damage, a SIXTEENTH of a full raid's) while an
+    /// all-enemy one is divided by nothing. So the more help you brought, the less each hero
+    /// felt — a Worldbreaker at sixteen heroes was a longer fight and an *easier* one.
+    ///
+    /// So the assertion is the RATIO, never the rates: the tunables are `[TUNABLE]` and the
+    /// wide share drifts with every kit edit, but "a full raid must feel at least what one
+    /// party feels" is the rule. `per_hero` is the whole model — a wide turn costs every hero
+    /// its damage, a single one costs a hero its damage divided by the crowd.
+    ///
+    /// Played rather than modelled: the boss's picks come out of the real engine's weighted
+    /// roll against real cooldowns, level gates and HP thresholds, over real world-generated
+    /// gatekeepers. Modelling it is what let three bosses ship with their only party-wide
+    /// ability gated at level 45 — twenty levels past where a gatekeeper first stands — so
+    /// their raid tiers escalated nothing at all. Only playing it found that.
+    #[test]
+    fn a_raid_boss_answers_a_crowd_with_its_wide_half() {
+        let b = Balance::load_default().unwrap();
+        // A wide turn lands on every hero; a single one is split across whoever showed up.
+        let per_hero = |wide_share: f64, heroes: f64| wide_share + (1.0 - wide_share) / heroes;
+
+        // Aggregated across seeds: one gatekeeper is only a few dozen turns, too small a
+        // sample to read a share off on its own.
+        let wide_share_at = |parties: u8| {
+            let (mut wide, mut total) = (0u32, 0u32);
+            for wseed in [7u64, 11, 42] {
+                let mut runs = InstanceRun::new("i".into(), 500, &b, 0);
+                let classes = [
+                    CharacterClass::PhoenixGuard,
+                    CharacterClass::PhoenixGuard,
+                    CharacterClass::Resonant,
+                    CharacterClass::Resonant,
+                ];
+                runs.add_party(
+                    classes
+                        .iter()
+                        .enumerate()
+                        .map(|(i, c)| {
+                            (format!("p{i}"), format!("u{i}"), *c, format!("r{i}"))
+                        })
+                        .collect(),
+                );
+                let mut arena = meld_world::Arena::generate(&b, wseed, false);
+                arena.ensure_frontier(&b, 400.0); // cross a biome seam so a gatekeeper spawns
+                let mut gk = arena
+                    .monsters
+                    .iter()
+                    .find(|m| m.encounter_class == "gatekeeper")
+                    .expect("a gatekeeper spawned at the crossed seam")
+                    .clone();
+                // Only the DECLARED count differs between arms — its stats are untouched, so
+                // the two fights differ in the kit alone and nothing else can explain a gap.
+                gk.expects_parties = parties;
+                let enemies = vec![(&gk, "mc".to_string())];
+                let party: Vec<PartyMember> = classes
+                    .iter()
+                    .enumerate()
+                    .map(|(i, c)| {
+                        (format!("p{i}"), format!("c{i}"), *c, GearBonus::default())
+                    })
+                    .collect();
+                let mut battle =
+                    build_battle("b".into(), &party, &enemies, &runs, &b, 1, &[], &[], false);
+                let (allies, foes) = battle.wire_combatants();
+                let hero_ids: std::collections::HashSet<String> =
+                    allies.iter().map(|c| c.combatant_id.clone()).collect();
+                let boss_id = foes[0].combatant_id.clone();
+                for _ in 0..12_000 {
+                    if battle.is_over() {
+                        break;
+                    }
+                    let mut ready: Vec<String> = Vec::new();
+                    for ev in battle.tick() {
+                        match ev {
+                            // The heroes have to actually SWING, or the boss never drops
+                            // below its own HP thresholds and its enrage rows never unlock —
+                            // a defending party silently under-samples the wide half.
+                            meld_battle::Event::TurnReady { combatant_id } => {
+                                ready.push(combatant_id)
+                            }
+                            meld_battle::Event::Resolved(r) if r.actor_id == boss_id => {
+                                total += 1;
+                                let hit: std::collections::HashSet<&String> = r
+                                    .effects
+                                    .iter()
+                                    .filter(|e| hero_ids.contains(&e.target_id))
+                                    .map(|e| &e.target_id)
+                                    .collect();
+                                if hit.len() >= 2 {
+                                    wide += 1;
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    for id in ready {
+                        let _ = battle.submit(
+                            &id,
+                            "a".into(),
+                            meld_proto::enums::BattleActionKind::Attack,
+                            Some(vec![boss_id.clone()]),
+                            None,
+                            None,
+                        );
+                    }
+                }
+                assert!(total > 20, "seed {wseed} gave only {total} boss turns to read");
+            }
+            f64::from(wide) / f64::from(total)
+        };
+
+        let shares: Vec<f64> = (1..=meld_proto::warbands::max_parties())
+            .map(wide_share_at)
+            .collect();
+        // Every rung is a wider fight than the one below it — the ladder has to be a ladder,
+        // or "Leviathan" and "Colossus" differ by a health bar and a word.
+        for (i, pair) in shares.windows(2).enumerate() {
+            assert!(
+                pair[1] > pair[0],
+                "{} parties goes wide {:.1}% of the time and {} parties only {:.1}%",
+                i + 2,
+                pair[1] * 100.0,
+                i + 1,
+                pair[0] * 100.0
+            );
+        }
+        // THE CLAIM. A lone party against an unlabelled boss is the baseline every hero in
+        // the game already accepts; a full raid on the boss sized for it must feel at LEAST
+        // that. Before the wide half escalated, sixteen heroes felt about half of it.
+        let solo_baseline = per_hero(shares[0], 4.0);
+        let full_raid = per_hero(*shares.last().unwrap(), 16.0);
+        assert!(
+            full_raid > solo_baseline,
+            "a full raid feels {full_raid:.3} per hero where one party feels \
+             {solo_baseline:.3} - the raid boss is the easier fight"
+        );
+        // And under-manning it is worse still, which is what the plate's warning promises.
+        assert!(
+            per_hero(*shares.last().unwrap(), 4.0) > full_raid,
+            "bringing nobody costs each hero no more than bringing everybody"
+        );
     }
 }

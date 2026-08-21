@@ -666,6 +666,28 @@ gatekeeper_atk_mult = 1.6
 # the cap `merge_cap_gatekeeper_instances` allows. [TUNABLE]
 gatekeeper_raid_chance = 0.25
 gatekeeper_raid_max_parties = 4
+# HOW A RAID BOSS ANSWERS A CROWD (FS-4). HP rides the party count and attack deliberately
+# does not — a swing lands on ONE hero, so scaling it one-shots whoever arrives before the
+# merge fills. Followed through, that same reasoning is the argument FOR scaling the wide
+# half: a single-target blow is divided by the crowd in front of it (a quarter of a lone
+# party's incoming damage, a sixteenth of a full raid's) while an all-enemy one is divided by
+# nothing at all. So the shipped raid boss got EASIER per hero the more help you brought.
+#
+# MEASURED, playing gatekeepers out over five world seeds
+# (`a_raid_boss_answers_a_crowd_with_its_wide_half`): 12.5% of an unlabelled boss's turns go
+# wide, which puts a Worldbreaker at sixteen heroes on 52% of the per-hero pressure that same
+# boss applies to a lone party — while carrying 20x the health. Four times the damage went in
+# and each hero felt half the answer back.
+#
+# These buy CADENCE, never magnitude: the party-wide rows come round sooner and are rolled
+# oftener, and every number a hero takes is the one an ordinary gatekeeper deals. Nothing here
+# can turn a hit into a one-shot, which is exactly why it is safe where scaling attack is not.
+# At 1.0/1.0 the measured wide share climbs 12.5% -> 23.5% -> 32.9% -> 41.8% across the four
+# rungs, which puts a full raid at ~132% of the one-party baseline per hero and an under-manned
+# party at ~164% — a raid boss should be the WORSE fight, not merely the longer one. 2.0 was
+# tried and reached 59%, which is a boss that does nothing but sweep. [TUNABLE]
+raid_wide_weight_per_party = 1.0
+raid_wide_cooldown_per_party = 1.0
 gatekeeper_xp_mult = 3.0
 gatekeeper_loot_mult = 9.0       # a guaranteed, fat reward for clearing the pass
 # A boss is a multiple of an ordinary creature's health — and now that health rides

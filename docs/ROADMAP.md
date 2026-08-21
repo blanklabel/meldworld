@@ -1630,6 +1630,42 @@ Make time in the field a living, dangerous place worth screenshotting.
     - **Not yet:** nothing *enforces* bringing help; a solo party is warned, not refused. And
       no raid has been PLAYED — four parties merged on one gatekeeper is `qa/tests/raid_merge.rs`
       territory and is where a real measurement belongs.
+  - ✅ **AND ITS ABILITIES ANSWER THE CROWD** (the "attack does not scale" line, followed
+    through). Sizing a raid boss purely in HP made it *easier* per hero the more help you
+    brought, which is the opposite of raid content. "Attack does not scale" is an argument
+    about SINGLE TARGETS — a swing lands on one hero, so scaling it deletes whoever arrives
+    before the merge fills — and taken seriously it is the argument FOR scaling the wide half:
+    **a single-target blow is divided by the crowd in front of it and an all-enemy one is
+    divided by nothing.**
+    - **MEASURED**, playing world-generated gatekeepers out over five seeds: **12.5%** of an
+      unlabelled boss's turns go wide, which puts a **Worldbreaker at sixteen heroes on 52%**
+      of the per-hero pressure that same boss applies to a lone party — while carrying 20x the
+      health. Four times the damage went in and each hero felt half the answer back.
+    - `abilities::widen_for_warband` buys **CADENCE, never magnitude**: the party-wide rows
+      come round sooner and are rolled oftener (`[encounters] raid_wide_weight_per_party` /
+      `raid_wide_cooldown_per_party`), every number a hero takes is the one an ordinary
+      gatekeeper deals, and a shortened cooldown never undercuts its own telegraph. Nothing
+      here can turn a hit into a one-shot, which is exactly why it is safe where scaling attack
+      is not. Single-target rows are left strictly alone — raising them would be the
+      attack-scaling mistake wearing a cooldown's clothes.
+    - Wide share climbs **12.5% → 23.5% → 32.9% → 41.8%** across the four rungs, taking a full
+      raid to ~132% of the one-party per-hero baseline and an under-manned party to ~164% — a
+      raid boss is the *worse* fight now, not merely the longer one. The test **plays** the
+      fight and asserts the **ratio** (`per_hero`), never the rates.
+    - ⚠️ **THREE BOSSES IN TEN COULD NOT GO WIDE AT ALL**, and only playing it found that:
+      `sepulcher`, `rustfang` and `gloamhound` had their ONLY party-wide ability gated at
+      **level 45** while `gatekeeper_min_distance` puts the first gate boss at **24** — so a
+      third of Worldbreakers were labelled raid bosses that could only ever hit one hero at a
+      time. Each has its mid-tier wide row now (the rung the other seven already had), and
+      `every_boss_can_go_wide_at_the_level_a_gatekeeper_is_first_met` derives the required rung
+      from balance and refuses an hp-gated row as the answer — existence in the pool is not
+      reachability.
+    - ⚠️ **A harness whose heroes only DEFEND under-samples the wide half**: the boss never
+      drops below its own `hp_threshold_pct` rows, so its enrage abilities never unlock. That
+      artifact hid the level-45 gap through the first two measurement passes.
+    - **Still not enforced, and still unplayed as a real merge**: this closes the arithmetic,
+      not `qa/tests/raid_merge.rs`. Sixteen heroes actually converging on one gatekeeper is
+      where the per-hero figures above get confirmed against a played raid rather than a model.
   - ✅ **A boss NAMES ITSELF on the overworld.** `boss_kind` reached the client only at
     battle assembly, so an end-fight peer, a Gatekeeper standing in the pass and an
     `AD-4` bounty mark all rode the snapshot as the host creature they overlay

@@ -371,6 +371,16 @@ pub struct Encounters {
     pub gatekeeper_hp_mult: f64,
     pub gatekeeper_raid_chance: f64,
     pub gatekeeper_raid_max_parties: u8,
+    /// How much oftener a raid boss's PARTY-WIDE abilities are rolled, per party past the
+    /// first. Cadence rather than magnitude: a wide blow is the only part of a boss's output
+    /// that does not dilute as the crowd grows, so it is the only part a raid tier may raise
+    /// without one-shotting whoever arrives before the merge fills. Measured: the wide share
+    /// climbs 12.5% -> 41.8% across the four rungs, taking a full raid from 52% of the
+    /// one-party per-hero baseline to ~132% of it.
+    pub raid_wide_weight_per_party: f64,
+    /// How much sooner those same abilities come back, per party past the first — the
+    /// cooldown is divided by `1 + this x (parties - 1)`, floored at the telegraph.
+    pub raid_wide_cooldown_per_party: f64,
     pub gatekeeper_atk_mult: f64,
     pub gatekeeper_xp_mult: f64,
     pub gatekeeper_loot_mult: f64,
