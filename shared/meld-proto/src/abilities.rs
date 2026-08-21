@@ -104,3 +104,20 @@ pub struct MonsterAbility {
     /// Ordered list of mechanical consequences.
     pub effects: Vec<AbilityEffect>,
 }
+
+impl MonsterAbility {
+    /// Does this ability land on the WHOLE party rather than one hero?
+    ///
+    /// The distinction is the one that decides whether an encounter scales with its
+    /// audience. A single-target blow is divided by the crowd in front of it: the same
+    /// swing that is a quarter of a lone party's incoming damage is a sixteenth of a full
+    /// raid's. A wide one is not divided by anything — every hero present takes it — so its
+    /// per-hero cost is the same whoever shows up.
+    ///
+    /// `any`, not `all`: an ability that damages one hero and afflicts the party still
+    /// reaches everybody with the half that spreads, and that half is the one that does not
+    /// dilute.
+    pub fn reaches_the_whole_party(&self) -> bool {
+        self.effects.iter().any(|e| e.target == AbilityTarget::AllEnemies)
+    }
+}

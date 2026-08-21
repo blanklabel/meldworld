@@ -555,7 +555,7 @@ boss and none of them said so — measured, a level-40 party ground a 66,792 HP 
 **464 turns**. The scale is declared now ([`meld_proto::warbands`](shared/meld-proto/src/warbands.rs)):
 1 party unlabelled, **Colossus** (2), **Leviathan** (3), **Worldbreaker** (4), capped there
 because `merge_cap_gatekeeper_instances` is 4. ONE number is the source of both the size and
-the name, so they cannot disagree about how big the fight is. HP and XP ride the count;
+the name, so they cannot disagree about how big the fight is. HP and XP ride the count and
 **attack does not** — a raid boss is a longer fight for more people, not one that one-shots
 whoever arrives first. `gatekeeper_hp_mult` is **per party** (5.0), because a boss must stay a
 real fight for ONE party (`outgrowing_a_fight_lets_you_stomp_it` holds parity to 20+ rounds;
@@ -566,6 +566,42 @@ Without that clamp the table is superlinear, more people would make a fight *har
 content could not be expressed as HP at all. It rides the snapshot as a `parties:<n>` marker in
 the same SET as `boss:`/`held`/`clash`/`quarry`, and the plate shows it TOPMOST — the only line
 up there a player has to act on before engaging.
+
+**AND THE WIDE HALF OF ITS KIT DOES RIDE THE COUNT, AND HAS TO.** "Attack does not scale" is
+an argument about SINGLE TARGETS: a swing lands on one hero, so scaling it deletes whoever
+arrives before the merge fills. Followed through, the same reasoning is the argument FOR
+scaling the wide half — **a single-target blow is divided by the crowd in front of it and an
+all-enemy one is divided by nothing.** So the raid tier as first shipped made a boss *easier*
+per hero the more help you brought. Measured over five seeds, **12.5%** of an unlabelled
+gatekeeper's turns go wide, which puts a Worldbreaker at sixteen heroes on **52%** of the
+per-hero pressure that boss applies to a lone party — while carrying 20x the health. Four
+times the damage went in and each hero felt half the answer back.
+`Fighter::raid_parties` buys **CADENCE, never magnitude**: the party-wide rows come
+round sooner and are rolled oftener (`[encounters] raid_wide_*_per_party`), every number a
+hero takes is the one an ordinary gatekeeper deals, and the telegraph is never shortened.
+That is what makes it safe where scaling attack is not — nothing here can turn a hit into a
+one-shot.
+⚠️ **THE BIAS IS APPLIED TO THE ROLL, NEVER TO THE POOL, AND THAT IS LOAD-BEARING.** An
+ability's authored `weight` is read for a SECOND purpose — `signature_ability` picks the
+rarest one as `CN-7`'s rebuke — so scaling weights in the kit silently changes what counts as
+a boss's signature, and changes it in the worst direction: the rows a raid tier makes common
+are exactly the wide capstones. Measured on the roster, five of ten bosses had their rebuke
+downgraded from their apocalypse (SERMON OF SILENCE, THE DEPTHS RECLAIM, IRONMAW RAMPAGE,
+COLLAPSING SORROW, ASHFALL APOCALYPSE) to a small single-target poke, so a **Worldbreaker
+answered an interruption more weakly than the ordinary version of itself**. The pool stays
+authored content and the encounter biases how it is rolled; magnitudes, telegraphs and level
+gates are then untouched *by construction* rather than by test. A raid tier changes how often
+you see an ability, never what an ability IS. Measured wide share climbs **12.5% → 23.5% → 32.9% → 41.8%** across the four rungs,
+taking a full raid to ~132% of the one-party baseline per hero and an under-manned party to
+~164%. The test **plays the fight** and asserts the RATIO (`per_hero`), never the rates.
+⚠️ **The heroes in that harness must actually SWING**: a defending party never drops the boss
+below its own `hp_threshold_pct` rows, so its enrage half never unlocks and the wide share
+reads low. Playing it is also the only thing that found the gap below — three bosses in ten
+(`sepulcher`, `rustfang`, `gloamhound`) had their ONLY party-wide ability gated at level 45
+while `gatekeeper_min_distance` puts the first gate boss at 24, so a third of Worldbreakers
+were labelled raid bosses that could only ever hit one hero at a time. Existence in the pool
+is not reachability: `every_boss_can_go_wide_at_the_level_a_gatekeeper_is_first_met` derives
+the rung from balance and rejects an hp-gated row as the answer.
 
 ⚠️ **A BOSS RIDES THE WIRE AS ITS HOST CREATURE.** `become_boss` sets `boss_kind`, but the
 overworld snapshot tag is `mob:<monster_kind>:<faction>` and nothing carries the boss identity

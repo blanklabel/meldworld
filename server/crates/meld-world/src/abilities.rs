@@ -258,6 +258,8 @@ pub fn creature_abilities(kind: &str) -> Vec<MonsterAbility> {
                 vec![status("chill", 50, SingleEnemy), atb(-0.2, SingleEnemy)]),
             ability("umbral_pounce", "Umbral Pounce!", 2, 180, 12, 16, None,
                 vec![dmg(Magic, 1.6, Shadow, SingleEnemy)]),
+            ability("gloom_bay", "GLOOM BAY!", 2, 240, 24, 12, None,
+                vec![dmg(Magic, 1.0, Shadow, AllEnemies), status("chill", 60, AllEnemies)]),
             ability("umbral_pack", "UMBRAL PACK!", 2, 300, 30, 45, None,
                 vec![dmg(Attack, 1.45, Shadow, AllEnemies), status("dread", 80, AllEnemies)]),
         ],
@@ -268,6 +270,8 @@ pub fn creature_abilities(kind: &str) -> Vec<MonsterAbility> {
                 vec![dmg(Magic, 0.8, Lightning, SingleEnemy), atb(0.2, SelfCast)]),
             ability("overdrive_maul", "Overdrive Maul!", 2, 200, 14, 16, Some(0.5),
                 vec![dmg(Attack, 1.7, Lightning, SingleEnemy)]),
+            ability("scrapstorm", "SCRAPSTORM!", 2, 250, 24, 12, None,
+                vec![dmg(Attack, 1.0, Pierce, AllEnemies), status("corrode", 60, AllEnemies)]),
             ability("corrosion_bloom", "CORROSION BLOOM!", 2, 300, 30, 45, None,
                 vec![dmg(Magic, 1.35, Water, AllEnemies), status("corrode", 90, AllEnemies)]),
         ],
@@ -298,6 +302,13 @@ pub fn creature_abilities(kind: &str) -> Vec<MonsterAbility> {
                 vec![dmg(Magic, 0.9, Shadow, SingleEnemy), heal(MaxHp, 0.12, SelfCast)]),
             ability("epitaph_of_ruin", "EPITAPH OF RUIN!", 1, 300, 28, 14, Some(0.45),
                 vec![dmg(Magic, 1.5, Ethereal, SingleEnemy), status("dread", 70, SingleEnemy)]),
+            // Its mid-tier WIDE row. Every other boss has one around this rung; these three
+            // (sepulcher, rustfang, gloamhound) had their only party-wide ability gated at
+            // level 45, and a gatekeeper stands at `gatekeeper_min_distance` = level 24 — so
+            // for three bosses in ten a Worldbreaker label sat on a creature that could only
+            // ever hit one hero at a time, which at sixteen heroes is a sixteenth of a fight.
+            ability("grave_pall", "GRAVE PALL!", 2, 250, 24, 12, None,
+                vec![dmg(Magic, 1.0, Ethereal, AllEnemies), status("dread", 60, AllEnemies)]),
             ability("mausoleum_collapse", "MAUSOLEUM COLLAPSE!", 2, 330, 34, 45, None,
                 vec![dmg(Attack, 1.6, Earth, AllEnemies), status("dread", 90, AllEnemies)]),
         ],
@@ -890,5 +901,43 @@ mod tests {
         let spore: std::collections::HashMap<_, _> =
             creature_damage_modifiers("sporeling").into_iter().collect();
         assert!(spore[&Fire] > 1.0);
+    }
+
+
+
+
+    /// Every named boss must be able to go WIDE at the shallowest level a gatekeeper is ever
+    /// met at — not merely somewhere in its pool.
+    ///
+    /// A raid tier is expressed entirely through the wide half, so a boss that cannot reach
+    /// any of it is labelled a Worldbreaker and fights exactly like an ordinary gatekeeper:
+    /// one hero at a time, which at sixteen heroes is a sixteenth of a fight. That is the
+    /// FS-4 bug over again, one layer down, and existence alone does not catch it — three
+    /// bosses in ten (sepulcher, rustfang, gloamhound) HAD a party-wide ability and had it
+    /// gated at level 45, while `gatekeeper_min_distance` puts the first gate boss at 24.
+    ///
+    /// The threshold is derived from balance rather than written down, so retuning where
+    /// gatekeepers start retunes what a boss must be able to do when it gets there.
+    #[test]
+    fn every_boss_can_go_wide_at_the_level_a_gatekeeper_is_first_met() {
+        let b = meld_balance::Balance::load_default().unwrap();
+        let first_gate =
+            crate::Scaling::new(&b).mlevel(b.encounters.gatekeeper_min_distance);
+        for kind in all_bosses() {
+            let pool = creature_abilities(kind);
+            assert!(
+                pool.iter().any(|a| a.reaches_the_whole_party()),
+                "{kind} has no party-wide ability, so a raid tier cannot reach it"
+            );
+            // An hp_threshold row does not count: a boss that can only go wide once it is
+            // nearly dead spends the whole fight unable to answer a crowd.
+            assert!(
+                pool.iter().any(|a| a.reaches_the_whole_party()
+                    && a.min_level <= first_gate
+                    && a.hp_threshold_pct.is_none()),
+                "{kind} cannot go wide at level {first_gate}, where the first gatekeeper \
+                 stands - a raid tier has nothing to escalate"
+            );
+        }
     }
 }
