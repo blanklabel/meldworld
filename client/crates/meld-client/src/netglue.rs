@@ -29,7 +29,7 @@ pub(crate) const UI_FONT_BYTES: &[u8] =
 pub(crate) fn load_ui_font(mut commands: Commands, mut fonts: ResMut<Assets<Font>>) {
     // Embed the Nerd Font bytes at COMPILE time and register it directly as a Font
     // asset, bypassing the async asset loader. Loading it as a loose/streamed asset was
-    // fragile across build paths (loose-disk, wasm) — when that load silently failed,
+    // fragile across build paths (loose-disk vs embedded) — when that load silently failed,
     // every text node fell back to Bevy's default face, which has the Latin glyphs but
     // none of the private-use icon codepoints, so all the HUD icons rendered as tofu
     // boxes. Compiling the bytes in makes the symbol-capable font ALWAYS present.

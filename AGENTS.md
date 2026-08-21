@@ -58,7 +58,7 @@ existing code does.
 ## Workspace layout
 
 Cargo workspace; the Bevy client is a **separate workspace** under `client/`
-(sharing only `meld-proto`) so its heavy wasm/Bevy deps don't burden the server.
+(sharing only `meld-proto`) so its heavy Bevy deps don't burden the server.
 
 ```
 shared/meld-proto/          wire types: envelope {type,seq,ts,payload}, C2S/S2C messages,
@@ -72,7 +72,7 @@ server/crates/
   meld-world/               overworld: seeded procedural areas, monster placement, movement, touch
   meld-run/                 run/instance lifecycle + battle assembly (party → Fighters)
   meld-server/              WS gateway + session handshake + the authoritative game loop + HTTP mount
-client/crates/meld-client/  Bevy client (native + wasm); screens: Join → Overworld → Battle → Ended
+client/crates/meld-client/  Bevy client (native); screens: Join → Overworld → Battle → Ended
 qa/                         headless bot framework + Postgres-backed conformance/integration tests (T6)
 ```
 
@@ -117,7 +117,7 @@ bakes all 84 MB of assets into the file. Everything is **ephemeral** — account
 Vault, progression live in RAM and reset on exit (a clean slate every launch),
 which is what you want for QA. The party/flag env vars (`MELD_PARTY`,
 `MELD_CLASS`, `MELD_AUTOPLAY`) still apply. This does **not** touch the normal
-server/Postgres path — default builds and the wasm client are unchanged.
+server/Postgres path — default builds are unchanged.
 
 `make dist` builds for the host OS/arch only. For **cross-platform** binaries
 (Windows `.exe`, macOS, Linux) there's a `dist` GitHub Actions workflow
@@ -129,11 +129,11 @@ and on a `v*` tag (which also attaches the per-OS binaries to a GitHub Release).
 `make release VERSION=v0.1.0` is the one-liner for the tag path: it tags the
 latest `origin/main` and pushes, and CI does the rest.
 
-`make play` builds the wasm client and has the **server itself serve it**, so the
-whole game lives at one URL (`$MELD_ADDR`, default `http://127.0.0.1:18090`) — no
-proxy, no second port. It needs `trunk` (`cargo install trunk`) and the wasm target
-(`rustup target add wasm32-unknown-unknown`); everything needs a local Postgres
-(`initdb`/`pg_ctl`/`createdb` on PATH).
+**There is no browser client.** The wasm build is removed — `make play` runs the
+NATIVE window against a local server, and every dev/QA toggle is a `MELD_*` env var
+(the `?query=` half of each flag went with it). `make play`/`make play-dev` need a
+local Postgres (`initdb`/`pg_ctl`/`createdb` on PATH); `make play-solo` needs
+nothing but the Rust toolchain.
 
 **[E] is the one interact key** on the overworld — it does whatever is in reach
 (gather a node, open a chest, descend an entrance, extract at the deep portal, join a
@@ -761,8 +761,8 @@ key they have to be told about. The deep portal stays an `[E]` world interaction
 walking west into the city wedge is still an instant free return (no channel, no item).
 
 Build your **party of four** on the Join screen (keys 1–4 cycle each slot's class),
-or preset it: `?party=explorer,psyker,resonant,explorer` / `?class=psyker` (lead) in the
-browser, or `MELD_PARTY=…` / `MELD_CLASS=…` natively. `?autoplay` self-drives the
+or preset it with `MELD_PARTY=explorer,psyker,resonant,explorer` /
+`MELD_CLASS=psyker` (lead). `MELD_AUTOPLAY` self-drives the
 loop for demos/screenshots.
 
 ## Testing
@@ -872,31 +872,40 @@ Psyker party looked like from outside for two rounds of measurement.
 
 ### Visual verification (screenshots, not interactive driving)
 
-For anything the browser renders (HD-2D art, HUD/UI, overworld, battle screen),
-**verify by screenshot** — boot the stack, load the page, and capture the frame;
-don't click through the app interactively (Bevy paints to a `<canvas>`, so the
-accessibility/DOM tools see nothing useful anyway). Boot the backend and web client
-as two processes, then screenshot:
+For anything the game renders (HD-2D art, HUD/UI, overworld, battle screen),
+**verify by NATIVE screenshot**. There is no browser client and no DOM to inspect —
+Bevy paints to its own window — so the loop is: boot the self-contained binary with the
+flags that put the game in the state you want, ask it for a frame over the file channel,
+and read the PNG.
 
 ```sh
-# 1) Postgres + game server on :18090 (stays up; Ctrl-C to stop)
-client/scripts/serve.sh bash -c 'tail -f /dev/null' &
-# 2) wasm client dev server on :9080 (proxies /v1 + /v1/realtime → :18090)
-client/scripts/trunk-build.sh          # first build compiles wasm — a few minutes
-client/scripts/trunk-serve.sh --port 9080 --address 127.0.0.1 --no-autoreload &
-# → open http://127.0.0.1:9080 and screenshot the canvas
+# One binary, no Postgres, no port: server baked in, assets embedded.
+(cd client && cargo build -p meld-client --release --features embedded-server)
+# Boot it in the state you want to look at…
+MELD_AUTOPLAY=1 MELD_BIOME=forest MELD_SEED=424242 MELD_START_LEVEL=45 \
+  MELD_PARTY=hunter,psyker,resonant,hunter client/target/release/meld-client &
+# …then ask for a frame: touch the request file, wait for the PNG.
+touch /tmp/meld-game-shot-request      # → /tmp/meld-game-latest.png
 ```
 
-`?tally` (`MELD_TALLY`) holds an extraction haul on screen — the real one rolls off on a
-timer, which is long enough to be gone before a capture lands.
+`/tmp/meld-game-look.json` sets the survey camera (`cam_pitch`, `cam_dist`, `fog_start`,
+`fog_end`, `orbit`) so a whole stretch of the maze is in frame rather than the
+over-the-shoulder default. `client/scripts/view_biome.sh <biome> [seed] [frames]` wraps
+the whole dance for one biome.
 
-`?party=…` / `?class=…` preset the party, `?autoplay` self-drives the loop, and `?city`
-(+ `?wall` for the Vanguard Wall, `?shop` for the counter, `?forge` for the Forge &
-Alembic) parks in Last City — handy for deterministic
-screenshot states. The `meld-web` entry in `.claude/launch.json`
-runs the trunk step for the browser-preview tooling. Pre-build the wasm once
-(`trunk-build.sh`) so the preview server starts fast instead of timing out on the
-cold Bevy compile.
+**Every dev/QA toggle is a `MELD_*` env var.** The `?query=` half of each flag went with
+the wasm client, and `flags.rs` is one reader per flag now instead of two.
+`MELD_PARTY` / `MELD_CLASS` preset the party, `MELD_AUTOPLAY` self-drives the loop, and
+`MELD_CITY` (+ `MELD_WALL` for the Vanguard Wall, `MELD_SHOP` for the counter,
+`MELD_FORGE` for the Forge & Alembic) parks in Last City — handy for deterministic
+screenshot states. `MELD_TALLY` holds an extraction haul on screen, since the real one
+rolls off on a timer long enough to be gone before a capture lands.
+
+⚠️ **Autoplay takes no onboarding, and that is load-bearing for this loop.** The town
+tour and the "Before You Dive" card are modal, nothing presses their buttons for you, and
+`city_input` returns early while a tour step is open — so autoplay used to sit in the hub
+forever and every "biome" screenshot ever taken this way was of the plaza. Both now opt
+out under `autoplay_flag()`. If a new onboarding card appears, give it the same guard.
 
 #### Biome/scenario harness (native embedded build)
 

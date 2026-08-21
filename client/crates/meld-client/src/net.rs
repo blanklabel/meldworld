@@ -1,9 +1,9 @@
-//! Cross-platform network layer (native desktop AND browser/wasm).
+//! The client's network layer: HTTP for the API, a WebSocket for realtime.
 //!
 //! Poll-based, single-threaded: [`Net`] holds an internal state machine advanced
 //! by [`Net::poll`] once per frame. Auth HTTP goes through `ehttp`, the realtime
 //! socket through `ewebsock` — neither needs tokio or OS threads, so the exact
-//! same code runs on the desktop and compiled to wasm in the browser.
+//! one code path, native only (the browser client is gone).
 //!
 //! Bevy holds `Net` as a NonSend resource; commands go in via [`Net::send`],
 //! server events come out via [`Net::poll`] + [`Net::try_recv`]. Message
@@ -2033,7 +2033,7 @@ impl Inner {
                 );
             }
             // v4 (random) not v7 for action_id — v7 needs a system clock, which
-            // panics on wasm. Uniqueness is all the server needs here.
+            // Uniqueness is all the server needs here.
             ClientCmd::Attack {
                 battle_id,
                 actor,
@@ -3555,7 +3555,7 @@ fn spawn_inventory_fetch(base: String, token: String, tx: mpsc::Sender<InvPayloa
 }
 
 /// Kick off register (idempotent) + login via `ehttp`; the result arrives on the
-/// returned channel. Works on native (background thread) and wasm (fetch).
+/// returned channel, off a background thread.
 fn spawn_login(base: &str, username: &str, password: &str) -> mpsc::Receiver<LoginResult> {
     let (tx, rx) = mpsc::channel();
     let body = serde_json::to_vec(&json!({ "username": username, "password": password }))

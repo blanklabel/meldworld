@@ -3485,7 +3485,6 @@ dependencies = [
  "bevy_embedded_assets",
  "ehttp",
  "ewebsock",
- "getrandom 0.2.17",
  "meld-proto",
  "meld-server",
  "rlimit",
@@ -3494,7 +3493,6 @@ dependencies = [
  "tokio",
  "ttf-parser 0.21.1",
  "uuid",
- "web-sys",
 ]
 
 [[package]]

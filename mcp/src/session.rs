@@ -348,7 +348,6 @@ impl Session {
             // throw away, which is what makes "boot a fresh world per question" reasonable.
             database_url: "memory://meld-mcp".to_string(),
             balance: Arc::new(balance),
-            client_dist: None,
         };
         let built = meld_server::build(&config).await?;
         let listener = TcpListener::bind("127.0.0.1:0")

@@ -85,8 +85,8 @@ make play-solo     # a self-contained native build — no Postgres, no setup, no
 make help          # every command, explained
 ```
 
-(The browser/WebAssembly client is parked for now — native is how we play — but the
-wasm code and its build scripts are still in the tree for when we revisit it.)
+(There is no browser client. The WebAssembly build was parked for a long time and is
+now removed — native is how the game is played and screenshotted.)
 
 **`make play-solo` is the zero-setup option.** It's a single binary with the
 server baked in (in-memory database, embedded assets) — great for a quick local
@@ -104,17 +104,14 @@ class), then:
 - **T** — use a Town Portal to extract from anywhere; **E** — the deep exit portal
 - **J** — join a teammate's ongoing battle
 
-Prefer to watch it play itself? Open **http://127.0.0.1:18090/?autoplay**. You can
-also preset a party without touching the Join screen:
-`?party=explorer,psyker,resonant,explorer` (or `?class=psyker` for the lead) in the
-browser, or `MELD_PARTY=…` natively.
+Prefer to watch it play itself? Set **`MELD_AUTOPLAY=1`**. You can also preset a party
+without touching the Join screen: `MELD_PARTY=explorer,psyker,resonant,explorer` (or
+`MELD_CLASS=psyker` for just the lead).
 
 ### Requirements
 
-`make play` needs a Rust toolchain, a local Postgres (`initdb` / `pg_ctl` /
-`createdb` on your `PATH`), plus `trunk` (`cargo install trunk`) and the wasm
-target (`rustup target add wasm32-unknown-unknown`) for the web build.
-`make play-solo` needs only the Rust toolchain.
+`make play` needs a Rust toolchain and a local Postgres (`initdb` / `pg_ctl` /
+`createdb` on your `PATH`). `make play-solo` needs only the Rust toolchain.
 
 ---
 
@@ -230,7 +227,7 @@ test drives real bot clients through the real protocol.
 
 MELDWORLD is a Rust workspace. The server, the shared wire types, and the Bevy
 client are all Rust; the client is a *separate* workspace under `client/` so its
-heavy wasm/Bevy dependencies don't weigh down the server.
+heavy Bevy dependencies don't weigh down the server.
 
 ```
 shared/meld-proto/           wire types: envelope, C2S/S2C messages, HTTP DTOs, enums, validators
@@ -243,7 +240,7 @@ server/crates/
   meld-world/                overworld: seeded procedural areas, terrain, monsters, movement
   meld-run/                  run/instance lifecycle + battle assembly
   meld-server/               WebSocket gateway + session handshake + the game loop + HTTP mount
-client/crates/meld-client/   Bevy client (native + wasm): Join → Overworld → Battle → Ended
+client/crates/meld-client/   Bevy client (native): Join → Overworld → Battle → Ended
 qa/                          headless bot framework + Postgres-backed conformance tests
 ```
 
