@@ -1517,6 +1517,11 @@ fn spend_material(
 }
 
 
+/// The DEV/QA gear tier, read from the environment at the one place that asks for it.
+fn dev_gear_tier() -> Option<i32> {
+    std::env::var("MELD_GEAR_TIER").ok().and_then(|v| v.trim().parse::<i32>().ok())
+}
+
 /// DEV/QA: dress a party as though it were wearing a full six-slot set of tier-`n` insured
 /// epics (`MELD_GEAR_TIER`), on top of whatever the Vault actually holds.
 ///
@@ -1532,6 +1537,11 @@ fn dress_for_dev(
     balance: &Balance,
     classes: &[CharacterClass],
     gear: Vec<meld_db::GearBonus>,
+    // The tier, passed IN rather than read from the environment here. Env belongs at the
+    // server boundary (CANON §S's discipline, and every other override in this file obeys
+    // it) — and a function that reads a global cannot be tested in parallel with one that
+    // sets it, which is a flaky test, which is worse than no test.
+    tier: Option<i32>,
 ) -> Vec<meld_db::GearBonus> {
             // `MELD_GEAR_TIER=<n>` — DEV/QA: dress every hero as if it were wearing a full
     // set of tier-`n` insured epics, without a Vault full of them. The end fight is
@@ -1542,10 +1552,7 @@ fn dress_for_dev(
     // Mirrors what `equipped_gear_bonuses` derives from a real six-slot set: one
     // weapon's worth of atk, four armour pieces' worth of def, each carrying two
     // epic stat affixes.
-    let gear = match std::env::var("MELD_GEAR_TIER")
-        .ok()
-        .and_then(|v| v.trim().parse::<i32>().ok())
-    {
+    let gear = match tier {
         Some(tier) if tier > 0 => {
             // DRESS WITH REAL ROLLED GEAR, not with an arithmetic impression of it.
             //
@@ -4978,7 +4985,7 @@ impl GameState {
             inst.durability_charged.remove(pid);
             let dressed_classes =
                 inst.party_classes.get(pid).cloned().unwrap_or_default();
-            let gear = dress_for_dev(&inst.balance, &dressed_classes, gear);
+            let gear = dress_for_dev(&inst.balance, &dressed_classes, gear, dev_gear_tier());
             inst.gear_bonuses.insert(pid.clone(), gear);
             inst.hero_names.insert(pid.clone(), names);
             inst.hero_rows.insert(pid.clone(), rows);
@@ -6807,7 +6814,7 @@ impl GameState {
                             // first gear load to land, and never longer.
                             let classes =
                                 w.party_classes.get(&pid).cloned().unwrap_or_default();
-                            let bonuses = dress_for_dev(&w.balance, &classes, bonuses);
+                            let bonuses = dress_for_dev(&w.balance, &classes, bonuses, dev_gear_tier());
                             w.gear_bonuses.insert(pid.clone(), bonuses);
                         }
                     }
@@ -11563,9 +11570,7 @@ mod dev_gear_tests {
         ];
         let bare = vec![meld_db::GearBonus::default(); classes.len()];
 
-        std::env::set_var("MELD_GEAR_TIER", "8");
-        let dressed = dress_for_dev(&b, &classes, bare.clone());
-        std::env::remove_var("MELD_GEAR_TIER");
+        let dressed = dress_for_dev(&b, &classes, bare.clone(), Some(8));
 
         // The stat half still lands, as it always did.
         for (i, g) in dressed.iter().enumerate() {
@@ -11608,9 +11613,9 @@ mod dev_gear_tests {
     #[test]
     fn without_the_flag_nobody_is_dressed() {
         let b = Balance::load_default().unwrap();
-        std::env::remove_var("MELD_GEAR_TIER");
         let bare = vec![meld_db::GearBonus::default(); 2];
-        let out = dress_for_dev(&b, &[CharacterClass::Hunter, CharacterClass::Keeper], bare);
+        let out =
+            dress_for_dev(&b, &[CharacterClass::Hunter, CharacterClass::Keeper], bare, None);
         assert!(out.iter().all(|g| g.atk == 0 && g.def == 0 && g.main_hand.is_none()));
     }
 }

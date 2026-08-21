@@ -406,6 +406,22 @@ phoenix_guard_toll_mult = 1.1            # Toll of the Deep: dmg = atk*mult - de
 # to exist is undead, so every damaging ability of theirs hits undead this much
 # harder — the one number that makes them a counter rather than a re-skin. [TUNABLE]
 phoenix_guard_undead_mult = 1.6
+# GAUGE DENIAL, priced. A knock takes a turn; the guard that follows stops it being every
+# turn; the stagger is what the knock buys beyond tempo.
+#
+# `gauge_guard_turns` is how many of its OWN turns a fighter must take before it can be
+# knocked again. It comes up as the fighter DOES, so it survives the recovery turn — at 1 the
+# guard would lapse the instant it stood and the party could re-knock immediately, making
+# EVERY boss turn a rebuke. At 2 a boss gets one clean turn between denials. Counted in turns
+# rather than ticks on purpose: creature `speed_stat` is a fixed 40-125 while a hero's climbs
+# with Dex, so a timer can lapse before a slow creature's gauge has refilled and the lock
+# resumes — counted in turns, "it always gets turns" is unconditional. [TUNABLE]
+gauge_guard_turns = 2
+# What a knocked-down fighter takes from EVERYTHING until it is back up. The reward for
+# spending a turn on denial: without it a knock buys only tempo, which is thin for an ability
+# that could have been damage. Applied in `apply_damage_reaching`, the one point every hit
+# passes through, like the blaze bonus beside it. [TUNABLE]
+staggered_damage_mult = 1.35
 # Unbroken Vigil (Redeemer, L13): Barrier for the WHOLE party, as a fraction of each
 # ally's own max HP — smaller than the self-only Rite of Rest, because it lands on
 # four heroes instead of one.

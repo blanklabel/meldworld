@@ -31,7 +31,7 @@ pub const AFFLICTIONS: &[&str] = &[
 ];
 
 /// Conditions a fighter WANTS, which fade on purpose.
-pub const BOONS: &[&str] = &["hasted", "barrier", "regen", "evasion", "insight"];
+pub const BOONS: &[&str] = &["hasted", "barrier", "regen", "evasion", "insight", "gauge_guard"];
 
 /// Whether `name` is an affliction — and therefore whether it needs curing rather than
 /// waiting out. Unknown conditions are treated as BOONS, because the failure mode matters:
