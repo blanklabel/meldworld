@@ -1731,6 +1731,26 @@ design for this epic: [`proposals/worldgen-wg.md`](proposals/worldgen-wg.md).
     the fan and the clear path runs radially, so nothing draws a player sideways. Behind the
     city it pays immediately; along the arc edges it only pays once this item's angular
     structure gives a reason to travel laterally. Ocean and wedges are complements.
+  - *And the form the ocean should take: **Last City as a PENINSULA**.* Strictly better
+    than "water behind the city", because it answers that idea's own objection — a coast
+    along the arc edges would be seen by almost nobody, while a peninsula puts the coast
+    where the player stands **every run**. The geometry already almost is one: the fan is
+    340° centred east and the gap is 20° centred west, so the city sits in a *notch with
+    world on both sides*; fill that wedge and everything beyond the fan with water and the
+    city is a spit reaching west into open sea, with the fan's two edges (±170°) as its
+    coastline — and **the neck is the hub itself**, already where every run begins, so the
+    Threshold becomes a geographic fact rather than a UI affordance. The fiction pays for
+    the geometry: a peninsula is *defensible* (water on three sides, one landward
+    approach), which is a reason for this to be the *Last* city — and it pre-loads
+    `BD-4`/`BD-8`, where the neck is the siege front and the only axis an assault can come
+    from. ⚠️ **The city is a SEPARATE SCENE, not continuous world** (`Screen::City` has its
+    own scene/move/camera; `EnterMaze` is a screen transition), so the peninsula is
+    authored **twice** — city coast and arena water — and the two must agree or the illusion
+    breaks the moment you dive. Same drift shape as the `terrain.rs` ↔ WGSL mirror: **put
+    the coastline behind one shared constant.** Two calls: is the neck a walk you make every
+    run (proposed *no* — keep `Enter` as the fast path, let the neck be the diegetic route,
+    as the Threshold already works), and a city on a peninsula is a **port**, so say no to
+    boats on purpose rather than by omission.
   - *The constraint that makes it fun rather than a tax:* **a detour budget.** Route length
     to depth `d` must stay under a bounded multiple of `d`, held by test across seeds — a
     barrier that cannot be afforded is not placed. Depth is already a time sink (a

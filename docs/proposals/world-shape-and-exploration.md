@@ -490,6 +490,48 @@ empty field today. **Make the shore the return** — walk to the coast and the c
    behind the city. (Narrowing the arc with depth would make the coast unavoidable instead —
    but that is a real difficulty-curve change, not a free one.)
 
+### 4.2b Make Last City a PENINSULA
+
+This is the form the ocean should take, and it is strictly better than "water behind the
+city" because it answers §4.2a's own objection. The problem with a coastline along the arc
+edges is that **nobody would ever see it** — all content is inside the fan, the clear path
+runs radially, and nothing draws a player sideways. A peninsula **puts the coast where the
+player stands every single run.**
+
+**The geometry already almost is one.** The fan is 340° centred east and the gap is 20°
+centred west, so the city already sits in a *notch with world on both sides*. Fill that
+wedge — and everything beyond the fan's radius — with water, and the city becomes a spit of
+land reaching west into open sea, with the fan's two edges (±170°) as its coastline.
+
+**And the neck is the hub itself**, which is already where every run begins. The Threshold
+stops being a UI affordance and becomes a geographic fact: the single land route out.
+
+**The fiction pays for the geometry.** A peninsula is *defensible* — water on three sides,
+one landward approach — which is a reason for this to be the *Last* city rather than a
+coincidence. It also pre-loads `BD-4`/`BD-8`: when creatures siege the city, the neck is
+the front and the only axis an assault can come from. And it gives **both** spaces an edge
+they currently lack — the arena ends at an invisible square with zero content outside the
+fan (§4.2a), and the city scene has no bound at all.
+
+⚠️ **The structural caveat: the city is a SEPARATE SCENE, not continuous world.**
+`Screen::City` has its own `city_scene` / `city_move` / `city_camera`, and `EnterMaze` is a
+screen transition. So the peninsula is authored **twice** — once as the city's ground and
+coast, once as the arena's western water — and the two must agree or the illusion breaks
+the instant you dive. Cheap (a transition, not a seam), but exactly the kind of duplicated
+fact that drifts silently: the same shape as the `terrain.rs` ↔ WGSL mirror the repo
+already hand-maintains. **Put the coastline behind one shared constant** rather than two
+hand-placed shorelines.
+
+Two calls to make:
+
+- **Is the neck a walk you make every run?** Today `Enter` dives from anywhere in town.
+  Proposed: keep that as the fast path and let the neck be the *diegetic* route — exactly
+  how the Threshold district already works (`E` there, or `Enter` anywhere). A mandatory
+  walk taxes every single run.
+- **A city on a peninsula is a PORT.** Boats become an obvious affordance and someone will
+  ask. Out of scope — but say no on purpose rather than by omission, because the geometry
+  invites it.
+
 ### 4.3 The constraint I would insist on: a detour budget
 
 If barriers lengthen the walk to depth *d* without bound, "walk around the mountain" stops
