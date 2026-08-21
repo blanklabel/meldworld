@@ -3829,21 +3829,7 @@ impl GameState {
         let Some(inst) = self.world.as_mut() else {
             return;
         };
-        inst.arena.avatars.retain(|a| a.player_id != player_id);
-        inst.run.runs.retain(|r| r.player_id != player_id);
-        // Drop the player's combatant bookkeeping from whichever battle held them.
-        for slot in inst.battles.iter_mut() {
-            if let Some(cids) = slot.player_combatants.remove(player_id) {
-                for cid in cids {
-                    slot.combatant_player.remove(&cid);
-                }
-            }
-        }
-        inst.hero_hp.remove(player_id);
-        inst.party_classes.remove(player_id);
-        inst.hero_names.remove(player_id);
-        inst.hero_rows.remove(player_id);
-        inst.extraction.remove(player_id);
+        inst.forget_player(player_id);
         if inst.run.runs.is_empty() && (inst.tutorial || !self.balance.world_persist.enabled) {
             self.world = None;
         }
@@ -5025,6 +5011,9 @@ impl GameState {
                         [ox, oz]
                     },
                     peaks: inst.arena.peaks.clone(),
+                    // The world's own fact, not the caller's request: a joiner who asked
+                    // for a normal dive still lands in a live tutorial world.
+                    tutorial: inst.tutorial,
                 },
             ));
             if !backpack_gear.is_empty() {
@@ -5314,6 +5303,39 @@ impl GameState {
 }
 
 impl WorldActor {
+    /// Drop everything this world remembered ABOUT ONE PLAYER's run — their avatar, their
+    /// run, their combatant bookkeeping in whatever battle held them, and every per-run map
+    /// keyed by their id. Called when a run ends, whichever way it ended.
+    ///
+    /// It is one named function because it is a LIST, and a list is what gets an entry left
+    /// off it: `hero_afflictions` was missing while the five maps beside it were cleared, and
+    /// since `SL-1` the world outlives its divers — so the map outlived the run that filled
+    /// it. A party that died poisoned came home, dived again and started the next run still
+    /// poisoned, with no creature to blame and nothing to lift it, because afflictions do not
+    /// expire. **Coming home is a cure**, for a wipe and an extraction alike: both end the
+    /// run, and an affliction is run-scoped (`CN-3`).
+    ///
+    /// Deliberately NOT here: anything about the world itself. Cleared ground, spent nodes,
+    /// standing structures and the Shift schedule are the world's, not the diver's (§W1).
+    fn forget_player(&mut self, player_id: &str) {
+        self.arena.avatars.retain(|a| a.player_id != player_id);
+        self.run.runs.retain(|r| r.player_id != player_id);
+        // Drop the player's combatant bookkeeping from whichever battle held them.
+        for slot in self.battles.iter_mut() {
+            if let Some(cids) = slot.player_combatants.remove(player_id) {
+                for cid in cids {
+                    slot.combatant_player.remove(&cid);
+                }
+            }
+        }
+        self.hero_hp.remove(player_id);
+        self.hero_afflictions.remove(player_id);
+        self.party_classes.remove(player_id);
+        self.hero_names.remove(player_id);
+        self.hero_rows.remove(player_id);
+        self.extraction.remove(player_id);
+    }
+
     /// A LEVEL-UP CURES. Every affliction gripping the hero that just advanced is lifted —
     /// but not death: a fallen hero still needs a raise, and coming back up is the one thing
     /// levelling does not do for you.
@@ -11444,6 +11466,28 @@ mod level_up_cure_tests {
         w.hero_afflictions.insert("p1".into(), vec![vec!["dread".to_string()], vec![]]);
         w.cure_on_level_up("p1", 0);
         assert_eq!(w.hero_hp["p1"][0], 0, "levelling must not stand a fallen hero back up");
+    }
+
+    /// **Coming home is a cure.** A run ending drops every per-run map keyed to that
+    /// player, afflictions included — and the affliction map is the one that was missed,
+    /// which since `SL-1` (the world outliving its divers) meant a party that died poisoned
+    /// started its NEXT run poisoned, permanently, since afflictions never expire.
+    #[test]
+    fn ending_a_run_lifts_what_had_hold_of_you() {
+        let (mut w, _rx) = super::shifting_lands_tests::world(50, 10);
+        w.hero_afflictions.insert("p1".into(), vec![vec!["poison".to_string()], vec!["web".to_string()]]);
+        w.hero_hp.insert("p1".into(), vec![0, 0]);
+        w.hero_afflictions.insert("p2".into(), vec![vec!["dread".to_string()]]);
+
+        w.forget_player("p1");
+
+        assert!(
+            !w.hero_afflictions.contains_key("p1"),
+            "the run ended and the poison came home with them"
+        );
+        assert!(!w.hero_hp.contains_key("p1"), "hero HP is run state too");
+        // And it is that player's run only — somebody else's dive is still theirs.
+        assert_eq!(w.hero_afflictions["p2"][0], vec!["dread".to_string()]);
     }
 
     /// Nothing recorded for that player, or a slot past the end of the party: a cure is a

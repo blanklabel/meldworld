@@ -217,7 +217,7 @@ pub(crate) fn pump_net(
                     next.set(Screen::City);
                 }
             }
-            ServerMsg::RunStarted { terrain_off, peaks } => {
+            ServerMsg::RunStarted { terrain_off, peaks, tutorial } => {
                 // Seed this run's terrain BEFORE the ground/entities render, so the shader
                 // + every entity Y grow the same per-run-varied hills (no "same hill by the
                 // hub every run").
@@ -247,15 +247,20 @@ pub(crate) fn pump_net(
                     net.0.send(ClientCmd::OnboardingRunSeen);
                     announce.tutorial.show_run_popup = true;
                 }
-                // Arm the guided [T]-dive step-by-step walkthrough the moment the
-                // server confirms the dive actually began (mirrors the briefing's
-                // own arm point above, for the same reason: not confirmed at the
-                // Dive/T keypress itself).
-                if announce.tutorial_run.pending_arm {
-                    announce.tutorial_run.pending_arm = false;
+                // Arm the guided walkthrough from the SERVER's answer about the world we
+                // actually landed in — never from our own [T] keypress. The old intent flag
+                // was cleared only when a dive started, so a T-press whose `enter_maze` was
+                // refused stayed armed and put a walkthrough over the player's next,
+                // randomized dive. And the world's tutorial-ness was never the caller's to
+                // decide: the flag is set when a world is CREATED, so a normal dive that
+                // joins a live tutorial world IS a tutorial run whatever it asked for, and
+                // a `[T]` dive into a world that already exists is not one.
+                if tutorial {
                     announce.tutorial_run.step = Some(TutorialStep::Harvest);
                     announce.tutorial_run.harvested = false;
                     announce.tutorial_run.chest_opened = false;
+                } else {
+                    announce.tutorial_run.step = None;
                 }
             }
             ServerMsg::LobbyState { code, host, members } => {

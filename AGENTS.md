@@ -300,6 +300,18 @@ counts a party that **fled** as dead, since fleeing clears `alive` with everyone
 two deaths with no battle to end — a dungeon trap and a Shift's Force blast — credit the
 same tax through the same write.
 
+**A GEAR DROP IS ROLLED FOR A CLASS SOMEBODY CAN PLAY.** `meld_world::CLASS_KEYS` is the pool
+`roll_creature_loot` picks a drop's `class_key` from, and every drop is class-LOCKED
+(`can_wear` refuses another class's piece), so the pool and the fieldable roster have to be
+the same set. They were not: it held five classes with no kit, no stats and no unlock
+(`dragoon`, `sage`, `ranger`, `alchemist_knight`, `bard`) and **omitted the Hunter** — so five
+drops in twelve were wearable by nobody alive, a Hunter hero could never find a single piece
+of gear, and a synergy affix could name a `bard` ally that can never be in a party. It is the
+eight fieldable classes now, held against `meld_proto::unlocks` by
+`every_fieldable_class_can_find_gear` (which also refuses a class with no authored nouns, or
+its drops are all called "Trinket"). A class added to the roster and not here is a hero that
+can never find loot.
+
 ⚠️ **`GearBonus` is defined TWICE** — `meld_db::GearBonus` and `meld_run::GearBonus`, bridged
 by `effective_gear_bonus`. A property added to one and not the other is a bow that reaches in
 the Vault and not in the fight.
@@ -1485,7 +1497,10 @@ the snapshot tags entities on `avatar_state` — `mob:<kind>:<faction>`, `portal
   **Town Portal** consumable (`begin_extraction { method: "town_portal" }`): it works
   from anywhere, is checked at channel start and **consumed on completion** (not on
   interrupt). Each dive starts with `starting_town_portals`; felled creatures drop
-  more at `town_portal_drop_chance`. Client keys: `E` = deep portal, `T` = Town Portal.
+  more at `town_portal_drop_chance`. `E` is the deep portal; **going home has no hotkey** —
+  it is the menu's Map column ("Return to town"), because spending an item belongs somewhere
+  a player can find. `T` is NOT the Town Portal any more: in town it is the guided
+  **tutorial** dive, which is the collision to know about.
 - **Harvestable resource nodes** (`ResourceNode`) scatter through every area (area 0
   gets one guaranteed starter node) and hold **finite stock**. `run.harvest { entity_id }`
   opens a **channel** (MS-2) that hands over **one unit per tick** while you stand still:

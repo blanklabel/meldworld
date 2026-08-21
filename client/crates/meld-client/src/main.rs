@@ -1161,10 +1161,12 @@ enum TutorialStep {
 
 #[derive(Resource, Default)]
 struct TutorialRun {
-    /// Set the instant a `[T]` dive is sent; consumed by the next `RunStarted`
-    /// to arm `step` (the server hasn't confirmed the dive yet at send-time).
-    pending_arm: bool,
     /// `None` = no guided walkthrough active (a normal dive, or not yet armed).
+    ///
+    /// Armed from `run.started.tutorial` — the WORLD's own answer — and never from the
+    /// `[T]` keypress. A `pending_arm` intent flag used to live here and was cleared only
+    /// when a dive actually started, so a refused `[T]` dive stayed armed and put a
+    /// walkthrough over the player's next randomized run.
     step: Option<TutorialStep>,
     harvested: bool,
     chest_opened: bool,

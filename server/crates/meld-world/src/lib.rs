@@ -418,13 +418,21 @@ pub struct CreatureLoot {
 /// spelling. Kept as a plain literal list here (rather than depending on meld-run's
 /// `CharacterClass` enum) since this crate only ever needs the strings, to pick which
 /// class a gear drop belongs to.
-pub const CLASS_KEYS: [&str; 12] = [
+/// The classes a gear drop may be rolled FOR — the eight a player can actually field,
+/// held against `meld_proto::unlocks` by test.
+///
+/// It used to be twelve, and the twelve were wrong in both directions: it carried five
+/// classes nobody can field (`dragoon`, `sage`, `ranger`, `alchemist_knight`, `bard` — enum
+/// variants with no kit, no stats and no unlock) and it **omitted the Hunter**, which is a
+/// shipped, unlockable class. Every drop is class-locked (`can_wear` refuses another
+/// class's piece), so five in twelve drops were unwearable by anybody alive and a Hunter
+/// hero could never find a single piece of gear in the entire world. That is loot's own
+/// version of the hand-written-list bug: the pool is derived from the unlock registry's
+/// intent now, and a class added there but not here fails
+/// `every_fieldable_class_can_find_gear`.
+pub const CLASS_KEYS: [&str; 8] = [
     "explorer",
-    "dragoon",
-    "sage",
-    "ranger",
-    "alchemist_knight",
-    "bard",
+    "hunter",
     "psyker",
     "resonant",
     "shifter",
@@ -496,6 +504,13 @@ pub fn class_slot_noun(class_key: &str, slot: &str) -> &'static str {
         ("shifter", "main_hand") => "Glitchblade",
         ("shifter", "chest") => "Runner's Wrap",
         ("shifter", "accessory") => "Flicker Charm",
+        // The Hunter: the guild's trade is disposal, and its kit reads like a kill-tool.
+        ("hunter", "main_hand") => "Culling Blade",
+        ("hunter", "off_hand") => "Trapper's Buckler",
+        ("hunter", "head") => "Stalker's Hood",
+        ("hunter", "chest") => "Quarry Harness",
+        ("hunter", "legs") => "Tracker's Greaves",
+        ("hunter", "accessory") => "Adrenal Cuff",
         ("phoenix_guard", "main_hand") => "Kinetic Gauntlet",
         ("phoenix_guard", "chest") => "Bulwark Plate",
         ("phoenix_guard", "accessory") => "Aggro Band",
@@ -571,6 +586,9 @@ fn class_signature_name(class_key: &str, slot: &str) -> &'static str {
         ("bard", "main_hand") => "The Last Refrain",
         ("bard", "chest") => "Coat of a Thousand Verses",
         ("bard", "accessory") => "The Siren's Pendant",
+        ("hunter", "main_hand") => "Gravemaker, the Last Contract",
+        ("hunter", "chest") => "Harness of the Long Hunt",
+        ("hunter", "accessory") => "The Second Wind",
         ("psyker", "main_hand") => "The Fractured Lens",
         ("psyker", "chest") => "Ward of the Silent Mind",
         ("psyker", "accessory") => "Shard of the Second Sight",
@@ -692,10 +710,12 @@ pub fn roll_creature_loot(
         // ACCESSORY_1/2 are two *equip* slots sharing the one accessory category.
         let mut slot =
             ["main_hand", "off_hand", "head", "chest", "legs", "accessory"][rng.below(6)];
-        // Every drop belongs to one of the ten classes (no class-agnostic
-        // gear) — picked independent of the party's actual composition, like
-        // any other loot roll; a hero can only wear/benefit from gear that
-        // matches their own class (enforced server-side at equip/battle time).
+        // Every drop belongs to one of the FIELDABLE classes (no class-agnostic gear) —
+        // picked independent of the party's actual composition, like any other loot roll;
+        // a hero can only wear/benefit from gear that matches their own class (enforced
+        // server-side at equip/battle time). Which is exactly why the pool may only ever
+        // hold classes somebody can play: a drop for a class with no kit is loot nobody in
+        // the game can use.
         let class_key = CLASS_KEYS[rng.below(CLASS_KEYS.len())];
         // GR-5: the drop's family/weight come from the class it belongs to, so a
         // Resonant drop is a stave and an Phoenix Guard drop is plate. A two-handed
@@ -8508,8 +8528,31 @@ mod tests {
                 seen.insert(class_of(&a));
             }
         }
-        for want in [AffixClass::Ward, AffixClass::Keyword, AffixClass::Synergy, AffixClass::Element] {
+        for want in [AffixClass::Ward, AffixClass::Synergy, AffixClass::Element] {
             assert!(seen.contains(&want), "deep rolls never produced {want:?}");
+        }
+        // A Keyword affix is class-locked, so it is reachable for its OWN class and for
+        // nobody else — ask each one of its owner rather than expecting the Explorer to
+        // roll a Psyker's Focus slot.
+        for d in meld_proto::affixes::AFFIXES
+            .iter()
+            .filter(|d| matches!(d.class, AffixClass::Keyword))
+        {
+            let owner = d.only_class.expect("a keyword affix names its class");
+            let key = meld_proto::equipment::class_key(owner);
+            let mut found = false;
+            for seed in 0..400u64 {
+                let mut rng = Rng(seed);
+                for slot in ["main_hand", "chest", "accessory"] {
+                    if roll_affixes(&b, &mut rng, 12, "legendary", true, key, slot, "ashfall")
+                        .iter()
+                        .any(|a| a.key == d.key)
+                    {
+                        found = true;
+                    }
+                }
+            }
+            assert!(found, "{} never rolled for its own class ({key})", d.key);
         }
 
         // Common drops stay plain, and the same seed always rolls the same affixes.
@@ -8527,7 +8570,7 @@ mod tests {
         for seed in 0..300u64 {
             let mut rng = Rng(seed);
             for a in roll_affixes(&b, &mut rng, 14, "legendary", true, "resonant", "main_hand", "tundra") {
-                // "of Fury" is an Explorer twist; a Resonant drop must never carry it.
+                // "of Fury" is a Hunter twist; a Resonant drop must never carry it.
                 assert_ne!(a.key, "adrenaline_primed", "seed {seed}");
                 assert_ne!(a.key, "focus_slot", "seed {seed}");
             }
@@ -8691,6 +8734,35 @@ mod tests {
             better > 400,
             "masterwork bought an extra death only {better}/500 times"
         );
+    }
+
+    /// The loot pool may only hold classes somebody can field, and must hold ALL of them.
+    /// It carried five classes with no kit and omitted the **Hunter** — so a Hunter could
+    /// never find gear, and five drops in twelve were wearable by nobody alive. Asked of
+    /// the unlock registry rather than of a second hand-written list, because a second list
+    /// is how this happened.
+    #[test]
+    fn every_fieldable_class_can_find_gear() {
+        let owned: Vec<String> = meld_proto::unlocks::UNLOCKS.iter().map(|u| u.key.to_string()).collect();
+        let fieldable = meld_proto::unlocks::owned_classes(&owned);
+        let want: std::collections::HashSet<&str> =
+            fieldable.iter().map(|c| meld_proto::equipment::class_key(*c)).collect();
+        let have: std::collections::HashSet<&str> = CLASS_KEYS.iter().copied().collect();
+        assert_eq!(
+            have, want,
+            "the gear pool and the fieldable roster disagree - a class in one and not the \
+             other is either loot nobody can wear or a hero that can never find any"
+        );
+        // And every one of them has real nouns, or its drops are all called "Trinket".
+        for key in CLASS_KEYS {
+            for slot in meld_proto::equipment::SLOTS {
+                assert_ne!(
+                    class_slot_noun(key, slot),
+                    "Trinket",
+                    "{key}/{slot} has no authored noun"
+                );
+            }
+        }
     }
 
     #[test]
