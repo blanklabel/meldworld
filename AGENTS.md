@@ -668,6 +668,27 @@ the base texture, never mirrored from another system: `illuminate_players` lives
 system tuple with no ordering against it, so reading the texture from there was a frame stale
 on whichever frames the scheduler ran it first, and the hero juddered in the dark.
 
+**A SPRITE'S EMISSIVE LAYER IS ITS OWN TEXTURE, SET AT CONSTRUCTION.** The trap above bit
+three times before it was closed: the whole-sprite reach pulse, the condition rim, and the
+battle night glow — which handed `emissive` to every `SpriteQuad` in the arena, heroes AND
+creatures. A hero self-illuminates because it CARRIES a lamp (a co-located point light
+cannot light the billboard it sits inside) and `animate_chars` sets its `emissive_texture`
+beside each frame; a plain creature has no `CharSprite`, so its emissive was untextured and
+the glow was added FLAT across the quad — every creature rendered as a solid white
+silhouette at night, and the Explorer's lantern read as a bug that erased the art.
+`hd2d::sprite_material` now gives every sprite billboard its own texture as its emissive
+layer (a no-op while `emissive` stays BLACK, which is the default), so a glow MODULATES the
+art by construction rather than by a caller remembering; and the battle glow is gated on
+`PlayerGlowSprite`, because what lights a creature is the party's lamps — chiefly the
+Explorer's, the one with the reach to cross the arena — and not itself.
+
+**A NIGHT BUG NEEDS A NIGHT YOU CAN PIN.** `MELD_WORLD_FEEL="sky_t=0.0"` opens the session
+at midnight (`0.25` sunrise, `0.5` noon, `0.75` sunset) — the same argument as `MELD_TALLY`
+holding a haul on screen. Nightfall is otherwise minutes into a session and gone again
+before a capture lands, which is exactly how a bug that only shows in the dark reached a
+release with nobody having seen it. `MELD_BATTLE=1` is the fixture: three creatures and an
+Explorer lead, no server, deterministic.
+
 **Every item wears its own icon, and never instead of its name.** One rule, in
 [`icons.rs`](client/crates/meld-client/src/icons.rs): if we drew art for it, show the art —
 every harvestable has a `resource_<kind>.png`, and a shrunk copy of the bush you pulled it

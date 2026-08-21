@@ -1898,6 +1898,18 @@ Make time in the field a living, dangerous place worth screenshotting.
     cool moon replaces the sun's directional fill, Ashfall sifts ash, and ground detail is
     biome-gated. What is left is the open-ended part — *more* flourishes, and hanging them
     off a real time-of-day (`FS-5`) rather than each client's own sky.
+  - ✅ *And the dark is legible again:* the battle screen's night glow was handed to every
+    `SpriteQuad`, heroes AND creatures. A hero self-illuminates because it CARRIES a lamp
+    (a co-located point light cannot light the billboard it sits inside) and its material
+    is emissive-TEXTURED by `animate_chars`; a plain creature's was not, so the glow was
+    added flat across the quad and the whole enemy row rendered as solid white
+    silhouettes — the Explorer's lantern read as a bug that erased the art. The glow is
+    gated on `PlayerGlowSprite` now, and `hd2d::sprite_material` gives EVERY sprite
+    billboard its own texture as its emissive layer, so the trap is closed by
+    construction rather than by remembering. `MELD_WORLD_FEEL="sky_t=0.0"` pins the
+    opening time of day, which is what makes "verify by native screenshot at night"
+    a thing you can actually do — nightfall is otherwise minutes in and gone again
+    before a capture lands, which is how this shipped unseen.
 - [ ] **FS-4 — Gatekeepers & unique bosses.** 🟡 *Shipped Elites + Gatekeepers:* the
   (previously dormant) `EncounterClass` pipeline is now live — a fraction of creatures
   roll **Elite** champions (tougher, ~3× loot) and a **Gatekeeper** boss guards every

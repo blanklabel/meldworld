@@ -170,6 +170,16 @@ mod tests {
 pub(crate) struct WorldFeel {
     /// Seconds for one full day → night → day cycle.
     pub day_len: f32,
+    /// The time of day the world OPENS at, as a fraction of the cycle: `0.0`/`1.0`
+    /// midnight, `0.25` sunrise, `0.5` noon, `0.75` sunset. Default is mid-morning.
+    ///
+    /// It exists so a NIGHT scene can be screenshotted deterministically — the same
+    /// argument as `MELD_TALLY` holding an extraction haul on screen. Nightfall is
+    /// otherwise minutes into a session and gone again by the time a capture lands,
+    /// which is how a bug that only shows in the dark (the battle glow washing every
+    /// creature to a white silhouette) reached a release unseen.
+    /// `MELD_WORLD_FEEL="sky_t=0.0"` opens at midnight.
+    pub sky_t: f32,
     /// The long dry spell between storms. This is the knob that decides how often it
     /// rains: the other three phases are the storm itself and are short by design.
     pub fair_secs: f32,
@@ -188,6 +198,9 @@ impl Default for WorldFeel {
             // dawn and dusk inside one fight. Ten minutes still shows a player both halves
             // in a normal dive without the sky ever being the thing they notice.
             day_len: 600.0,
+            // Mid-morning: the sun is up and climbing, so a fresh player's first
+            // frame is a lit world rather than a puzzle about the brightness.
+            sky_t: 0.36,
             // Rain was ~8% of all weather and a storm arrived every ~4 minutes, so the
             // overworld read as permanently overcast. The dry spell is what governs the
             // rate, so it is the only one that moved.
@@ -222,6 +235,10 @@ impl WorldFeel {
             };
             match key.trim() {
                 "day_len" => self.day_len = v,
+                // Wrapped, not clamped: `sky.t` is a fraction of a cycle and
+                // `advance_sky` keeps it that way, so `sky_t=1.25` is quarter past dawn
+                // rather than an error. A negative reads back from midnight.
+                "sky_t" => self.sky_t = v.rem_euclid(1.0),
                 "fair_secs" => self.fair_secs = v,
                 "gust_secs" => self.gust_secs = v,
                 "storm_secs" => self.storm_secs = v,
@@ -288,5 +305,19 @@ mod world_feel_tests {
         let mut f = WorldFeel::default();
         f.apply("day_len=900, nonsense=3, fair_secs=oops");
         assert_eq!(f, WorldFeel { day_len: 900.0, ..WorldFeel::default() });
+    }
+
+    /// The opening time of day is a PHASE of the cycle, so it has to stay inside one —
+    /// `advance_sky` only ever `fract()`s what it adds, and `apply_sky` reads
+    /// `sin((t - 0.25) * TAU)`, which a t of 12.0 answers with an arbitrary sun.
+    #[test]
+    fn the_opening_time_of_day_is_a_fraction_of_a_cycle() {
+        let f = WorldFeel::default();
+        assert!((0.0..1.0).contains(&f.sky_t), "sky_t {} is not a time of day", f.sky_t);
+        for (spec, want) in [("sky_t=0.75", 0.75), ("sky_t=1.25", 0.25), ("sky_t=-0.25", 0.75)] {
+            let mut f = WorldFeel::default();
+            f.apply(spec);
+            assert!((f.sky_t - want).abs() < 1e-5, "{spec} → {}, wanted {want}", f.sky_t);
+        }
     }
 }
