@@ -357,3 +357,4 @@ async fn the_end_fight_is_not_trivialised_by_one_build() {
         );
     }
 }
+

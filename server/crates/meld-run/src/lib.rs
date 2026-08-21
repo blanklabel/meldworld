@@ -1006,10 +1006,17 @@ pub fn build_battle(
             } else {
                 meld_world::boss_display_name(&m.boss_kind)
             };
+            // Prefixes stack outward from the creature: "Colossus Vicious Ironmaw" reads
+            // scale, then twist, then who it is — and the scale goes first because it is the
+            // one a player has to act on before the fight starts.
             let name = if m.affix.is_empty() {
                 base_name.to_string()
             } else {
                 format!("{} {}", m.affix, base_name)
+            };
+            let name = match meld_proto::warbands::title(m.expects_parties) {
+                "" => name,
+                scale => format!("{scale} {name}"),
             };
             let mut f = Fighter::new(
                 cid.clone(),

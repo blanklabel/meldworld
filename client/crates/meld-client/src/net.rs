@@ -233,6 +233,10 @@ pub struct EntityView {
     /// For dungeon entrances: how many heroes the doors inside want standing on
     /// plates at once. 1 for anything a lone player can finish.
     pub bodies_required: u8,
+    /// How many PARTIES this fight is sized for (`FS-4`), when that is more than one.
+    /// 0 on everything ordinary — a label on a normal creature is a label players learn
+    /// to ignore, and then the raid ones stop working.
+    pub expects_parties: u8,
 }
 
 /// One saved party composition (PT-2).
@@ -2724,6 +2728,7 @@ impl Inner {
                             let mut bodies_required: u8 = 1;
                             let mut opened = false;
                             let mut quarry = false;
+                            let mut expects_parties = 0u8;
                             let mut held = false;
                             let mut clashing = false;
                             let mut boss: Option<String> = None;
@@ -2746,6 +2751,7 @@ impl Inner {
                                     held = t.held;
                                     clashing = t.clashing;
                                     boss = t.boss.map(str::to_string);
+                                    expects_parties = t.parties;
                                     (
                                         EntityKind::Monster,
                                         Some(t.kind.to_string()),
@@ -2815,6 +2821,7 @@ impl Inner {
                                 encounter_class: if is_mob { e.encounter_class } else { None },
                                 aggression: if is_mob { e.aggression } else { None },
                                 quarry,
+                                expects_parties,
                                 held,
                                 boss,
                                 clashing,
@@ -3110,6 +3117,9 @@ struct MobTag<'a> {
     quarry: bool,
     held: bool,
     clashing: bool,
+    /// How many PARTIES this fight is sized for, when that is more than one (`FS-4`).
+    /// Absent on everything ordinary, so a plate only ever appears where it is a warning.
+    parties: u8,
 }
 
 /// Split a monster's `avatar_state` — `mob:<kind>:<faction>[:token…]` — into its parts.
@@ -3136,6 +3146,9 @@ fn parse_mob_state(state: &str) -> MobTag<'_> {
             "held" => tag.held = true,
             "clash" => tag.clashing = true,
             "boss" => tag.boss = parts.next().filter(|k| !k.is_empty()),
+            "parties" => {
+                tag.parties = parts.next().and_then(|n| n.parse().ok()).unwrap_or(0)
+            }
             _ => {}
         }
     }
@@ -3689,6 +3702,26 @@ mod mob_state_tests {
         assert_eq!(parse_mob_state("mob:dune_wyrm:wyrm:boss:"), tag("dune_wyrm", "wyrm"));
         // Ordinary fauna names no boss at all.
         assert_eq!(parse_mob_state("mob:thornback_boar:beast").boss, None);
+    }
+
+    /// The scale marker is a `key:value` in the same SET as the others, so a Colossus that
+    /// is ALSO pinned and ALSO your quarry keeps all three — the failure mode this parser
+    /// was rewritten for.
+    #[test]
+    fn a_raid_marker_composes_with_every_other_marker() {
+        let t = parse_mob_state("mob:bog_stinger:construct:boss:ironmaw:parties:3:held:quarry");
+        assert_eq!(t.parties, 3);
+        assert_eq!(t.boss, Some("ironmaw"));
+        assert!(t.held && t.quarry);
+        // Order must not matter.
+        let t2 = parse_mob_state("mob:bog_stinger:construct:quarry:parties:2:boss:ironmaw");
+        assert_eq!(t2.parties, 2);
+        assert_eq!(t2.boss, Some("ironmaw"));
+        assert!(t2.quarry);
+        // Ordinary fauna carries no scale at all, so nothing draws a plate for it.
+        assert_eq!(parse_mob_state("mob:bog_stinger:beast").parties, 0);
+        // A malformed count reads as ordinary rather than as a guess.
+        assert_eq!(parse_mob_state("mob:x:y:parties:nine").parties, 0);
     }
 }
 

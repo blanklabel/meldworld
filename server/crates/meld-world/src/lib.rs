@@ -1458,6 +1458,14 @@ pub struct MonsterSpawn {
     /// FS-4: an Elite's affix (Swift/Brutal/Armored/Giant/Vicious), empty otherwise.
     /// Shown as a prefix on the battle name so the champion reads distinctly.
     pub affix: String,
+    /// How many PARTIES this encounter is sized for (`meld_proto::warbands`). 1 for
+    /// everything ordinary.
+    ///
+    /// A gatekeeper's HP wall was always sized for a merge and never declared it, so a solo
+    /// party met a four-party boss with nothing on screen to say so. The count is the single
+    /// source of both the scaling and the name — derive one from the other and they cannot
+    /// disagree about how big the fight is.
+    pub expects_parties: u8,
     pub position: Position,
     /// Where it spawned — passive/territorial creatures leash to it.
     pub home: Position,
@@ -1559,6 +1567,7 @@ impl MonsterSpawn {
             entity_id,
             monster_kind: kind.to_string(),
             affix: String::new(),
+            expects_parties: 1,
             position,
             home: position,
             area_min_x: f64::NEG_INFINITY,
@@ -1690,6 +1699,23 @@ impl MonsterSpawn {
         self.encounter_class = class.to_string();
     }
 
+    /// Size this encounter for `parties` full parties, and let it say so.
+    ///
+    /// HP and XP ride the count while ATK does NOT: a raid boss is a longer fight for more
+    /// people, not one that hits each of them harder — scaling attack too would make the
+    /// same blow that a full raid shrugs off a one-shot for anybody who arrives early.
+    fn scale_to_warband(&mut self, parties: u8) {
+        let w = meld_proto::warbands::warband(parties);
+        self.expects_parties = w.parties;
+        if !meld_proto::warbands::is_raid(w.parties) {
+            return;
+        }
+        let n = w.parties as f64;
+        self.max_hp = ((self.max_hp as f64) * n).round().max(1.0) as i32;
+        self.hp = self.max_hp;
+        self.xp_reward = ((self.xp_reward as f64) * n).round().max(0.0) as i64;
+    }
+
     /// Give this spawn a named boss identity, and with it the boss's OWN lineage
     /// (FS-4 + PG-2). A boss used to inherit whatever creature it rode in on, so a
     /// Choirmother fought as a beast; the dead are undead and the made are constructs
@@ -1723,6 +1749,25 @@ impl MonsterSpawn {
         self.speed_stat = ((self.speed_stat as f64) * spd_m).round().max(1.0) as i32;
         self.affix = name.to_string();
     }
+}
+
+/// How many parties a gatekeeper is sized for.
+///
+/// Weighted toward the shallow end of the ladder rather than uniform: two parties is a
+/// plausible thing to gather, four is the cap the merge rule allows, and a flat roll would
+/// make the hardest tier as common as the easiest.
+fn roll_warband(enc: &meld_balance::Encounters, seed: u64) -> u8 {
+    let mut rng = Rng(seed);
+    if rng.unit() >= enc.gatekeeper_raid_chance {
+        return 1;
+    }
+    let cap = enc.gatekeeper_raid_max_parties.clamp(2, meld_proto::warbands::max_parties());
+    // Halving weights: 2 parties twice as likely as 3, which is twice as likely as 4.
+    let mut parties = 2u8;
+    while parties < cap && rng.unit() < 0.5 {
+        parties += 1;
+    }
+    parties
 }
 
 /// Roll one bounty contract for a hunter of `rank` (`AD-4`).
@@ -3507,6 +3552,11 @@ impl Arena {
                 "gatekeeper",
             );
             self.monsters[gidx].apply_affix(gseed ^ 0xAFF1);
+            // Some doors are RAIDS. Rolled on its own sub-stream so adding this cannot shift
+            // any existing draw, and declared on the spawn so both the scaling and the name
+            // come from the one number — the wall used to be four-party-sized for everyone
+            // and said nothing.
+            self.monsters[gidx].scale_to_warband(roll_warband(enc, gseed ^ 0x5CA1_E000));
             // FS-4: unique boss mechanics — this gate boss fights as one of
             // the named bosses, tiered by which biome-seam threshold it guards.
             // `become_boss` rather than a bare field write, so it also takes the boss's
@@ -8853,6 +8903,56 @@ mod tests {
     /// six of eight classes drew from a pool with no twist in it, and the most characterful
     /// affix class was one most heroes could never find. Asked of the roster rather than a
     /// hand-written list, because that is how it came to be two in the first place.
+    /// A RAID BOSS SAYS SO — in its size, in its name, and (through the tag) on screen.
+    /// The three come from one number, so a four-party wall can never be labelled as a
+    /// two-party one: that mismatch is the whole bug, in which every gatekeeper was
+    /// four-party-sized and none of them mentioned it.
+    #[test]
+    fn a_raid_sized_boss_carries_its_scale_in_both_hp_and_name() {
+        let b = Balance::load_default().unwrap();
+        let base = MonsterSpawn::build(&b, "m".into(), "forest_bloom_stalker", Position::new(600.0, 0.0), 7);
+        for parties in 1..=meld_proto::warbands::max_parties() {
+            let mut m = base.clone();
+            m.scale_to_warband(parties);
+            assert_eq!(m.expects_parties, parties);
+            let want = (base.max_hp as f64 * parties.max(1) as f64).round() as i32;
+            assert_eq!(m.max_hp, want, "{parties} parties did not scale the wall");
+            assert_eq!(m.hp, m.max_hp, "a scaled boss must start full");
+            // XP rides it too: a fight sized for four parties that paid one party's XP
+            // would make the raid the WORST use of everybody's time.
+            assert!(m.xp_reward >= base.xp_reward);
+            let title = meld_proto::warbands::title(parties);
+            assert_eq!(title.is_empty(), parties == 1, "{parties} parties: title {title:?}");
+        }
+        // Attack deliberately does NOT scale: a raid boss is a longer fight for more
+        // people, not one that one-shots whoever arrives first.
+        let mut four = base.clone();
+        four.scale_to_warband(4);
+        assert_eq!(four.atk, base.atk, "scaling by parties must not raise its attack");
+    }
+
+    /// The roll stays inside the ladder and leaves most doors ordinary — a raid on every
+    /// seam is not an event, it is a toll.
+    #[test]
+    fn the_raid_roll_is_rare_and_never_leaves_the_ladder() {
+        let b = Balance::load_default().unwrap();
+        let enc = &b.encounters;
+        let mut raids = 0;
+        for seed in 0..4000u64 {
+            let n = roll_warband(enc, seed);
+            assert!(
+                (1..=meld_proto::warbands::max_parties()).contains(&n),
+                "rolled {n} parties, off the ladder"
+            );
+            if n > 1 {
+                raids += 1;
+            }
+        }
+        let rate = raids as f64 / 4000.0;
+        assert!(rate > 0.05, "raids never happen ({rate})");
+        assert!(rate < 0.5, "a raid on half the doors is a toll, not an event ({rate})");
+    }
+
     #[test]
     fn every_class_has_exactly_one_keyword_affix() {
         for key in CLASS_KEYS {

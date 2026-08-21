@@ -362,7 +362,11 @@ pub struct Encounters {
     pub elite_atk_mult: f64,
     pub elite_xp_mult: f64,
     pub elite_loot_mult: f64,
+    /// A wall of HP **per party** — multiplied by the encounter's declared party count
+    /// (`meld_proto::warbands`), so the number means the same thing whoever shows up.
     pub gatekeeper_hp_mult: f64,
+    pub gatekeeper_raid_chance: f64,
+    pub gatekeeper_raid_max_parties: u8,
     pub gatekeeper_atk_mult: f64,
     pub gatekeeper_xp_mult: f64,
     pub gatekeeper_loot_mult: f64,

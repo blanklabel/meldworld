@@ -549,6 +549,24 @@ absolutely, but `def`/`ward`/speed still ride the placement distance and the dee
 abilities come online by monster level, so the real d3200 bosses carry ~1.7x the defence
 (`(1 + d/500)^0.7`: 4.15 against 2.45). Treat the table as a **lower bound**.
 
+**A RAID BOSS DECLARES HOW MANY PARTIES IT IS FOR.** `gatekeeper_hp_mult` was 10x and
+commented "sized to the party over a merge", so every gatekeeper was secretly a four-party
+boss and none of them said so — measured, a level-40 party ground a 66,792 HP gatekeeper for
+**464 turns**. The scale is declared now ([`meld_proto::warbands`](shared/meld-proto/src/warbands.rs)):
+1 party unlabelled, **Colossus** (2), **Leviathan** (3), **Worldbreaker** (4), capped there
+because `merge_cap_gatekeeper_instances` is 4. ONE number is the source of both the size and
+the name, so they cannot disagree about how big the fight is. HP and XP ride the count;
+**attack does not** — a raid boss is a longer fight for more people, not one that one-shots
+whoever arrives first. `gatekeeper_hp_mult` is **per party** (5.0), because a boss must stay a
+real fight for ONE party (`outgrowing_a_fight_lets_you_stomp_it` holds parity to 20+ rounds;
+2.5 folded one in twelve). ⚠️ **The reason a static multiple works: `encounter_party_scale` is
+a four-entry table CLAMPED to its length**, so creature HP stops growing past four heroes — a
+sixteen-hero merge faces the same pool a party of four does while bringing 4x the damage.
+Without that clamp the table is superlinear, more people would make a fight *harder*, and raid
+content could not be expressed as HP at all. It rides the snapshot as a `parties:<n>` marker in
+the same SET as `boss:`/`held`/`clash`/`quarry`, and the plate shows it TOPMOST — the only line
+up there a player has to act on before engaging.
+
 ⚠️ **A BOSS RIDES THE WIRE AS ITS HOST CREATURE.** `become_boss` sets `boss_kind`, but the
 overworld snapshot tag is `mob:<monster_kind>:<faction>` and nothing carries the boss identity
 out — so an end-fight boss, a Gatekeeper and an FS-4 named bounty boss all render as ordinary
