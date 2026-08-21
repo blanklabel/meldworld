@@ -478,7 +478,91 @@ things on it, and the ground makes you turn.
   a category error; retire `dungeon_every`, or make a procedural dungeon a *local*
   enclosure placed on the route the way a DG-3 entrance is.
 
-## 5. What shipped alongside this
+## 5. `WG-8` — overworld dungeons: maze regions assembled from authored parts
+
+A maze does not have to be a global property of a biome. §4.1's pushback was that making
+dense fill *impassable* turns the whole overworld into corridors — but that objection only
+holds if density is global. **Bounded regions with derived openings** answer it: a biome
+can feel like a maze *in some spots*, and be open everywhere else.
+
+The shape: a region of the overworld assembled from **authored design parts**, laid out so
+it can only be entered and left through a **few openings derived when it is put together**
+— Diablo's trick, where preset pieces give a place authored legibility while derived
+connections keep it from being the same twice. Crucially it is **not a sublayer**: you do
+not descend into it, and the rest of the world does not unload.
+
+### 5.1 The substrate already exists, and it already makes the right guarantee
+
+`server/crates/meld-dungeon/` is a glyph-grid + legend format with a parser
+(`parse.rs`), semantic checks (`validate.rs`), and a **build-time-compiled content pool**
+(`meld-dungeon-content`, with a `build.rs`). Its headline check is a bounded fixpoint that
+grows two monotone sets — `active` (emitters reached, hence operable) and `open` (barriers
+whose condition now holds) — re-flooding reachability until nothing changes, proving that
+*some* order of operations a party can perform opens a route from the entrance to an exit.
+
+Its stated reason is exactly this design's reason:
+
+> *"a dungeon is a committed space (no Town Portal — design §4), so an unsolvable dungeon
+> would be a trap with no way out, so this is a hard gate."*
+
+"Only a couple of defined ways in and out, guaranteed to connect" is therefore **already
+built and already enforced**. `WG-8` reuses it rather than inventing it.
+
+### 5.2 What changes for an overworld piece
+
+1. **Openings replace stairs.** The structural glyphs today are `#` / `.` / space / `>` /
+   `<`, and the validator requires exactly one `Down` on floor *n* and one `Up` on floor
+   *n+1*. An overworld region has no floor stack — it has **boundary openings**, and per the
+   design they are *derived at assembly* rather than authored into each part.
+2. **The guarantee gets STRONGER.** A descent dungeon is **directed** (enter → clear →
+   exit). An overworld maze region is **permeable**: a player may enter from the north
+   meaning to leave west, or cut through it as a shortcut. So the fixpoint's query becomes
+   **all-pairs reachability between openings**, not entrance→exit. Same machinery, harder
+   question — and it must be a hard gate for the same reason, because a region that can be
+   entered and not left is a trap in the middle of the overworld.
+3. ⚠️ **Prefabs are rectangular and this world bends.** A glyph grid is an array in some
+   frame; corridor `y` is an **ANGLE**. A piece laid out naively at r=1200 is smeared into
+   an arc. This is the same mistake the repo has now made three times — the tree spacing
+   that asked for 392 and placed 90, the creature grouping, and (§1b) the dungeon divider
+   walls that are currently a line of rocks ~250 world units apart. **The assembler must lay
+   parts out in WORLD space, or bend per cell.** Write it into the design before the code.
+
+### 5.3 Two properties that are easy to miss
+
+- **Co-op works inside it, with no instance transition.** Because a maze region is just
+  world, it is in the snapshot, the interest cull and `check_touch` — so `run.join_battle`,
+  `run.watch_battle`, clash markers and everything else already apply. A `DG-3` descent
+  dungeon is its own space: a teammate standing outside cannot see or join you. This is a
+  gameplay advantage, not only a loading one.
+- **"In some spots" is load-bearing for PERFORMANCE, not just for feel.** A maze region is
+  far denser in blocking props than open ground, and §2 measured that prop density is what
+  makes `blocks()` expensive. Bounded regions are affordable; carpeting the world in them
+  would not be. The design instinct and the perf envelope agree, which is a good sign.
+
+### 5.4 It replaces something broken rather than adding a system
+
+`dungeon_every = 4` makes every **fourth ring** of the world a procedural "dungeon" whose
+divider walls are a rounding error across 340° of arc — §1b measured those rings at 30x
+emptier than ordinary ones, and §1b concluded that a ring-scale "room" is a category error
+whose fix is *retire it, or make it a LOCAL enclosure placed on the route*. `WG-8` is that
+second option, done properly. So this is not a new system beside the old one: **retire the
+ring-dungeon and put prefab maze regions in its place.**
+
+### 5.5 Open
+
+- **On the clear path, or off it?** On-path makes a region a **gate**: mandatory, so it must
+  be tuned for every party that passes. Off-path makes it **optional** content that can be
+  harder and pay better, consistent with how side terraces and treasure already work.
+  Default proposed: *off-path and optional*, with the option of a mandatory one at a biome
+  seam later, where a pass already exists and a Gatekeeper already stands.
+- **How big, and does size ride depth?** The same trap as §1a and §4.1: a fixed-size region
+  in a world whose scale grows becomes negligible at depth. At r=1200 the ring's arc is
+  ~7,000 units.
+- **Do parts carry their own encounters, or are creatures placed by the normal pass?**
+  Authored encounters make a place memorable; procedural placement keeps difficulty riding
+  distance, which CANON §B requires.
+
+## 6. What shipped alongside this
 
 - **`CR-10`** — the wander fix (§1c), with `[ai] wander_leg_seconds` /
   `wander_arrive_radius` / `wander_pause_chance` / `wander_pause_seconds`.

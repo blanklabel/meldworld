@@ -1722,6 +1722,58 @@ design for this epic: [`proposals/worldgen-wg.md`](proposals/worldgen-wg.md).
     like a place": the ground has things on it, and the ground makes you turn.
   - Full design in
     [`proposals/world-shape-and-exploration.md`](proposals/world-shape-and-exploration.md) §4.
+- [ ] **WG-8 — Overworld dungeons: maze regions assembled from authored parts.** A maze
+  does not have to be a global property of a biome. Making dense fill *impassable*
+  everywhere would turn the overworld into corridors — but that only follows if density is
+  global. **Bounded regions with derived openings** answer it: a biome feels like a maze
+  *in some spots* and stays open elsewhere. A region is assembled from **authored design
+  parts** laid out so it can only be entered and left through a **few openings derived when
+  it is put together** (Diablo's trick: preset pieces give authored legibility, derived
+  connections stop it being the same place twice). Explicitly **not a sublayer** — you do
+  not descend into it and the rest of the world does not unload.
+  - *The substrate already exists and already makes the right guarantee.*
+    [`meld-dungeon`](../server/crates/meld-dungeon/) is a glyph-grid + legend format with a
+    parser, semantic checks and a build-time-compiled content pool
+    (`meld-dungeon-content`). Its headline check is a bounded fixpoint growing `active`
+    (emitters reached) and `open` (barriers whose condition holds), re-flooding
+    reachability until nothing changes, proving *some* order of operations opens a route
+    from entrance to exit — because "a dungeon is a committed space, so an unsolvable one
+    would be a trap with no way out, so this is a hard gate." That is exactly "a couple of
+    defined ways in and out, guaranteed to connect", already built.
+  - *What changes:* **openings replace stairs** (no floor stack, so the `>`/`<` pair check
+    becomes a boundary-opening check, derived at assembly); and the guarantee gets
+    **stronger** — a descent dungeon is DIRECTED (enter → clear → exit) while an overworld
+    region is **permeable** (in from the north, out to the west, or cut through as a
+    shortcut), so the query becomes **all-pairs reachability between openings**. Still a
+    hard gate: a region you can enter and not leave is a trap in the middle of the world.
+  - ⚠️ *Prefabs are rectangular and this world BENDS.* A glyph grid is an array in some
+    frame; corridor `y` is an ANGLE, so a part laid out naively at r=1200 is smeared into an
+    arc. Same mistake the repo has now made three times — the tree spacing that asked for
+    392 and placed 90, the creature grouping, and `WG-6`'s dungeon divider walls that are
+    currently a line of rocks ~250 world units apart. **The assembler lays parts out in
+    WORLD space, or bends per cell.**
+  - *Two properties easy to miss:* **co-op works inside it with no instance transition** —
+    it is just world, so it is in the snapshot, the interest cull and `check_touch`, and
+    `join_battle`/`watch_battle`/clash markers all already apply, where a `DG-3` descent
+    dungeon is its own space a teammate outside cannot see or join. And **"in some spots" is
+    load-bearing for PERFORMANCE too**: a maze region is far denser in blocking props than
+    open ground, and prop density is what makes `blocks()` expensive, so bounded regions are
+    affordable where carpeting the world would not be.
+  - *This REPLACES something broken rather than adding beside it.* `dungeon_every = 4` makes
+    every fourth RING a procedural "dungeon" whose divider walls are a rounding error across
+    340° of arc (`WG-6` measured those rings 30x emptier than ordinary ones, and concluded a
+    ring-scale "room" is a category error whose fix is *retire it, or make it a LOCAL
+    enclosure on the route*). This is that second option: retire the ring-dungeon, put
+    prefab maze regions in its place.
+  - *Open:* **on the clear path or off it** — on-path is a GATE (mandatory, tuned for
+    everyone), off-path is OPTIONAL content that can be harder and pay better, like side
+    terraces and treasure already do; default proposed **off-path/optional**, with a
+    mandatory one at a biome seam later where a pass and a Gatekeeper already exist. Also:
+    does region size ride depth (the same trap as `WG-6` — a fixed size in a world whose
+    scale grows is negligible at r=1200, where the arc is ~7,000 units), and do parts carry
+    authored encounters or take the normal distance-driven placement (CANON §B).
+  - Full design in
+    [`proposals/world-shape-and-exploration.md`](proposals/world-shape-and-exploration.md) §5.
 - [ ] **WG-5 — Mountains as a content pillar (the "new dungeon").** 🟡 *Backlog.* WG-4
   shipped authored climbable mountains as **landmarks** — a raised dome with a single
   boss/chest on the summit. The bigger idea: promote a mountain into a **destination
