@@ -1591,6 +1591,14 @@ pub(crate) struct Sky {
     /// duplicating the sun-angle math.
     pub(crate) day: f32,
 }
+impl Sky {
+    /// The sky a session opens with, at the time of day `MELD_WORLD_FEEL="sky_t=…"`
+    /// asks for (default mid-morning). One place, so `Default` and the flag can never
+    /// disagree about when the world starts.
+    pub(crate) fn opening(feel: &crate::feel::WorldFeel) -> Self {
+        Sky { t: feel.sky_t, ..default() }
+    }
+}
 impl Default for Sky {
     fn default() -> Self {
         Sky {
@@ -2137,5 +2145,19 @@ mod ground_uniform_tests {
             Some("shift"),
             "the Shift's tell must stay last — it is what the 16-byte tail rounds to: {order:?}"
         );
+    }
+}
+
+#[cfg(test)]
+mod sky_tests {
+    use super::*;
+
+    /// Two literals for one fact — `Sky::default().t` and `WorldFeel::default().sky_t` —
+    /// and a session would open at a different hour than the knob's own default claims.
+    #[test]
+    fn the_default_sky_opens_when_the_knob_says_it_does() {
+        let feel = crate::feel::WorldFeel::default();
+        assert_eq!(Sky::default().t, feel.sky_t);
+        assert_eq!(Sky::opening(&feel).t, feel.sky_t);
     }
 }

@@ -638,7 +638,16 @@ pub fn animate_chars(
 pub fn sprite_material(tint: Color, tex: Handle<Image>) -> StandardMaterial {
     StandardMaterial {
         base_color: tint,
-        base_color_texture: Some(tex),
+        base_color_texture: Some(tex.clone()),
+        // The emissive layer is the SAME texture, always, for every sprite billboard
+        // in the game. `emissive` defaults to BLACK so this changes nothing until
+        // something lights the sprite up — and when something does, the glow
+        // MODULATES the art instead of being added flat across the quad. That trap
+        // has now bitten this repo three times (the overworld's whole-sprite reach
+        // pulse, the condition rim, and the battle night glow, which painted every
+        // creature in the arena a solid white silhouette). One place, so a future
+        // caller cannot reintroduce it: a self-lit sprite is textured by construction.
+        emissive_texture: Some(tex),
         perceptual_roughness: 0.95,
         metallic: 0.0,
         reflectance: 0.05, // matte — no specular hotspot sliding across the sprite

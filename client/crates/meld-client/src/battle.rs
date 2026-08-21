@@ -556,17 +556,26 @@ pub(crate) fn animate_battle_actors(
     feel: Res<BattleFeel>,
     sky: Res<Sky>,
     mut mats: ResMut<Assets<StandardMaterial>>,
-    mut q: Query<(&mut Transform, &SpriteQuad)>,
+    mut q: Query<(&mut Transform, &SpriteQuad, Has<PlayerGlowSprite>)>,
 ) {
     // The night glow is folded in HERE rather than left to `illuminate_players`, which
     // owns it everywhere else. Both systems wrote `emissive` on the same battle-hero
     // material with no ordering between them, so whichever the scheduler ran second that
     // frame decided whether the hero was lit — and the party flickered for the whole
     // fight. One field, one owner: `illuminate_players` now skips a `SpriteQuad`.
+    //
+    // ⚠️ AND IT IS THE PLAYER CHARACTERS' GLOW, NOT THE ARENA'S. A hero self-illuminates
+    // because it CARRIES a lamp and a co-located point light cannot light the billboard it
+    // sits inside; a creature carries nothing, so what lights it is the party's lamps —
+    // chiefly the Explorer's, the one with the reach to cross the arena. Handing the same
+    // glow to every `SpriteQuad` made every creature emit its own light instead: emissive
+    // is added flat across a TEXTURED billboard, so at full dark the enemy row rendered as
+    // solid white silhouettes and the Explorer's lantern read as a bug that erased the art.
+    // Gated on [`PlayerGlowSprite`], which is exactly "is this a player character".
     let night = (1.0 - sky.day).clamp(0.0, 1.0);
-    let ef = night * 1.15;
-    let glow = LinearRgba::rgb(ef, ef * 0.9, ef * 0.7);
-    for (mut tf, s) in &mut q {
+    for (mut tf, s, player) in &mut q {
+        let ef = if player { night * 1.15 } else { 0.0 };
+        let glow = LinearRgba::rgb(ef, ef * 0.9, ef * 0.7);
         // KO: gray the sprite, drop any hit motion — reads as "downed".
         if battle.view(&s.id).map(|c| c.hp <= 0).unwrap_or(false) {
             if let Some(m) = mats.get_mut(&s.mat) {
