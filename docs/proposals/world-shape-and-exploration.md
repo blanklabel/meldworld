@@ -280,9 +280,88 @@ later."* So the blocker to `WG-7`'s barrier half is **how a vertical face is dra
 that is worth stating plainly because it is a much smaller problem than "the world needs
 new geometry."
 
-### 4.1 Rivers are the better primitive, and they dodge the art bug
+### 4.1 Water first — and LAKES before rivers
 
-A **river** should land before a mountain range, for three reasons:
+⚠️ **This reverses the ordering an earlier draft of this section gave.** Rivers were put
+first because they dodge the cliff-face rendering bug. Lakes are cheaper still, and the
+reason is worth stating precisely.
+
+**Ponds already exist.** `pond` / `bog_pool` / `frozen_pond` are real obstacle kinds that
+the world already places: the field/forest scatter list is `["tree", "boulder", "pond"]`,
+the tundra's is `frozen_pond`, and the **mire's entire maze fill is `bog_pool`** at
+`mire_obstacle_mult = 7.5`. So impassable water as *terrain* is shipped, played, and it
+already reads well — the flooded mire is the existing proof that this works.
+
+**But every body of water in the game is at most 5.6 units across.** Both the sparse
+scatter and the dense fill draw `radius = obstacle_min_radius + u·(obstacle_max_radius −
+obstacle_min_radius)` = **1.1 … 2.8**. So "add ponds" is really *let a pond be
+pond-sized*, and a lake is a pond whose radius was allowed to grow.
+
+**And that costs almost nothing to draw.** A water obstacle is already an *organic blob*
+mesh — `hd2d::blob_mesh(28)`, commented "organic pool outline, not a circle" — scaled by
+`Vec3::splat(r * 2.0)` and painted with the animated per-biome water material. A lake is
+that same primitive with a bigger `r`: **no new mesh, no new material, no new shader, no
+new collision path.** A river is *not* free in the same way — the blob is scaled
+uniformly, so an elongated channel needs its own geometry. Hence: lakes, then rivers.
+
+**A lake is also the best-behaved barrier for the detour budget (§4.3).** It is convex, so
+routing around one costs the semicircle against the chord — `πr / 2r` = **π/2 ≈ 1.57×** the
+straight line, *bounded*. A ridge or a river can force an arbitrarily long detour. So a
+lake is simultaneously the cheapest barrier to build, the cheapest to draw, and the one
+whose cost to the player is provably small.
+
+#### ⚠️ You cannot just raise the radius — measured
+
+`BlockField::new` sets its spatial-hash cell from the **largest radius in the world**:
+`cell = (max_radius * 2).max(8.0)`, and `blocks()` sweeps `±ceil((max_radius + radius) /
+cell)` cells. That maximum is **global**, so one large body of water coarsens the grid for
+every prop everywhere and pushes the per-query scan back toward the linear one whose
+removal is documented three lines above it (the O(creatures × props) pass that cost
+**1.7 s a tick**).
+
+Measured on a world streamed to d1300 — 23,069 props, 11,836 creatures — adding **one**
+water body parked at (9000, 9000), where it blocks nothing and nobody can ever reach it:
+
+| | per-tick `step_creatures` |
+|---|---|
+| baseline (largest prop radius 2.80) | **15.8 ms** |
+| + one r=30 body | 15.5 ms (free) |
+| + one r=80 body | 18.0 ms (+14%) |
+| + one r=150 body | **23.6 ms (+50%)** |
+
+So **water up to ~60 units across is free today**, which is already a real lake at shallow
+depth. Anything larger needs `BlockField` to bucket by **radius tier** first — small props
+in a fine grid, large bodies in a coarse one — which is a contained change and the obvious
+prerequisite. And it *is* required for the deep world: at r=1200 the ring's arc is ~7,000
+units, so a lake that actually gates a route out there is hundreds of units across. That is
+the same shape of bug as §1a — **a fixed size in a world whose scale keeps growing** — and
+it will bite lakes exactly as it bit the maze fill.
+
+#### And a lake has to be placed BEFORE the path
+
+Today obstacles are *rejected* from the clear-path tube, so a lake placed by the ordinary
+scatter would never cross your route and would never make you turn. Barriers must be placed
+first and the route drawn around them (the inversion §3 and §4.0 both call for). Otherwise
+a lake is scenery you walk past, which is what a pond already is.
+
+#### Water as the region boundary
+
+Worth considering while both are on the table: a connected **lake + river network
+partitions the ring**, which is `WG-7`'s "regions with shapes" (§4.2) achieved through
+*topology* rather than through a separate biome field — one system doing two jobs, with the
+boundary being a thing you can see and stand on rather than a texture cross-fade.
+
+That is also the feasibility hazard, and it is sharper here than for mountains:
+connectedness is what water *is*, and a connected impassable network is precisely what
+disconnects a graph. The measured mesa experiment (§4.0a) already showed an isotropic mask
+starting to seal routes at ~7% coverage; water wants to be connected on purpose. So fords
+and isthmuses have to be **generator-level guarantees**, not repairs after the fact — the
+`Seam` contract, applied to a shape that genuinely tries to cut the world in half.
+
+### 4.1a Rivers, and why they still dodge the art bug
+
+A **river** should land after lakes (§4.1) but before a mountain range, for three
+reasons:
 
 1. **The art already ships, and it is a SURFACE rather than a billboard.** A river is a
    depression, a water plane and a crossing — it never asks the coarse ground grid to

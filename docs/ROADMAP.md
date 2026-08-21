@@ -1641,7 +1641,43 @@ design for this epic: [`proposals/worldgen-wg.md`](proposals/worldgen-wg.md).
     **guaranteed pass** like `Seam` does — which also makes coverage free of feasibility
     risk, instead of rolling dice against the route and relying on `generate_with`'s twelve
     terrain-offset re-rolls to notice a sealed one.
-  - *Rivers first, and they dodge that art bug — the rendering already ships.* A river is a
+  - *Water first, and LAKES before rivers — ponds already exist, they are just capped at
+    puddle scale.* `pond`/`bog_pool`/`frozen_pond` are real placed obstacle kinds (the
+    field/forest scatter list is `["tree", "boulder", "pond"]`; the **mire's whole fill is
+    `bog_pool`**), so impassable water as terrain is shipped and already reads well. But
+    every scatter and fill placement draws `radius` from `obstacle_min_radius` …
+    `obstacle_max_radius` = **1.1-2.8**, so **the largest body of water in the game is 5.6
+    units across.** A lake is that same primitive with a bigger radius, and it is nearly
+    free to draw: water already renders as `hd2d::blob_mesh(28)` ("organic pool outline,
+    not a circle") scaled by `r * 2.0` with the animated per-biome material — no new mesh,
+    material, shader or collision path. A river is *not* free the same way (the blob scales
+    uniformly, so a channel needs its own geometry), which is why lakes come first. A lake
+    is also the **best-behaved barrier for the detour budget**: convex, so routing around
+    one costs `πr / 2r` = **π/2 ≈ 1.57x** the straight line, bounded — where a ridge or a
+    river can force an arbitrarily long detour.
+  - ⚠️ *But you cannot just raise the radius, and it is measured.* `BlockField::new` sets
+    its spatial-hash cell from the **largest radius in the world** (`cell =
+    (max_radius * 2).max(8.0)`), so one big body coarsens the grid for every prop
+    everywhere and pushes `blocks()` back toward the linear scan whose removal is
+    documented three lines above it (the pass that cost 1.7 s a tick). On a world streamed
+    to d1300 (23,069 props, 11,836 creatures), adding **one** water body parked at
+    (9000, 9000) where it blocks nothing: baseline **15.8 ms** per tick → r=30 **15.5 ms**
+    (free) → r=80 **18.0 ms** → r=150 **23.6 ms (+50%)**. So water up to ~60 units across
+    is free today; larger needs `BlockField` to bucket by **radius tier** first. And that
+    is required for the deep world — at r=1200 the arc is ~7,000 units, so a lake that
+    gates anything is hundreds of units across. Same shape as the density bug above: a
+    fixed size in a world whose scale keeps growing.
+  - *A barrier must be placed BEFORE the path.* Obstacles are currently *rejected* from the
+    clear-path tube, so a lake placed by the ordinary scatter would never cross your route
+    and never make you turn — it would be scenery you walk past, which is what a pond
+    already is. Barriers get placed first and the route drawn around them.
+  - *Water can BE the region boundary.* A connected lake+river network partitions the ring,
+    which is the "regions with shapes" idea below achieved through topology rather than a
+    separate biome field — one system, two jobs, and a boundary you can see and stand on.
+    That is also the sharper feasibility hazard: connectedness is what water *is*, and a
+    connected impassable network is exactly what disconnects a graph, so fords and
+    isthmuses must be generator-level guarantees rather than repairs.
+  - *Rivers next, and they dodge that art bug — the rendering already ships.* A river is a
     depression, a water plane and a ford, so no vertical face for the coarse ground grid to
     stair-step. And there is nothing to draw: water is already **animated textured ground
     geometry** (`WorldAssets::water_mats` → `MeshMaterial3d`, swept by `animate_water`), in
