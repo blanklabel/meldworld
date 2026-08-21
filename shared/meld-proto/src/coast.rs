@@ -57,16 +57,33 @@ fn smoothstep(e0: f32, e1: f32, x: f32) -> f32 {
 }
 
 /// How far west of the hub the land bridge reaches before the sea opens on both sides.
-/// Comfortably past `[worldgen] west_return_border` (-20), so the walk home crosses solid
-/// ground the whole way and the city transition never fires while you are standing in the
-/// water. **This is the neck.**
-pub const NECK_REACH: f32 = 34.0;
+/// **This is the neck.**
+///
+/// ⚠️ It has to sit INSIDE `[worldgen] west_return_border`, not outside it, and getting
+/// that backwards is what made the peninsula invisible on the day it shipped: the border
+/// was -20 and this was 34, so a player walking west was returned to Last City **fourteen
+/// units before the sea opened**. The coastline was real in the world model, correct in
+/// every test, and no player could ever reach it. The screenshots that "verified" it were
+/// taken with `MELD_IDLE` and a pulled-back survey camera — looking over a boundary the
+/// player cannot cross. A geometry test is not a reachability test.
+///
+/// The invariant now runs the other way and is asserted at compile time: the neck ends,
+/// the sea opens on both flanks, and only THEN does the border hand you to the city — so
+/// the walk home crosses the shore rather than stopping short of it.
+pub const NECK_REACH: f32 = 14.0;
 
-/// The neck must reach past `[worldgen] west_return_border` (-20), or the city transition
-/// could fire while the player is standing in open water. Checked at COMPILE time rather
-/// than in a test, because it is a structural relationship between two constants and there
-/// is no reason to let a build exist that violates it.
-const _: () = assert!(NECK_REACH > 20.0);
+/// Where `[worldgen] west_return_border` sits, mirrored here so the relationship below can
+/// be checked at all. Balance owns the real value; this is the contract it must honour.
+pub const RETURN_BORDER_REACH: f32 = 46.0;
+
+/// The player must cross the shore before the city takes them: the neck has to END well
+/// inside the return border, leaving open water on both flanks for the last stretch of the
+/// walk — and it has to end near enough the hub that the sea is IN FRAME from spawn rather
+/// than a rumour you would have to go looking for. Checked at COMPILE time rather than in a
+/// test, because it is a structural relationship between constants and a build that
+/// violates it ships an ocean nobody can see.
+const _: () = assert!(NECK_REACH > 8.0);
+const _: () = assert!(NECK_REACH * 2.0 < RETURN_BORDER_REACH);
 
 /// Half-width of the spit at its landward end, where it leaves the neck.
 pub const NECK_HALF_WIDTH: f32 = 12.0;

@@ -7131,6 +7131,57 @@ mod tests {
     }
 
     #[test]
+    fn a_player_walking_home_actually_reaches_the_shore() {
+        // ⚠️ THE TEST THAT WAS MISSING, and its absence shipped an invisible ocean. The
+        // coastline was correct in every geometry test and no player could ever reach it:
+        // `west_return_border` was -20 while `coast::NECK_REACH` was 34, so walking west
+        // handed you to Last City fourteen units BEFORE the sea opened. The screenshots
+        // that "verified" it were taken with a pulled-back survey camera looking over a
+        // boundary the player cannot cross.
+        //
+        // So this walks the actual player path and asserts what a player would SEE: before
+        // the border takes you, there is open water within sight on BOTH flanks. A geometry
+        // test is not a reachability test.
+        let b = Balance::load_default().unwrap();
+        let border = b.worldgen.west_return_border.abs();
+        let arc_half = (b.worldgen.radial_arc_degrees.to_radians() * 0.5) as f32;
+        assert!(
+            border > meld_proto::coast::NECK_REACH as f64,
+            "the return border ({border}) must sit OUTSIDE the neck ({}) or the sea is \
+             unreachable",
+            meld_proto::coast::NECK_REACH
+        );
+        // Walk west along the spit, stopping where the city would take over, and look
+        // sideways for water at each step.
+        let mut saw_water_both_sides = false;
+        let mut d = 1.0_f64;
+        while d < border {
+            let mut north = false;
+            let mut south = false;
+            let mut off = 1.0_f64;
+            while off < 90.0 {
+                if meld_proto::coast::is_ocean(-d as f32, off as f32, arc_half) {
+                    north = true;
+                }
+                if meld_proto::coast::is_ocean(-d as f32, -off as f32, arc_half) {
+                    south = true;
+                }
+                off += 1.0;
+            }
+            if north && south {
+                saw_water_both_sides = true;
+                break;
+            }
+            d += 1.0;
+        }
+        assert!(
+            saw_water_both_sides,
+            "walking west from the hub, a player must reach a point with sea on BOTH \
+             flanks before `west_return_border` ({border}) hands them to the city"
+        );
+    }
+
+    #[test]
     fn nothing_the_world_places_ever_lands_in_the_sea() {
         // Content is laid out in CORRIDOR space and bent by `radialize`, whose
         // `theta = (y / lat).clamp(-1, 1) * half` pins every bent position inside the fan
@@ -8927,12 +8978,19 @@ mod tests {
 
     #[test]
     fn city_return_is_the_west_wedge_not_a_straight_line() {
-        // Bug fix: `west_return` used a straight `x < border` test, which in the 340°
-        // radial fan sliced through explorable western content — walking over to a
-        // creature at a west-ish bearing silently extracted the player. Only the empty
-        // due-west wedge (beyond the fan's arc, out past the wall ring) returns you now.
+        // Bug fix: `west_return` used a straight `x < border` test, which in the radial
+        // fan sliced through explorable western content — walking over to a creature at a
+        // west-ish bearing silently extracted the player. Only the empty due-west wedge
+        // (beyond the fan's arc, out past the wall ring) returns you now.
+        //
+        // The sample points are DERIVED from the arc and the border rather than written
+        // down: both moved when Last City became a peninsula (the fan narrowed to open a
+        // gap for the sea, and the border moved out past the neck so the shore is
+        // reachable), and hardcoded coordinates silently stopped testing what they named —
+        // the old bearing landed exactly ON the narrowed fan's edge.
         let b = Balance::load_default().unwrap();
-        let border = b.worldgen.west_return_border; // -20.0
+        let border = b.worldgen.west_return_border;
+        let arc_half = b.worldgen.radial_arc_degrees.to_radians() * 0.5;
         let mut arena = Arena::generate(&b, 7, false);
         arena.add_avatar("p1".into(), 6.0);
         let place = |arena: &mut Arena, x: f64, y: f64| {
@@ -8942,9 +9000,11 @@ mod tests {
         // Fresh spawn at the hub is not returning.
         assert!(!arena.heading_into_city("p1", border));
 
-        // West-ish FAN content: far past `border` in x, but inside the content arc — a
-        // legit place to fight. Must NOT extract. (bearing ~150°, radius ~35.)
-        let (r, th) = (35.0_f64, 150.0_f64.to_radians());
+        // West-ish FAN content: far past `border` in x, but comfortably INSIDE the content
+        // arc — a legit place to fight. Must NOT extract. Bearing is a margin inside the
+        // fan's edge; radius is whatever puts it well west of the border at that bearing.
+        let th = arc_half - 10.0_f64.to_radians();
+        let r = (border.abs() + 20.0) / th.cos().abs();
         place(&mut arena, r * th.cos(), r * th.sin());
         assert!(
             arena.avatars[0].position.x < border,

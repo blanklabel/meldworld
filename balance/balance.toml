@@ -1335,7 +1335,13 @@ dungeon_depth_level_step = 25    # effective-distance added per floor descended 
 dungeon_trap_damage = 30         # base HP a sprung dungeon trap deals; scaled up by depth (DG-3b/DG-4)
 # WG-4: crossing this far WEST of the hub (behind spawn) returns you to Last City —
 # the safe anchor is always just to the west. Negative = behind the origin.
-west_return_border = -20.0     # walk this far west (open ground) up to the city WALL+GATE to return; a clear deliberate distance, not an accidental step
+# ⚠️ MUST stay outside `coast::NECK_REACH`, or the peninsula is invisible. It was -20
+# against a neck of 34, so a player walking west was handed to Last City FOURTEEN UNITS
+# BEFORE the sea opened — the coastline was real, tested, and unreachable. Now the walk
+# west crosses the neck, the sea opens on both flanks, and the last stretch is a shore you
+# walk along before the city takes you. `coast::RETURN_BORDER_REACH` mirrors this value and
+# asserts the relationship at compile time.
+west_return_border = -46.0     # walk this far west (over the neck, along the shore) to the city WALL+GATE
 base_area_length = 20.0          # tiles: length of the first (shallowest) area
 area_length_growth = 7.0         # each successive area is ~this much longer on avg
 area_length_jitter = 0.35        # ± fraction applied to each area's length
