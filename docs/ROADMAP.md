@@ -1539,6 +1539,153 @@ design for this epic: [`proposals/worldgen-wg.md`](proposals/worldgen-wg.md).
   (see `proposals/worldgen-wg.md` "Known cosmetic follow-up").
   See [`proposals/worldgen-wg.md`](proposals/worldgen-wg.md); fold into
   [`behaviors/world-generation.md`](behaviors/world-generation.md) when built.
+- [ ] **WG-6 — The maze holds its terrain at depth.** 🟡 *The arithmetic half ships; the
+  structural half does not.* Reported from play: *"every biome just kinda looks like… a
+  big open field."* Measured, seed 424242, streamed to d1700 — obstacles per 1000 u² by
+  ring: **7.38** at r=40-100 falling to **1.49** past r=800, a 4.5x collapse, mean prop
+  spacing 5.9 → 13.0 tiles. Stated the way a player meets it — obstacles within 40 world
+  units of `route_point_at(d)`, standing on the world's own route, biome pinned to forest:
+
+  | standing at | before | after | reads as |
+  |---|---|---|---|
+  | d60 | 69 | **136** | a wood |
+  | d200 | 42 | **65** | a wood |
+  | d550 | 11 | 11 | parkland |
+  | d900 | 3 | 3 | a field with three trees in it |
+  | d1200 | **0** | **0** | a plain |
+
+  ⚠️ **Past ~d550 the arithmetic fixes change nothing, because the cap binds either way** —
+  so the shallow rings roughly double, every fourth ring stops being a plain, and the deep
+  world, where the game is actually played, is as empty as it was. Two bugs, both fixed:
+  - *Every FOURTH RING of the world had no terrain in it at all.* `dungeon_every = 4`
+    marks every 4th section a procedural dungeon and the maze fill was skipped for one
+    ("rooms-and-corridors instead of the scattered fill") — true when a section was a
+    20-tile corridor with three rooms, false once WG-4 made it an annular band spanning
+    the whole 340°, where two divider walls are a rounding error. Dungeon sections
+    averaged **0.167** per 1000 u² against **4.92** for ordinary ones — a **30x** gap —
+    and section 16 (forest, the densest fill multiplier in the table) held **29 props
+    across 900,893 u²**, a mean spacing of **88 tiles**. The walls are laid OVER the
+    biome now, door gaps still on the clear path, so connectivity is untouched.
+  - *Density thinned along two axes and only one was compensated.* The arc stretch was;
+    the fact that `obstacles_per_area` is a count per SECTION while sections grow from 13
+    units thick to 184 by d1560 was not, at all. Their product is exactly the section's
+    world area over the base area's, and it now lives in ONE function
+    (`maze_fill_scale`) — it had been written twice, in `push_section` and in the Shift's
+    `reroll_props`, which is the same one-rule-two-call-sites drift this repo has already
+    been bitten by three times. A Shift re-scattering at a stale density is invisible
+    until someone measures the ring it landed on.
+  - *The guard only covered the shallow end.* `the_world_does_not_empty_out_as_it_fans_
+    open` samples to r=280 — inside the radius where the compensation still holds. The new
+    guard pins **mean prop spacing** (the quantity a player experiences; a wood has trunks
+    4 tiles apart, a plain has them 50) out to d1500, with the biome PINNED so it measures
+    the compensation rather than the per-seed biome lottery, plus a vacuity check.
+  - ⚠️ *What did NOT get fixed, and why the cap stayed at 24.* The deep ring is still ~3x
+    short of the shallow one, and `maze_radial_scale_cap` is the obvious lever — but
+    `ensure_frontier` runs **inside the authoritative tick**, and streaming one deep
+    section is already a **181 ms stall on a 100 ms tick** at the current cap, over budget
+    by 1.8x whenever a player walks into new ground and before any of this was touched. At
+    60 it is 372 ms and at 120 it is 652 ms. (World *generation* is not the problem —
+    best-of-5 in release is unchanged by these fixes, inside the noise on a shared box; an
+    early "4x slower" reading was measurement noise from concurrent runs.) So the cap is
+    gated on `SC-2`/`CR-4` taking that stall off the loop — **and it is the wrong lever
+    regardless**: the fill is spread uniformly across a ring whose arc is
+    ~7,000 units at r=1200, almost none of which any player can reach. The real fix is to
+    spend the SAME budget along the route network (`Arena::path` + `corridor_web`) with a
+    band width, which buys the density at no extra count at all and grows linearly rather
+    than quadratically with depth. Specced in
+    [`proposals/world-shape-and-exploration.md`](proposals/world-shape-and-exploration.md) §3.
+  - *And the divider walls are no longer walls.* A wall steps `dungeon_wall_radius * 1.8`
+    ≈ 2.0 units in corridor y — and corridor y is an **ANGLE**, so at r=1200 that step is
+    ~250 world units: a line of rocks a quarter-kilometre apart. Same bent-frame mistake
+    the maze fill already learned ("the forest asked for 392 trees and placed 90"): the
+    count was compensated, the SPACING never was. Deliberately not fixed by making the
+    wall real (a genuine ring wall at r=1200 is ~3,600 props, twice per section) — a
+    ring-scale "room" is a category error, and the decision (retire `dungeon_every`, or
+    make a procedural dungeon a LOCAL enclosure placed on the route like a DG-3 entrance)
+    belongs with `WG-7`.
+- [ ] **WG-7 — The world is radial; the regions and the routes should not be.** Not a bug
+  — a decision about what the world *is*, which is why it is not folded into `WG-6`. Today
+  a section is a radius band spanning the entire 340° arc and biome is drawn per section,
+  so **every angle is the same content**: two players walking out on different bearings see
+  statistically identical worlds, there is nothing to walk *toward*, and "exploring" reduces
+  to holding W. Biomes are 20-180 units thick, so a biome is a stripe you cross rather than
+  a region you are *in* — which also defeats the per-biome density contrast `WG-6` protects,
+  since open grassland versus a wood you cannot see across only lands if you are in one long
+  enough to notice. **Direction (the owner's): keep the WORLD radial — CANON §B, distance
+  *is* difficulty, is load-bearing and does not move — and make the REGIONS shaped and the
+  ROUTES obstructed, so you walk around rivers and mountain ranges to reach the end of the
+  world.**
+  - ⚠️ *The finding that reframes it: every source of impassable large-scale terrain is set
+    to zero.* `terrain::CLIFF_HEIGHT = 0.0`, `[worldgen] terraces_per_area = 0.0`,
+    `max_level = 0`. Nothing in the world can stop you or make you turn, and the authored
+    peaks that do exist are deliberately **walkable domes** (`PEAK_MAX_ASPECT`) — so a
+    mountain today is something you walk *over*, never *around*. With `WG-6`'s density
+    collapse that is the complete explanation of "every biome looks like a big open field."
+  - *And the machinery is already built and already correct.* `terrain::height` is a pure
+    function of world position with a per-run offset (**the terrain is already 2D, not
+    radially banded** — only the biome skin and the props are); `routable`/`walkable` are
+    slope thresholds over it; and `Arena::astar_route` already routes the guaranteed
+    backbone **around** unroutable ground *honestly*, costing each edge along its BENT arc
+    so it cannot leap a 2u cliff ring where one corridor cell spans hundreds of world units.
+    Feasibility-by-construction already survives detours. The mesas were switched off for a
+    **rendering** reason — a vertical face stair-steps on the coarse ground grid — so the
+    blocker is how a cliff is DRAWN, not the world model.
+  - *Measured, before designing on top of it:* share of a 1200x1200 patch that
+    `terrain::routable` refuses — **0.00%** as shipped (no point in the overworld is
+    unroutable, so no barrier of any kind exists), **1.05%** with the old mesas switched
+    back on at their original mask, **6.73%** with the mask widened. So the old mesas were
+    mechanically pointless as well as ugly — at 1% coverage you never walk around anything
+    — and widening only yields *more scattered blobs*: an isotropic threshold over a sum of
+    sines cannot make a long connected ridge with a pass in it at any amplitude. **A
+    barrier therefore has to be STRUCTURED** (a range spine, a river channel) and carry a
+    **guaranteed pass** like `Seam` does — which also makes coverage free of feasibility
+    risk, instead of rolling dice against the route and relying on `generate_with`'s twelve
+    terrain-offset re-rolls to notice a sealed one.
+  - *Rivers first, and they dodge that art bug — the rendering already ships.* A river is a
+    depression, a water plane and a ford, so no vertical face for the coarse ground grid to
+    stair-step. And there is nothing to draw: water is already **animated textured ground
+    geometry** (`WorldAssets::water_mats` → `MeshMaterial3d`, swept by `animate_water`), in
+    three biome-shaped variants — `pond`/`ground/water_clear.png`,
+    `bog_pool`/`water_bog.png`, `frozen_pond`/`water_ice.png` — so a channel takes its
+    region's own water tile for free (ice through tundra, bog through mire), and
+    `water_mat` already falls back to `pond` for an unknown kind, so a new `river` renders
+    on day one. There is even `models/nature/cliff_waterfall_rock.glb` for a channel
+    crossing elevation, and the mire's whole fill is already impassable water — "a flooded
+    region you route around" is shipped and played, just scattered into pools instead of
+    drawn into a channel. **The barrier is new; the rendering is not.** It is also the
+    stronger barrier: a mountain gives a detour *around*, a river gives *"follow it until
+    you find a crossing"*, which is the lateral decision the world has none of. What is new
+    is the construct — `height` is a sum of sines and has no long connected channels, so a
+    river wants a seeded polyline / ridged-noise channel with a signed distance folded into
+    `routable`; A* then handles it for free, and the fords are the gaps. Same contract the
+    existing `Seam` already honours, generalized from "a ring wall with one door" to "an
+    arbitrary barrier with a pass." Mountains return as `CLIFF_HEIGHT` raised **and widened
+    into ranges** (a range is what you walk around; a butte is what you walk past), gated on
+    cliff-face rendering. `WG-5` is the same feature from the content side.
+  - *Regions with shapes = biome as a 2D field, the same pattern `height` already uses:* one
+    pure function of world position, mirrored between Rust and the WGSL ground shader,
+    seeded per run. The client is closer than it looks — `ground_biome.wgsl` **already picks
+    biome per fragment from world position** and cross-fades; it just resolves it through a
+    32-entry `rings: array<vec4<f32>>` of `(outer_radius, biome)`. Replace the ring lookup
+    with `biome_at(x, z)` and the table goes away. Voronoi gives a guaranteed minimum region
+    size (regions with real extent) and the cross-fade free via distance-to-second-nearest.
+    `[biome_gate]` stays a **radial gate**, so the on-ramp and CANON §B are untouched.
+  - ⚠️ *Costs to accept first.* **The Shift is radius-banded in the renderer as well as the
+    model** — `apply_shift` retiles a section span and re-sends `world.terrain_section`, and
+    the shader relies on a region being an annulus, so CANON §W2's granularity, its
+    rendering, and §W5's span-based replay log all move. And **props/creatures are placed
+    per section from that section's biome**, so a section becomes a patchwork and
+    `creatures_for_biome`/`resources_for_biome`/`fill_kind_for_biome` get asked per
+    placement — mechanical, but at every placement site.
+  - *The constraint that makes it fun rather than a tax:* **a detour budget.** Route length
+    to depth `d` must stay under a bounded multiple of `d`, held by test across seeds — a
+    barrier that cannot be afforded is not placed. Depth is already a time sink (a
+    continuous expedition reaches only ~d1150 in four hours), so unbounded detours turn
+    "walk around the mountain" into a toll. Paired with `WG-6`'s criterion (props in view
+    along the route must not collapse with depth), those two pin both halves of "it feels
+    like a place": the ground has things on it, and the ground makes you turn.
+  - Full design in
+    [`proposals/world-shape-and-exploration.md`](proposals/world-shape-and-exploration.md) §4.
 - [ ] **WG-5 — Mountains as a content pillar (the "new dungeon").** 🟡 *Backlog.* WG-4
   shipped authored climbable mountains as **landmarks** — a raised dome with a single
   boss/chest on the summit. The bigger idea: promote a mountain into a **destination
@@ -1696,6 +1843,47 @@ budgeted so the creature sim never threatens the single-owner loop or the server
 > cascade needs SC-3's event log. Build the sim on the precursor, wire persistence when
 > SC-3 lands (no sim rework). A **wiped region always recovers** via a colonization
 > trickle seeded from the biome table (local extinction possible; global impossible).
+
+- [x] **CR-10 — A wandering creature actually goes somewhere.** Reported from play:
+  *"creature movement in the overworld makes no sense whatsoever."* The wander
+  DESTINATION was re-rolled inside the movement pass on **every tick** — a fresh angle
+  ten times a second at the 100 ms authoritative tick — so every creature in the world
+  was chasing a point that teleported around its leash faster than it could walk. It
+  walked at full speed and stayed put. Measured over 30 s, 400 creatures, no players in
+  the arena to chase:
+
+  | | before | after |
+  |---|---|---|
+  | path walked | 47.8 tiles (full speed throughout) | 28.8 (it pauses now) |
+  | net displacement | **0.87 tiles** | 4.63 |
+  | furthest from start | **1.93 tiles** | 7.30 (leash is 9.0) |
+  | straightness (net/path) | 0.018 | 0.186 |
+
+  98% of the motion cancelled itself out, and because the client picks its 8-way facing
+  off frame-to-frame movement (`hd2d::animate_chars`), the sprites **spun on the spot**
+  as well. Epic CR's own header said *"creatures already roam"* — that is the assumption
+  this retires.
+  - *The destination outlives the tick that picked it* (`MonsterSpawn::wander_to`), and a
+    leg is bounded by TIME as well as by arrival (`[ai] wander_leg_seconds`) — a
+    destination can walk a creature into a rock, where the per-axis slide leaves it
+    grinding against the same tree for the rest of the dive.
+  - *It stands still sometimes* (`wander_pause_chance` / `wander_pause_seconds`). A
+    creature that walks every tick reads as machinery; the pause is what makes it read
+    as grazing, and it is cheap to lose in a refactor because nothing else observes it.
+  - *The destination is drawn from the leash DISC, not its rim* (`sqrt` for a uniform
+    draw over the area), so a creature crosses its territory instead of only ever
+    visiting the edge. The old `y * 0.4` axis squash is gone: `home` is world-space, and
+    in the radial fan a squashed y biased every creature into walking radially (in/out)
+    when tangential movement is what reads as roaming.
+  - Both halves are held by test, and the density one carries a **vacuity check** that
+    puts the per-tick re-roll back and proves the new bar fails — anything that
+    reintroduces destination churn fails however it is written.
+  - *Why nobody had seen it.* `MELD_AUTOPLAY`/`?autoplay` could never leave town —
+    `city_input` returns early while a town-tour step is open, and the tour opens on every
+    account in the in-memory embedded build — so `view_biome.sh` and every `?autoplay`
+    screenshot had been capturing the hub. `render_town_tour`'s half of that landed on
+    `main` concurrently and `main`'s version is kept; this branch adds the same rule for
+    the "Before You Dive" card, which nothing had covered.
 
 - [ ] **CR-1 — Per-creature distance modifiers + deep-biome palette & rarity.**
   Beyond the global `stat_mult(d)`, give each creature its own distance-scaled

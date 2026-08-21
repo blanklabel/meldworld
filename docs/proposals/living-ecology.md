@@ -5,9 +5,15 @@
 > on: the **day/night clock** (`FS-5`), **materials → crafting** (`MS-1`), overworld
 > **ground drops** ([`async-interaction.md`](../behaviors/async-interaction.md)), and
 > the persistent-world target (**CANON §W**, `WM-*`). It is written against the real
-> stack — creatures already roam, belong to **factions**, carry a live `hp/max_hp`
+> stack — creatures roam, belong to **factions**, carry a live `hp/max_hp`
 > bar, skirmish with hostile factions, and leash to `home`
 > ([`meld-world` `MonsterSpawn` / `Arena::step_creatures`](../../server/crates/meld-world/src/lib.rs));
+> ⚠️ *"already roam" was load-bearing here and was not true until `CR-10`.* The wander
+> destination was re-rolled every 100 ms tick, so a creature walked at full speed and
+> covered 0.87 tiles in 30 seconds — every creature in the world vibrating in place.
+> Anything below that assumes a creature *goes somewhere* (territory, migration, herd
+> roam targets, predator/prey pressure) was building on a movement layer that did not
+> move; check the fix is in before sizing any of it;
 > the world tick now runs inside the **`WorldActor`** that owns all world logic
 > (SC-3, [`game.rs:595`](../../server/crates/meld-server/src/game.rs)); kills already
 > bank a per-biome **material** (`combat_material_for_biome`), and `ResourceNode`s

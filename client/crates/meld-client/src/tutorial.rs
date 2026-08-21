@@ -297,6 +297,12 @@ pub(crate) fn first_run_popup(
     dismiss_q: Query<&Interaction, (With<FirstRunDismissBtn>, Changed<Interaction>)>,
     root_q: Query<Entity, With<FirstRunPopupRoot>>,
 ) {
+    // Same rule as the town tour above, and the same predicate: autoplay takes no
+    // onboarding. Nobody is at the keyboard to dismiss this card, so it sat over a third
+    // of every captured frame for the whole demo/screenshot run.
+    if crate::flags::autoplay_flag() {
+        tutorial.show_run_popup = false;
+    }
     if !tutorial.show_run_popup {
         for e in &root_q {
             commands.entity(e).despawn();

@@ -1383,10 +1383,40 @@ maze_obstacle_mult = 2.0         # fallback for any unlisted biome
 # so density-per-tile stays roughly constant with depth. Capped so the deepest areas
 # don't explode the obstacle count (wire size + client draw calls). 1.0 = off (old
 # behaviour). [TUNABLE]
-# Matches `creature_radial_lane_cap` — the same geometry thins both, so they hold to the
-# same radius (~230) before the world starts opening up again. 4.0 was far too low to be
-# the dense wood the multiplier above claims.
-maze_radial_scale_cap = 24.0     # max × the arc-stretch can multiply an area's obstacle count
+# ⚠️ THE FORMULA THIS CONSTANT CAPS CHANGED UNDER IT. It used to cap the ARC stretch
+# alone; `maze_fill_scale` now multiplies that by the section's THICKNESS ratio too (a
+# per-section count spread over a section that grows from 13 to 184 units thick was the
+# second, wholly uncompensated thinning axis). So the same 24 is a much tighter cap than
+# its old comment claimed — it held the designed density out to about r=226 against the
+# one-axis formula, and binds by r≈90 against the real two-axis stretch.
+#
+# MEASURED, seed 424242, biome PINNED to forest (so this is the compensation and not the
+# per-seed biome lottery), streamed to d1300. Density is obstacles per 1000 u² with the
+# mean prop spacing in tiles beside it — the quantity a player experiences, since a wood
+# has trunks a few tiles apart and a plain has them fifty. `ms/tick` is `step_creatures`
+# and `stream ms` is ONE deep section entering through `ensure_frontier`. Both best-of-N
+# in release, because this box is shared and single-shot timings here are noise.
+#
+#   cap |   props | d 40-100  | d 400-700  | d 900-1200 | ms/tick | stream ms
+#     1 |     995 | 1.65 (12) | 0.17  (38) | 0.11  (47) |    12.3 |     50   ← the bug
+#    24 |  27,451 | 27.4  (3) | 5.89   (7) | 2.83   (9) |    14.8 |    181   ← here
+#    60 |  66,081 | 27.4  (3) | 14.7   (4) | 7.05   (6) |    17.5 |    372
+#   120 | 122,652 | 27.4  (3) | 29.3   (3) | 14.1   (4) |    22.1 |    652
+#
+# ⚠️ HELD AT 24, and the binding reason is the last column, not the density argument.
+# `ensure_frontier` runs INSIDE the authoritative tick (`game.rs`), so streaming one deep
+# section is already a **181 ms stall on a 100 ms tick** — over budget by 1.8x whenever a
+# player walks into new ground, before anything here is touched. 60 makes that 372 ms and
+# 120 makes it 652 ms. (World GENERATION is not the problem: best-of-5 at cap 24 is
+# unchanged from before these fixes, ~1.2 s against ~1.8 s, inside the noise.) Raising
+# this is therefore gated on that stall coming off the loop — `SC-2`'s sim/IO split and
+# `CR-4`'s bounded tick cost.
+#
+# And it is the WRONG lever regardless: the fill is spread uniformly across a ring whose
+# arc is ~7,000 units at r=1200, almost none of which any player can reach. Concentrating
+# the SAME budget along the route network buys the density at no extra count at all. See
+# `WG-6` in docs/ROADMAP.md and docs/proposals/world-shape-and-exploration.md. [TUNABLE]
+maze_radial_scale_cap = 24.0     # max × `maze_fill_scale` can multiply an area's obstacle count
 biome_transition_width = 30.0    # world units over which density blends at a section edge
 obstacle_min_radius = 1.1        # smallest feature (a lone tree/rock) — chunky so fill reads as walls
 obstacle_max_radius = 2.8        # largest feature (a cliff/boulder)
@@ -1443,6 +1473,16 @@ smart_chance_cap = 0.55          # …and never past this
 # better target mid-fight rather than committing to one hero until it dies.
 gang_switch_chance = 0.15
 wander_speed = 1.6            # tiles/sec for passive/idle drifting near home
+# A WANDER DESTINATION HAS TO OUTLIVE THE TICK THAT PICKED IT. The destination used to
+# be re-rolled every 100 ms tick, so a creature chased a point that teleported around
+# its leash faster than it could walk: measured over 30 s, 47.8 tiles of path walked for
+# 0.87 tiles of net displacement, never more than 1.93 tiles from its start. A leg is
+# bounded by TIME as well as arrival, because a destination can walk a creature into a
+# rock and the mover just stops there. [TUNABLE]
+wander_leg_seconds = 6.0      # seconds committed to one destination before repicking
+wander_arrive_radius = 1.2    # close enough — take the next leg rather than jitter through it
+wander_pause_chance = 0.45    # chance a finished leg is followed by standing still…
+wander_pause_seconds = 3.0    # …for this long, jittered ±50% (grazing, not machinery)
 chase_speed = 4.2            # tiles/sec when hunting a player
 aggro_radius = 11.0          # aggressive creatures chase players within this range
 territorial_aggro_radius = 5.0  # territorial creatures only chase when this close

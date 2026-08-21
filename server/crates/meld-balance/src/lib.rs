@@ -1197,6 +1197,18 @@ pub struct Ai {
     /// Chance per attacking turn that a ganging pack re-picks its mark.
     pub gang_switch_chance: f64,
     pub wander_speed: f64,
+    /// How long a creature commits to one wander destination before picking another.
+    /// Load-bearing: the destination used to be re-rolled every 100 ms tick, which
+    /// made every creature vibrate in place instead of going anywhere (see
+    /// `MonsterSpawn::wander_to`).
+    pub wander_leg_seconds: f64,
+    /// How close counts as arrived, so the next leg is picked instead of jittering
+    /// through the destination point.
+    pub wander_arrive_radius: f64,
+    /// Chance that a finished leg is followed by standing still, and how long for
+    /// (jittered ±50%). A creature that never stops reads as machinery.
+    pub wander_pause_chance: f64,
+    pub wander_pause_seconds: f64,
     pub chase_speed: f64,
     pub aggro_radius: f64,
     pub territorial_aggro_radius: f64,
