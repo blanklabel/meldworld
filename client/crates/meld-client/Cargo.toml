@@ -13,15 +13,26 @@ default-run = "meld-client"
 # `webp` decodes the login screen's baked backdrop frames. It is NOT `jpeg`
 # because every zune-jpeg 0.5.x fails to build on the current rustc.
 bevy = { version = "0.16", features = ["mp3", "webp"] }
-# Cross-platform networking (native desktop AND browser/wasm): ewebsock for the
+# Networking: ewebsock for the
 # realtime WebSocket, ehttp for the auth HTTP calls. Both are poll/callback based
-# and need no tokio, so the same code runs on the desktop and in the browser.
+# and need no tokio, which keeps the client off the server's async stack.
 ewebsock = "0.6"
 ehttp = "0.5"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 uuid = { version = "1", features = ["v4", "v7"] }
 meld-proto = { path = "../../../shared/meld-proto" }
+
+# Extras for the `embedded-server` build. Optional, so a normal
+# `cargo build -p meld-client` never compiles the server stack. Paths reach into the
+# server workspace exactly like meld-proto does.
+meld-server = { path = "../../../server/crates/meld-server", optional = true }
+tokio = { version = "1", features = ["rt-multi-thread", "net", "time"], optional = true }
+bevy_embedded_assets = { version = "0.13", optional = true }
+# Raise the process's open-file limit at startup — Bevy's asset loader opens many
+# files at once and a low soft limit (256 on a GUI/launchd-launched macOS process)
+# makes loads fail with "Too many open files", silently dropping sprites + models.
+rlimit = "0.10"
 
 [features]
 # Bake every game asset into the binary (via bevy_embedded_assets) instead of
@@ -34,27 +45,9 @@ embedded-assets = ["dep:bevy_embedded_assets"]
 # The self-contained QA / demo build. Implies `embedded-assets`, and additionally
 # boots the whole server in-process on a background thread (in-memory DB, embedded
 # balance — no Postgres, no separate server), so it runs as ONE file with nothing
-# beside it. Native only — never enabled for the wasm/browser build.
+# beside it.
 embedded-server = ["embedded-assets", "dep:meld-server", "dep:tokio"]
 
-# Native-only extras for the `embedded-server` build. Optional, so a normal
-# `cargo build -p meld-client` (and the wasm build) never compiles the server
-# stack. Paths reach into the server workspace exactly like meld-proto does.
-[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-meld-server = { path = "../../../server/crates/meld-server", optional = true }
-tokio = { version = "1", features = ["rt-multi-thread", "net", "time"], optional = true }
-bevy_embedded_assets = { version = "0.13", optional = true }
-# Raise the process's open-file limit at startup — Bevy's asset loader opens many
-# files at once and a low soft limit (256 on a GUI/launchd-launched macOS process)
-# makes loads fail with "Too many open files", silently dropping sprites + models.
-rlimit = "0.10"
-
-# In the browser, uuid/getrandom need the JS entropy backend, and we read the
-# server base from the page origin.
-[target.'cfg(target_arch = "wasm32")'.dependencies]
-uuid = { version = "1", features = ["v4", "v7", "js"] }
-getrandom = { version = "0.2", features = ["js"] }
-web-sys = { version = "0.3", features = ["Window", "Location", "UrlSearchParams"] }
 
 [dev-dependencies]
 # Reading the bundled face in tests, so "is this glyph real?" is checked rather than

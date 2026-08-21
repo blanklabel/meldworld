@@ -7,8 +7,8 @@
 #
 # play / play-dev boot a throwaway local Postgres under target/pg (reused across
 # runs) and the server on $(MELD_ADDR). Requires a local Postgres install
-# (initdb/pg_ctl/createdb on PATH). The browser/wasm client is parked for now —
-# native is the way we play (see `make play-solo` for a zero-setup one-file run).
+# (initdb/pg_ctl/createdb on PATH). Native is the only client — the browser/wasm
+# build is gone (see `make play-solo` for a zero-setup one-file run).
 
 MELD_ADDR ?= 127.0.0.1:18090
 SERVE     := client/scripts/serve.sh
@@ -64,8 +64,7 @@ help:
 # The native desktop window is how we play. `make play` boots Postgres + the server
 # (serve.sh) and runs the client with art PACKED into the binary (embedded-assets)
 # in release — representative + robust (no loose-file descriptor storms). First build
-# is slow (embeds ~84 MB); leave it running (Ctrl-C to stop). The browser/wasm client
-# is parked for now (the trunk scripts + wasm code still exist for when we revisit it).
+# is slow (embeds ~84 MB); leave it running (Ctrl-C to stop).
 play:
 	$(SERVE) cargo run -p meld-client --features embedded-assets --release
 

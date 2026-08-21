@@ -75,23 +75,14 @@ const MOVE_INTENT_HZ: f32 = 20.0;
 /// out of descriptors and loads fail with "Too many open files (os error 24)" —
 /// which silently drops sprite atlases and GLB models (missing creatures, a
 /// wrecked/absent castle, ground decals). Harmless no-op when the limit is already
-/// high. No-op on wasm (no such limit in the browser).
-#[cfg(not(target_arch = "wasm32"))]
+/// high.
 fn raise_open_file_limit() {
     let _ = rlimit::increase_nofile_limit(u64::MAX);
 }
-#[cfg(target_arch = "wasm32")]
-fn raise_open_file_limit() {}
 
-/// The window mode at launch: borderless-fullscreen on the native desktop (big +
-/// readable), plain windowed in the browser (the canvas fills its parent instead).
-#[cfg(not(target_arch = "wasm32"))]
+/// The window mode at launch: borderless-fullscreen, which is big and readable.
 fn default_window_mode() -> bevy::window::WindowMode {
     bevy::window::WindowMode::BorderlessFullscreen(bevy::window::MonitorSelection::Current)
-}
-#[cfg(target_arch = "wasm32")]
-fn default_window_mode() -> bevy::window::WindowMode {
-    bevy::window::WindowMode::Windowed
 }
 
 fn main() {
@@ -118,14 +109,10 @@ fn main() {
                 .set(WindowPlugin {
                     primary_window: Some(Window {
                         title: "MELDWORLD".to_string(),
-                        // Open BIG: borderless-fullscreen on the native desktop so the
-                        // world + sprites are readable; the resolution is the windowed
-                        // fallback (and what the wasm canvas uses).
+                        // Open BIG: borderless-fullscreen so the world + sprites are
+                        // readable; the resolution is the windowed fallback.
                         resolution: (1280.0_f32, 800.0_f32).into(),
                         mode: default_window_mode(),
-                        // Browser (wasm): bind to <canvas id="bevy"> and fill its parent.
-                        canvas: Some("#bevy".to_string()),
-                        fit_canvas_to_parent: true,
                         ..default()
                     }),
                     ..default()
@@ -681,8 +668,8 @@ struct LobbyData {
 
 // ------------------------------------------------------------- resources ---
 
-/// Non-send: the browser socket handle isn't `Send`, so Bevy runs the systems
-/// that touch it on the main thread.
+/// Non-send: the socket handle isn't `Send`, so Bevy runs the systems that touch it
+/// on the main thread.
 struct NetRes(Net);
 
 #[derive(Resource)]
@@ -1981,7 +1968,7 @@ struct CityIdle(bool);
 
 /// Offline render demo: scripts canned data through the real rendering systems
 /// (no server). Used to show the Overworld/Battle screens where a live WS isn't
-/// available (e.g. a headless preview browser).
+/// available.
 #[derive(Resource)]
 struct Demo {
     on: bool,

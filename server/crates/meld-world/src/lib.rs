@@ -1341,7 +1341,7 @@ pub fn section_seed(run_seed: u64, n: usize) -> u64 {
 
 /// A tiny deterministic PRNG (splitmix64). Same seed ⇒ same world, always —
 /// the determinism invariant (world-generation.md §Invariants). No external rng
-/// dependency (keeps the crate lean and wasm-neutral).
+/// dependency (keeps the crate lean).
 struct Rng(u64);
 
 impl Rng {

@@ -174,10 +174,9 @@ pub fn spawn_camera(commands: &mut Commands, look: &Look, initial: Transform) ->
     // each frame as the camera moves, which is what made the water "shimmer in and
     // out" — flat blended pools flipping in front of / behind each other and the
     // ground. OIT is order-independent, so it's stable. It forbids MSAA, so we swap
-    // to FXAA for edge anti-aliasing on the low-poly geometry. Native only: the
-    // browser (WebGL2) build lacks the storage-buffer features OIT needs, so it
-    // keeps the default sorted-transparency path.
-    #[cfg(not(target_arch = "wasm32"))]
+    // to FXAA for edge anti-aliasing on the low-poly geometry. This used to be gated
+    // off the wasm build, which lacked the storage-buffer features OIT needs; there is
+    // no wasm build any more, so it is unconditional.
     cam.insert((
         Msaa::Off,
         bevy::core_pipeline::oit::OrderIndependentTransparencySettings::default(),

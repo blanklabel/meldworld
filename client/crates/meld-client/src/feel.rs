@@ -6,7 +6,7 @@
 //! to hang these off, and they had drifted into bare `const`s in `main.rs` plus magic
 //! literals inside the animation systems — which made dialing the feel in a recompile per
 //! guess. One struct, defaults that are exactly what shipped, and a runtime override:
-//! `MELD_FEEL="lunge_ttl=0.5,number_rise=70"` natively, `?feel=…` in the browser.
+//! `MELD_FEEL="lunge_ttl=0.5,number_rise=70"`.
 
 use bevy::prelude::*;
 
@@ -165,8 +165,7 @@ mod tests {
 /// The same argument as [`BattleFeel`] and the same shape — these are *presentation*
 /// pacing, they had drifted into a bare `const` plus four magic literals inside
 /// `advance_sky`, and they are exactly the numbers you want to turn with the game in
-/// front of you. `MELD_WORLD_FEEL="day_len=900,fair_secs=800"` natively, `?worldfeel=…`
-/// in the browser.
+/// front of you. `MELD_WORLD_FEEL="day_len=900,fair_secs=800"`.
 #[derive(Resource, Clone, Debug, PartialEq)]
 pub(crate) struct WorldFeel {
     /// Seconds for one full day → night → day cycle.
