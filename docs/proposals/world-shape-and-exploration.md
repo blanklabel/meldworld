@@ -449,6 +449,47 @@ Two costs to see before committing:
   `resources_for_biome` / `fill_kind_for_biome` get asked per *placement* rather than per
   section. That is mechanical, but it is every placement site.
 
+### 4.2a The ocean: give the fan a coastline
+
+Measured first, seed 424242 streamed to d600. The arc is **340°**, so the wedge behind
+Last City spans **20°** — and:
+
+- content outside the fan: **0 obstacles, 0 creatures, 0 nodes** (of 11,704 / 3,745 / 36)
+- the movement clamp is a **SQUARE** (`x_min`/`x_max`/`lateral` = ±rmax), **not the arc**
+
+So a player can walk off the side of the world into entirely empty walkable ground and keep
+going until an invisible rectangle stops them. That is the same class of problem as a token
+nothing renders: **a boundary the player cannot see does not exist to them.**
+
+**The version worth building is the fan's COASTLINE, not a backdrop behind town.** The fan
+has two edges and they exist at *every* radius; "behind the city" only anchors you near
+home, and the orientation problem is worst deep. One body of water runs out along both
+edges and closes behind the city where they meet — Last City at the head of a bay.
+
+Why it is close to free:
+
+- **An ocean is pure boundary.** You never need its interior, only its shore — the
+  strongest possible case for the edge representation measured in §4.1 (2,110 rim colliders
+  **+3%**; one filled disc **+63%**).
+- The rendering already ships, animated, in three biome-keyed variants, so a tundra coast is
+  `water_ice` and a mire coast is `water_bog` for nothing.
+- Coastline length grows linearly with reach and streams like everything else.
+
+It also retires a magic number: `west_return_border = -20.0` is an invisible line in an
+empty field today. **Make the shore the return** — walk to the coast and the city is there.
+
+⚠️ **Two honest limits.**
+
+1. **It does not solve `WG-7`.** It is a *frame*, not a destination: it tells you which way
+   is out, but there is still nothing to walk *toward*. Wedges and landmarks remain the work.
+2. **The coastline may never be seen.** All content is inside the fan and the clear path runs
+   radially, so nothing draws a player sideways; a coast at ±170° would be visited by almost
+   nobody. So: **behind the city it pays immediately** (you go there every run), while
+   **along the arc edges it only pays once `WG-7` gives a reason to travel laterally.** Ocean
+   and angular structure are complements. Building the ocean alone means building the part
+   behind the city. (Narrowing the arc with depth would make the coast unavoidable instead —
+   but that is a real difficulty-curve change, not a free one.)
+
 ### 4.3 The constraint I would insist on: a detour budget
 
 If barriers lengthen the walk to depth *d* without bound, "walk around the mountain" stops

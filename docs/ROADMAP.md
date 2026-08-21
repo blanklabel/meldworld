@@ -1713,6 +1713,24 @@ design for this epic: [`proposals/worldgen-wg.md`](proposals/worldgen-wg.md).
     per section from that section's biome**, so a section becomes a patchwork and
     `creatures_for_biome`/`resources_for_biome`/`fill_kind_for_biome` get asked per
     placement — mechanical, but at every placement site.
+  - *Give the fan a COASTLINE (the ocean).* Measured at seed 424242 to d600: the arc is
+    340°, the wedge behind Last City spans **20°**, there is **zero** content outside the
+    fan (0 obstacles / 0 creatures / 0 nodes of 11,704 / 3,745 / 36), and the movement
+    clamp is a **SQUARE** (`x_min`/`x_max`/`lateral` = ±rmax) rather than the arc — so a
+    player can walk off the side of the world into empty ground until an invisible
+    rectangle stops them. A boundary nobody can see does not exist to them. The version
+    worth building is the fan's **coastline**, not a backdrop behind town: the fan has two
+    edges at *every* radius, so one body of water runs out along both and closes behind the
+    city where they meet (Last City at the head of a bay). Nearly free — an ocean is **pure
+    boundary**, the best case for the edge representation above (2,110 rim colliders +3%
+    against one filled disc's +63%), and the animated water already ships in three
+    biome-keyed variants. It also retires a magic number: make **the shore** the
+    west-return instead of `west_return_border = -20.0`, an invisible line in an empty
+    field. ⚠️ Two limits: it is a **frame, not a destination** (it says which way is out;
+    nothing to walk toward), and **the coastline may never be seen** — all content is inside
+    the fan and the clear path runs radially, so nothing draws a player sideways. Behind the
+    city it pays immediately; along the arc edges it only pays once this item's angular
+    structure gives a reason to travel laterally. Ocean and wedges are complements.
   - *The constraint that makes it fun rather than a tax:* **a detour budget.** Route length
     to depth `d` must stay under a bounded multiple of `d`, held by test across seeds — a
     barrier that cannot be afforded is not placed. Depth is already a time sink (a
