@@ -576,11 +576,22 @@ per hero the more help you brought. Measured over five seeds, **12.5%** of an un
 gatekeeper's turns go wide, which puts a Worldbreaker at sixteen heroes on **52%** of the
 per-hero pressure that boss applies to a lone party — while carrying 20x the health. Four
 times the damage went in and each hero felt half the answer back.
-`abilities::widen_for_warband` buys **CADENCE, never magnitude**: the party-wide rows come
+`Fighter::raid_parties` buys **CADENCE, never magnitude**: the party-wide rows come
 round sooner and are rolled oftener (`[encounters] raid_wide_*_per_party`), every number a
 hero takes is the one an ordinary gatekeeper deals, and the telegraph is never shortened.
 That is what makes it safe where scaling attack is not — nothing here can turn a hit into a
-one-shot. Measured wide share climbs **12.5% → 23.5% → 32.9% → 41.8%** across the four rungs,
+one-shot.
+⚠️ **THE BIAS IS APPLIED TO THE ROLL, NEVER TO THE POOL, AND THAT IS LOAD-BEARING.** An
+ability's authored `weight` is read for a SECOND purpose — `signature_ability` picks the
+rarest one as `CN-7`'s rebuke — so scaling weights in the kit silently changes what counts as
+a boss's signature, and changes it in the worst direction: the rows a raid tier makes common
+are exactly the wide capstones. Measured on the roster, five of ten bosses had their rebuke
+downgraded from their apocalypse (SERMON OF SILENCE, THE DEPTHS RECLAIM, IRONMAW RAMPAGE,
+COLLAPSING SORROW, ASHFALL APOCALYPSE) to a small single-target poke, so a **Worldbreaker
+answered an interruption more weakly than the ordinary version of itself**. The pool stays
+authored content and the encounter biases how it is rolled; magnitudes, telegraphs and level
+gates are then untouched *by construction* rather than by test. A raid tier changes how often
+you see an ability, never what an ability IS. Measured wide share climbs **12.5% → 23.5% → 32.9% → 41.8%** across the four rungs,
 taking a full raid to ~132% of the one-party baseline per hero and an under-manned party to
 ~164%. The test **plays the fight** and asserts the RATIO (`per_hero`), never the rates.
 ⚠️ **The heroes in that harness must actually SWING**: a defending party never drops the boss

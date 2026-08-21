@@ -1641,13 +1641,24 @@ Make time in the field a living, dangerous place worth screenshotting.
       unlabelled boss's turns go wide, which puts a **Worldbreaker at sixteen heroes on 52%**
       of the per-hero pressure that same boss applies to a lone party — while carrying 20x the
       health. Four times the damage went in and each hero felt half the answer back.
-    - `abilities::widen_for_warband` buys **CADENCE, never magnitude**: the party-wide rows
+    - `Fighter::raid_parties` buys **CADENCE, never magnitude**: the party-wide rows
       come round sooner and are rolled oftener (`[encounters] raid_wide_weight_per_party` /
       `raid_wide_cooldown_per_party`), every number a hero takes is the one an ordinary
       gatekeeper deals, and a shortened cooldown never undercuts its own telegraph. Nothing
       here can turn a hit into a one-shot, which is exactly why it is safe where scaling attack
       is not. Single-target rows are left strictly alone — raising them would be the
       attack-scaling mistake wearing a cooldown's clothes.
+    - ⚠️ **THE BIAS IS ON THE ROLL, NOT THE POOL — a crossing with `CN-7`, caught by rebasing.**
+      An ability's authored `weight` is read for a second purpose: `signature_ability` picks the
+      rarest one as the rebuke. Scaling weights in the kit therefore changes what counts as a
+      boss's signature, in the worst direction — the rows a raid tier makes common are exactly
+      the wide capstones. Measured on the roster, **five of ten bosses** had their rebuke
+      downgraded from their apocalypse (SERMON OF SILENCE, THE DEPTHS RECLAIM, IRONMAW RAMPAGE,
+      COLLAPSING SORROW, ASHFALL APOCALYPSE) to a small single-target poke, so a Worldbreaker
+      answered an interruption *more weakly* than the ordinary version of itself. The pool stays
+      authored content now and the encounter biases how it is rolled, which also makes
+      "magnitudes, telegraphs and level gates untouched" true by construction rather than by
+      test. `a_raid_tier_never_changes_what_a_bosss_signature_is` is the guard.
     - Wide share climbs **12.5% → 23.5% → 32.9% → 41.8%** across the four rungs, taking a full
       raid to ~132% of the one-party per-hero baseline and an under-manned party to ~164% — a
       raid boss is the *worse* fight now, not merely the longer one. The test **plays** the

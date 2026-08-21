@@ -379,7 +379,9 @@ pub struct Encounters {
     /// one-party per-hero baseline to ~132% of it.
     pub raid_wide_weight_per_party: f64,
     /// How much sooner those same abilities come back, per party past the first — the
-    /// cooldown is divided by `1 + this x (parties - 1)`, floored at the telegraph.
+    /// cooldown is divided by `1 + this x (parties - 1)`, floored at the telegraph. It
+    /// saturates early in practice: past the point where a wide row is ready whenever the boss
+    /// acts, only the weight above moves the share.
     pub raid_wide_cooldown_per_party: f64,
     pub gatekeeper_atk_mult: f64,
     pub gatekeeper_xp_mult: f64,

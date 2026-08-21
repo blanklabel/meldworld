@@ -181,7 +181,28 @@ pub struct Fighter {
     /// The (level-unfiltered) monster ability pool — content from
     /// `meld_world::abilities`. Empty for players and unknown creature kinds
     /// (they fight with basic attacks only).
+    ///
+    /// **Authored content, never rewritten per encounter.** A raid tier biases how this pool
+    /// is ROLLED (see `raid_parties`) rather than editing it, because the weights in here are
+    /// read for a second purpose — `signature_ability` picks the rarest one as the rebuke — so
+    /// a scaled-in-place weight silently changes which ability is "rare".
     pub abilities: Vec<MonsterAbility>,
+    /// How many PARTIES this creature is sized for (`meld_proto::warbands`); 1 for everything
+    /// ordinary, and the only input the raid bias takes.
+    ///
+    /// A raid boss's HP rides this count and its ATTACK deliberately does not — a swing lands
+    /// on ONE hero, so scaling it would delete whoever arrives before the merge fills. That
+    /// argument is about single targets, and followed through it is the argument FOR biasing
+    /// the WIDE half: **a single-target blow is divided by the crowd in front of it and an
+    /// all-enemy one is divided by nothing.** So without this a raid boss got *easier* per
+    /// hero the more help you brought — at sixteen heroes a single-target filler is a
+    /// sixteenth of the pressure it is at four, while a Cinder Wave is unchanged.
+    ///
+    /// It buys CADENCE, never magnitude: party-wide rows are rolled oftener and come back
+    /// sooner, and every number a hero takes is the one an ordinary gatekeeper deals. Nothing
+    /// here can turn a hit into a one-shot, which is exactly why it is safe where scaling
+    /// attack is not.
+    pub raid_parties: u8,
     /// Which of the 10 named bosses (FS-4) this fighter is, if any — empty for
     /// players and plain creatures. Rides the wire as a `boss:<key>` status
     /// (see `build_wire_statuses`) so the client can render the actual boss
@@ -330,6 +351,7 @@ impl Fighter {
             foci: Vec::new(),
             defending: false,
             abilities: Vec::new(),
+            raid_parties: 1,
             boss_kind: String::new(),
             ward: 0,
             element_power: HashMap::new(),
@@ -822,6 +844,10 @@ pub struct Battle {
     poison_dot_fraction: f64,
     burn_dot_fraction: f64,
     basic_attack_weight: i32,
+    /// FS-4 raid bias, applied to a party-wide ability's roll weight and cooldown per party
+    /// past the first. See `Fighter::raid_parties`.
+    raid_wide_weight_per_party: f64,
+    raid_wide_cooldown_per_party: f64,
     min_damage: i32,
     paralysis_break_base: f64,
     paralysis_break_per_wll: f64,
@@ -1142,6 +1168,8 @@ impl Battle {
             poison_dot_fraction: balance.battle.poison_dot_fraction,
             burn_dot_fraction: balance.battle.burn_dot_fraction,
             basic_attack_weight: balance.battle.basic_attack_weight,
+            raid_wide_weight_per_party: balance.encounters.raid_wide_weight_per_party,
+            raid_wide_cooldown_per_party: balance.encounters.raid_wide_cooldown_per_party,
             min_damage: balance.combat_math.min_damage,
             paralysis_break_base: balance.affliction.paralysis_break_base,
             paralysis_break_per_wll: balance.affliction.paralysis_break_per_wll,
@@ -4103,6 +4131,30 @@ impl Battle {
     ///
     /// `None` for a creature with no authored kit, which is what keeps this to things that
     /// have something to answer WITH, without anything having to declare itself a boss.
+    /// Extra parties past the first this fighter is sized for — 0 for everything ordinary.
+    fn raid_extra(&self, i: usize) -> f64 {
+        f64::from(self.fighters[i].raid_parties.saturating_sub(1))
+    }
+
+    /// How much likelier a PARTY-WIDE ability is to be rolled for this fighter (1.0 = not).
+    ///
+    /// The bias lives here rather than in the pool on purpose: the authored weights are also
+    /// read as *rarity* by `signature_ability`, so scaling them in place would quietly make a
+    /// raid boss's rebuke its small single-target poke where the ordinary version of the same
+    /// boss answers with its apocalypse — a raid tier weakening the fight it is meant to
+    /// escalate. Measured, that hit five of the ten authored bosses.
+    fn wide_weight_mult(&self, i: usize) -> f64 {
+        1.0 + self.raid_wide_weight_per_party.max(0.0) * self.raid_extra(i)
+    }
+
+    /// How much sooner a party-wide ability comes back for this fighter (1.0 = not).
+    fn wide_cooldown_div(&self, i: usize) -> f64 {
+        1.0 + self.raid_wide_cooldown_per_party.max(0.0) * self.raid_extra(i)
+    }
+
+    /// The rebuke's pick: the RAREST thing in this creature's book, by its **authored**
+    /// weight. Deliberately not the biased weight — a raid tier changes how often you see an
+    /// ability, never what counts as its signature.
     fn signature_ability(&self, i: usize) -> Option<usize> {
         let level = self.fighters[i].level;
         self.fighters[i]
@@ -4152,7 +4204,15 @@ impl Battle {
                         <= now
                     && a.hp_threshold_pct.is_none_or(|t| hp_pct <= t)
             })
-            .map(|(idx, a)| (idx, a.weight.max(1) as i64))
+            .map(|(idx, a)| {
+                let w = f64::from(a.weight.max(1));
+                let w = if a.reaches_the_whole_party() {
+                    w * self.wide_weight_mult(actor_i)
+                } else {
+                    w
+                };
+                (idx, (w.round() as i64).max(1))
+            })
             .collect();
         let total: i64 =
             eligible.iter().map(|(_, w)| w).sum::<i64>() + self.basic_attack_weight.max(1) as i64;
@@ -4175,9 +4235,18 @@ impl Battle {
         idx: usize,
         events: &mut Vec<Event>,
     ) -> Option<Resolution> {
-        let (cooldown, telegraph, callout) = {
+        let (cooldown, telegraph, callout, wide) = {
             let a = &self.fighters[actor_i].abilities[idx];
-            (a.cooldown_ticks, a.telegraph_ticks, a.callout_text.clone())
+            (a.cooldown_ticks, a.telegraph_ticks, a.callout_text.clone(), a.reaches_the_whole_party())
+        };
+        // A raid boss's wide rows come back sooner. Floored at the TELEGRAPH, never below: a
+        // shout has to still mean something, and an ability ready again before the last cast
+        // has landed would announce itself into a fight that never sees it arrive.
+        let cooldown = if wide {
+            ((f64::from(cooldown) / self.wide_cooldown_div(actor_i)).round() as i32)
+                .max(telegraph.max(1))
+        } else {
+            cooldown
         };
         self.fighters[actor_i]
             .ability_ready_at
@@ -8037,6 +8106,188 @@ mod tests {
             }
         }
         (all, resolutions)
+    }
+
+    /// A pool with one wide row and one single-target row, both plainly available. The
+    /// AUTHORED rarity puts the wide one rarest, which is the shape five of the ten authored
+    /// boss kits actually have — and the shape that breaks if the bias is applied to the pool
+    /// instead of to the roll.
+    fn wide_and_single_pool() -> Vec<MonsterAbility> {
+        let row = |kind: &str, weight: i32, target: meld_proto::abilities::AbilityTarget| {
+            MonsterAbility {
+                ability_kind: kind.into(),
+                callout_text: format!("{kind}!"),
+                weight,
+                cooldown_ticks: 40,
+                telegraph_ticks: 0,
+                hp_threshold_pct: None,
+                min_level: 1,
+                effects: vec![meld_proto::abilities::AbilityEffect {
+                    effect_kind: meld_proto::abilities::AbilityEffectKind::Damage,
+                    scaling_base: Some(meld_proto::abilities::ScalingBase::Attack),
+                    coefficient: Some(0.5),
+                    damage_type: Some(DamageType::Blunt),
+                    target,
+                    status_name: None,
+                    duration_ticks: None,
+                    steal_target_kind: None,
+                }],
+            }
+        };
+        vec![
+            row("wide_sweep", 1, meld_proto::abilities::AbilityTarget::AllEnemies),
+            row("single_poke", 2, meld_proto::abilities::AbilityTarget::SingleEnemy),
+        ]
+    }
+
+    /// FS-4: a raid boss rolls its PARTY-WIDE half oftener, because that is the only half of
+    /// its output that does not dilute as the crowd grows — a single-target blow is divided by
+    /// however many heroes turned up and an all-enemy one is divided by nothing. Without it a
+    /// boss sized for four parties is a longer fight and an *easier* one per hero.
+    #[test]
+    fn a_raid_boss_rolls_its_wide_half_oftener() {
+        let b = Balance::load_default().unwrap();
+        let wide_share = |parties: u8| {
+            let mut boss = monster("m", 1_000_000, 400);
+            boss.abilities = wide_and_single_pool();
+            boss.raid_parties = parties;
+            // Heroes that outlast the sample: the question is what the boss CHOOSES over many
+            // turns, and a party that dies at turn ten answers it with noise.
+            let bystander = |id: &str| {
+                Fighter::new(
+                    id.to_string(),
+                    CombatantKind::Player,
+                    Some(format!("p-{id}")),
+                    None,
+                    1,
+                    10_000_000,
+                    1,
+                    0,
+                    1,
+                )
+            };
+            let mut battle = Battle::new(
+                "b".into(),
+                EncounterClass::Gatekeeper,
+                vec![bystander("h1"), bystander("h2")],
+                vec![boss],
+                &b,
+                7,
+            );
+            let (mut wide, mut total) = (0u32, 0u32);
+            for _ in 0..40_000 {
+                if battle.is_over() {
+                    break;
+                }
+                for ev in battle.tick() {
+                    if let Event::Resolved(r) = ev {
+                        if r.actor_id != "m" {
+                            continue;
+                        }
+                        total += 1;
+                        let hit: std::collections::HashSet<&String> =
+                            r.effects.iter().map(|e| &e.target_id).collect();
+                        if hit.len() >= 2 {
+                            wide += 1;
+                        }
+                    }
+                }
+            }
+            assert!(total > 50, "{parties} parties gave only {total} turns to read");
+            f64::from(wide) / f64::from(total)
+        };
+        let (one, four) = (wide_share(1), wide_share(4));
+        assert!(
+            four > one,
+            "a four-party boss goes wide {:.1}% of the time and a one-party boss {:.1}% - the \
+             raid tier is a health bar and a word",
+            four * 100.0,
+            one * 100.0
+        );
+    }
+
+    /// ⚠️ THE CROSSING THIS GUARDS. `signature_ability` reads the pool's weights as *rarity*
+    /// to pick the rebuke, so a raid tier that scaled those weights in place would change what
+    /// counts as a boss's signature — and change it in the worst direction, since the rows a
+    /// raid tier makes common are exactly the wide capstones. Measured on the authored roster
+    /// at the time: five of ten bosses had their rebuke downgraded from their apocalypse
+    /// (SERMON OF SILENCE, THE DEPTHS RECLAIM, IRONMAW RAMPAGE, COLLAPSING SORROW, ASHFALL
+    /// APOCALYPSE) to a small single-target poke, so a Worldbreaker answered an interruption
+    /// more weakly than the ordinary version of itself.
+    ///
+    /// The bias therefore lives on the ROLL and the pool stays authored content. A raid tier
+    /// changes how often you see an ability, never what counts as its signature.
+    #[test]
+    fn a_raid_tier_never_changes_what_a_bosss_signature_is() {
+        let b = Balance::load_default().unwrap();
+        let signature_of = |parties: u8| {
+            let mut boss = monster("m", 1000, 100);
+            boss.abilities = wide_and_single_pool();
+            boss.raid_parties = parties;
+            let battle = Battle::new(
+                "b".into(),
+                EncounterClass::Gatekeeper,
+                vec![player("h1", 100)],
+                vec![boss],
+                &b,
+                7,
+            );
+            let i = battle.idx("m").expect("the boss is in the fight");
+            let idx = battle.signature_ability(i).expect("a non-empty kit has a signature");
+            battle.fighters[i].abilities[idx].ability_kind.clone()
+        };
+        assert_eq!(
+            signature_of(1), "wide_sweep",
+            "the rarest authored row is the signature"
+        );
+        for parties in 2..=meld_proto::warbands::max_parties() {
+            assert_eq!(
+                signature_of(parties), "wide_sweep",
+                "{parties} parties changed the boss's signature - the bias reached the pool"
+            );
+        }
+    }
+
+    /// A raid-shortened cooldown may never dip below its own telegraph: a shout has to keep
+    /// meaning something, and an ability ready again before the last cast has landed would
+    /// announce itself into a fight that never sees it arrive.
+    #[test]
+    fn a_raid_shortened_cooldown_never_undercuts_its_own_telegraph() {
+        let mut b = Balance::load_default().unwrap();
+        // Far past anything tunable, to prove the floor rather than the current numbers.
+        b.encounters.raid_wide_cooldown_per_party = 500.0;
+        let mut boss = monster("m", 1_000_000, 400);
+        boss.abilities = wide_and_single_pool();
+        boss.abilities[0].telegraph_ticks = 20;
+        boss.abilities[0].cooldown_ticks = 200;
+        boss.raid_parties = 4;
+        let mut battle = Battle::new(
+            "b".into(),
+            EncounterClass::Gatekeeper,
+            vec![player("h1", 1), player("h2", 1)],
+            vec![boss],
+            &b,
+            7,
+        );
+        let i = battle.idx("m").expect("the boss is in the fight");
+        // Drive it until the wide row has been committed at least once, then read back when
+        // the engine says it may be used again.
+        for _ in 0..40_000 {
+            if battle.is_over() {
+                break;
+            }
+            battle.tick();
+            if let Some(ready_at) = battle.fighters[i].ability_ready_at.get(&0).copied() {
+                assert!(
+                    ready_at >= battle.tick_count(),
+                    "the wide row was ready again before its own telegraph landed"
+                );
+                if ready_at > battle.tick_count() {
+                    return;
+                }
+            }
+        }
+        panic!("the wide row never came up to check");
     }
 
     #[test]

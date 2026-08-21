@@ -1079,20 +1079,13 @@ pub fn build_battle(
             // named boss identity (FS-4), which gets its own bespoke kit.
             let ability_key = if m.boss_kind.is_empty() { &m.monster_kind } else { &m.boss_kind };
             f.boss_kind = m.boss_kind.clone();
-            // A RAID boss answers the crowd it is sized for with its WIDE half (FS-4): its
-            // party-wide rows come round sooner and are rolled oftener, at unchanged
-            // magnitudes. A single-target blow is divided by however many heroes turned up
-            // and an all-enemy one is not, so cadence on the wide half is the only lever that
-            // makes "sized for four parties" mean a harder fight rather than merely a longer
-            // one — and the only one that cannot one-shot the party that arrives first.
-            // Applied here for the same reason the group is derived here: sixteen places
-            // create a spawn, exactly one assembles a battle.
-            f.abilities = meld_world::abilities::widen_for_warband(
-                meld_world::abilities::creature_abilities(ability_key),
-                m.expects_parties,
-                balance.encounters.raid_wide_weight_per_party,
-                balance.encounters.raid_wide_cooldown_per_party,
-            );
+            f.abilities = meld_world::abilities::creature_abilities(ability_key);
+            // A RAID boss answers the crowd it is sized for with its WIDE half (FS-4). Only
+            // the COUNT is carried: the engine biases how the pool is rolled, rather than
+            // anything here rewriting the kit — the authored weights are read as *rarity*
+            // elsewhere (the rebuke's signature), so a kit scaled in place makes a raid boss
+            // answer an interruption more weakly than the ordinary version of itself.
+            f.raid_parties = m.expects_parties;
             // A creature's elemental resistance rides its defence curve, since it has no Mnd
             // to grow one from — kept under 1.0 so casting stays the answer to armour.
             f.ward = ((m.def as f64) * balance.armor_resist.creature_ward_fraction).round() as i32;
@@ -3165,4 +3158,5 @@ mod tests {
             "bringing nobody costs each hero no more than bringing everybody"
         );
     }
+
 }

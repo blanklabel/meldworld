@@ -682,6 +682,9 @@ gatekeeper_raid_max_parties = 4
 # These buy CADENCE, never magnitude: the party-wide rows come round sooner and are rolled
 # oftener, and every number a hero takes is the one an ordinary gatekeeper deals. Nothing here
 # can turn a hit into a one-shot, which is exactly why it is safe where scaling attack is not.
+# Applied to the ROLL and never to the kit — an ability's authored weight is also read as its
+# RARITY (`signature_ability` picks the rarest as CN-7's rebuke), so a scaled pool would make
+# a Worldbreaker answer an interruption more weakly than the ordinary version of itself.
 # At 1.0/1.0 the measured wide share climbs 12.5% -> 23.5% -> 32.9% -> 41.8% across the four
 # rungs, which puts a full raid at ~132% of the one-party baseline per hero and an under-manned
 # party at ~164% — a raid boss should be the WORSE fight, not merely the longer one. 2.0 was
