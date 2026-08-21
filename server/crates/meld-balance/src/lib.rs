@@ -802,6 +802,19 @@ pub struct Affix {
     pub count_ephemeral_bonus: usize,
     pub magnitude_per_tier: f64,
     pub magnitude_jitter: f64,
+    /// Relative DRAW weight per affix class — how often a line of that kind is the one
+    /// you get, not how big it is (`AffixDef::scale` is the size). A flat pool made
+    /// `brand` — which decides what damage type your attacks ARE — exactly as common as
+    /// `masterwork`, extra durability: measured at 32-34% each on a deep legendary, every
+    /// key identical. With nothing rarer than anything else there is nothing to chase, so a
+    /// wide roll was just more random lines. Filler sits at 1.0 and the build-defining
+    /// classes below it. [TUNABLE]
+    pub weight_stat: f64,
+    pub weight_quality: f64,
+    pub weight_element: f64,
+    pub weight_ward: f64,
+    pub weight_keyword: f64,
+    pub weight_synergy: f64,
     pub tier_floor_stat: i32,
     pub tier_floor_element: i32,
     pub tier_floor_ward: i32,
@@ -831,6 +844,21 @@ impl Affix {
         base
             + if signature { self.count_signature_bonus } else { 0 }
             + if ephemeral { self.count_ephemeral_bonus } else { 0 }
+    }
+
+    /// The relative draw weight for an affix class, keyed by its wire word (same reason
+    /// `tier_floor` is: this crate stays a pure config loader with no proto dependency).
+    /// An unknown word reads as filler weight rather than 0, so a new affix class is
+    /// merely un-tuned instead of unreachable.
+    pub fn weight(&self, class: &str) -> f64 {
+        match class {
+            "element" => self.weight_element,
+            "ward" => self.weight_ward,
+            "keyword" => self.weight_keyword,
+            "synergy" => self.weight_synergy,
+            "quality" => self.weight_quality,
+            _ => self.weight_stat,
+        }
     }
 
     /// The tier a given affix class unlocks at, keyed by its wire word — so this

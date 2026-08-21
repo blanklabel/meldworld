@@ -300,6 +300,37 @@ counts a party that **fled** as dead, since fleeing clears `alive` with everyone
 two deaths with no battle to end — a dungeon trap and a Shift's Force blast — credit the
 same tax through the same write.
 
+⚠️ **AN AFFIX ON GEAR YOU FOUND THIS DIVE USED TO DO NOTHING.** The fold from affixes to
+stats lived in `meld-db`, so it only ever ran on VAULT rows; run loot reached the fight
+through `effective_gear_bonus`, which copied `atk`/`def`/`spd` and dropped everything else —
+no brand, no ward, no synergy, no keyword, for the whole dive you were carrying the piece.
+Worst for the **EPHEMERAL** tier, which only ever exists inside a run and burns on the way
+home: its entire affix payload, the widest in the game, could never once apply. It is one
+function now (`meld_proto::equipment::fold_affixes`) called by both paths, and a weapon found
+this dive contributes its FAMILY too, or a bow you just picked up does not reach. Same shape
+as the twice-declared `GearBonus` below: a property that reaches the Vault and not the fight.
+
+**AN AFFIX POOL WITH NOTHING RARE IN IT HAS NOTHING TO CHASE.** Draws are **weighted** by
+affix class (`[affix] weight_stat` … `weight_synergy`) and taken **without replacement**.
+Both halves were wrong: a uniform pool put every reachable key on 32-34% of a deep
+legendary, so `brand` — which decides what damage type your attacks ARE — was exactly as
+common as `masterwork`, extra durability; and the loop `continue`d past a duplicate key,
+silently eating the line, so a nominal 5 delivered 4.29 and the gap grew with the count.
+Filler sits at 1.0 and the build-defining classes below it, which puts an element at ~13%
+and a keyword or synergy at ~9% of a standard legendary. The test asserts the **ordering**,
+never the rates — the weights are `[TUNABLE]` and the shape is the rule.
+
+**EVERY FIELDABLE CLASS HAS EXACTLY ONE KEYWORD AFFIX**, and each lands on a state the
+engine already models rather than new machinery: the Explorer's `pace_setter` (gauge
+part-filled at battle start), the Hunter's `adrenaline_primed`, the Psyker's `focus_slot`,
+the Resonant's `mender_regen` (points of max HP on its innate regen — the only innate regen
+in the game), the Shifter's `runner_dodge` (PERMANENT dodge, not the decaying Evasion boon
+anyone can roll), the Phoenix Guard's `undead_bane` (read off the ATTACKER, since it is the
+wearer's zeal), the Smithwright's `tempered_start` (walks in already Tempered) and the
+Keeper's `grafted_bloom` (spell power, because its damage rides Mnd). It was a two-class
+feature for a long time, so six of eight classes drew from a pool with no twist in it at
+all; `every_class_has_exactly_one_keyword_affix` reads the roster rather than a list.
+
 **EPHEMERAL IS THE BUILD-DEFINING TIER, AND IT BURNS TWICE.** It goes when you reach the
 city (any way home — extract, walk in, or abandon) **and when the hero wearing it falls**,
 which is the same trigger `GR-2`'s durability tax uses. That double risk is what pays for

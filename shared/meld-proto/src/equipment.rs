@@ -451,6 +451,77 @@ pub fn class_key(class: CharacterClass) -> &'static str {
 /// category columns cannot disagree about what a hero wears.
 pub const SLOTS: [&str; 6] = ["main_hand", "off_hand", "head", "chest", "legs", "accessory"];
 
+/// Fold one item's AD-1 affixes into a hero's running bonus — the ONE place that turns an
+/// affix into a stat.
+///
+/// Stat and ward affixes apply immediately; a **keyword** affix only counts for the class
+/// whose mechanic it twists; a **synergy** affix is deferred to battle assembly, the only
+/// place that knows the party composition.
+///
+/// It lives here, beside `GearBonus`, because it had lived in `meld-db` — and so it only
+/// ever ran on VAULT gear. Gear found during a dive reached the fight through a different
+/// path that copied `atk`/`def`/`spd` and nothing else, so **every affix on a piece you
+/// picked up this run was inert until you banked it**: no brand, no ward, no synergy, no
+/// keyword. Worst for the EPHEMERAL tier, which only ever exists during a run and burns on
+/// the way home — its entire affix payload could never once apply. Same shape as the
+/// twice-declared `GearBonus` this crate already warns about: a property that reaches the
+/// Vault and not the fight.
+pub fn fold_affixes(
+    b: &mut GearBonus,
+    affixes: &[crate::affixes::Affix],
+    hero_class: Option<CharacterClass>,
+) {
+    for a in affixes {
+        match hero_class {
+            Some(c) if !a.applies_to(c) => continue,
+            // No class known: skip the class-locked ones rather than guess. Every caller
+            // that fields a hero knows its class, so this is the Vault-listing path.
+            None if a.def().and_then(|d| d.only_class).is_some() => continue,
+            _ => {}
+        }
+        let m = a.magnitude;
+        match a.key.as_str() {
+            "atk" => b.atk += m,
+            "def" => b.def += m,
+            "spd" => b.spd += m,
+            "barrier" => b.barrier += m,
+            "regen" => b.regen += m,
+            "evasion" => b.evasion += m,
+            "adrenaline_primed" => b.adrenaline += m,
+            "focus_slot" => b.focus_slots += m,
+            // One keyword per fieldable class, each landing on a state the engine models.
+            "pace_setter" => b.start_gauge_pct += m,
+            "mender_regen" => b.mender_regen_pct += m,
+            "runner_dodge" => b.dodge_pct += m,
+            "undead_bane" => b.undead_bane_pct += m,
+            "tempered_start" => b.tempered_pct += m,
+            "grafted_bloom" => b.spell_power_pct += m,
+            "ward" => b.ward += m,
+            "element_power" => {
+                if let Some(el) = &a.element {
+                    b.element_power.push((el.clone(), m));
+                }
+            }
+            "brand" if b.brand.is_none() => b.brand = a.element.clone(),
+            "resist" => {
+                if let Some(el) = &a.element {
+                    // A resist affix reads as a percentage; the modifier plumbing wants a
+                    // multiplier (25% resisted -> 0.75).
+                    let mult = 1.0 - (m.clamp(0, 100) as f64 / 100.0);
+                    b.modifiers.push((el.clone(), mult));
+                }
+            }
+            "ally_atk" | "ally_def" => {
+                if let Some(ally) = &a.ally_class {
+                    let (atk, def) = if a.key == "ally_atk" { (m, 0) } else { (0, m) };
+                    b.synergies.push((ally.clone(), atk, def));
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 /// Score a piece for a class, given that class's `[atk, def, spd]` weights (`[equip_best]`).
 ///
 /// Gear carries only those three bonuses, so they are the whole axis. A flat sum would be
@@ -513,10 +584,23 @@ pub struct GearBonus {
     pub regen: i32,
     /// Evasion in percentage points.
     pub evasion: i32,
-    /// AD-1 keyword affixes (class-mechanic twists), already filtered to this hero's class:
-    /// banked Adrenaline at battle start, extra Focus slots.
+    /// AD-1 keyword affixes (class-mechanic twists), already filtered to this hero's class.
+    /// One per fieldable class, each reusing a state the engine already models — so an
+    /// unrecognised one is simply zero rather than a mechanic nobody honours.
     pub adrenaline: i32,
     pub focus_slots: i32,
+    /// Explorer: percentage points of the ATB gauge already filled at battle start.
+    pub start_gauge_pct: i32,
+    /// Resonant: percentage points of max HP added to its innate per-turn regen.
+    pub mender_regen_pct: i32,
+    /// Shifter: percentage points of permanent dodge.
+    pub dodge_pct: i32,
+    /// Phoenix Guard: percentage points on top of the order's standing anti-undead bonus.
+    pub undead_bane_pct: i32,
+    /// Smithwright: percentage of base atk it walks in already holding.
+    pub tempered_pct: i32,
+    /// Keeper: percentage added to its Mnd-driven spell power.
+    pub spell_power_pct: i32,
     /// This hero's MAIN HAND weapon family, as a wire key (`bow`, `sword`, …).
     ///
     /// The family itself rather than a bag of booleans derived from it: reach came first,

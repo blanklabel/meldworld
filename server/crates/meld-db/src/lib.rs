@@ -3702,55 +3702,15 @@ fn note_weapon(b: &mut GearBonus, slot: &str, family: &str) {
     }
 }
 
-/// Fold one item's AD-1 affixes into a hero's running bonus.
+/// Fold one item's AD-1 affixes into a hero's running bonus, from the gear row's JSON.
 ///
-/// Stat and ward affixes apply immediately; a **keyword** affix only counts for
-/// the class whose mechanic it twists; a **synergy** affix is deferred to battle
-/// assembly, which is the only place that knows the party composition.
+/// The FOLD itself is `meld_proto::equipment::fold_affixes` — this only parses. It used to
+/// hold the match too, and because it lived here it only ever ran on Vault gear: an affix on
+/// a piece found mid-dive reached the fight through a different path that copied atk/def/spd
+/// and dropped everything else.
 fn apply_affixes(b: &mut GearBonus, raw: &str, hero_class: Option<&str>) {
     let class = hero_class.and_then(meld_proto::equipment::class_from_key);
-    for a in meld_proto::affixes::from_json(raw) {
-        if let Some(c) = class {
-            if !a.applies_to(c) {
-                continue;
-            }
-        } else if a.def().and_then(|d| d.only_class).is_some() {
-            continue;
-        }
-        let m = a.magnitude;
-        match a.key.as_str() {
-            "atk" => b.atk += m,
-            "def" => b.def += m,
-            "spd" => b.spd += m,
-            "barrier" => b.barrier += m,
-            "regen" => b.regen += m,
-            "evasion" => b.evasion += m,
-            "adrenaline_primed" => b.adrenaline += m,
-            "focus_slot" => b.focus_slots += m,
-            "ward" => b.ward += m,
-            "element_power" => {
-                if let Some(el) = &a.element {
-                    b.element_power.push((el.clone(), m));
-                }
-            }
-            "brand" if b.brand.is_none() => b.brand = a.element.clone(),
-            "resist" => {
-                if let Some(el) = &a.element {
-                    // A resist affix reads as a percentage; the modifier plumbing
-                    // wants a multiplier (25% resisted → 0.75).
-                    let mult = 1.0 - (m.clamp(0, 100) as f64 / 100.0);
-                    b.modifiers.push((el.clone(), mult));
-                }
-            }
-            "ally_atk" | "ally_def" => {
-                if let Some(ally) = &a.ally_class {
-                    let (atk, def) = if a.key == "ally_atk" { (m, 0) } else { (0, m) };
-                    b.synergies.push((ally.clone(), atk, def));
-                }
-            }
-            _ => {}
-        }
-    }
+    meld_proto::equipment::fold_affixes(b, &meld_proto::affixes::from_json(raw), class);
 }
 
 /// Fold one item's AD-1 chase-tier facts into a hero's running bonus: a unique's

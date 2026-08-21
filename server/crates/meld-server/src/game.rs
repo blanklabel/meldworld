@@ -498,6 +498,9 @@ fn effective_gear_bonus(
     looted: &[LootGear],
     hero_slot: i32,
     edge: Option<&Edge>,
+    // The wearer's class, so a keyword affix on run loot is filtered exactly as the Vault
+    // path filters one. Every caller fields a hero and therefore knows this.
+    hero_class: meld_proto::enums::CharacterClass,
 ) -> GearBonus {
     // One type, so this is a move and not a field-by-field copy. It WAS a copy, across two
     // identical declarations, and a field added to one side compiled fine on the other while
@@ -518,6 +521,18 @@ fn effective_gear_bonus(
             "off_hand" | "head" | "chest" | "legs" => bonus.def = g.def_bonus,
             "accessory" => bonus.spd = g.spd_bonus,
             _ => {}
+        }
+        // AND ITS AFFIXES. This loop used to copy the three stat numbers and nothing else,
+        // so every affix on a piece found THIS RUN was inert until it was banked — no
+        // brand, no ward, no synergy, no keyword, for the whole dive you were carrying it.
+        // Worst for the EPHEMERAL tier, which only ever exists inside a run and burns on the
+        // way home: its entire affix payload, the widest in the game, could never once
+        // apply. Same fold the Vault path uses, so the two cannot disagree.
+        meld_proto::equipment::fold_affixes(&mut bonus, &g.affixes, Some(hero_class));
+        // A weapon found this run is the hand the hero is actually fighting with, so its
+        // FAMILY has to answer too — reach, damage type and sweep all come from it.
+        if g.slot == "main_hand" && !g.family.is_empty() {
+            bonus.main_hand = Some(g.family.clone());
         }
     }
     // The edge goes on LAST, so it sharpens whatever the hero actually ended up
@@ -2901,7 +2916,7 @@ impl WorldActor {
                     pid.to_string(),
                     String::new(),
                     *c,
-                    effective_gear_bonus(b, looted, slot as i32, self.edge_for(pid, slot)),
+                    effective_gear_bonus(b, looted, slot as i32, self.edge_for(pid, slot), *c),
                 )
             })
             .collect();
@@ -3194,6 +3209,7 @@ impl WorldActor {
                     &r.looted_gear,
                     slot as i32,
                     edges.get(&r.player_id).and_then(|v| v.get(slot)),
+                    *cls,
                 );
                 party.push((r.player_id.clone(), cid.clone(), *cls, bonus));
                 hp_overrides.push(hp_vec.get(slot).copied());
@@ -3387,6 +3403,7 @@ impl WorldActor {
                     &r.looted_gear,
                     slot as i32,
                     edges.get(&r.player_id).and_then(|v| v.get(slot)),
+                    *cls,
                 );
                 party.push((r.player_id.clone(), cid.clone(), *cls, bonus));
                 hp_overrides.push(hp_vec.get(slot).copied());
@@ -6320,6 +6337,7 @@ impl WorldActor {
                     looted,
                     slot as i32,
                     edges.get(pid).and_then(|v| v.get(slot)),
+                    *cls,
                 );
                 party.push((pid.clone(), cid.clone(), *cls, bonus));
                 hp_overrides.push(hp_vec.get(slot).copied());
@@ -11456,6 +11474,103 @@ mod spending_tests {
             spend_material(&mut run, meld_proto::materials::MaterialClass::Ore, 6).as_deref(),
             Some("peat_iron")
         );
+    }
+}
+
+#[cfg(test)]
+mod run_loot_affix_tests {
+    use super::*;
+
+    fn piece(slot: &str, affixes: Vec<meld_proto::affixes::Affix>) -> LootGear {
+        LootGear {
+            gear_id: "g1".into(),
+            name: "Found This Dive".into(),
+            rarity: "legendary".into(),
+            slot: slot.into(),
+            class_key: "hunter".into(),
+            insurance: meld_proto::Insurance::Ephemeral,
+            tier: 20,
+            atk_bonus: 40,
+            def_bonus: 0,
+            spd_bonus: 0,
+            base_max_durability: 70,
+            max_durability: 70,
+            equipped_hero_slot: Some(0),
+            damage_modifiers: Vec::new(),
+            family: "bow".into(),
+            armor_weight: String::new(),
+            affixes,
+            unique_key: String::new(),
+            set_key: String::new(),
+        }
+    }
+
+    fn aff(key: &str, m: i32, element: Option<&str>) -> meld_proto::affixes::Affix {
+        meld_proto::affixes::Affix {
+            key: key.into(),
+            magnitude: m,
+            element: element.map(|e| e.to_string()),
+            ally_class: None,
+        }
+    }
+
+    /// A PIECE YOU FOUND THIS DIVE FIGHTS WITH ITS AFFIXES. This loop copied atk/def/spd and
+    /// nothing else, so every affix on run loot was inert until it was banked — no brand, no
+    /// ward, no synergy, no keyword, for the whole dive you were carrying it. Worst for the
+    /// EPHEMERAL tier, which only ever exists inside a run and burns on the way home: its
+    /// entire affix payload, the widest in the game, could never once apply.
+    #[test]
+    fn a_piece_found_this_dive_brings_its_affixes_into_the_fight() {
+        let looted = vec![piece(
+            "main_hand",
+            vec![
+                aff("barrier", 12, None),
+                aff("brand", 1, Some("FIRE")),
+                aff("adrenaline_primed", 30, None),
+                aff("ward", 9, None),
+            ],
+        )];
+        let b = effective_gear_bonus(
+            GearBonus::default(),
+            &looted,
+            0,
+            None,
+            meld_proto::CharacterClass::Hunter,
+        );
+        assert_eq!(b.atk, 40, "the stat still lands");
+        assert_eq!(b.barrier, 12, "a ward affix on run loot never reached the fight");
+        assert_eq!(b.ward, 9);
+        assert_eq!(b.brand.as_deref(), Some("FIRE"), "the brand never reached the fight");
+        assert_eq!(b.adrenaline, 30, "the keyword never reached the fight");
+        // And the weapon's FAMILY answers too, or a bow found this dive does not reach.
+        assert_eq!(b.main_hand.as_deref(), Some("bow"));
+    }
+
+    /// Another hero's piece is still another hero's, and a keyword still only counts for the
+    /// class whose mechanic it twists — the same two filters the Vault path applies.
+    #[test]
+    fn run_loot_respects_the_hero_slot_and_the_class_lock() {
+        let looted = vec![piece("main_hand", vec![aff("adrenaline_primed", 30, None)])];
+        // Hero 1 is not wearing it.
+        let other = effective_gear_bonus(
+            GearBonus::default(),
+            &looted,
+            1,
+            None,
+            meld_proto::CharacterClass::Hunter,
+        );
+        assert_eq!(other.adrenaline, 0);
+        assert_eq!(other.atk, 0, "a piece equipped to hero 0 armed hero 1");
+        // A Hunter keyword is inert on a Resonant even when worn.
+        let wrong_class = effective_gear_bonus(
+            GearBonus::default(),
+            &looted,
+            0,
+            None,
+            meld_proto::CharacterClass::Resonant,
+        );
+        assert_eq!(wrong_class.adrenaline, 0, "a Hunter's keyword paid out for a Resonant");
+        assert_eq!(wrong_class.atk, 40, "the plain stat still applies to whoever wears it");
     }
 }
 

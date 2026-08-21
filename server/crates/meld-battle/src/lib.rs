@@ -94,6 +94,10 @@ pub struct Fighter {
     /// attack (Attack / Power Strike / creature attacks). Psychic manifestations
     /// are unavoidable. Zero unless Dex is above the dodge floor.
     pub dodge: f64,
+    /// AD-1 "of the Pyre" (Phoenix Guard only): extra multiplier ON TOP of the order's
+    /// standing bonus against the risen. On the ATTACKER, because it is the wearer's own
+    /// zeal rather than a property of what it is hitting.
+    pub undead_bane: f64,
     pub gauge: f64,
     pub statuses: Vec<String>,
     /// Content key of the fighter's class (`explorer`/`psyker`/`resonant`/…), surfaced
@@ -268,6 +272,7 @@ impl Fighter {
             wll: 0,
             spell_power: atk,
             dodge: 0.0,
+            undead_bane: 0.0,
             gauge: 0.0,
             statuses: Vec::new(),
             class_key: String::new(),
@@ -2455,7 +2460,7 @@ impl Battle {
             let mut effects = Vec::new();
             for t in enemies {
                 let scaled = (atk as f64 * self.phoenix_guard_toll_mult).round() as i32;
-                let scaled = (scaled as f64 * self.undead_bonus(t)).round() as i32;
+                let scaled = (scaled as f64 * self.undead_bonus(actor_i, t)).round() as i32;
                 let dmg = self.damage(scaled, self.fighters[t].def, self.fighters[t].defending);
                 effects.extend(self.apply_damage(t, dmg));
             }
@@ -2484,7 +2489,7 @@ impl Battle {
                 .collect();
             let mut effects = Vec::new();
             for t in enemies {
-                let scaled = (atk as f64 * mult * self.undead_bonus(t)).round() as i32;
+                let scaled = (atk as f64 * mult * self.undead_bonus(actor_i, t)).round() as i32;
                 let dmg = self.damage(scaled, self.fighters[t].def, self.fighters[t].defending);
                 effects.extend(self.apply_damage(t, dmg));
                 if !ascendant && self.fighters[t].alive {
@@ -2545,7 +2550,7 @@ impl Battle {
         };
         // The order's whole purpose: silvered and holy tools bite far deeper into
         // the risen than into anything else alive.
-        let mult = mult * self.undead_bonus(target_i);
+        let mult = mult * self.undead_bonus(actor_i, target_i);
         let scaled_atk = self.phys_atk(actor_i, mult);
         let def = self.fighters[target_i].def;
         let defending = self.fighters[target_i].defending;
@@ -3321,9 +3326,12 @@ impl Battle {
     /// battle faction, which a boss now carries in its own right
     /// (`meld_world::abilities::boss_faction`) rather than inheriting from whatever
     /// creature it was promoted from — so "undead" here means undead.
-    fn undead_bonus(&self, target_i: usize) -> f64 {
+    ///
+    /// Takes the ATTACKER too, because AD-1's "of the Pyre" deepens the bonus and that is
+    /// the wearer's own zeal — a property of who is swinging, not of what is being hit.
+    fn undead_bonus(&self, actor_i: usize, target_i: usize) -> f64 {
         if self.fighters[target_i].faction == meld_proto::factions::UNDEAD {
-            self.phoenix_guard_undead_mult
+            self.phoenix_guard_undead_mult + self.fighters[actor_i].undead_bane
         } else {
             1.0
         }

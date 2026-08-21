@@ -992,13 +992,40 @@ pub(crate) fn roll_affixes(
     if pool.is_empty() {
         return Vec::new();
     }
+    // WEIGHTED, and WITHOUT REPLACEMENT. Two things were wrong with a uniform draw that
+    // skipped duplicates:
+    //
+    // * Flat odds meant nothing was a prize. Every reachable key landed on 32-34% of a deep
+    //   legendary, so `brand` — which decides what damage type your attacks ARE — was
+    //   exactly as common as `masterwork`, extra durability. A wider roll was more random
+    //   lines rather than a better-targeted build, and there was nothing to chase.
+    // * `continue` on a duplicate silently ATE the line, so the counts overstated what
+    //   landed and the gap grew with the count: a nominal 5 delivered 4.29, a nominal 6
+    //   delivered 4.97. Removing the drawn entry instead is exact — `min(count, pool)` lines
+    //   every time, and a piece still never rolls the same key twice.
+    let mut pool: Vec<(&aff::AffixDef, f64)> = pool
+        .into_iter()
+        .map(|d| (d, a.weight(affix_class_word(d.class))))
+        .collect();
     let mut out: Vec<aff::Affix> = Vec::new();
     for _ in 0..count {
-        let d = pool[rng.below(pool.len())];
-        // One of each key: two "+atk" lines read as a bug, not a roll.
-        if out.iter().any(|o| o.key == d.key) {
-            continue;
+        if pool.is_empty() {
+            break;
         }
+        let total: f64 = pool.iter().map(|(_, w)| *w).sum();
+        let mut pick = rng.unit() * total;
+        let mut idx = pool.len() - 1;
+        for (i, (_, w)) in pool.iter().enumerate() {
+            if pick < *w {
+                idx = i;
+                break;
+            }
+            pick -= *w;
+        }
+        // `swap_remove` rather than `remove`: the ORDER of the remaining pool never reaches
+        // the output (the weighted walk above re-derives its own total every draw), so the
+        // cheap removal is safe and still fully deterministic for a given seed.
+        let (d, _) = pool.swap_remove(idx);
         let jitter = 1.0 + rng.signed() * a.magnitude_jitter;
         let magnitude = match d.class {
             // A brand has no magnitude; a resist does.
@@ -8819,6 +8846,120 @@ mod tests {
             width(true) > width(false),
             "the ephemeral bonus never widened a single roll"
         );
+    }
+
+    /// EVERY FIELDABLE CLASS HAS A KEYWORD AFFIX, and exactly one. The class-mechanic lane
+    /// was a two-class feature — the Hunter's Adrenaline and the Psyker's Focus slot — so
+    /// six of eight classes drew from a pool with no twist in it, and the most characterful
+    /// affix class was one most heroes could never find. Asked of the roster rather than a
+    /// hand-written list, because that is how it came to be two in the first place.
+    #[test]
+    fn every_class_has_exactly_one_keyword_affix() {
+        for key in CLASS_KEYS {
+            let class = eq::class_from_key(key).expect("a fieldable class parses");
+            let mine: Vec<&str> = meld_proto::affixes::AFFIXES
+                .iter()
+                .filter(|d| matches!(d.class, meld_proto::affixes::AffixClass::Keyword))
+                .filter(|d| d.only_class == Some(class))
+                .map(|d| d.key)
+                .collect();
+            assert_eq!(
+                mine.len(),
+                1,
+                "{key} owns {mine:?} keyword affixes - every class gets exactly one twist"
+            );
+        }
+        // And no keyword belongs to a class nobody can field.
+        for d in meld_proto::affixes::AFFIXES
+            .iter()
+            .filter(|d| matches!(d.class, meld_proto::affixes::AffixClass::Keyword))
+        {
+            let owner = d.only_class.expect("a keyword affix names its class");
+            assert!(
+                CLASS_KEYS.contains(&eq::class_key(owner)),
+                "{} belongs to {owner:?}, who cannot be fielded",
+                d.key
+            );
+        }
+    }
+
+    /// A PRIZE IS RARER THAN FILLER. A flat pool made `brand` — which decides what damage
+    /// type your attacks ARE — exactly as common as `masterwork`, extra durability: measured
+    /// at 32-34% each, every key identical, so a wide roll was more random lines rather than
+    /// a build worth chasing. The ORDERING is what is asserted, not the rates: the weights
+    /// are `[TUNABLE]` and the shape is the rule.
+    #[test]
+    fn a_prize_affix_is_rarer_than_filler() {
+        use meld_proto::affixes::AffixClass;
+        let b = Balance::load_default().unwrap();
+        let mut hits: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+        let rolls = 4000u64;
+        for s in 0..rolls {
+            for aff in
+                roll_affixes(&b, &mut Rng(s), 20, "legendary", false, false, "hunter", "main_hand", "ashfall")
+            {
+                let cls = meld_proto::affixes::find(&aff.key).map(|d| d.class);
+                *hits.entry(format!("{cls:?}")).or_default() += 1;
+            }
+        }
+        let rate = |c: AffixClass| -> f64 {
+            let n = meld_proto::affixes::AFFIXES.iter().filter(|d| d.class == c).count().max(1);
+            hits.get(&format!("{:?}", Some(c))).copied().unwrap_or(0) as f64 / n as f64
+        };
+        // Per-affix rates, so a class with more members is not credited for its size.
+        let (stat, quality, ward, element, keyword, synergy) = (
+            rate(AffixClass::Stat),
+            rate(AffixClass::Quality),
+            rate(AffixClass::Ward),
+            rate(AffixClass::Element),
+            rate(AffixClass::Keyword),
+            rate(AffixClass::Synergy),
+        );
+        assert!(stat > ward, "stat {stat} should be commoner filler than a ward {ward}");
+        assert!(quality > ward, "masterwork {quality} should be commoner than a ward {ward}");
+        assert!(ward > element, "a ward {ward} should be commoner than an element {element}");
+        assert!(
+            element > keyword && element > synergy,
+            "the build-defining classes must be the rarest: element {element}, keyword \
+             {keyword}, synergy {synergy}"
+        );
+        assert!(keyword > 0.0 && synergy > 0.0, "a prize that never drops is not a prize");
+    }
+
+    /// THE COUNT IS THE COUNT. The draw used to `continue` past a duplicate key, silently
+    /// eating the line — so a nominal 5 delivered 4.29 and a nominal 6 delivered 4.97, and
+    /// the gap grew with the count, which made `count_ephemeral_bonus` mean less the more of
+    /// it you asked for. Drawing without replacement is exact.
+    #[test]
+    fn every_line_a_piece_is_owed_actually_lands() {
+        let b = Balance::load_default().unwrap();
+        for (rarity, sig, eph) in [
+            ("rare", false, false),
+            ("legendary", false, false),
+            ("legendary", false, true),
+            ("legendary", true, true),
+        ] {
+            let want = b.affix.count_for(rarity, sig, eph);
+            for s in 0..500u64 {
+                let got =
+                    roll_affixes(&b, &mut Rng(s), 20, rarity, sig, eph, "hunter", "main_hand", "ashfall");
+                assert_eq!(
+                    got.len(),
+                    want,
+                    "{rarity} sig={sig} eph={eph} seed {s}: owed {want} lines, landed {}",
+                    got.len()
+                );
+                // Still never the same key twice.
+                let mut keys: Vec<&str> = got.iter().map(|a| a.key.as_str()).collect();
+                keys.sort();
+                let before = keys.len();
+                keys.dedup();
+                assert_eq!(keys.len(), before, "a piece rolled the same affix twice");
+            }
+        }
+        // A pool smaller than the count caps at the pool, rather than looping forever.
+        let shallow = roll_affixes(&b, &mut Rng(1), 1, "legendary", true, true, "hunter", "chest", "forest");
+        assert!(!shallow.is_empty() && shallow.len() <= 4, "tier-1 pool is 3 keys: {shallow:?}");
     }
 
     #[test]

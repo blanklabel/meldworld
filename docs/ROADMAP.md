@@ -2515,6 +2515,41 @@ the current build.
   - *Complete:* affix rerolling landed with the Forge (`MS-1`), and the elemental half
     with the `brand` affix (`AD-3`). Affixes, uniques, sets, damage types and rerolling
     are all live.
+  - ⚠️ **AND AN AFFIX ON GEAR FOUND THIS DIVE DID NOTHING AT ALL.** The affix→stat fold
+    lived in `meld-db`, so it only ever ran on VAULT rows; run loot reached the fight through
+    `effective_gear_bonus`, which copied `atk`/`def`/`spd` and dropped the rest — no brand,
+    no ward, no synergy, no keyword, for the whole dive you were carrying the piece. Which
+    means the **ephemeral tier's affixes could never once apply**: it only exists inside a
+    run and burns on the way home, so its entire payload was decorative and its only real
+    effect was the 1.6x stat. (Anything measured about ephemeral affixes before this — the
+    "4.00 affixes on an ephemeral legendary" in the commit above included — was counting
+    lines that did nothing in a fight.) One fold now
+    (`meld_proto::equipment::fold_affixes`), called by both paths, and a weapon found this
+    dive contributes its FAMILY too, or a bow you just picked up does not reach. Same shape
+    as the twice-declared `GearBonus` this repo already warns about.
+  - ✅ **THE POOL IS A HIERARCHY, NOT A COIN FLIP.** Measured on the flat pool: all 13
+    reachable keys landed on **32-34%** of a deep legendary, so `brand` was exactly as
+    common as `masterwork` and a wide roll was more random lines rather than a build worth
+    chasing. Draws are now **weighted** per affix class (`[affix] weight_stat` …
+    `weight_synergy`, parallel to the existing tier floors) and taken **without
+    replacement** — which also retires a silent tax: the loop used to `continue` past a
+    duplicate key and eat the line, so a nominal 5 delivered 4.29, a nominal 6 delivered
+    4.97, and `count_ephemeral_bonus` meant less the more of it you asked for. Now a
+    standard legendary weapon reads stat 38-40%, masterwork 33%, a ward 21%, an element
+    **13%**, a keyword or synergy **9%**, and every count lands exactly. The test holds the
+    ORDERING, not the rates.
+  - ✅ **EVERY CLASS HAS A KEYWORD AFFIX NOW.** The class-mechanic lane was a two-class
+    feature — the Hunter's Adrenaline and the Psyker's Focus slot — so six of the eight
+    fieldable classes drew from a pool with no twist in it, and the most characterful affix
+    class was one most heroes could never find. Six new ones, each reusing a state the
+    engine already models (the discipline `GR-4`'s potions were built on): Explorer
+    **pace_setter** (gauge part-filled at battle start), Resonant **mender_regen** (points
+    of max HP on the only innate regen in the game), Shifter **runner_dodge** (PERMANENT
+    dodge, not the decaying boon anyone can roll), Phoenix Guard **undead_bane** (read off
+    the ATTACKER — the wearer's zeal, not a property of the target), Smithwright
+    **tempered_start** (walks in already Tempered), Keeper **grafted_bloom** (spell power,
+    because its damage rides Mnd). `every_class_has_exactly_one_keyword_affix` reads the
+    roster, not a list.
   - ✅ **EPHEMERAL IS THE BUILD-DEFINING TIER, and it is now priced like one.** It was the
     strongest *number* in the game (`ephemeral_power_mult` 1.6) and nothing else — affix
     count came from rarity alone, and rarity is rolled INDEPENDENTLY of insurance, so an

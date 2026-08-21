@@ -122,6 +122,72 @@ pub const AFFIXES: &[AffixDef] = &[
         Some(CharacterClass::Psyker),
         "of the Open Mind",
     ),
+    // ONE KEYWORD PER CLASS. The class-mechanic lane was a two-class feature — the Hunter's
+    // Adrenaline and the Psyker's Focus slot — so six of the eight fieldable classes drew
+    // from a pool with no twist in it at all, and the most characterful affix class was
+    // something most heroes could never find. Each of these reuses a state the engine
+    // ALREADY models, keyed to what the class is for, so a keyword is content rather than
+    // new machinery (the same discipline `GR-4`'s potions were built on).
+    //
+    // The Explorer sets the PACE — its whole kit is tempo, marks and haste — so it starts
+    // the fight with its gauge already part-filled. The gauge-at-start is the same thing a
+    // Psyker's pin buys the whole party (`build_battle(.., surprise)`).
+    def(
+        "pace_setter",
+        AffixClass::Keyword,
+        0.6,
+        Some(CharacterClass::Explorer),
+        "of the Blazed Trail",
+    ),
+    // The Resonant is the only class with INNATE regen, so deepening it is a twist nobody
+    // else could use. Percentage POINTS of max HP on top of `resonant_regen_fraction`.
+    def(
+        "mender_regen",
+        AffixClass::Keyword,
+        0.09,
+        Some(CharacterClass::Resonant),
+        "of the Wellspring",
+    ),
+    // The Shifter is the only class whose base Dex clears the dodge floor. This raises the
+    // PERMANENT dodge rather than granting the Evasion boon (which decays, and which every
+    // class can already roll as a ward affix) — being hard to hit is what a Runner IS.
+    def(
+        "runner_dodge",
+        AffixClass::Keyword,
+        0.15,
+        Some(CharacterClass::Shifter),
+        "of the Vanishing",
+    ),
+    // The Phoenix Guard's whole purpose, deepened: a percentage on top of the order's
+    // standing bonus against the risen. It reads the ATTACKER, so it is the wearer's own
+    // zeal rather than a property of what it is hitting.
+    def(
+        "undead_bane",
+        AffixClass::Keyword,
+        0.75,
+        Some(CharacterClass::PhoenixGuard),
+        "of the Pyre",
+    ),
+    // The Smithwright walks in already Tempered — its own signature buff, as a share of
+    // base atk. Seeded at construction like the ward affixes beside it (`barrier`/`regen`
+    // land the same way), not as a stack of the ability.
+    def(
+        "tempered_start",
+        AffixClass::Keyword,
+        0.3,
+        Some(CharacterClass::Smithwright),
+        "of the Anvil",
+    ),
+    // The Keeper's damage rides Mnd, not Str — it is the one martial-looking class whose
+    // hits scale off `spell_power`, so a percentage of it is a twist only the Order of the
+    // Open Flower can spend.
+    def(
+        "grafted_bloom",
+        AffixClass::Keyword,
+        0.3,
+        Some(CharacterClass::Keeper),
+        "of the Grafted Bloom",
+    ),
     // Extra max durability, read as a PERCENT. The loss per hero death is flat points
     // (`durability_loss_per_fall`), so more durability is literally more deaths
     // survived — which is why craftsmanship can be an affix at all rather than a
@@ -175,6 +241,12 @@ impl Affix {
             "evasion" => format!("+{m}% Evasion at battle start"),
             "adrenaline_primed" => format!("start battle with {m} Adrenaline"),
             "focus_slot" => format!("+{m} Focus slot"),
+            "pace_setter" => format!("start battle with your gauge {m}% filled"),
+            "mender_regen" => format!("+{m}% of max HP to your innate Regen"),
+            "runner_dodge" => format!("+{m}% dodge"),
+            "undead_bane" => format!("+{m}% damage to undead"),
+            "tempered_start" => format!("start battle with +{m}% atk"),
+            "grafted_bloom" => format!("+{m}% spell power"),
             "ally_atk" | "ally_def" => {
                 let stat = if self.key == "ally_atk" { "atk" } else { "def" };
                 match &self.ally_class {

@@ -830,6 +830,19 @@ count_ephemeral_bonus = 2
 magnitude_per_tier = 1.6         # base magnitude = this x tier x the affix's own scale [TUNABLE]
 magnitude_jitter = 0.25          # +/- fraction on each roll [TUNABLE]
 # Tier floors per affix class: the early game stays legible (P1-3), builds bloom deep.
+# How OFTEN a line of each kind is the one you draw (relative weights; `scale` above is
+# how BIG it is). Filler at 1.0, the build-defining classes below it — so a synergy or a
+# class keyword is a find rather than a coin flip. Measured before this existed: all 13
+# reachable affixes landed on 32-34% of deep legendary pieces, i.e. `brand` (what damage
+# type your attacks ARE) was exactly as common as `masterwork` (extra durability), and a
+# wider roll was simply more random lines. Draws are WITHOUT REPLACEMENT, so these are the
+# odds of each *slot*, and a piece never rolls the same key twice. [TUNABLE]
+weight_stat = 1.0                # atk / def / spd - the filler that makes a prize feel like one
+weight_quality = 0.8             # masterwork
+weight_ward = 0.5                # barrier / regen / evasion / ward
+weight_element = 0.3             # resist / element_power / brand
+weight_keyword = 0.2             # the class-mechanic twists
+weight_synergy = 0.2             # ally-conditional: the party-build lines
 tier_floor_stat = 0              # +N atk/def/spd from the first drop
 tier_floor_element = 3           # elemental resistance
 tier_floor_ward = 4              # start-of-battle Barrier/Regen/Evasion
