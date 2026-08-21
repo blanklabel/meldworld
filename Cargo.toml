@@ -61,5 +61,22 @@ meld-run = { path = "server/crates/meld-run" }
 # test loop snappy without a full release build.
 opt-level = 1
 
+# WORLDGEN IS THE WHOLE COST OF `make check`, so it gets compiled properly for tests.
+#
+# Measured: of a ~500s check, `meld-world`'s test binary was 439s and everything else
+# combined was under 40s. It is not the test COUNT — it is that world generation is
+# compute-bound pure code (splitmix64 streams, rejection-sampling thousands of props per
+# section, property tests sweeping hundreds of seeds through a full `Arena::generate`) and
+# `[profile.test]` inherits dev's opt-level 1.
+#
+# Optimising it buys the time back without giving up a single seed of coverage — those sweeps
+# are what make extraction feasible BY CONSTRUCTION, so thinning them to go faster would be
+# selling the guarantee. `debug-assertions` and overflow checks are separate settings and stay
+# ON, so nothing about what the tests catch changes; only the codegen does.
+[profile.test.package.meld-world]
+opt-level = 3
+[profile.test.package.meld-battle]
+opt-level = 3
+
 [workspace.dependencies.meld-server]
 path = "server/crates/meld-server"
