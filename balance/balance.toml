@@ -626,8 +626,30 @@ elite_hp_mult = 2.4              # Elite HP vs a standard creature at the same d
 elite_atk_mult = 1.35
 elite_xp_mult = 3.0
 elite_loot_mult = 3.0            # chits ×, and boosts the gear-drop chance
-gatekeeper_hp_mult = 10.0         # a wall of HP — a real fight, sized to the party over a merge
+# A wall of HP, PER PARTY. This was 10.0 and commented "sized to the party over a merge" —
+# which meant every gatekeeper was secretly a four-party raid boss and never said so. Measured:
+# a level-40 party ground a 66,792 HP gatekeeper for 464 turns with nothing on screen to warn
+# it. The party count is declared now (`meld_proto::warbands`) and multiplies this.
+#
+# 5.0 rather than a quarter of the old 10.0, because a boss has to stay a REAL fight for ONE
+# party — `outgrowing_a_fight_lets_you_stomp_it` holds a boss at parity to 20+ rounds, and 2.5
+# folded it in twelve. So an ordinary gatekeeper is a 5x wall a single party can finish, and a
+# Worldbreaker is 20x.
+#
+# THE REASON A STATIC MULTIPLE WORKS: `encounter_party_scale` is a four-entry table indexed by
+# hero count and CLAMPED to its length, so creature HP stops growing past four heroes. A merge
+# of four parties (sixteen heroes) faces the same pool a lone party of four does while bringing
+# four times the damage — which is what makes "sized for N parties" expressible as HP at all,
+# and why this multiplying by the party count does not double-count the merge. [TUNABLE]
+gatekeeper_hp_mult = 5.0
 gatekeeper_atk_mult = 1.6
+# P(a gatekeeper is a RAID, sized for more than one party) and how deep the roll can reach.
+# A raid boss is the fat reward on the door, so it must be rare enough to be an event and
+# announced loudly enough that nobody walks into one by accident — the whole point of naming
+# it. Weighted toward the shallow end of the ladder: two parties is a plausible ask, four is
+# the cap `merge_cap_gatekeeper_instances` allows. [TUNABLE]
+gatekeeper_raid_chance = 0.25
+gatekeeper_raid_max_parties = 4
 gatekeeper_xp_mult = 3.0
 gatekeeper_loot_mult = 9.0       # a guaranteed, fat reward for clearing the pass
 # A boss is a multiple of an ordinary creature's health — and now that health rides

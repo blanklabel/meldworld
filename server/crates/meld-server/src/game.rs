@@ -1547,56 +1547,106 @@ fn dress_for_dev(
         .and_then(|v| v.trim().parse::<i32>().ok())
     {
         Some(tier) if tier > 0 => {
+            // DRESS WITH REAL ROLLED GEAR, not with an arithmetic impression of it.
+            //
+            // This used to synthesise the atk/def a six-piece epic set would total, plus a
+            // hand-computed `ward` line, and that was the whole instrument — so it rolled no
+            // affixes at all. Which meant a "geared" party measured through this flag could
+            // not see a **brand**, a **resist**, a **synergy** or a **class keyword**: every
+            // AD-1 mechanic except the two stat numbers was invisible to the one tool the
+            // repo tunes gear with. The flag has already been inert once
+            // (`flush_gear_loads` overwrote it a tick later) and every number taken through
+            // it then was of an undressed party; this is the same failure one layer in — the
+            // instrument reporting a figure it was not actually measuring.
+            //
+            // Now each hero is dressed in six pieces from `rolled_gear`, the same function
+            // the Forge crafts with, and their affixes fold through the same
+            // `fold_affixes` a real drop uses. Deterministic per (tier, hero, slot), so a
+            // repeat run dresses identically.
+            //
+            // ⚠️ This CHANGES what a given `MELD_GEAR_TIER` is worth, so tables recorded
+            // against the old synthetic set are not comparable with tables recorded now.
             let l = &balance.loot;
             let af = &balance.affix;
-            let piece = l.gear_atk_per_tier * tier as f64 * l.insured_power_mult;
-            let affix = af.magnitude_per_tier * tier as f64 * af.count_epic as f64;
-            let atk = (piece + affix).round() as i32;
-            let def = (4.0 * (piece + affix)).round() as i32;
-            tracing::warn!(tier, atk, def, "MELD_GEAR_TIER: heroes dressed (DEV/QA)");
-            // Four armour pieces of the weight the CLASS actually wears, so the
-            // dressed party answers for damage types the way a real set would.
-            // Without this the harness could see the atk/def half of gear and not
-            // the resistance half — which is the half the apex is gated on.
-            let comp = classes.to_vec();
-            gear.iter()
+            tracing::warn!(tier, "MELD_GEAR_TIER: heroes dressed in rolled gear (DEV/QA)");
+            // `MELD_GEAR_WARD=<TYPE>` still forces an elemental ward onto every piece — what
+            // a player who KNEW what they were walking into would bring. A rolled set may or
+            // may not draw a resist, and the apex fight is gated on the elemental half.
+            let forced_ward = std::env::var("MELD_GEAR_WARD").ok().and_then(|t| {
+                let key = t.trim().to_uppercase();
+                meld_proto::enums::DamageType::from_wire(&key).map(|_| key)
+            });
+            gear.into_iter()
                 .enumerate()
-                .map(|(i, _)| {
-                    let weight = comp
-                        .get(i)
-                        .and_then(|c| {
-                            meld_proto::equipment::armor_weights(*c).first().copied()
-                        })
-                        .map(|w| w.wire().to_string());
-                    // `MELD_GEAR_WARD=<TYPE>` dresses the set with an elemental ward
-                    // on every piece — what a player who KNEW what they were walking
-                    // into would bring. Without it the harness can only show gear's
-                    // physical half, and a fire fight is not answered by plate.
-                    let ward = std::env::var("MELD_GEAR_WARD").ok().and_then(|t| {
-                        let key = t.trim().to_uppercase();
-                        meld_proto::enums::DamageType::from_wire(&key).map(|_| key)
-                    });
-                    // A tier-`n` set rolls Aegis (flat ward) and Furnace (element
-                    // power) lines like any other epic, so the harness grants them
-                    // too — otherwise a dressed party shows gear's physical half and
-                    // none of its elemental one, which is the half the apex needs.
-                    let ward_stat = (af.magnitude_per_tier * tier as f64
-                        * af.count_epic as f64)
-                        .round() as i32;
-                    GearBonus {
-                        atk,
-                        def,
-                        ward: ward_stat,
-                        armor_weights: weight
-                            .into_iter()
-                            .flat_map(|w| std::iter::repeat_n(w, 4))
-                            .collect(),
-                        modifiers: ward
-                            .into_iter()
-                            .flat_map(|k| std::iter::repeat_n((k, 0.75), 4))
-                            .collect(),
-                        ..Default::default()
+                .map(|(i, vault)| {
+                    let class = classes.get(i).copied().unwrap_or(CharacterClass::Explorer);
+                    let ck = meld_run::class_key(class);
+                    let mut b = vault;
+                    for slot in meld_proto::equipment::SLOTS {
+                        // A two-handed class has no off-hand to fill, so dressing one would
+                        // be a piece it could never wear.
+                        if slot == "off_hand" && !meld_proto::equipment::has_off_hand(class) {
+                            continue;
+                        }
+                        let seed = hash_str(&format!("devgear-{tier}-{i}-{slot}"));
+                        let g = meld_world::rolled_gear(
+                            balance, tier, "epic", 0.0, slot, ck, "ashfall", seed,
+                        );
+                        match slot {
+                            "main_hand" => {
+                                b.atk += g.atk_bonus;
+                                if !g.family.is_empty() {
+                                    b.main_hand = Some(g.family.clone());
+                                }
+                            }
+                            "accessory" => b.spd += g.spd_bonus,
+                            _ => b.def += g.def_bonus,
+                        }
+                        if !g.armor_weight.is_empty() {
+                            b.armor_weights.push(g.armor_weight.clone());
+                        }
+                        // The affixes, through the one fold every other path uses.
+                        meld_proto::equipment::fold_affixes(&mut b, &g.affixes, Some(class));
+                        if let Some(k) = &forced_ward {
+                            b.modifiers.push((k.clone(), 0.75));
+                        }
                     }
+                    // Keep the old flag's guarantee that a dressed set answers for elemental
+                    // damage even when the rolls did not hand it an Aegis line.
+                    let floor = (af.magnitude_per_tier * tier as f64 * af.count_epic as f64)
+                        .round() as i32;
+                    b.ward = b.ward.max(floor);
+                    // And that a tier-n set is at least as strong as the synthetic one was,
+                    // so a run at a given tier is never WEAKER than the recorded tables.
+                    let piece = l.gear_atk_per_tier * tier as f64 * l.insured_power_mult;
+                    b.atk = b.atk.max(piece.round() as i32);
+                    b.def = b.def.max((4.0 * piece).round() as i32);
+                    // Say what the dressing actually GRANTED, not just that it happened. A
+                    // flag that reports "dressed" while granting only two stat numbers is
+                    // how this instrument misled a tuning pass before; the affix-derived
+                    // fields are the ones a measurement is usually about.
+                    tracing::warn!(
+                        hero = i,
+                        class = ck,
+                        atk = b.atk,
+                        def = b.def,
+                        ward = b.ward,
+                        barrier = b.barrier,
+                        regen = b.regen,
+                        evasion = b.evasion,
+                        brand = ?b.brand,
+                        adrenaline = b.adrenaline,
+                        focus_slots = b.focus_slots,
+                        start_gauge_pct = b.start_gauge_pct,
+                        mender_regen_pct = b.mender_regen_pct,
+                        dodge_pct = b.dodge_pct,
+                        undead_bane_pct = b.undead_bane_pct,
+                        tempered_pct = b.tempered_pct,
+                        spell_power_pct = b.spell_power_pct,
+                        synergies = b.synergies.len(),
+                        "MELD_GEAR_TIER: dressed"
+                    );
+                    b
                 })
                 .collect()
         }
@@ -2006,6 +2056,14 @@ impl WorldActor {
                     // it composes with the markers below.
                     if !m.boss_kind.is_empty() {
                         tag.push_str(&format!(":boss:{}", m.boss_kind));
+                    }
+                    // How many PARTIES it is sized for, when that is more than one. It rides
+                    // the tag rather than a new field for the same reason `boss:` does — and
+                    // it has to reach the player BEFORE the touch, because the whole failure
+                    // this fixes is walking into a four-party wall with nothing on screen to
+                    // say so.
+                    if meld_proto::warbands::is_raid(m.expects_parties) {
+                        tag.push_str(&format!(":parties:{}", m.expects_parties));
                     }
                     if m.held_for > 0.0 {
                         tag.push_str(":held");
@@ -11474,6 +11532,86 @@ mod spending_tests {
             spend_material(&mut run, meld_proto::materials::MaterialClass::Ore, 6).as_deref(),
             Some("peat_iron")
         );
+    }
+}
+
+#[cfg(test)]
+mod dev_gear_tests {
+    use super::*;
+
+    /// `MELD_GEAR_TIER` HAS TO DRESS THE PARTY IN AFFIXES, not in an impression of them.
+    ///
+    /// It used to synthesise the atk/def a six-piece epic set would total plus one computed
+    /// `ward` line, and that was all — so the flag this repo tunes gear with could not
+    /// express a brand, a resist, a synergy or a class keyword. Every AD-1 mechanic bar two
+    /// stat numbers was invisible to the instrument, which is the same shape as the time the
+    /// flag was outright inert (`flush_gear_loads` overwrote it a tick later) and every
+    /// number taken through it was of an undressed party. A measurement is only worth the
+    /// instrument, so the instrument gets a test.
+    ///
+    /// Tier 8 because that is the first tier whose pool holds EVERY affix class — below it
+    /// there are no wards, no keywords and no synergies to find, so a low-tier assertion
+    /// would pass on a set that proves nothing.
+    #[test]
+    fn the_dev_gear_flag_dresses_a_party_in_real_affixes() {
+        let b = Balance::load_default().unwrap();
+        let classes = vec![
+            CharacterClass::Hunter,
+            CharacterClass::Resonant,
+            CharacterClass::Shifter,
+            CharacterClass::PhoenixGuard,
+        ];
+        let bare = vec![meld_db::GearBonus::default(); classes.len()];
+
+        std::env::set_var("MELD_GEAR_TIER", "8");
+        let dressed = dress_for_dev(&b, &classes, bare.clone());
+        std::env::remove_var("MELD_GEAR_TIER");
+
+        // The stat half still lands, as it always did.
+        for (i, g) in dressed.iter().enumerate() {
+            assert!(g.atk > 0 && g.def > 0, "hero {i} was not dressed at all");
+            assert!(!g.armor_weights.is_empty(), "hero {i} wears no armour weight");
+        }
+        // The half that used to be missing: across the party, a dressed set has to produce
+        // affix-derived properties. Asserted across the PARTY rather than per hero, because
+        // which affixes a piece rolls is a roll — what must not happen is a whole dressed
+        // party carrying none of them.
+        let any = |f: fn(&meld_db::GearBonus) -> bool| dressed.iter().any(f);
+        assert!(
+            any(|g| g.brand.is_some())
+                || any(|g| !g.element_power.is_empty())
+                || any(|g| !g.modifiers.is_empty()),
+            "a tier-8 dressed party rolled no elemental affix of any kind"
+        );
+        assert!(
+            any(|g| g.barrier > 0 || g.regen > 0 || g.evasion > 0),
+            "a tier-8 dressed party rolled no ward affix - the pool opens at tier 4"
+        );
+        assert!(
+            any(|g| !g.synergies.is_empty()),
+            "a tier-8 dressed party rolled no synergy - the pool opens at tier 8"
+        );
+        // And a CLASS KEYWORD, the affix class that only exists because a class exists.
+        assert!(
+            any(|g| g.adrenaline > 0
+                || g.mender_regen_pct > 0
+                || g.dodge_pct > 0
+                || g.undead_bane_pct > 0),
+            "a tier-8 dressed party of four keyword-owning classes rolled no keyword"
+        );
+        // A weapon was rolled, so the hand answers for reach and damage type.
+        assert!(any(|g| g.main_hand.is_some()), "nobody was dressed with a weapon");
+    }
+
+    /// Unset, the flag changes nothing — a measurement of the undressed case has to actually
+    /// be undressed.
+    #[test]
+    fn without_the_flag_nobody_is_dressed() {
+        let b = Balance::load_default().unwrap();
+        std::env::remove_var("MELD_GEAR_TIER");
+        let bare = vec![meld_db::GearBonus::default(); 2];
+        let out = dress_for_dev(&b, &[CharacterClass::Hunter, CharacterClass::Keeper], bare);
+        assert!(out.iter().all(|g| g.atk == 0 && g.def == 0 && g.main_hand.is_none()));
     }
 }
 

@@ -788,16 +788,20 @@ struct OwEntity {
     boss: Option<String>,
     /// Dungeon entrances: heroes the doors inside want on plates at once (1 = solo).
     bodies_required: u8,
+    /// `FS-4`: how many PARTIES this fight is sized for, when more than one. 0 on anything
+    /// ordinary, so the plate is only ever drawn where it is a warning.
+    expects_parties: u8,
 }
 
 impl OwEntity {
     fn player(x: f32, y: f32) -> Self {
-        Self { x, y, kind: EntityKind::Player, name: None, faction: None, radius: 0.0, battling: false, clashing: false, level: 0, opened: false, mob_level: None, hp: None, max_hp: None, encounter_class: None, aggression: None, quarry: false, held: false, boss: None, bodies_required: 1 }
+        Self { x, y, kind: EntityKind::Player, name: None, faction: None, radius: 0.0, battling: false, clashing: false, level: 0, opened: false, mob_level: None, hp: None, max_hp: None, encounter_class: None, aggression: None, quarry: false, held: false, boss: None, bodies_required: 1, expects_parties: 0 }
     }
     fn monster(x: f32, y: f32, name: &str, faction: &str) -> Self {
         Self {
             x,
             y,
+            expects_parties: 0,
             kind: EntityKind::Monster,
             name: Some(name.to_string()),
             faction: Some(faction.to_string()),
@@ -818,7 +822,7 @@ impl OwEntity {
         }
     }
     fn portal(x: f32, y: f32) -> Self {
-        Self { x, y, kind: EntityKind::Portal, name: None, faction: None, radius: 0.0, battling: false, clashing: false, level: 0, opened: false, mob_level: None, hp: None, max_hp: None, encounter_class: None, aggression: None, quarry: false, held: false, boss: None, bodies_required: 1 }
+        Self { x, y, kind: EntityKind::Portal, name: None, faction: None, radius: 0.0, battling: false, clashing: false, level: 0, opened: false, mob_level: None, hp: None, max_hp: None, encounter_class: None, aggression: None, quarry: false, held: false, boss: None, bodies_required: 1, expects_parties: 0 }
     }
 }
 

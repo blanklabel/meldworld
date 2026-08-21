@@ -304,6 +304,7 @@ pub(crate) fn pump_net(
                             encounter_class: e.encounter_class,
                             aggression: e.aggression,
                             quarry: e.quarry,
+                            expects_parties: e.expects_parties,
                             held: e.held,
                             boss: e.boss,
                             bodies_required: e.bodies_required,

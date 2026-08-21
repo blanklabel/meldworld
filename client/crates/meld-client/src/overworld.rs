@@ -2455,6 +2455,25 @@ pub(crate) fn update_mob_nameplates(
                         TextColor(Color::srgb(1.0, 0.6, 0.55)),
                     ));
                 }
+                // HOW BIG THE FIGHT IS, above everything else on the plate and in the
+                // loudest colour, because it is the only line on it a player has to act on
+                // BEFORE touching the creature. Every other marker describes what the thing
+                // is; this one says whether you should be here at all. Measured: a solo
+                // party ground a four-party-sized gatekeeper for 464 turns with nothing on
+                // screen to warn them.
+                let scale = meld_proto::warbands::warband(ent.expects_parties);
+                if meld_proto::warbands::is_raid(scale.parties) {
+                    c.spawn((
+                        Text::new(scale.title.to_uppercase()),
+                        TextFont { font_size: 13.0, ..default() },
+                        TextColor(Color::srgb(1.0, 0.45, 0.35)),
+                    ));
+                    c.spawn((
+                        Text::new(format!("{} parties", scale.parties)),
+                        TextFont { font_size: 10.0, ..default() },
+                        TextColor(Color::srgb(1.0, 0.7, 0.6)),
+                    ));
+                }
                 // What you came out here for, over its head, in the board's own word.
                 if ent.quarry {
                     c.spawn((
@@ -3514,6 +3533,7 @@ mod tests {
             held: false,
             boss: None,
             bodies_required: 1,
+            expects_parties: 0,
         }
     }
 
@@ -3941,6 +3961,7 @@ mod explored_map_tests {
             held: false,
             boss: None,
             bodies_required: 1,
+            expects_parties: 0,
         }
     }
 
@@ -4346,6 +4367,7 @@ mod station_tests {
             held: false,
             boss: None,
             bodies_required: 1,
+            expects_parties: 0,
         };
         world.entities.insert("me".into(), me.clone());
         me.kind = EntityKind::Station;

@@ -1594,8 +1594,42 @@ Make time in the field a living, dangerous place worth screenshotting.
   the merge cap already differs for gatekeepers. `meld-world`
   (`promote` + placement), `meld-server` (loot spike), unit-tested. **Remaining:**
   unique *boss mechanics* (special attack patterns, not just big stats), **class-emblem**
-  drops feeding CL-1, party-scaled HP over a full merge, and a proper boss arena.
+  drops feeding CL-1, and a proper boss arena.
   See [`behaviors/combat-atb.md`](behaviors/combat-atb.md) battle merge.
+  - ✅ **A RAID BOSS SAYS IT IS ONE** (the "party-scaled HP over a full merge" line, closed).
+    `gatekeeper_hp_mult` was 10.0 and commented *"sized to the party over a merge"* — so every
+    gatekeeper was secretly a four-party boss and none of them mentioned it. Measured through
+    `mcp/`: a level-40 party ground a **66,792 HP** gatekeeper for **464 turns** with nothing on
+    screen to warn it. The scale is a declared property now
+    ([`meld_proto::warbands`](../shared/meld-proto/src/warbands.rs)): 1 party unlabelled, then
+    **Colossus** (2), **Leviathan** (3), **Worldbreaker** (4), capped there because
+    `merge_cap_gatekeeper_instances` is 4 — a boss sized for more parties than may legally
+    merge is one nobody can bring enough people to.
+    - **One number is the source of the size AND the name**, so a four-party wall can never be
+      labelled a two-party one; that mismatch is the entire bug. HP and XP ride the count,
+      **attack does not** — a raid boss is a longer fight for more people, not one that
+      one-shots whoever arrives first, and XP has to scale or the raid is the worst use of
+      everybody's time.
+    - `gatekeeper_hp_mult` now means **per party**, at **5.0**: an ordinary gatekeeper is a
+      wall one party can finish, a Worldbreaker is 20x. 2.5 was tried first and
+      `outgrowing_a_fight_lets_you_stomp_it` caught it — that test holds a boss at parity to
+      20+ rounds and 2.5 folded one in twelve.
+    - ⚠️ **Why a static multiple works at all:** `encounter_party_scale` is a four-entry table
+      indexed by hero count and **clamped to its length**, so creature HP stops growing past
+      four heroes. A sixteen-hero merge faces the same pool a lone party of four does while
+      bringing four times the damage. Without that clamp the table is superlinear — more
+      people would make the fight *harder* and raid content would be structurally
+      inexpressible as HP. It is also why multiplying by the party count does not double-count
+      the merge.
+    - **It announces itself before the touch.** `parties:<n>` rides the mob tag as a
+      `key:value` in the same SET as `boss:` / `held` / `clash` / `quarry`, and the client
+      floats the title and "N parties" at the TOP of the plate in the loudest colour — the one
+      line there a player must act on before engaging. Ungated, like the ⚔ and the QUARRY
+      plate: the world reporting a fact, not intel a perk buys. Battle names stack outward,
+      "Colossus Vicious Ironmaw" — scale, twist, identity.
+    - **Not yet:** nothing *enforces* bringing help; a solo party is warned, not refused. And
+      no raid has been PLAYED — four parties merged on one gatekeeper is `qa/tests/raid_merge.rs`
+      territory and is where a real measurement belongs.
   - ✅ **A boss NAMES ITSELF on the overworld.** `boss_kind` reached the client only at
     battle assembly, so an end-fight peer, a Gatekeeper standing in the pass and an
     `AD-4` bounty mark all rode the snapshot as the host creature they overlay

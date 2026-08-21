@@ -39,6 +39,7 @@ pub mod structures;
 pub mod synergies;
 pub mod terrain;
 pub mod unlocks;
+pub mod warbands;
 pub mod uniques;
 
 pub use enums::*;
