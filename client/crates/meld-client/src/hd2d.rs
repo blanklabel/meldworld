@@ -894,6 +894,18 @@ pub fn grass_texture(size: u32) -> Image {
 /// A flat **irregular blob** (triangle fan whose radius wobbles with angle) so pools
 /// don't read as perfect circles. Lies in the XY plane — rotate it flat like a
 /// `Circle`. Spin each instance around Y for variety.
+/// The largest radius the lobed [`blob_mesh`] outline reaches, in local units.
+///
+/// **A water prop must never be DRAWN wider than it BLOCKS.** The blob was spawned with
+/// `scale = r * 2.0` against a collision radius of `r`, so water rendered up to
+/// `1.035 * 2 = 2.07x` the radius that stops you — leaving a walkable ring inside every
+/// visible pool. That was survivable while the spacing grid held pools ~6.8 units apart
+/// and small; the moment water was allowed to POOL and merge, the band became a large
+/// walkable area inside an apparent lake, and with the basin's surface drawn above the
+/// player's feet the result was a character walking around underground. Scale by
+/// `r / BLOB_MAX_RADIUS` and the widest lobe lands exactly on the collision edge.
+pub const BLOB_MAX_RADIUS: f32 = 1.035;
+
 /// The same organic outline as [`blob_mesh`], but sunk into a **basin**: a rim at local
 /// `z = 0` sloping down to a flat waterline at `-depth`.
 ///
