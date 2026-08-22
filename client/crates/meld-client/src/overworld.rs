@@ -3389,18 +3389,20 @@ pub(crate) fn spawn_obstacle(
             // prop's scale, so the mesh can ask "is this rim vertex inside another pool?"
             // in the units it is built in. `LOCAL_R` is the mean lobed outline, which is
             // close enough to decide coverage.
-            const LOCAL_R: f32 = 0.85;
-            let scale = r * 2.0;
+            // Drawn no wider than it blocks: `BLOB_MAX_RADIUS` is the outline's widest
+            // lobe, so this puts that lobe exactly on the collision edge. Anything larger
+            // leaves walkable ground inside visible water.
+            let scale = r / hd2d::BLOB_MAX_RADIUS;
             let (cs, sn) = ((-spin).cos(), (-spin).sin());
             let near: Vec<(f32, f32, f32)> = water_bodies
                 .iter()
                 .filter(|(nx, ny, nr)| {
                     let d = (nx - e.x).hypot(ny - e.y);
-                    d > 1e-4 && d < (r + nr) * 2.0 * LOCAL_R
+                    d > 1e-4 && d < r + nr
                 })
                 .map(|(nx, ny, nr)| {
                     let (dx, dy) = ((nx - e.x) / scale, (ny - e.y) / scale);
-                    (dx * cs - dy * sn, dx * sn + dy * cs, nr * 2.0 * LOCAL_R / scale)
+                    (dx * cs - dy * sn, dx * sn + dy * cs, nr / scale)
                 })
                 .collect();
             let mesh = if near.is_empty() {
@@ -3408,16 +3410,60 @@ pub(crate) fn spawn_obstacle(
             } else {
                 meshes.add(hd2d::blob_basin_mesh_merged(28, 0.16, 0.74, &near))
             };
-            commands.spawn((
-                WorldEntity(id.to_string()),
-                Mesh3d(mesh),
-                MeshMaterial3d(wa.water_mat(name)),
-                Transform::from_translation(world_pos(e.x, e.y, 0.2))
-                    .with_rotation(
-                        Quat::from_rotation_y(spin) * Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2),
-                    )
-                    .with_scale(Vec3::splat(r * 2.0)),
-            ));
+            // Floating leaves. Still water reads as water because of what is ON it —
+            // duckweed, pads, fallen leaves — and bog water has almost no value contrast
+            // against the mire's own ground, so without them a merged mere is just a dark
+            // patch of mud. Not on ice: nothing floats on a frozen pond.
+            let pads: Vec<(f32, f32, f32, usize)> = if name == "frozen_pond" {
+                Vec::new()
+            } else {
+                // Count rides the pool's size, so a mere is dressed and a puddle is not.
+                let n = ((r * 1.5) as usize).clamp(1, 7);
+                (0..n)
+                    .map(|i| {
+                        let key = format!("{id}-pad{i}");
+                        let a = hash_pick(&key, 360) as f32;
+                        // sqrt for a uniform draw over the AREA, or every pad crowds the rim.
+                        let t = (hash_pick(&format!("{key}r"), 100) as f32 / 100.0).sqrt();
+                        let rad = t * 0.58; // inside the flat surface, clear of the bank
+                        let sz = 0.07 + hash_pick(&format!("{key}s"), 60) as f32 / 1000.0;
+                        (
+                            a.to_radians().cos() * rad,
+                            a.to_radians().sin() * rad,
+                            sz,
+                            hash_pick(&format!("{key}c"), wa.pad_mats.len().max(1)),
+                        )
+                    })
+                    .collect()
+            };
+            commands
+                .spawn((
+                    WorldEntity(id.to_string()),
+                    Mesh3d(mesh),
+                    MeshMaterial3d(wa.water_mat(name)),
+                    Transform::from_translation(world_pos(e.x, e.y, 0.2))
+                        .with_rotation(
+                            Quat::from_rotation_y(spin)
+                                * Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2),
+                        )
+                        .with_scale(Vec3::splat(scale)),
+                ))
+                .with_children(|p| {
+                    // Children live in the BASIN's own mesh space, so the parent's spin,
+                    // flat-lay rotation and radius scale all apply for free — and the pad
+                    // sits at the waterline (`-depth`) rather than the rim, a hair above
+                    // the surface so it does not z-fight with it.
+                    for (px, py, sz, ci) in pads {
+                        if let Some(m) = wa.pad_mats.get(ci) {
+                            p.spawn((
+                                Mesh3d(wa.pad_mesh.clone()),
+                                MeshMaterial3d(m.clone()),
+                                Transform::from_xyz(px, py, -0.16 + 0.006)
+                                    .with_scale(Vec3::splat(sz)),
+                            ));
+                        }
+                    }
+                });
         }
         _ => {
             let mat = mats.add(StandardMaterial {

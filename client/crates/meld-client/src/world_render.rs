@@ -231,6 +231,14 @@ pub(crate) struct WorldAssets {
     /// per biome — so walls read as fitted stone, not flat blocks.
     pub(crate) wall_tex: Handle<Image>,
     pub(crate) water_mesh: Handle<Mesh>,
+    /// A lily pad / floating leaf: the SAME organic lobed outline the pools use, just
+    /// small. Bog water has almost no value contrast against the mire's ground, so a
+    /// merged mere still read as a dark patch of mud — and the fix is not to tint swamp
+    /// water blue, it is to put on its surface the things that make real still water
+    /// legible as water. No new art: `blob_mesh` already draws a leaf if you shrink it.
+    pub(crate) pad_mesh: Handle<Mesh>,
+    /// A few leaf greens, so a pool's pads are not all the same colour.
+    pub(crate) pad_mats: Vec<Handle<StandardMaterial>>,
     /// Per-water-kind materials (`pond`/`bog_pool`/`frozen_pond`), each wearing a
     /// bespoke pixel-art water tile and drifting via [`animate_water`]. Keyed by the
     /// `SnapshotEntity` obstacle name; fall back to `pond` via [`Self::water_mat`].
@@ -638,6 +646,21 @@ pub(crate) fn setup(
         // surface sits below it, so water reads as sunk into the ground rather than floating
         // on it. Worst in the Mire, whose entire maze fill is water.
         water_mesh: meshes.add(hd2d::blob_basin_mesh(28, 0.16, 0.74)),
+        pad_mesh: meshes.add(hd2d::blob_mesh(14)),
+        pad_mats: [
+            LinearRgba::rgb(0.16, 0.34, 0.15),
+            LinearRgba::rgb(0.22, 0.42, 0.18),
+            LinearRgba::rgb(0.13, 0.27, 0.14),
+        ]
+        .into_iter()
+        .map(|c| {
+            mats.add(StandardMaterial {
+                base_color: Color::from(c),
+                perceptual_roughness: 0.85,
+                ..default()
+            })
+        })
+        .collect(),
         // Bespoke pixel-art water tiles (PixelLab), one per water kind, tiled + drifted
         // by `animate_water`. Replaces the old procedural `water_ripple_texture`.
         water_mats: [
