@@ -1768,7 +1768,16 @@ design for this epic: [`proposals/worldgen-wg.md`](proposals/worldgen-wg.md).
       numbers, so **the sea the player sees is the sea the server collides with**. The sea
       bed drops away from the shore so water sits visibly below land, with a pale surf line
       at the waterline so the shore is something you can aim at.
-    - 🟡 *Not done: Last City's own scene has no coast yet.* It is laid out in its own
+    - [x] *Last City's own scene has its coast.* The city is laid out in its own
+      coordinates and cannot sample `is_ocean` (its ground is a hand-placed plaza, not the
+      world's terrain), so it takes its shoreline from `coast::CITY_SHORE_HALF_WIDTH` /
+      `CITY_TIP_REACH` — water on both flanks and ahead past the tip. The constants are
+      held against the real spit by `the_city_actually_fits_on_its_own_spit`, which is what
+      keeps this from being a second hand-placed shoreline that drifts from the world's.
+      ⚠️ The water sits just ABOVE the grass, not below it: the city's ground plane runs
+      well past the shoreline, so water tucked underneath is simply invisible — which is
+      how the first attempt shipped.
+    - ~~🟡 *Not done: Last City's own scene has no coast yet.*~~ It is laid out in its own
       coordinates, so painting the world's sea into it would put water through the plaza.
       The neck and the channel are walked in the ARENA, which is where this ships; giving
       the city scene its matching shore is follow-up.

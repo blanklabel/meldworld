@@ -511,6 +511,40 @@ pub(crate) fn city_scene(
         perceptual_roughness: 0.95,
         ..default()
     });
+    // --- THE SEA. Last City stands on a spit, so water on both flanks and ahead past
+    // the tip. This scene is laid out in its own coordinates and cannot sample
+    // `coast::is_ocean` (its ground is a hand-placed plaza, not the world's terrain), so
+    // it takes the shoreline from `coast`'s constants — and
+    // `the_city_actually_fits_on_its_own_spit` holds those against the real spit, which is
+    // what stops this being a second hand-placed shoreline that drifts from the world's.
+    //
+    // Orientation: The Threshold sits at -z ("leave town"), so -z is the way to the maze
+    // (world east) and +z runs out to the tip. The flanks are ±x.
+    {
+        use meld_proto::coast::{CITY_SHORE_HALF_WIDTH as SHORE, CITY_TIP_REACH as TIP};
+        const SEA: f32 = 420.0;
+        // ABOVE the grass, not below it. The city's ground plane runs well past the
+        // shoreline, so water tucked underneath it is simply invisible — which is exactly
+        // how this shipped the first time. Sat just over the grass and under nothing else
+        // (the streets stop well inside the shore), it reads as sea meeting a flat bank.
+        const SEA_Y: f32 = 0.05;
+        let water = wa.water_mat("pond");
+        for side in [-1.0_f32, 1.0] {
+            commands.spawn((
+                CityScene,
+                Mesh3d(meshes.add(road_mesh(SEA, SEA))),
+                MeshMaterial3d(water.clone()),
+                Transform::from_xyz(side * (SHORE + SEA * 0.5), SEA_Y, 0.0),
+            ));
+        }
+        commands.spawn((
+            CityScene,
+            Mesh3d(meshes.add(road_mesh(SEA, SEA))),
+            MeshMaterial3d(water.clone()),
+            Transform::from_xyz(0.0, SEA_Y, TIP + SEA * 0.5),
+        ));
+    }
+
     // Central plaza (a paved square around the fountain).
     commands.spawn((
         CityScene,

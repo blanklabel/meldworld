@@ -94,6 +94,29 @@ pub const CITY_HALF_WIDTH: f32 = 34.0;
 /// How far west of the hub the spit runs before it ends in open sea.
 pub const PENINSULA_LENGTH: f32 = 150.0;
 
+/// How far west of the hub Last City itself stands, on the widest part of the spit.
+///
+/// **Last City is a separate scene laid out in its own coordinates**, so it cannot sample
+/// `is_ocean` directly — its ground is a hand-placed plaza, not the world's terrain. It
+/// therefore takes its shoreline from the two constants below, and
+/// `the_city_actually_fits_on_its_own_spit` holds them against the real geometry. That
+/// assertion is what keeps the two scenes agreeing; without it the city's coast is just a
+/// second hand-placed shoreline, which is the exact drift this module exists to prevent.
+pub const CITY_CENTER_REACH: f32 = 110.0;
+
+/// The city has to stand ON the spit — not back on the neck, and not out past the tip.
+/// Compile-time, like the neck/border relationship: it is a fact about constants.
+const _: () = assert!(CITY_CENTER_REACH > NECK_REACH);
+const _: () = assert!(CITY_CENTER_REACH < PENINSULA_LENGTH);
+
+/// Half-width of the dry ground Last City is built on, in its own scene. Water starts
+/// beyond this on both flanks.
+pub const CITY_SHORE_HALF_WIDTH: f32 = 26.0;
+
+/// How far past the city's centre the spit's tip lies, in the city's own scene — beyond
+/// this, open sea ahead as well as to the sides.
+pub const CITY_TIP_REACH: f32 = 34.0;
+
 /// Fraction of the spit's run over which it tapers to its tip, so the peninsula ends in a
 /// point rather than a cliff-edged rectangle.
 pub const TIP_TAPER: f32 = 0.22;
@@ -243,6 +266,22 @@ mod tests {
                 "the sea must reach both flanks of the spit (side {side})"
             );
         }
+    }
+
+    #[test]
+    fn the_city_actually_fits_on_its_own_spit() {
+        // Last City is a separate scene and draws its shore from `CITY_SHORE_HALF_WIDTH`
+        // rather than by sampling `is_ocean`. That is only safe while the constant agrees
+        // with the real spit — otherwise the city's water sits where the world's is land
+        // (or worse, the reverse) and the two scenes tell different stories about the same
+        // place. This is the assertion that keeps them honest.
+        let w = peninsula_half_width(CITY_CENTER_REACH, ARC_HALF);
+        assert!(
+            w >= CITY_SHORE_HALF_WIDTH,
+            "the spit at the city's reach ({CITY_CENTER_REACH}) is {w:.1} half-wide, but \
+             the city scene draws {CITY_SHORE_HALF_WIDTH} of dry ground — the city would \
+             be standing in its own sea"
+        );
     }
 
     #[test]
