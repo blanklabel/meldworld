@@ -475,7 +475,7 @@ pub struct CreatureLoot {
 /// version of the hand-written-list bug: the pool is derived from the unlock registry's
 /// intent now, and a class added there but not here fails
 /// `every_fieldable_class_can_find_gear`.
-pub const CLASS_KEYS: [&str; 8] = [
+pub const CLASS_KEYS: [&str; 10] = [
     "explorer",
     "hunter",
     "psyker",
@@ -484,6 +484,8 @@ pub const CLASS_KEYS: [&str; 8] = [
     "phoenix_guard",
     "smithwright",
     "keeper",
+    "iron_hull",
+    "rift_knight",
 ];
 
 /// The universal 20-step power ladder (weakest → strongest), shared by every
@@ -573,6 +575,23 @@ pub fn class_slot_noun(class_key: &str, slot: &str) -> &'static str {
         ("keeper", "chest") => "Bloomweave",
         ("keeper", "legs") => "Roothose",
         ("keeper", "accessory") => "Terra Locket",
+        // The Order of the Iron Hull: everything it wears came off the ship. Sailcloth,
+        // rust-dyed canvas, and the oar itself — the order owns no armour and no forge, so
+        // its kit reads as ship's stores rather than as equipment.
+        ("iron_hull", "main_hand") => "Rivet-Dyed Wraps",
+        ("iron_hull", "off_hand") => "Ballast Cord",
+        ("iron_hull", "head") => "Listener's Cowl",
+        ("iron_hull", "chest") => "Sailcloth Robe",
+        ("iron_hull", "legs") => "Deckbinds",
+        ("iron_hull", "accessory") => "Hull Bell",
+        // The Wall Defense Force: issued kit, requisitioned from the Foundry, and it reads
+        // like it — a quartermaster's list rather than a hero's trophies.
+        ("rift_knight", "main_hand") => "Shock Lance",
+        ("rift_knight", "off_hand") => "Tether Harness",
+        ("rift_knight", "head") => "Drop Helm",
+        ("rift_knight", "chest") => "Parapet Cuirass",
+        ("rift_knight", "legs") => "Dampener Greaves",
+        ("rift_knight", "accessory") => "Rift Anchor",
         // 7-slot expansion (Epic GR spec §5): off-hand / head / legs nouns.
         ("explorer", "off_hand") => "Targe",
         ("explorer", "head") => "Warhelm",
@@ -4691,10 +4710,20 @@ impl Arena {
     /// Collect (remove and return) every ground-loot drop within pickup range of
     /// `player_id`. The caller banks each into the player's backpack.
     pub fn collect_loot(&mut self, player_id: &str) -> Vec<GroundLoot> {
+        self.collect_loot_within(player_id, 0.0)
+    }
+
+    /// [`Self::collect_loot`], with a Rift Knight's **Recall Blade** reaching further.
+    ///
+    /// The perk rides in as a parameter rather than being read here, for the same reason
+    /// `step_creatures_with_aggro` takes its multiplier map: `meld-world` is a pure state
+    /// machine and knows nothing about classes, perks or run levels. The server owns that
+    /// and hands in the answer.
+    pub fn collect_loot_within(&mut self, player_id: &str, extra_radius: f64) -> Vec<GroundLoot> {
         let Some(pos) = self.avatar(player_id).map(|a| a.position) else {
             return Vec::new();
         };
-        let radius = self.loot_pickup_radius;
+        let radius = self.loot_pickup_radius + extra_radius.max(0.0);
         let mut taken = Vec::new();
         let mut i = 0;
         while i < self.ground_loot.len() {
@@ -5040,6 +5069,29 @@ impl Arena {
         dir_y: f64,
         input_seq: u32,
     ) -> Option<Position> {
+        self.apply_move_with(player_id, dir_x, dir_y, input_seq, false)
+    }
+
+    /// [`Self::apply_move`], with a Rift Knight's **Inertial Nullification** allowing a
+    /// step off a terrace anywhere instead of a walk to a connector.
+    ///
+    /// DESCENT ONLY, and that asymmetry is the whole rule. "A connector is the only way to
+    /// change level" exists so a terrace is real terrain rather than decoration, and a
+    /// party that could go UP anywhere would walk over the world instead of through it —
+    /// including straight onto the plateaus that generation deliberately keeps off the
+    /// clear path. Falling is the half the order's doctrine actually claims (no damage from
+    /// sixty feet, and it lands on its feet), and it is the half that cannot skip content:
+    /// you still had to get up there.
+    ///
+    /// The perk arrives as a parameter, not a lookup — `meld-world` stays pure.
+    pub fn apply_move_with(
+        &mut self,
+        player_id: &str,
+        dir_x: f64,
+        dir_y: f64,
+        input_seq: u32,
+        may_drop: bool,
+    ) -> Option<Position> {
         // Read the avatar's current state first (immutable) so the elevation/obstacle
         // math below can borrow `&self`; write the result back at the end.
         let (cur, cur_elev, state, speed) = {
@@ -5084,6 +5136,8 @@ impl Arena {
             if cl == cur_elev
                 || self.connector_between(&cur, cur_elev, cl)
                 || self.connector_between(&cand, cur_elev, cl)
+                // A Rift Drop-Trooper steps off. Strictly DOWNWARD: see `apply_move_with`.
+                || (may_drop && cl < cur_elev)
             {
                 Some(cl)
             } else {

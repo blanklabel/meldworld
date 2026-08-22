@@ -502,6 +502,8 @@ pub fn class_key(class: CharacterClass) -> &'static str {
         CharacterClass::PhoenixGuard => "phoenix_guard",
         CharacterClass::Smithwright => "smithwright",
         CharacterClass::Keeper => "keeper",
+        CharacterClass::IronHull => "iron_hull",
+        CharacterClass::RiftKnight => "rift_knight",
     }
 }
 
@@ -661,6 +663,24 @@ pub fn party_fighters(
             let def = (stats.base_def + grow(wll, stats.wll, a.wll_to_def) + bonus.def
                 - bonus.penalty_def)
                 .max(0);
+            // UNARMORED DEFENCE (the D&D monk's, adapted). The Iron Hull wears no armour
+            // and carries no weapon, so the thing that hardens as it climbs is its own
+            // discipline: `def` gains a per-level term nothing else in the game has.
+            //
+            // Applied to the DERIVED def rather than to `base_def`, because it must scale
+            // with the hero and not with the class: a flat number is a third of a level-1
+            // monk's armour and a rounding error at 100, which is the same trap every
+            // magnitude that lands on a hero has to avoid.
+            //
+            // It is deliberately not "more Wll": Wll buys HP as well, and this order's
+            // whole trade is that it does not get TOUGHER, it gets harder to land a blow on
+            // and better at shrugging one off when you do.
+            let def = if *class == CharacterClass::IronHull {
+                def + ((level - 1).max(0) as f64 * balance.battle.iron_hull_unarmored_def_per_level)
+                    .round() as i32
+            } else {
+                def
+            };
             // Wll answers a blade, Mnd answers a spell. Gear's `def` is deliberately NOT
             // added here: armour is steel, and what stops fire is the mind behind it plus
             // whatever ward the piece happens to carry (which rides `damage_modifiers`).
@@ -832,6 +852,17 @@ pub fn party_fighters(
                         * (bonus.spell_power_pct as f64 / 100.0))
                         .round() as i32;
                 }
+                // AD-1 "of the Deck": the Iron Hull is already rooted when the bell goes.
+                // A share of its own max HP as a Barrier, seeded here rather than as a
+                // STACK of Structural Rooting — gear granting a standing bonus is the
+                // piece's own, and it must not eat one of the five the fight allows.
+                CharacterClass::IronHull => {
+                    f.barrier += ((f.max_hp as f64) * (bonus.rooted_pct as f64 / 100.0))
+                        .round() as i32;
+                }
+                // The Rift Knight's "of the Open Breach" needs no arm: it folds into
+                // `start_gauge_pct` beside the Explorer's `pace_setter`, which is already
+                // applied wherever that is. One state, one code path.
                 // Other martial classes hold the front line with no special resource.
                 _ => {}
             }
@@ -1235,6 +1266,107 @@ mod tests {
         );
     }
 
+
+    /// UNARMORED DEFENCE: the monk's armour is its own discipline, and it CLIMBS.
+    ///
+    /// The Iron Hull gave up both halves of the usual answer — no armour heavier than a
+    /// robe, and no weapon at all — so the thing that has to grow with it is `def` itself.
+    /// This is the D&D monk's shape, where a high-level monk eventually out-ACs plate.
+    ///
+    /// Asserted as a RELATIONSHIP rather than a number: the coefficient is a `[TUNABLE]`,
+    /// but "it grows", "it grows faster than the class that stands still", and "it does not
+    /// touch anyone else" are the rules.
+    #[test]
+    fn the_monks_armour_is_its_discipline_and_it_climbs() {
+        let b = Balance::load_default().unwrap();
+        let def_at = |class: CharacterClass, level: i32| -> i32 {
+            let runs = {
+                let mut r = InstanceRun::new("i".into(), 0, &b, 0);
+                r.add_party(vec![("p".into(), "u".into(), class, "r".into())]);
+                r
+            };
+            let party: Vec<PartyMember> =
+                vec![("p".to_string(), "u".to_string(), class, GearBonus::default())];
+            let mut runs = runs;
+            // A hero's OWN level is the source of truth (`hero_level(slot)`), with the
+            // run's headline level as the fallback — so both are stood at `level` here.
+            if let Some(r) = runs.runs.first_mut() {
+                r.run_level = level;
+                if r.hero_levels.is_empty() {
+                    r.hero_levels.push(level);
+                } else {
+                    r.hero_levels[0] = level;
+                }
+            }
+            party_fighters(&party, &runs, &b, &[None])[0].def
+        };
+        let monk_1 = def_at(CharacterClass::IronHull, 1);
+        let monk_50 = def_at(CharacterClass::IronHull, 50);
+        assert!(monk_50 > monk_1, "the monk's armour never grew: {monk_1} -> {monk_50}");
+
+        // It must out-climb the class that wears actual plate, or "unarmored defence" is
+        // just a slightly different armour curve and the trade was for nothing.
+        let guard_1 = def_at(CharacterClass::PhoenixGuard, 1);
+        let guard_50 = def_at(CharacterClass::PhoenixGuard, 50);
+        assert!(
+            guard_1 > monk_1,
+            "a level-1 monk should start SOFTER than plate: {monk_1} vs {guard_1}"
+        );
+        assert!(
+            monk_50 - monk_1 > guard_50 - guard_1,
+            "the monk's discipline ({} over 50 levels) must out-climb the wall's Wll ({})",
+            monk_50 - monk_1,
+            guard_50 - guard_1
+        );
+
+        // And nobody else got quietly handed it.
+        for other in [CharacterClass::Explorer, CharacterClass::Shifter, CharacterClass::RiftKnight]
+        {
+            let lo = def_at(other, 1);
+            let hi = def_at(other, 50);
+            let by_wll = hi - lo;
+            let monk_gain = monk_50 - monk_1;
+            assert!(
+                by_wll < monk_gain,
+                "{other:?} gained {by_wll} armour where the monk gained {monk_gain} — the \
+                 per-level term is leaking outside the order it belongs to"
+            );
+        }
+    }
+
+    /// A CLASS THAT SURVIVES BY DODGING MUST ACTUALLY DODGE.
+    ///
+    /// `[attributes] dodge_dex_floor` is a `<=`: Dex at or below it yields **zero** dodge.
+    /// So a class designed around not being hit, written at exactly the floor, has its
+    /// entire defensive plan evaluate to nothing — silently, with a stat line that looks
+    /// deliberate. The Iron Hull monk shipped that way for one commit: unarmoured (Light
+    /// and Robe only), unarmed, and with no dodge either, which is not a trade, it is just
+    /// a worse Phoenix Guard.
+    ///
+    /// Asserted for the two classes whose survival IS evasion, at level 1 — the level
+    /// where a floor bites, and the one every hero passes through.
+    #[test]
+    fn a_class_that_lives_by_dodging_clears_the_dodge_floor_at_level_one() {
+        let b = Balance::load_default().unwrap();
+        for class in [CharacterClass::Shifter, CharacterClass::IronHull] {
+            let key = class_key(class);
+            let p = b.player.get(key).unwrap_or_else(|| panic!("{key} has no stat block"));
+            assert!(
+                p.dex > b.attributes.dodge_dex_floor,
+                "{key} lives by not being hit and has Dex {} against a dodge floor of {} — \
+                 every point of that design is worth exactly zero",
+                p.dex,
+                b.attributes.dodge_dex_floor
+            );
+        }
+        // …and the Phoenix Guard is the deliberate opposite: the wall does NOT dodge, so a
+        // change that lifted everyone over the floor would have broken its identity too.
+        let guard = b.player.get(class_key(CharacterClass::PhoenixGuard)).unwrap();
+        assert!(
+            guard.dex <= b.attributes.dodge_dex_floor,
+            "the Phoenix Guard is a wall, not a dodger"
+        );
+    }
 
     /// A class's abilities and the resource they spend have to be granted to the SAME
     /// class. Adrenaline was handed to the Explorer while every ability that spends it

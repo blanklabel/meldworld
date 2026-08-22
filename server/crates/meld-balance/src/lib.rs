@@ -255,6 +255,38 @@ pub struct Battle {
     pub phoenix_guard_root_barrier_fraction: f64,
     pub phoenix_guard_shock_mult: f64,
     pub phoenix_guard_toll_mult: f64,
+    /// The Order of the Iron Hull (`resolve_iron_hull`). Priced below the Phoenix Guard on
+    /// raw damage and paid back in tempo — a stagger, a drain, a Barrier — because an
+    /// order whose art is returning momentum must not also win the damage comparison.
+    /// The D&D monk's Unarmored Defence: `def` per level, because the order wears no
+    /// armour and its discipline is what hardens.
+    pub iron_hull_unarmored_def_per_level: f64,
+    pub iron_hull_oar_mult: f64,
+    pub iron_hull_sea_legs_evasion: f64,
+    pub iron_hull_swell_mult: f64,
+    pub iron_hull_swell_drain: f64,
+    pub iron_hull_rooting_barrier_fraction: f64,
+    pub iron_hull_shock_mult: f64,
+    pub iron_hull_resonance_barrier_fraction: f64,
+    /// The acoustic half. Both land as `Ethereal`, so a back rank is no protection — a
+    /// melee order with an answer to the rear is the trade for having no armour.
+    pub iron_hull_wake_mult: f64,
+    pub iron_hull_wake_drain: f64,
+    pub iron_hull_toll_mult: f64,
+    pub iron_hull_toll_barrier_fraction: f64,
+    /// The Wall Defense Force's Rift Drop-Trooper (`resolve_rift_knight`). The highest
+    /// single-target numbers in the game, each paid for by a turn the party fights one
+    /// hero short — tune `dive_untargetable_ticks` before touching a multiplier.
+    pub rift_knight_blink_mult: f64,
+    pub rift_knight_recall_atk_fraction: f64,
+    pub rift_knight_dive_mult: f64,
+    pub rift_knight_dive_untargetable_ticks: u64,
+    pub rift_knight_payload_mult: f64,
+    pub rift_knight_breach_mult: f64,
+    pub rift_knight_breach_splash_mult: f64,
+    pub rift_knight_gate_barrier_fraction: f64,
+    pub rift_knight_cataclysm_mult: f64,
+    pub rift_knight_cataclysm_drain: f64,
     pub phoenix_guard_undead_mult: f64,
     /// How many of its OWN turns a fighter must take before its gauge can be knocked again.
     pub gauge_guard_turns: u8,
@@ -1337,6 +1369,20 @@ pub struct Perks {
     pub resonant_regen_per_level: f32,
     // --- Phoenix Guard: bulwark (reduced skirmish/aggro pull). ---
     /// Fraction the creature aggro/skirmish radius shrinks per run level.
+    /// The Order of the Iron Hull on the overworld: the Resonant Wake as a standing
+    /// deterrent, and Hull-Listening — an ear to the ground.
+    pub iron_hull_wake_at: i32,
+    pub iron_hull_wake_reduction_per_level: f64,
+    pub iron_hull_wake_mult_floor: f64,
+    pub iron_hull_listen_at: i32,
+    pub iron_hull_listen_radius_base: f32,
+    pub iron_hull_listen_radius_per_level: f32,
+    /// The Wall Defense Force on the overworld: Recall Blade reaching for loot, and
+    /// Inertial Nullification making every cliff a route down.
+    pub rift_knight_recall_at: i32,
+    pub rift_knight_recall_radius_base: f32,
+    pub rift_knight_recall_radius_per_level: f32,
+    pub rift_knight_drop_at: i32,
     pub phoenix_guard_aggro_reduction_per_level: f64,
     /// Lowest the aggro multiplier can fall to (a floor so mobs never fully ignore).
     pub phoenix_guard_aggro_mult_floor: f64,

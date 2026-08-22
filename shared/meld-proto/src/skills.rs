@@ -55,7 +55,11 @@ pub enum Archetype {
 
 pub fn archetype(class: &str) -> Archetype {
     match class {
-        "hunter" | "shifter" => Archetype::Martial,
+        // The Rift Knight is a dragoon: one blow, placed exactly, and its ladder is that
+        // blow getting better. The Iron Hull falls through to Hybrid on purpose — a monk
+        // that staggers, braces the party and answers a rank with sound is doing four
+        // different jobs, which is what Hybrid means.
+        "hunter" | "shifter" | "rift_knight" => Archetype::Martial,
         "psyker" | "resonant" => Archetype::Caster,
         _ => Archetype::Hybrid,
     }
@@ -729,6 +733,209 @@ pub const SKILLS: &[SkillDef] = &[
         requires: None,
         rank: "Void-Dancer",
     },
+    // ---- Order of the Iron Hull: the ascetic monks of the rusting vessel
+    // (docs/lore/factions.md). Their art is kinetic momentum, isometric strength and the
+    // raw physics of the swell, and their ladder is their rank ladder — Bilge-Scraper,
+    // Wake-Striker, Anchor-Priest, Iron-Bound, Deck-Master, Grandmaster of the Hull.
+    //
+    // THE DOCTRINE OF EQUILIBRIUM IS THE KIT: every action demands a counter-balance, so
+    // this order does not out-tank the Phoenix Guard (which stands and absorbs) — it takes
+    // a blow's momentum and hands it back. Half the ladder is blunt work that STAGGERS
+    // rather than kills, and the other half is **acoustic**: hull resonance through the
+    // deck and the Resonant Wake, the one sound-shaped damage in the game and the reason a
+    // melee order has an answer to a back rank at all.
+    SkillDef {
+        key: "oar_fighter",
+        name: "Oar-Fighter",
+        class: "iron_hull",
+        unlock: 1,
+        target: Target::Enemy,
+        description: "A two-handed swing of the copper-banded oar: blunt damage, heavy enough to rock what it lands on.",
+        upgrades: None,
+        requires: None,
+        rank: "Bilge-Scraper",
+    },
+    SkillDef {
+        key: "sea_legs",
+        name: "Sea-Legs",
+        class: "iron_hull",
+        unlock: 5,
+        target: Target::Caster,
+        description: "Ride the swell: grants YOURSELF Evasion that decays each of your turns. Balance is the first thing the order teaches.",
+        upgrades: None,
+        requires: None,
+        rank: "Wake-Striker",
+    },
+    SkillDef {
+        key: "swell_step",
+        name: "Swell-Step",
+        class: "iron_hull",
+        unlock: 10,
+        target: Target::Enemy,
+        description: "Step inside the blow and give it back: damage plus a gauge drain, taking the target's tempo along with its footing.",
+        upgrades: None,
+        requires: None,
+        rank: "Anchor-Priest",
+    },
+    SkillDef {
+        key: "structural_rooting",
+        name: "Structural Rooting",
+        class: "iron_hull",
+        unlock: 20,
+        target: Target::Caster,
+        description: "Root to the deck and transfer the world's momentum through your bones: a heavy Barrier on YOURSELF. Root over reach.",
+        upgrades: None,
+        requires: None,
+        rank: "Iron-Bound",
+    },
+    SkillDef {
+        key: "kinetic_shock",
+        name: "Kinetic Shock",
+        class: "iron_hull",
+        unlock: 35,
+        target: Target::Enemy,
+        description: "Every ounce of stored momentum into one point: heavy blunt damage that STAGGERS, taking the target's turn outright.",
+        upgrades: None,
+        requires: None,
+        rank: "Deck-Master",
+    },
+    SkillDef {
+        key: "hull_resonance",
+        name: "Hull Resonance",
+        class: "iron_hull",
+        unlock: 50,
+        target: Target::Party,
+        description: "The order's encoded hum through the ship's skeleton — the whole PARTY braces as one and gains a Barrier.",
+        upgrades: None,
+        requires: None,
+        rank: "Deck-Master",
+    },
+    SkillDef {
+        key: "resonant_wake",
+        name: "The Resonant Wake",
+        class: "iron_hull",
+        unlock: 75,
+        target: Target::AllEnemies,
+        description: "The synchronised hum and oar-slam that deters sea beasts: damage to EVERY enemy and a gauge drain on each of them. Sound is not a physical blow, so a back rank is no protection from it.",
+        upgrades: None,
+        requires: None,
+        rank: "Grandmaster of the Hull",
+    },
+    SkillDef {
+        key: "toll_of_the_deep",
+        name: "Toll of the Deep",
+        class: "iron_hull",
+        unlock: 100,
+        target: Target::AllEnemies,
+        description: "The bell on its chain, struck once: a shockwave through EVERY enemy, and the party braced behind it with a Barrier. ONCE per battle.",
+        upgrades: None,
+        requires: None,
+        rank: "Grandmaster of the Hull",
+    },
+
+    // ---- Wall Defense Force: the Rift Drop-Troopers (docs/lore/factions.md). A dragoon
+    // whose leap is a TELEPORT — it phases out of the fight entirely and crashes back down
+    // with the momentum it never spent. Ranks: Sentry, Breach Guard, Drop-Lancer, Wall
+    // Captain, Garrison Commander, Grand Marshal of the Perimeter.
+    //
+    // MARTIAL, so it climbs by its rows getting BETTER rather than by growing new ones, and
+    // everything past 50 is a once-a-fight call instead of more damage.
+    //
+    // ⚠️ The lore's Force damage is deliberately NOT `DamageType::None` here. None bypasses
+    // the modifier map entirely — every resistance and immunity ignored — so it is TRUE
+    // damage rather than a neutral default, and three classes dealt it by accident for a
+    // whole release. A rift blow is **Ethereal**: still not turned by armour the way a
+    // spear is, but answerable, and it is what lets the order reach a back rank without
+    // owning a bow.
+    SkillDef {
+        key: "blink_lance",
+        name: "Blink Lance",
+        class: "rift_knight",
+        unlock: 1,
+        target: Target::Enemy,
+        description: "Step through a micro-rift and put the lance in on the far side: damage that arrives BEHIND the line, so a back rank is no protection from it.",
+        upgrades: None,
+        requires: None,
+        rank: "Sentry",
+    },
+    SkillDef {
+        key: "recall_blade",
+        name: "Recall Blade",
+        class: "rift_knight",
+        unlock: 5,
+        target: Target::Caster,
+        description: "The bonded lance snaps back through a portal, already set for the swing: grants YOURSELF a higher attack for the rest of the battle.",
+        upgrades: None,
+        requires: None,
+        rank: "Breach Guard",
+    },
+    SkillDef {
+        key: "dimensional_dive",
+        name: "Dimensional Dive",
+        class: "rift_knight",
+        unlock: 10,
+        target: Target::Enemy,
+        description: "Tear out of the world and come down on one target with everything you did not spend getting there. Heavy damage, and you cannot be touched while you are gone.",
+        upgrades: None,
+        requires: None,
+        rank: "Drop-Lancer",
+    },
+    SkillDef {
+        key: "blast_gate",
+        name: "Blast-Gate Lockout",
+        class: "rift_knight",
+        unlock: 20,
+        target: Target::Party,
+        description: "Drop the perimeter's inertial dampening over the whole PARTY: a Barrier on every hero. What the Wall does, in miniature.",
+        upgrades: None,
+        requires: None,
+        rank: "Wall Captain",
+    },
+    SkillDef {
+        key: "kinetic_payload",
+        name: "Kinetic Payload",
+        class: "rift_knight",
+        unlock: 35,
+        target: Target::Enemy,
+        description: "Blink Lance with the drop put into it: the same step through the rift, arriving with far heavier damage.",
+        upgrades: Some("blink_lance"),
+        requires: None,
+        rank: "Drop-Lancer",
+    },
+    SkillDef {
+        key: "breach_point",
+        name: "Breach Point",
+        class: "rift_knight",
+        unlock: 50,
+        target: Target::Enemy,
+        description: "The Dive, landed on a fault: the same drop, and the ground going out from under whatever is standing near it — heavy damage to your target and the shock carried to EVERY other enemy.",
+        upgrades: Some("dimensional_dive"),
+        requires: None,
+        rank: "Garrison Commander",
+    },
+    SkillDef {
+        key: "phase_delay",
+        name: "Phase Delay",
+        class: "rift_knight",
+        unlock: 75,
+        target: Target::Caster,
+        description: "Stay in the interstitial void and pick your moment: nothing can touch YOURSELF while you are gone, and you come back with your gauge already full. ONCE per battle.",
+        upgrades: None,
+        requires: None,
+        rank: "Garrison Commander",
+    },
+    SkillDef {
+        key: "grand_cataclysm",
+        name: "Grand Cataclysm",
+        class: "rift_knight",
+        unlock: 100,
+        target: Target::AllEnemies,
+        description: "Widen the tear into an implosion: heavy damage to EVERY enemy, and a gauge drain on each as it is pulled off its footing. ONCE per battle.",
+        upgrades: None,
+        requires: None,
+        rank: "Grand Marshal of the Perimeter",
+    },
+
     // ---- Phoenix Guard: the Last City's anti-undead order (docs/lore/factions.md).
     // The ladder IS their rank ladder — Initiate 1, Purifier 2, Exemplar 5,
     // Luminary 9, Redeemer 13, Apotheosis 17 — so every promotion is a new tool.
@@ -1223,6 +1430,12 @@ pub fn is_once_per_battle(skill: &str) -> bool {
             | "grand_larceny"
             | "hallowed_ground"
             | "phoenix_ascendant"
+            // The Iron Hull's bell and the Rift Knight's two deep calls. `phase_delay` is
+            // the degenerate kind: untargetable plus a full gauge, on repeat, is a hero
+            // that takes every turn and never takes a hit.
+            | "toll_of_the_deep"
+            | "phase_delay"
+            | "grand_cataclysm"
             | "anvil_chorus"
             | "great_work"
             | "world_tree"
@@ -1413,9 +1626,12 @@ mod tests {
         assert!(is_unlocked("attack", 1));
         assert_eq!(describe("attack"), "");
         assert_eq!(pretty_skill("purging_light"), "Purging Light");
-        // Toll of the Deep is the Iron Hull's Grandmaster perk, reserved for that
-        // order — it must NOT resolve as a Phoenix Guard ability.
-        assert!(!is_hero_skill("toll_of_the_deep"));
+        // Toll of the Deep is the Iron Hull's Grandmaster capstone. It was RESERVED for
+        // years while the Phoenix Guard wore a kit borrowed from that order, and this line
+        // asserted it resolved for nobody; the order has landed, so what it guards now is
+        // that the ability belongs to the Iron Hull and to nothing else.
+        assert_eq!(skill_owner("toll_of_the_deep"), Some("iron_hull"));
+        assert!(is_hero_skill("toll_of_the_deep"));
         assert_eq!(skill_owner("backstab"), Some("shifter"));
         assert_eq!(skill_owner("nope"), None);
     }
@@ -1655,8 +1871,11 @@ mod tests {
             let shown: Vec<i32> = kit.iter().map(|s| s.unlock).collect();
             assert_eq!(shown, levels, "{class}'s kit is listed out of ladder order");
         }
-        // Every class in the registry is covered, not a hand-picked few.
-        assert_eq!(all_classes().len(), 8, "{:?}", all_classes());
+        // Every class in the registry is covered, not a hand-picked few. The count is
+        // asserted so that ADDING a class is a deliberate act here rather than a silent
+        // one — which is exactly how the Smithwright and the Keeper once shipped on
+        // 1/4/12/20/28/36 with nothing failing.
+        assert_eq!(all_classes().len(), 10, "{:?}", all_classes());
     }
 
     #[test]

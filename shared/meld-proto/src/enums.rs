@@ -36,8 +36,8 @@ pub enum CharacterClass {
     /// earned by surviving the undead rite.
     ///
     /// The `iron_hull` key is deliberately NOT aliased here: the Order of the Iron
-    /// Hull is a separate monastic order whose own kit is already authored
-    /// (docs/lore/factions.md), and it will claim that key when it lands.
+    /// Hull is a separate monastic order with its own kit ([`Self::IronHull`]), and a
+    /// hero persisted under that key must wake up as one rather than as this.
     PhoenixGuard,
     /// **The Foundry's Smithwright.** The order that keeps the world standing — walls,
     /// Anchors, and every blade the rest of it swings. A front-line class built around
@@ -50,6 +50,27 @@ pub enum CharacterClass {
     /// tonics, and the still it sets up in the field (MS-1). A Keeper in the party makes
     /// a cook easier the way a Smithwright makes a heat easier.
     Keeper,
+    /// **The Order of the Iron Hull's monk.** An ascetic order confined to one rusting
+    /// vessel off the Glass Desert, whose martial art is kinetic momentum, isometric
+    /// strength and the raw physics of the ocean's swell (docs/lore/factions.md).
+    ///
+    /// Where the Phoenix Guard is a WALL — it stands and absorbs — the Iron Hull is a
+    /// COUNTER-WEIGHT: its Doctrine of Equilibrium is that every action demands a
+    /// counter-balance, so its kit is built on taking a blow's momentum and returning
+    /// it. Blunt oarwork that staggers, a rooted stance it trades mobility for, and
+    /// **acoustic** work — hull resonance through the deck, the Resonant Wake that
+    /// deafens a whole line — which is the one damage family nothing else in the game
+    /// deals.
+    IronHull,
+    /// **The Wall Defense Force's Rift Drop-Trooper.** The perimeter military's shock
+    /// troops, who close a breach by tearing a hole in space and coming down on top of
+    /// it (docs/lore/factions.md).
+    ///
+    /// A dragoon whose leap is a TELEPORT: it phases out of the fight entirely — it
+    /// cannot be hit and cannot act — and crashes back down on a target of its choosing
+    /// with the momentum it never spent. The trade is the whole class: every turn it
+    /// spends airborne is a turn its party fights one hero short.
+    RiftKnight,
 }
 
 /// Damage typing (Creature AI/Combat/Gear spec §1). Every damaging effect
@@ -356,25 +377,53 @@ pub enum TerminateReason {
 mod tests {
     use super::*;
 
-    /// The Wall Defense Force's Rift Drop-Trooper (docs/lore/factions.md) has an
-    /// authored ladder and no kit, so `rift_knight` is a NAME the lore has claimed and
-    /// the enum has not. Same reservation as `iron_hull` above, for the same reason: a
-    /// key that silently deserialises to some other class is a hero who wakes up as the
-    /// wrong thing the day the real one lands.
+    /// THE TWO RESERVED KEYS HAVE LANDED, and each is its own class rather than an alias
+    /// of the one that nearly took its name.
+    ///
+    /// `iron_hull` was reserved for years while the Phoenix Guard wore a kit borrowed from
+    /// it; the reservation existed so that the day the real order shipped, no hero already
+    /// persisted under that key would silently wake up as the wrong class. This is that
+    /// day, and the assertion flips from "must not deserialise" to "must deserialise to
+    /// ITSELF" — which is the same guarantee, now that there is something to point at.
     #[test]
-    fn rift_knight_is_reserved_and_not_yet_fieldable() {
-        assert!(serde_json::from_str::<CharacterClass>("\"rift_knight\"").is_err());
-        assert_eq!(crate::equipment::class_from_key("rift_knight"), None);
+    fn the_reserved_orders_deserialise_to_themselves_and_not_to_their_neighbours() {
+        for (key, want) in [
+            ("iron_hull", CharacterClass::IronHull),
+            ("rift_knight", CharacterClass::RiftKnight),
+        ] {
+            assert_eq!(
+                serde_json::from_str::<CharacterClass>(&format!("\"{key}\"")).unwrap(),
+                want,
+                "`{key}` no longer round-trips to its own order"
+            );
+            assert_eq!(crate::equipment::class_from_key(key), Some(want));
+            assert_eq!(crate::equipment::class_key(want), key);
+        }
+        // …and neither of them quietly became the Phoenix Guard, which is the class that
+        // held the Iron Hull's authored kit while the order itself was still a reservation.
+        assert_ne!(CharacterClass::IronHull, CharacterClass::PhoenixGuard);
+        assert_eq!(
+            serde_json::from_str::<CharacterClass>("\"phoenix_guard\"").unwrap(),
+            CharacterClass::PhoenixGuard
+        );
     }
 
     #[test]
     fn iron_hull_is_reserved_for_its_own_order_not_an_alias() {
-        // The Order of the Iron Hull is a separate monastic order with its own
-        // authored kit (docs/lore/factions.md). If `iron_hull` still deserialised to
-        // the Phoenix Guard, the day that class lands every one of its heroes would
-        // silently be the wrong class.
-        assert!(serde_json::from_str::<CharacterClass>("\"iron_hull\"").is_err());
-        assert_eq!(crate::equipment::class_from_key("iron_hull"), None);
+        // The Order of the Iron Hull is a separate monastic order with its own authored
+        // kit (docs/lore/factions.md), and it has now LANDED as its own class — so the
+        // guarantee this test has always made (a hero saved as `iron_hull` is never
+        // silently a Phoenix Guard) is asserted against the real order rather than
+        // against its absence. See
+        // `the_reserved_orders_deserialise_to_themselves_and_not_to_their_neighbours`.
+        assert_eq!(
+            serde_json::from_str::<CharacterClass>("\"iron_hull\"").unwrap(),
+            CharacterClass::IronHull
+        );
+        assert_eq!(
+            crate::equipment::class_from_key("iron_hull"),
+            Some(CharacterClass::IronHull)
+        );
         assert_eq!(
             serde_json::to_string(&CharacterClass::PhoenixGuard).unwrap(),
             "\"phoenix_guard\""

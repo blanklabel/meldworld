@@ -926,6 +926,32 @@ pub mod run {
         /// Phoenix Guard skirmish/aggro radius multiplier (≤1; 1 = no Phoenix Guard).
         #[serde(default = "one_f32")]
         pub phoenix_guard_aggro_mult: f32,
+        /// Iron Hull — the Resonant Wake as a standing deterrent: creatures chase this
+        /// party from closer in, exactly as the Phoenix Guard's bulwark does.
+        ///
+        /// Its OWN field rather than a second writer of the Guard's, because a party can
+        /// hold both orders at once and one field would mean whichever arm ran last won.
+        /// The server takes the stronger of the two.
+        #[serde(default = "one")]
+        pub iron_hull_aggro_mult: f32,
+        /// Iron Hull — Hull-Listening: the order presses an ear to the deck and feels what
+        /// is moving through it. Creatures are force-included in this player's snapshot out
+        /// to this radius (the node-sense pattern, never a wider shared cull).
+        #[serde(default)]
+        pub iron_hull_listen_radius: f32,
+        /// Rift Knight — Recall Blade, applied to the ground: loose loot comes to your hand
+        /// through a micro-portal from this far away, instead of being walked over.
+        #[serde(default)]
+        pub rift_knight_recall_radius: f32,
+        /// Rift Knight — Inertial Nullification: it may step OFF a terrace anywhere and
+        /// land on its feet, instead of walking to a connector. The order's whole doctrine
+        /// is that a sixty-foot drop is a route.
+        ///
+        /// Descent only. Rising still needs a connector — "no free climbing" is what keeps
+        /// a terrace a real piece of terrain, and a party that could go up anywhere would
+        /// walk over the world rather than through it.
+        #[serde(default)]
+        pub rift_knight_drop: bool,
     }
     fn one_f32() -> f32 {
         1.0
@@ -966,9 +992,20 @@ pub mod run {
                 keeper_field_regen_mult: 1.0,
                 keeper_free_unit_chance: 0.0,
                 phoenix_guard_aggro_mult: 1.0,
+                iron_hull_aggro_mult: 1.0,
+                iron_hull_listen_radius: 0.0,
+                rift_knight_recall_radius: 0.0,
+                rift_knight_drop: false,
             }
         }
     }
+    /// `1.0`, for the multiplier perks whose neutral value is not zero. A missing
+    /// `iron_hull_aggro_mult` on an older client's payload must mean "no deterrent", and
+    /// `#[serde(default)]` would make it mean "creatures never chase you".
+    fn one() -> f32 {
+        1.0
+    }
+
     impl Message for Perks {
         const TYPE: &'static str = "run.perks";
     }
