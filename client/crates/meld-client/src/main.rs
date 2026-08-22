@@ -1297,7 +1297,7 @@ impl BattleData {
 /// A queued battle order for one hero. Attack/Skill hit the monster; Defend/Item
 /// are self-cast. `Focus`/`Hold` are Psyker channels (verb, manifestation kind).
 /// The `&'static str`s are the skill_kind / item_id / manifestation kind.
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Debug)]
 enum QueuedKind {
     Attack,
     Defend,
@@ -1405,15 +1405,34 @@ fn resonant_autoplay_op(battle: &BattleData) -> QueuedKind {
     }
 }
 
-/// Explorer kit catalog: (wire kind, unlock level, Adrenaline cost). A display/autoplay
-/// mirror of balance `[battle] explorer_*_cost` + `meld_proto::skills` unlock levels —
-/// the server stays authoritative; this only steers the menu/autoplay.
-const HUNTER_SKILLS: [(&str, i32, i32); 4] = [
-    ("power_strike", 1, 40),
-    ("second_wind", 2, 35),
-    ("snare", 2, 30),
-    ("frenzy", 3, 80),
+/// Hunter kit catalog for AUTOPLAY: (wire kind, Adrenaline cost), a mirror of balance
+/// `[battle] hunter_*_cost`. The unlock level is NOT written here — it comes from
+/// `meld_proto::skills::unlock_level`, the same registry the server gates on.
+///
+/// ⚠️ It used to carry its own levels, and they had gone stale against the round `RUNGS`:
+/// `second_wind` 2 (really 5), `snare` 2 (really 10), `frenzy` 3 (really 20). Autoplay
+/// does not go through `menu_entries`, so nothing greyed those rows — it simply submitted
+/// a skill the hero had not learned, the server refused it, and (before the turn-back fix
+/// in `handle_submit`) the hero was uncommandable until the 15 s auto-defend. A Hunter on
+/// autoplay spent most of its fight locked out by its own kit. A hand-written level beside
+/// a registry that owns levels is a copy that will go stale; this is the repo's "never a
+/// list of ability keys" rule wearing a tuple.
+const HUNTER_SKILLS: [(&str, i32); 4] = [
+    ("power_strike", 40),
+    ("second_wind", 35),
+    ("snare", 30),
+    ("frenzy", 80),
 ];
+
+/// The Adrenaline cost and registry unlock level of a Hunter autoplay row.
+fn hunter_skill(kind: &str) -> (i32, i32) {
+    let cost = HUNTER_SKILLS
+        .iter()
+        .find(|(k, _)| *k == kind)
+        .map(|(_, c)| *c)
+        .unwrap_or(i32::MAX);
+    (meld_proto::skills::unlock_level(kind), cost)
+}
 
 /// Autoplay heuristic for a Explorer hero: build Adrenaline with basic attacks, then
 /// release. Heal with Second Wind when badly hurt and it can afford it; otherwise if
@@ -1421,18 +1440,17 @@ const HUNTER_SKILLS: [(&str, i32, i32); 4] = [
 /// Strike as soon as it can afford it.
 fn explorer_autoplay_op(view: &CombatantView) -> QueuedKind {
     let adr = status_num(&view.statuses, "adrenaline:");
-    let skill = |kind: &str| HUNTER_SKILLS.iter().find(|(k, _, _)| *k == kind).unwrap();
-    let (_, sw_lv, sw_cost) = *skill("second_wind");
+    let (sw_lv, sw_cost) = hunter_skill("second_wind");
     let hurt = (view.hp as f32) < 0.4 * view.max_hp.max(1) as f32;
     if hurt && view.level >= sw_lv && adr >= sw_cost {
         return QueuedKind::Skill("second_wind");
     }
-    let (_, frenzy_lv, frenzy_cost) = *skill("frenzy");
+    let (frenzy_lv, frenzy_cost) = hunter_skill("frenzy");
     if view.level >= frenzy_lv {
         // Save up, then unleash Frenzy.
         return if adr >= frenzy_cost { QueuedKind::Skill("frenzy") } else { QueuedKind::Attack };
     }
-    let (_, ps_lv, ps_cost) = *skill("power_strike");
+    let (ps_lv, ps_cost) = hunter_skill("power_strike");
     if view.level >= ps_lv && adr >= ps_cost {
         return QueuedKind::Skill("power_strike");
     }
@@ -2900,5 +2918,57 @@ mod harvest_pop_tests {
         app.update();
         app.update();
         assert_eq!(banners(&mut app), 1, "the unlock was swallowed by the fight");
+    }
+}
+
+#[cfg(test)]
+mod autoplay_tests {
+    use super::*;
+
+    /// **AUTOPLAY MUST NOT PRESS A SKILL THE HERO HAS NOT LEARNED.** It bypasses
+    /// `menu_entries` entirely, so nothing greys its rows — it just submits, and the server
+    /// refuses. `HUNTER_SKILLS` used to carry its own unlock levels and they had gone stale
+    /// against the round `RUNGS`: Second Wind at 2 (really 5), Snare at 2 (really 10),
+    /// Frenzy at 3 (really 20). So an autoplaying Hunter spent most of its fight submitting
+    /// locked abilities. The levels come from the registry now; this holds every row it
+    /// names to actually being that class's, and to being priced.
+    #[test]
+    fn the_autoplay_hunter_only_presses_rows_the_registry_agrees_it_has() {
+        for (key, cost) in HUNTER_SKILLS {
+            assert_eq!(
+                meld_proto::skills::skill_owner(key),
+                Some("hunter"),
+                "{key} is not a Hunter row"
+            );
+            let (unlock, c) = hunter_skill(key);
+            assert_eq!(unlock, meld_proto::skills::unlock_level(key), "{key} unlock is a copy");
+            assert_eq!(c, cost, "{key} price is not the table's");
+            assert!(unlock >= 1 && c > 0, "{key}: unlock {unlock}, cost {c}");
+        }
+        // The specific regression: a level-4 Hunter is not offered Second Wind however hurt
+        // it is and however much Adrenaline it is sitting on.
+        let hurt_hunter = |level: i32| CombatantView {
+            id: "h".into(),
+            name: "H".into(),
+            hp: 1,
+            max_hp: 100,
+            gauge: 1.0,
+            is_player: true,
+            player_id: Some("me".into()),
+            level,
+            statuses: vec!["class:hunter".into(), "adrenaline:100".into(), "adrenaline_max:100".into()],
+        };
+        for level in 1..meld_proto::skills::unlock_level("second_wind") {
+            assert_ne!(
+                explorer_autoplay_op(&hurt_hunter(level)),
+                QueuedKind::Skill("second_wind"),
+                "autoplay pressed Second Wind at level {level}, before the hero learns it"
+            );
+        }
+        assert_eq!(
+            explorer_autoplay_op(&hurt_hunter(meld_proto::skills::unlock_level("second_wind"))),
+            QueuedKind::Skill("second_wind"),
+            "a hurt Hunter that HAS learned Second Wind should use it"
+        );
     }
 }

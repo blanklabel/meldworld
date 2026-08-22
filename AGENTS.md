@@ -1386,6 +1386,33 @@ acts again. Event Horizon slows the fill RATE (`HORIZON_STATUS`, through the sam
 `status_slow_mult` a web or chill uses), which cannot lock; Hallowed Ground zeroes every
 gauge outright and is gated to once a fight for the same reason.
 
+**A REFUSAL IS FREE, AND IT HANDS THE TURN BACK.** A rejected action must not move a single
+field, and `submit` used to do its damage before it knew whether the action was legal: it
+recorded the `action_id` as seen and ran `start_of_turn` (the DoT tick, the Regen heal, the
+Barrier decay) and only THEN resolved — so a refusal ticked the venom and decayed the Barrier
+and **threw those events away** with the early return (the client's HP silently wrong), burned
+the `action_id` so the identical retry came back `DuplicateAction`, and left the hero
+`awaiting` on a full gauge. That last one is the lock-out: the client drops a hero from its
+`ready` set the moment it fires an order, and `battle.turn_ready` only fires on the
+not-ready → ready TRANSITION, which already happened — so the hero went uncommandable until
+the 15 s auto-defend spent its turn. **Pressing Second Wind one Adrenaline short read,
+correctly, as the ability locking that hero out of the fight**, and it is the row that exposed
+it because it is the one you reach for when a hero is HURT, which is exactly when it has been
+taking hits instead of landing them and has nothing banked.
+Two rules now: `Battle::precheck` runs every foreseeable refusal (unlock, once-a-fight,
+Adrenaline affordability, a target-less attack) with `&self` BEFORE anything mutates — the
+per-resolver checks stay authoritative behind it — and `handle_submit` re-emits `TurnReady`
+through the ordinary audience funnel on ANY `Err`, so every refusal cause, including ones
+added later, hands the turn back through one point instead of each new check remembering to.
+`hunter_skill_cost` is one table read by both the precheck and the resolver, because a
+precheck that waves through what the resolver refuses is the same turn-eating bug wearing a
+guard's clothes. ⚠️ **AUTOPLAY DOES NOT GO THROUGH THE MENU**, so the greying that protects a
+human never protected it: its `HUNTER_SKILLS` carried its own unlock levels, stale against
+the round `RUNGS` (Second Wind 2 for 5, Snare 2 for 10, Frenzy 3 for 20), and an autoplaying
+Hunter spent most of its fight submitting abilities it had not learned. Levels come from the
+registry now — a hand-written level beside a registry that owns levels is the "never a list of
+ability keys" rule wearing a tuple.
+
 **Every lasting effect answers to ONE ceiling: `[battle] max_effect_stacks` = 5.** Regen,
 Barrier, Evasion and the fight-long attack buff all count stacks on the `Fighter`, and a
 grant past the ceiling is REFUSED rather than silently wasted — so "how many of these can I

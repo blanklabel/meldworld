@@ -1671,6 +1671,18 @@ impl Battle {
                 "Flee is disabled against Gatekeepers.",
             ));
         }
+        // EVERY refusal we can see coming happens HERE, before a single field moves — see
+        // [`Self::precheck`] for what a refusal past this point used to cost the player.
+        // A CONFUSED hero is exempt: it did not choose this action, and the scramble
+        // deliberately falls back to a defend rather than an error (below).
+        if !scrambled {
+            self.precheck(
+                i,
+                action,
+                skill_kind.as_deref(),
+                target_ids.as_ref().and_then(|t| t.first()).map(|s| s.as_str()),
+            )?;
+        }
         self.seen_actions.insert(action_id.clone());
 
         let mut events = Vec::new();
@@ -1934,6 +1946,93 @@ impl Battle {
         }]
     }
 
+    /// The Adrenaline a Hunter row costs, or `None` if `skill` is not one of its rows.
+    /// ONE table, read by both the resolver and [`Self::precheck`] — a second copy is a
+    /// precheck that passes an action the resolver then refuses, which is the turn-eating
+    /// case this whole path exists to prevent. Mirrors
+    /// `meld_run::ability_effects::adrenaline_cost`, which is what the client greys rows
+    /// against, and an upgrade costs what the row it replaced cost: the Hunter's rows get
+    /// better, its Adrenaline economy does not change.
+    fn hunter_skill_cost(&self, skill: &str) -> Option<i32> {
+        Some(match skill {
+            "power_strike" | "crushing_blow" => self.hunter_power_strike_cost,
+            "second_wind" | "iron_lung" => self.hunter_second_wind_cost,
+            "snare" | "pin_the_prey" => self.hunter_snare_cost,
+            "frenzy" | "apex_predator" => self.hunter_frenzy_cost,
+            _ => return None,
+        })
+    }
+
+    /// Everything a submitted action can be refused for that is knowable WITHOUT touching
+    /// a single field — run before `submit` mutates anything.
+    ///
+    /// ⚠️ **A REFUSAL USED TO COST THE PLAYER A TURN AND A POISON TICK.** `submit` recorded
+    /// the `action_id` as seen and ran `start_of_turn` (the DoT tick, the Regen heal, the
+    /// Barrier decay) and only *then* resolved — so a rejected action ticked the venom,
+    /// decayed the Barrier and threw those events away with the `return Err`, leaving the
+    /// client's HP and Barrier wrong; burned the `action_id`, so the same order re-sent came
+    /// back `DuplicateAction`; and left the hero `awaiting` with a full gauge, which the
+    /// client had already dropped from its `ready` set — so the hero could not be commanded
+    /// again until the 15 s auto-defend spent its turn for it. Pressing Second Wind one
+    /// Adrenaline short read, correctly, as the ability locking the hero out of the fight.
+    ///
+    /// The per-resolver checks stay exactly where they are and stay authoritative; this pass
+    /// only guarantees the refusals a PLAYER actually hits are free. Anything here must be
+    /// side-effect-free (`&self`) and must agree with the resolver, or it is worse than
+    /// nothing — hence [`Self::hunter_skill_cost`] being one table.
+    fn precheck(
+        &self,
+        i: usize,
+        action: BattleActionKind,
+        skill_kind: Option<&str>,
+        target: Option<&str>,
+    ) -> Result<(), Reject> {
+        if action == BattleActionKind::Attack && target.is_none() {
+            return Err(Reject::ValidationError("attack requires target_ids"));
+        }
+        if action != BattleActionKind::Skill {
+            return Ok(());
+        }
+        // A Psyker's `skill_kind` is an OP (`cast:<kind>`), not an ability key, and it is
+        // resolved by its own path — the checks below would read the whole op as a key.
+        if self.fighters[i].focus_max > 0 {
+            return Ok(());
+        }
+        let Some(key) = skill_kind else {
+            return Ok(());
+        };
+        if !meld_proto::skills::is_unlocked(key, self.fighters[i].level) {
+            return Err(Reject::ValidationError("skill not unlocked at this level"));
+        }
+        if meld_proto::skills::is_once_per_battle(key)
+            && self.fighters[i].once_spent.iter().any(|s| s == key)
+        {
+            return Err(Reject::ValidationError("already used this battle"));
+        }
+        if meld_proto::skills::skill_owner(key) == Some("hunter") {
+            match self.hunter_skill_cost(key) {
+                None => return Err(Reject::ValidationError("unknown hunter skill")),
+                Some(cost) if self.fighters[i].adrenaline < cost => {
+                    return Err(Reject::ValidationError("not enough adrenaline"))
+                }
+                Some(_) => {}
+            }
+        }
+        Ok(())
+    }
+
+    /// Is this combatant sitting on a full gauge waiting to be told what to do? The one
+    /// question the game loop has to ask after refusing an action, so it can hand the turn
+    /// back (`battle.turn_ready`) instead of leaving the hero uncommandable.
+    pub fn awaiting_turn(&self, combatant_id: &str) -> bool {
+        self.idx(combatant_id)
+            .map(|i| {
+                let f = &self.fighters[i];
+                f.alive && f.awaiting && f.gauge >= 1.0
+            })
+            .unwrap_or(false)
+    }
+
     /// Resolve a Explorer Adrenaline spender. EVERY Explorer skill spends banked
     /// Adrenaline and is rejected unless the cost is met (the client also greys
     /// unaffordable rows). `second_wind` is a self-heal; `power_strike`/`snare`/
@@ -1945,15 +2044,8 @@ impl Battle {
         target_id: Option<&str>,
         action_id: Option<Id>,
     ) -> Result<Resolution, Reject> {
-        let cost = match skill {
-            // An upgrade costs what the ability it replaced cost: the Hunter's rows get
-            // better, its Adrenaline economy does not change.
-            "power_strike" | "crushing_blow" => self.hunter_power_strike_cost,
-            "second_wind" | "iron_lung" => self.hunter_second_wind_cost,
-            "snare" => self.hunter_snare_cost,
-            "pin_the_prey" => self.hunter_snare_cost,
-            "frenzy" | "apex_predator" => self.hunter_frenzy_cost,
-            _ => return Err(Reject::ValidationError("unknown hunter skill")),
+        let Some(cost) = self.hunter_skill_cost(skill) else {
+            return Err(Reject::ValidationError("unknown hunter skill"));
         };
         if self.fighters[actor_i].adrenaline < cost {
             return Err(Reject::ValidationError("not enough adrenaline"));
@@ -7940,6 +8032,181 @@ mod tests {
         // shifter_ransack_drain = 0.35 → 0.6 − 0.35 = 0.25.
         assert!((gauge_of(&battle, "m") - 0.25).abs() < 1e-9, "Ransack drains the gauge to 0.25");
         assert!(player_hp(&battle, "m") < 500, "Ransack also deals damage");
+    }
+
+    /// A Hunter that cannot afford the row it pressed keeps its turn, its `action_id`, and
+    /// its skin — and can act again immediately.
+    ///
+    /// ⚠️ THIS IS THE "SECOND WIND LOCKS THE HERO OUT" BUG. `submit` recorded the
+    /// `action_id` and ran `start_of_turn` BEFORE resolving, then bailed on the rejection
+    /// and threw those events away. So one refused press: ticked the hero's poison and
+    /// decayed its Barrier with nobody told (client HP silently wrong), burned the
+    /// `action_id` so re-sending the same order came back `DuplicateAction`, and left the
+    /// hero `awaiting` on a full gauge — which the client had already dropped from `ready`,
+    /// so it could not be commanded until the 15 s auto-defend spent its turn. Second Wind
+    /// is the row that exposed it because it is the one you reach for when a hero is HURT,
+    /// which is exactly when it has been taking hits instead of landing them and has no
+    /// Adrenaline banked.
+    #[test]
+    fn a_refused_hunter_skill_costs_the_hero_nothing_and_keeps_its_turn() {
+        let b = balance();
+        let mut battle = Battle::new(
+            "b".into(),
+            EncounterClass::Standard,
+            // Level 5 = Second Wind is unlocked, so the ONLY thing wrong is the cost.
+            vec![hunter("h", 400, 5)],
+            vec![monster("m", 5000, 1)],
+            &b,
+            7,
+        );
+        tick_to_ready(&mut battle, "h");
+        // Poison and a Barrier, so "the refusal ran the start-of-turn upkeep" is visible.
+        battle.fighters[0].timed_statuses.push(("poison".into(), u64::MAX));
+        battle.fighters[0].barrier = 20;
+        battle.fighters[0].adrenaline = 0; // one Adrenaline short of everything
+        let hp = battle.fighters[0].hp;
+        let barrier = battle.fighters[0].barrier;
+
+        let err = battle
+            .submit(
+                "h",
+                "sw1".into(),
+                BattleActionKind::Skill,
+                None,
+                Some("second_wind".into()),
+                None,
+            )
+            .expect_err("0 Adrenaline cannot pay for Second Wind");
+        assert!(matches!(err, Reject::ValidationError("not enough adrenaline")));
+
+        // Nothing was spent: not HP, not the Barrier, not the turn.
+        assert_eq!(battle.fighters[0].hp, hp, "a refusal ticked the hero's poison");
+        assert_eq!(battle.fighters[0].barrier, barrier, "a refusal decayed the hero's Barrier");
+        assert!(
+            battle.awaiting_turn("h"),
+            "a refused action ate the hero's turn - it is uncommandable until the auto-act"
+        );
+        // And the SAME action_id is still usable, so the client's retry is not a duplicate.
+        battle.fighters[0].adrenaline = b.battle.hunter_adrenaline_max;
+        battle
+            .submit(
+                "h",
+                "sw1".into(),
+                BattleActionKind::Skill,
+                None,
+                Some("second_wind".into()),
+                None,
+            )
+            .expect("the retry of a refused order is not a duplicate");
+    }
+
+    /// Pressing it a dozen times is not a dozen poison ticks. The per-press cost above is
+    /// what makes a locked-out hero WORSE the more the player tries to un-stick it — which
+    /// is exactly what a player does when a button appears to do nothing.
+    #[test]
+    fn refusals_do_not_accumulate_damage() {
+        let b = balance();
+        let mut battle = Battle::new(
+            "b".into(),
+            EncounterClass::Standard,
+            vec![hunter("h", 400, 5)],
+            vec![monster("m", 5000, 1)],
+            &b,
+            7,
+        );
+        tick_to_ready(&mut battle, "h");
+        battle.fighters[0].timed_statuses.push(("poison".into(), u64::MAX));
+        battle.fighters[0].adrenaline = 0;
+        let hp = battle.fighters[0].hp;
+        for n in 0..12 {
+            let _ = battle.submit(
+                "h",
+                format!("sw{n}"),
+                BattleActionKind::Skill,
+                None,
+                Some("second_wind".into()),
+                None,
+            );
+        }
+        assert_eq!(battle.fighters[0].hp, hp, "12 refusals cost the hero 12 poison ticks");
+        assert!(battle.awaiting_turn("h"), "the hero still owns its turn");
+    }
+
+    /// A skill the hero has not learned is refused the same free way — the case AUTOPLAY
+    /// hit, since it bypasses the menu's greying entirely and used its own stale unlock
+    /// table (`second_wind` at 2, really 5).
+    #[test]
+    fn a_locked_skill_is_refused_without_costing_the_turn() {
+        let b = balance();
+        let mut battle = Battle::new(
+            "b".into(),
+            EncounterClass::Standard,
+            vec![hunter("h", 400, 2)], // Second Wind unlocks at 5
+            vec![monster("m", 5000, 1)],
+            &b,
+            7,
+        );
+        tick_to_ready(&mut battle, "h");
+        battle.fighters[0].adrenaline = b.battle.hunter_adrenaline_max;
+        battle.fighters[0].barrier = 20;
+        let err = battle
+            .submit("h", "x".into(), BattleActionKind::Skill, None, Some("second_wind".into()), None)
+            .expect_err("level 2 has not learned Second Wind");
+        assert!(matches!(err, Reject::ValidationError("skill not unlocked at this level")));
+        assert_eq!(battle.fighters[0].barrier, 20, "a locked skill decayed the hero's Barrier");
+        assert!(battle.awaiting_turn("h"), "a locked skill ate the hero's turn");
+    }
+
+    /// One table for what a Hunter row costs. The precheck refuses on it before anything
+    /// moves and the resolver charges on it — two copies means a precheck that waves an
+    /// action through for the resolver to refuse, which is the turn-eating case again.
+    #[test]
+    fn the_precheck_and_the_resolver_price_a_hunter_row_the_same() {
+        let b = balance();
+        let battle = Battle::new(
+            "b".into(),
+            EncounterClass::Standard,
+            vec![hunter("h", 400, 255)],
+            vec![monster("m", 5000, 1)],
+            &b,
+            7,
+        );
+        for d in meld_proto::skills::skills_for_class("hunter") {
+            let cost = battle
+                .hunter_skill_cost(d.key)
+                .unwrap_or_else(|| panic!("{} has no Adrenaline price", d.key));
+            assert!(cost > 0, "{} is free", d.key);
+            // The client greys rows against `meld_run`'s table; it must be the same number.
+            assert_eq!(
+                Some(cost),
+                meld_run_adrenaline_cost(d.key, &b),
+                "{}: the engine and the client disagree about the price",
+                d.key
+            );
+        }
+    }
+
+    /// `meld-battle` cannot depend on `meld-run` (it is the layer below), so the client's
+    /// table is mirrored here and held to the engine's by the test above. A divergence is a
+    /// row the menu shows as affordable and the engine refuses.
+    fn meld_run_adrenaline_cost(key: &str, b: &Balance) -> Option<i32> {
+        let bt = &b.battle;
+        match key {
+            "power_strike" | "crushing_blow" => Some(bt.hunter_power_strike_cost),
+            "second_wind" | "iron_lung" => Some(bt.hunter_second_wind_cost),
+            "snare" | "pin_the_prey" => Some(bt.hunter_snare_cost),
+            "frenzy" | "apex_predator" => Some(bt.hunter_frenzy_cost),
+            _ => None,
+        }
+    }
+
+    /// A Hunter fighter at `level` with an Adrenaline pool, for the refusal tests.
+    fn hunter(id: &str, speed: i32, level: i32) -> Fighter {
+        let b = balance();
+        let mut f = leveled_player(id, speed, level);
+        f.class_key = "hunter".into();
+        f.adrenaline_max = b.battle.hunter_adrenaline_max;
+        f
     }
 
     /// A Explorer fighter with a banked Adrenaline pool, for the kit tests.
