@@ -1471,11 +1471,23 @@ pub(crate) fn sync_overworld_sprites(
     time: Res<Time>,
     wa: Option<Res<WorldAssets>>,
     mut mats: ResMut<Assets<StandardMaterial>>,
+    mut meshes: ResMut<Assets<Mesh>>,
     mut interp: ResMut<OwInterp>,
     dungeon: Res<world_render::DungeonSceneRes>,
     mut q: Query<(Entity, &WorldEntity, &mut Transform)>,
 ) {
     let Some(wa) = wa else { return };
+    // Every water body in the snapshot, so a pool being spawned can tell whether its rim
+    // is really a shore or just the middle of a larger mere (`blob_basin_mesh_merged`).
+    // Gathered once per pass rather than per prop: the Mire's entire fill is water.
+    let water_bodies: Vec<(f32, f32, f32)> = world
+        .entities
+        .values()
+        .filter(|e| {
+            matches!(e.name.as_deref(), Some("pond") | Some("frozen_pond") | Some("bog_pool"))
+        })
+        .map(|e| (e.x, e.y, e.radius.max(0.4)))
+        .collect();
     // Consumed here rather than held: a correction applies to exactly one frame, and a
     // sticky one would pin the avatar in place the moment the player walked away.
     let snap = world.snap.take();
@@ -1742,7 +1754,9 @@ pub(crate) fn sync_overworld_sprites(
             }
             EntityKind::Obstacle => {
                 let theme = if dungeon.active { dungeon.theme.as_str() } else { "" };
-                spawn_obstacle(&mut commands, &mut mats, &wa, id, e, theme);
+                spawn_obstacle(
+                    &mut commands, &mut mats, &mut meshes, &wa, id, e, theme, &water_bodies,
+                );
             }
             // Chests are static and change look when opened — a dedicated
             // reconciler (`sync_chests`) owns them, not the generic sprite path.
@@ -3242,10 +3256,15 @@ fn add_ground_ring(commands: &mut Commands, wa: &WorldAssets, root: Entity) {
 pub(crate) fn spawn_obstacle(
     commands: &mut Commands,
     mats: &mut Assets<StandardMaterial>,
+    meshes: &mut Assets<Mesh>,
     wa: &WorldAssets,
     id: &str,
     e: &OwEntity,
     dungeon_theme: &str,
+    // Every OTHER water body in the snapshot, as `(x, y, radius)`. A pool whose rim is
+    // covered by one of these drops that rim to the waterline, so touching pools fuse into
+    // a single body with one outer bank (see `hd2d::blob_basin_mesh_merged`).
+    water_bodies: &[(f32, f32, f32)],
 ) {
     let name = e.name.as_deref().unwrap_or("");
     let r = e.radius.max(0.4);
@@ -3366,9 +3385,32 @@ pub(crate) fn spawn_obstacle(
             // Bespoke pixel-art water tile per kind (drifted by `animate_water`); spin
             // each organic blob a different way so pools don't look stamped from one shape.
             let spin = (hash_pick(id, 360) as f32).to_radians();
+            // Neighbours in this pool's OWN local frame: undo the spin, then divide by the
+            // prop's scale, so the mesh can ask "is this rim vertex inside another pool?"
+            // in the units it is built in. `LOCAL_R` is the mean lobed outline, which is
+            // close enough to decide coverage.
+            const LOCAL_R: f32 = 0.85;
+            let scale = r * 2.0;
+            let (cs, sn) = ((-spin).cos(), (-spin).sin());
+            let near: Vec<(f32, f32, f32)> = water_bodies
+                .iter()
+                .filter(|(nx, ny, nr)| {
+                    let d = (nx - e.x).hypot(ny - e.y);
+                    d > 1e-4 && d < (r + nr) * 2.0 * LOCAL_R
+                })
+                .map(|(nx, ny, nr)| {
+                    let (dx, dy) = ((nx - e.x) / scale, (ny - e.y) / scale);
+                    (dx * cs - dy * sn, dx * sn + dy * cs, nr * 2.0 * LOCAL_R / scale)
+                })
+                .collect();
+            let mesh = if near.is_empty() {
+                wa.water_mesh.clone()
+            } else {
+                meshes.add(hd2d::blob_basin_mesh_merged(28, 0.16, 0.74, &near))
+            };
             commands.spawn((
                 WorldEntity(id.to_string()),
-                Mesh3d(wa.water_mesh.clone()),
+                Mesh3d(mesh),
                 MeshMaterial3d(wa.water_mat(name)),
                 Transform::from_translation(world_pos(e.x, e.y, 0.2))
                     .with_rotation(

@@ -322,6 +322,12 @@ fn maze_fill_scale(
     (arc_stretch * thickness_scale).min(wg.maze_radial_scale_cap.max(1.0))
 }
 
+/// Is this fill kind WATER? Water is the one fill that may pool: two bog pools touching
+/// make a bigger mere, where two touching boulders are just a clipping bug.
+fn is_water_kind(kind: &str) -> bool {
+    matches!(kind, "pond" | "bog_pool" | "frozen_pond")
+}
+
 fn obstacles_for_biome(biome: &str) -> &'static [&'static str] {
     match biome {
         "field" | "forest" => &["tree", "boulder", "pond"],
@@ -3740,7 +3746,17 @@ impl Arena {
                 if near.blocked(&pos, radius) {
                     continue;
                 }
-                near.insert(pos, radius);
+                // WATER IS ALLOWED TO POOL. Every other prop is inserted into the spacing
+                // grid so nothing overlaps — two boulders in the same spot is a clipping
+                // bug. But that rule is why the Mire, whose entire fill is water, renders
+                // as ~50 identical blobs stamped on the mud instead of a swamp: pools were
+                // held `2·obstacle_max_radius + 1.2` apart, so no two could ever touch and
+                // there was nothing for the client's merge to fuse. Leaving water out of
+                // the grid lets bodies coalesce into real meres, while still CHECKING
+                // against it — so a pool never lands on a creature, a node or a chest.
+                if !is_water_kind(fill_kind) {
+                    near.insert(pos, radius);
+                }
                 self.obstacles.push(Obstacle {
                     entity_id: format!("obs-{}", self.obstacles.len()),
                     kind: fill_kind.to_string(),

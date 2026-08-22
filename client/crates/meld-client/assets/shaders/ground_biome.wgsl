@@ -72,6 +72,18 @@ struct BiomeParams {
 @group(2) @binding(104) var t_mire: texture_2d<f32>;
 @group(2) @binding(105) var samp: sampler;
 @group(2) @binding(106) var<uniform> params: BiomeParams;
+@group(2) @binding(107) var t_water_clear: texture_2d<f32>;
+@group(2) @binding(108) var t_water_bog: texture_2d<f32>;
+@group(2) @binding(109) var t_water_ice: texture_2d<f32>;
+
+// The sea's tile for the biome it borders — the same mapping the pond/bog-pool/
+// frozen-pond props use (`WorldAssets::water_mats`), so a tundra shore is ice and a mire
+// shore is bog rather than every coast being the same blue.
+fn water_color(bi: i32, uv: vec2<f32>) -> vec4<f32> {
+    if (bi == 3) { return textureSample(t_water_ice, samp, uv); }   // tundra
+    if (bi == 4) { return textureSample(t_water_bog, samp, uv); }   // mire
+    return textureSample(t_water_clear, samp, uv);
+}
 
 // Half-width of the land on the western spit at `d` units west of the hub. MUST match
 // `meld_proto::coast::peninsula_half_width`.
@@ -197,6 +209,9 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     let hw = max(params.blend_half, 0.001);
 
     var blended: vec4<f32>;
+    // Hoisted: the SEA needs the biome it borders too, to pick its tile (ice off a tundra
+    // shore, bog off a mire one), and `here` is otherwise scoped to the ring branch.
+    var here_biome: i32 = 0;
     if (params.count == 0u) {
         // No sections yet (menus): plain forest floor.
         blended = biome_color(0, uv);
@@ -213,6 +228,7 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         let prev_i = max(idx, 1u) - 1u;
         let next_i = min(idx + 1u, params.count - 1u);
         let here = i32(params.rings[idx].y);
+        here_biome = here;
         let prev = i32(params.rings[prev_i].y);
         let next = i32(params.rings[next_i].y);
         let inner = select(0.0, params.rings[prev_i].x, idx > 0u); // this ring's inner edge
@@ -235,10 +251,18 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     // movement and path routing collide against.
     let sea = sea_depth_at(in.world_position.xz);
     if (sea > -0.5) {
-        let shallow = vec4<f32>(0.24, 0.52, 0.60, 1.0);
-        let deep = vec4<f32>(0.05, 0.16, 0.31, 1.0);
-        let t = smoothstep(0.0, 60.0, max(sea, 0.0));
-        let water = mix(shallow, deep, t);
+        // The real water TILE, not a flat colour — the same art the city's sea and every
+        // pond in the game uses. It was two hardcoded RGB constants at first, which meant
+        // the arena and Last City drew the same sea two different ways, in exactly the two
+        // scenes `coast` exists to keep from disagreeing.
+        //
+        // Static, unlike the pool props: `animate_water` drifts THEIR material UVs from the
+        // clock, and this shader has no time uniform to do the same. The tile is the fix
+        // that mattered; a moving surface wants a `time` binding and is its own change.
+        let wuv = in.world_position.xz * params.uv_scale * 0.5;
+        var water = water_color(here_biome, wuv);
+        // Depth still reads: shallows keep the tile bright, open water darkens toward it.
+        water = vec4<f32>(water.rgb * mix(1.0, 0.42, smoothstep(0.0, 60.0, max(sea, 0.0))), 1.0);
         // A pale line right at the waterline, so the shore is a place you can aim at.
         let surf = 1.0 - smoothstep(0.0, 3.5, abs(sea));
         let wet = mix(water, vec4<f32>(0.72, 0.86, 0.88, 1.0), surf * 0.45);
