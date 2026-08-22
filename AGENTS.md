@@ -1608,7 +1608,28 @@ the snapshot tags entities on `avatar_state` — `mob:<kind>:<faction>`, `portal
   construction (unit-tested across seeds). The client draws the path as a faint trail
   (sent on `run.started`, field `path`).
 
-- **Density is a per-AREA question, and the fan distorts it.** WG-4 bends a fixed-width
+- **AND `monster_spacing` IS NOT THE DENSITY KNOB WHERE IT MATTERS.** `lanes` is purely
+geometric — arc width over corridor width, capped by `creature_radial_lane_cap` — and never
+reads `monster_spacing`, so past the cap your nearest creature is in an ADJACENT LANE rather
+than up the corridor. Swept at depth: raising spacing 6.5 -> 8.5 (+31%) moved the median gap
+between encounters 20.4 -> 21.9 (+7%), while dropping the lane cap 24 -> 12 moved it to 26.9
+and halved the population. So the knob whose NAME promises "how far apart is everything" is
+close to inert deep, and the one that delivers it is the compensation cap. Tune the cap for
+the deep world and `monster_spacing` for the shallow bands, where `arc_stretch` is under the
+cap and the corridor gap really is the spacing. The sweep table lives in `balance.toml` so
+the next person does not turn the wrong dial.
+
+⚠️ **RETUNING CREATURE DENSITY MOVES EVERY SEEDED WORLD.** Lane 0 draws from the section's
+MAIN rng stream, so changing how many creatures are placed shifts everything drawn after it
+— the clear path included. A per-seed assertion about world geometry will therefore break on
+some seed eventually, and that is the assertion being wrong rather than the world:
+`a_distance_is_a_ring_so_the_naive_landing_misses_the_route` asserted every seed lands
+>100u off `(reach, 0)` and broke when seed 99's path came to cross the centre line at
+exactly that ring (corridor `y = 0` maps to angle 0, so the gap is EXACTLY zero). A path
+that never crossed its own centre line would be the real bug. It asserts the DISTRIBUTION
+now — 14 of 15 seeds land 178-1892u off — which is what actually proves the fan bends.
+
+**Density is a per-AREA question, and the fan distorts it.** WG-4 bends a fixed-width
   corridor into an arc that grows with radius, so anything placed *per unit of corridor* is
   smeared ever thinner outward: at r=230 the arc is ~1400 units across. Both creatures and
   maze fill compensate (`creature_radial_lane_cap`, `maze_radial_scale_cap`) — creatures by

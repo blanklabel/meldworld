@@ -2263,6 +2263,36 @@ budgeted so the creature sim never threatens the single-owner loop or the server
   - The battle menu and targeting needed **no client change at all** — both read
     `meld_proto::skills`. That is the "never reintroduce a list of ability keys" rule
     paying for itself.
+- [x] **CR-12 — Fewer packs, and room to walk between them.** Reported from play, right
+  after `CR-11` landed: "maybe we should lower the number of spawned packs and put more
+  space in between creatures." Both halves were right, and `CR-11` is *why* — packs used to
+  come apart (45% of a pack gone in two minutes, a fifth of leaders alone), so the authored
+  pack chances had never once been what a player actually met. Fixing cohesion made every
+  one of them land at full strength for the first time, and the deep world went to **78% of
+  all encounters being groups of ~4**.
+  - Pack `chance` down across the ramp (0.55/0.7/0.8/0.85 → 0.4/0.5/0.55/0.6), which
+    restores roughly the frequency players were experiencing before while keeping it a
+    deliberate curve instead of an accident of drift.
+  - **`monster_spacing` turned out to be nearly inert at depth**, which is the finding worth
+    keeping. `lanes` is purely geometric and never reads it, so past
+    `creature_radial_lane_cap` the nearest creature is in an adjacent LANE, not up the
+    corridor. Swept: spacing 6.5→8.5 (+31%) bought +7% gap; lane cap 24→12 bought +32% and
+    halved the population. Both were moved — spacing to 8.5 for the shallow bands where the
+    cap does not bind, the cap to 16 for the deep world where it does.
+  - Measured end to end (seed 424242, two minutes of world time). Groups: 8/45/64/74/77% →
+    2/38/54/55/55% by band. Median gap between encounters: 13.3/13.6/15.1/16.2/21.6 →
+    11.9/14.3/19.1/19.3/25.9, which finally clears `[ai] aggro_radius` (11.0) by more than
+    one chase length instead of barely one.
+  - ⚠️ **Total creatures fall 11,581 → 6,134 (−47%), and nothing was scaled to compensate.**
+    XP is summed per creature, so that is roughly half the XP per unit of ground walked, on
+    a curve that already puts four continuous hours at ~d1150 / level ~43. If pace matters
+    more than crowding, the pack `chance` alone costs ~20% and the lane cap is the
+    expensive half.
+  - Retuning density **moves every seeded world** (lane 0 draws from the section's main rng
+    stream), which broke a per-seed geometry assertion —
+    `a_distance_is_a_ring_so_the_naive_landing_misses_the_route` now asserts the
+    distribution (14 of 15 seeds land 178-1892u off route) rather than requiring every seed
+    to.
 - [x] **CR-11 — A pack stays a pack, and calls for the rest of it.** Reported from play:
   "packs exist, but a lot of the time there is no one in one." Two causes, both measured,
   and neither visible to any existing test because **every pack test ran on a freshly

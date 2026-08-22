@@ -957,25 +957,38 @@ pack_rout_flees = true           # a routed minion also bolts when it drops low 
 # size-1 minions); `chance` is how often a spawn in that band forms a group at all
 # (the remainder stay solo, so a band still has texture); `mixed_chance` is the odds
 # a given minion is a different species than its leader.
+#
+# ⚠️ `chance` WAS RETUNED DOWN (0.55/0.7/0.8/0.85 -> 0.4/0.5/0.55/0.6) BECAUSE `CR-11`
+# CHANGED WHAT IT MEANS. Packs used to come apart: measured, a pack shed 45% of itself
+# within two minutes of ordinary wandering and a fifth of leaders ended up alone, so the
+# authored chance was never the chance a PLAYER met. Fixing cohesion made every one of
+# these numbers land for the first time, and the deep band went to 78% of all encounters
+# being groups of ~4 — a world with almost no lone creatures left in it. These values
+# restore roughly the pack frequency players were actually experiencing while keeping it
+# a deliberate curve instead of an accident of drift.
+#
+# The `chance` is what to tune for "how often is a fight a crowd"; `monster_spacing`
+# above is what to tune for "how far do I walk between fights". They are different
+# complaints and they have different knobs.
 [[encounters.group_ramp]]
 from_distance = 150              # duos: one leader, one minion, same species
 size = 2
-chance = 0.55
+chance = 0.4
 mixed_chance = 0.0
 [[encounters.group_ramp]]
 from_distance = 250              # triples, and species start mixing
 size = 3
-chance = 0.7
+chance = 0.5
 mixed_chance = 0.4
 [[encounters.group_ramp]]
 from_distance = 350              # quads
 size = 4
-chance = 0.8
+chance = 0.55
 mixed_chance = 0.45
 [[encounters.group_ramp]]
 from_distance = 500              # the deep world's baseline pack
 size = 5
-chance = 0.85
+chance = 0.6
 mixed_chance = 0.5
 
 # Gear rarity (loot excitement). A dropped piece rolls Common → Rare → Epic →
@@ -1454,7 +1467,13 @@ west_return_border = -46.0     # walk this far west (over the neck, along the sh
 base_area_length = 20.0          # tiles: length of the first (shallowest) area
 area_length_growth = 7.0         # each successive area is ~this much longer on avg
 area_length_jitter = 0.35        # ± fraction applied to each area's length
-monster_spacing = 6.5            # avg tiles between creatures along the corridor
+# MEASURED against `[ai] aggro_radius` (11.0), which is the number that decides whether
+# walking between two encounters is travel or just more fight. At 6.5 the median gap
+# between distinct encounters ran 12-16 units through the mid bands — barely one chase
+# radius — so a player was effectively never out of something's reach and the world read as
+# wall-to-wall creatures. 8.5 puts the median around 17-21 there, which is a real breath
+# between fights without emptying the map. [TUNABLE]
+monster_spacing = 8.5            # avg tiles between creatures along the corridor
 monster_spacing_jitter = 0.45    # ± fraction on each gap
 lateral_jitter = 0.4             # creature y offset from the corridor centre-line
                                  # (kept < touch_radius so an east walk still meets it)
@@ -1478,8 +1497,28 @@ creature_lateral_spread = 22.0   # ± y range creatures spawn across (areas ≥ 
 # stretch passes 30× in a world that streams outward forever and every creature is a live
 # roaming entity the sim steps every tick: 24 holds the designed density out to about
 # r=230 (the whole pre-generated world) and thins gently past it. 1.0 = off (the old
-# thinning behaviour, kept so the test for it can prove the bug). [TUNABLE]
-creature_radial_lane_cap = 24.0   # max corridor walks per section (× the creature count)
+# thinning behaviour, kept so the test for it can prove the bug).
+#
+# ⚠️ THIS — NOT `monster_spacing` — IS THE DENSITY KNOB WHERE THE CAP BINDS, and the two are
+# not interchangeable. `lanes` is purely geometric (arc width / corridor width) and never
+# reads `monster_spacing`, so past the cap the nearest creature is almost always in an
+# ADJACENT LANE rather than up the corridor. Measured deep, sweeping both:
+#
+#   spacing 6.5, cap 24 -> 8665 creatures, median gap between encounters 20.4
+#   spacing 8.5, cap 24 -> 7379 creatures, median gap 21.9   (+31% spacing buys +7% gap)
+#   spacing 6.5, cap 12 -> 4398 creatures, median gap 26.9
+#   spacing 8.5, cap 16 -> 4960 creatures, median gap 26.1
+#
+# So raising `monster_spacing` to open the world up is close to inert at depth — the same
+# shape of trap as an inert dev flag, a knob whose name promises what it does not deliver.
+# Tune THIS for "how far apart is everything"; tune `monster_spacing` for the shallow bands,
+# where `arc_stretch` is under the cap and the corridor gap is the real spacing.
+#
+# 16 rather than 12: the gap has to clear `[ai] aggro_radius` (11.0) by enough that walking
+# between encounters is travel rather than a chase, and 26 is comfortably past two of them.
+# Going lower re-approaches the "cross a section and meet nothing" bug this cap exists to
+# fix. [TUNABLE]
+creature_radial_lane_cap = 16.0   # max corridor walks per section (× the creature count)
 # Keep a creature-free ring around the Center Hub in the SPAWN section only, so a
 # just-spawned player isn't instantly aggro'd into a fight before they can orient.
 # MUST stay > [ai] aggro_radius (11.0): a creature's hub-distance equals its corridor-x
