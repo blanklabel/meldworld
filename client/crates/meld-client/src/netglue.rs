@@ -438,6 +438,26 @@ pub(crate) fn pump_net(
                     }
                 }
             }
+            // CR-11: say what just walked in. The leader's own shout arrived with its
+            // resolution; this is the answer to it, over the same body — creatures
+            // appearing mid-fight with nothing to explain them reads as the game cheating,
+            // which is the same argument the gang-up mark is shouted for.
+            ServerMsg::Reinforcements { called_by, arrived } => {
+                if arrived > 0 {
+                    hitfx.callouts.retain(|c| c.combatant_id != called_by);
+                    hitfx.callouts.push(Callout {
+                        combatant_id: called_by,
+                        text: if arrived == 1 {
+                            "THE PACK ANSWERS!".to_string()
+                        } else {
+                            format!("THE PACK ANSWERS \u{2014} {arrived} MORE!")
+                        },
+                        age: 0.0,
+                        ttl: 2.2,
+                        flashing: true,
+                    });
+                }
+            }
             ServerMsg::Gauge { updates } => {
                 for (id, gauge, hp, statuses) in updates {
                     if let Some(c) = battle.combatants.iter_mut().find(|c| c.id == id) {

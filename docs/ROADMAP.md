@@ -289,6 +289,29 @@ Right now the party is fixed at dive time; players can't rearrange or save teams
     one inline in `resolve_monster_turn`, one in `pick_weakest_hostile` for abilities — so
     a creature could hunt the back rank with its claws and the weakest hero with its
     breath. `choose_target` is the single place a creature decides.
+- [x] **PT-4 — The Drill Yard's saved parties actually behave like saved parties.**
+  Reported from play: "we can't rename or save multiple parties… we can't name parties…
+  and slot picking is generally weird." `PT-2` had shipped the whole feature — named save,
+  load, delete, per-account, with gear — so what was broken was the *edges*, and four of
+  them were each individually enough to make the feature read as absent:
+  - **No rename existed at all.** The only route was save-under-the-new-name and delete the
+    old, which **re-snapshots the gear** — and remembering a kit you are not currently
+    wearing is the entire reason a loadout stores gear, so correcting a typo rewrote the
+    loadout's contents. Now `POST /v1/party/loadouts/:name/rename` keeps what was stored,
+    and **refuses a name already in use** rather than silently eating the other saved party.
+  - **Overwriting a save, and renaming one, showed nothing.** The panel rebuilt on
+    `loadouts.list.len()`, so the two edits that leave the count identical were exactly the
+    two that never repainted. Keyed on the names now.
+  - **Delete raced its own re-read.** `save_loadout` re-reads *inside* the write's callback
+    (a race someone had already found and fixed, with the comment still there); `delete`
+    fired the read alongside the DELETE, so a deleted row could stay on screen.
+  - **The slot cursor never advanced**, so mustering four heroes was click-a-slot-then-a-
+    class four times over, and clicking a class without picking a slot first silently
+    overwrote whichever slot the cursor was left on. It advances and wraps now, so picking
+    four classes in a row does the obvious thing.
+  - The name field was a bare `Text` node with no caret, no focus ring and no placeholder —
+    indistinguishable from a label until you happened to type into it. It says
+    `type a name…` when empty.
 - [x] **PT-2 — Save, name, and swap party loadouts in town.** Named compositions
   AND the gear they wore, saved and re-applied at the Drill Yard (whose placeholder
   had promised "build templates" all along). `party_loadouts` + HTTP CRUD +
@@ -2186,6 +2209,49 @@ budgeted so the creature sim never threatens the single-owner loop or the server
   Which order is better depends on the pack, which is the point — a pack fight is a
   *decision* instead of just more HP. Lone creatures, elites, gatekeepers and heroes are
   untouched by all three rules (tested).
+- [x] **CR-11 — A pack stays a pack, and calls for the rest of it.** Reported from play:
+  "packs exist, but a lot of the time there is no one in one." Two causes, both measured,
+  and neither visible to any existing test because **every pack test ran on a freshly
+  generated arena that had never been stepped**:
+  - **Nothing knew a pack was a pack.** `encounter_class` said `leader`/`minion` and
+    nothing linked them, so the only thing making a pack one encounter was that
+    `group_around` happened to reach `[ai] group_radius` from whoever you touched — while
+    each member independently drew its wander destination inside its own
+    `leash_radius` **disc of 9.0, against a group radius of 6.5**. Two members could
+    legitimately stand 21 apart. Measured over three seeds with no player in the world:
+    2,189 leaders pulled **10,128 bodies at spawn (4.63 each) and 5,583 two minutes later
+    (2.55)** — 45% of every pack gone, and **440 leaders (20%) standing entirely alone**.
+    Members now carry their pack's identity (`MonsterSpawn::pack`, by id — `prune_defeated`
+    compacts underneath live membership) and roam a `pack_leash` disc around their
+    **leader's spawn point**, a fixed anchor held under half of `group_radius` by test.
+  - **A mixed pack was spawned at war with itself and ate itself before anyone arrived.**
+    `mixed_chance` makes some littles a different *species*, and species carry their own
+    faction — which is the field `CR-2` reads to decide who hunts whom. **1,253 of 2,196
+    packs (57%)** held a faction hostile to their own leader, and of the leaders still
+    standing alone after the anchor fix, **42 of 48 had every pack member killed** rather
+    than merely wandered off. A pack runs with its leader now: species variety kept,
+    hostility not. The undead rite already had this rule; ordinary packs never got it.
+  - Regrowth kept eroding them too — a felled leader or minion grew back as a plain
+    `standard` loner — so `Fallen` carries the pack, the rank and the class, and the delta
+    persists them (`serde(default)`, so a world stored before this still loads).
+  - Together: lone leaders **440 → 20**, and the 20 that remain are the ecology working
+    (15 lost a turf war), so the test asserts a **rate** rather than zero.
+  - **THE CALL.** A leader that is losing spends its **turn** shouting, and its pack
+    answers from `pack_call_radius` — deliberately far past a group radius, which is the
+    whole point: a pack thinned by drift, by a turf war, or by the party's opening turns can
+    get its bodies back. Armed by **either** reading of losing (its HP under
+    `pack_call_hp_fraction`, *or* no living minions left), because a pack fight has two
+    lines and covering one would make the call invisible to whoever took the other. Once a
+    fight, capped at `pack_call_max`, and priced by the only thing a creature has to spend —
+    a free reinforcement is just the pack's health written twice. It is **not** an authored
+    ability: an ordinary leader has no kit, and an ability's `weight` is read as its *rarity*
+    elsewhere (`CN-7`'s rebuke), so a new low-weight row would silently change what every
+    boss that got it answers an interruption with. Arrivals come through `Battle::join` —
+    the raid-merge door — built by the one shared `meld_run::enemy_fighters`, and ride the
+    wire as `battle.reinforcements` with a shout over the caller, because creatures
+    appearing from nowhere reads as the game cheating.
+  - Found on the way: `Battle::tick` never drained `pending_events` (only `submit` did), so
+    anything a **creature's** turn reported was silently dropped.
 - [x] **CR-2 — Creatures fight each other, visibly, with consequences.** Hostile factions
   skirmish, lose `hp`, and **drop loot where they fall**
   (`GroundLoot`, auto-collected within `[ai] loot_pickup_radius`). ✅ *The clash is now

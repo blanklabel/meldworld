@@ -356,6 +356,17 @@ pub enum TerminateReason {
 mod tests {
     use super::*;
 
+    /// The Wall Defense Force's Rift Drop-Trooper (docs/lore/factions.md) has an
+    /// authored ladder and no kit, so `rift_knight` is a NAME the lore has claimed and
+    /// the enum has not. Same reservation as `iron_hull` above, for the same reason: a
+    /// key that silently deserialises to some other class is a hero who wakes up as the
+    /// wrong thing the day the real one lands.
+    #[test]
+    fn rift_knight_is_reserved_and_not_yet_fieldable() {
+        assert!(serde_json::from_str::<CharacterClass>("\"rift_knight\"").is_err());
+        assert_eq!(crate::equipment::class_from_key("rift_knight"), None);
+    }
+
     #[test]
     fn iron_hull_is_reserved_for_its_own_order_not_an_alias() {
         // The Order of the Iron Hull is a separate monastic order with its own

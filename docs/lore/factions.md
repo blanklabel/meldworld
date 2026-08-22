@@ -23,14 +23,18 @@
 | **The Open Flower** | Druids of agriculture and balance | *future* (`keeper`) | Sprout · Seedling · Budling · Flowerling · Cultivator · Terra |
 | **The Order** | Secret anti-corruption coteries | *future, hidden* | Pacifier · Placater · Peacemaker · Conciliator · Arbiter · Judge |
 | **The Foundry** | Structural iron and magitech metal for the city's infrastructure | *future* (`smithwright`) | Indentured Extractor · Smelter Apprentice · Journeyman Smithwright / Extractor Foreman · Smithwright · Master Smithwright · Master of the Foundry |
+| **Wall Defense Force** | Holding the Great Ivory Wall; closing a breach by drop | *future* (`rift_knight`) | Sentry · Breach Guard · Drop-Lancer · Wall Captain · Garrison Commander · Grand Marshal of the Perimeter |
 
 The **Resonant** is the one class with no order yet — a healer who pays in its own
 blood fits none of the above cleanly, and inventing one to fill the table would be
 worse than leaving the gap named.
 
 The city's **non-class institutions** — government, the Sentinels, the Archivists,
-Artificing, the Messengers, the Wall Defense Force, the Healery, and the criminal
-syndicates — live in [`city-institutions.md`](city-institutions.md).
+Artificing, the Messengers, the Healery, and the criminal syndicates — live in
+[`city-institutions.md`](city-institutions.md). The **Wall Defense Force** lives there
+too, but it is not one of them any more: its Rift Drop-Troopers are a class, so its
+garrisons and its architecture are written up as an institution and its ladder is
+written up here.
 
 ---
 
@@ -390,6 +394,75 @@ Foundry **17**.
 > **council** the Explorers report to. *(The Foundry's Extractor Foreman was renamed
 > from Kaelen to **Brannek** Deep-Shift to clear the collision with the Iron Hull's
 > Grandmaster Kaelen "Iron-Spine".)*
+
+## Wall Defense Force — *a future class*
+
+The **perimeter military** of the Last City, and the only institution in
+[`city-institutions.md`](city-institutions.md) that carries a class: its **Rift
+Drop-Troopers** are elite martial shock troops who blink or drop off a sixty-foot
+parapet onto a breach. The garrisons, the four cardinal sectors, the beliefs and the
+notable officers are written up there; the ladder and the class are here.
+
+**Vision** An unbroken perimeter; civilization held firm against the shifting void.
+**Mission** Garrison the battlements, work the perimeter artillery and automated
+barriers, and intercept an incursion by high-altitude shock tactics, heavy polearm
+formation, and tactical spatial displacement — the **Blink-Drop**.
+
+| Rank | Title | Gate | Standing it buys |
+|---|---|---|---|
+| 1 | **Sentry** | basic combat screening, 30 days on the outer battlements | Wall Defense heavy armour and insignia; the catwalks, barracks and mess; a basic parapet tethering harness |
+| 2 | **Breach Guard** | verified survival of a Shifting Lands incursion or planar breach | Authorisation on the heavy siege engines and fireball cannons; spatial displacement gear; clearance to lead a two-man watch post |
+| 3 | **Drop-Lancer** | level 5; three high-altitude drop intercepts | Requisition of Foundry-forged polearms and shock lances; the inertial dampening kit (no fall damage to sixty feet); command of a parapet strike squad or an artillery battery |
+| 4 | **Wall Captain** | level 9; leadership through a multi-vector breach | Command of a gatehouse, watchtower, or moving golem line; authority to order a blast-gate lockout or call fire support; a direct link to Crystal Tower Strategic Command |
+| 5 | **Garrison Commander** | level 13; mastery of combined-arms sector defence | Full command of a cardinal sector; requisition of reserve golem battalions and Trace contingency units; a seat on the High Defense Council |
+| 6 | **Grand Marshal of the Perimeter** | level 17; unanimous appointment by the Central Council and all four sector cohorts | Operational command of the whole Force and the perimeter architecture; the war room on Floor 50; authority to trigger a city-wide lockdown and the classified countermeasures |
+
+### The Rift Knight — what this engine can and cannot express
+
+The archetype is **polearm mastery plus spatial manipulation**: micro-fractures in space
+to leave the field and crash back down on a chosen target. Its centre is **Dimensional
+Dive** — vanish into a pocket dimension (untargetable, immune to area effects, unable to
+act), then tear back in and land a melee blow carrying kinetic payload, with a bonus for
+a **Reach** weapon and an area rupture at the higher ranks that knocks the landing zone
+prone.
+
+Three of those pieces map cleanly onto what is already built, and three do not. Writing
+that down here rather than discovering it during implementation, because the lesson is
+already canon on the Psyker: *reinventing a mechanic this engine does not have, wearing
+its name, is worse than leaving it out* (see the unbuilt reaction aspects in
+`CLAUDE.md`).
+
+**Buildable as-is:**
+
+- **The Breach / The Plunge** — a self-targeting call that makes the fighter untargetable
+  for a window and then resolves a heavy blow. Untargetability is the same kind of state
+  `AFFLICTIONS`/`BOONS` already carry, the delayed strike is the same shape as a
+  telegraphed creature ability, and "removed from the queue and back" is a gauge
+  operation `deny_gauge` already reasons about — though note it must **never** be
+  expressible as an unbounded lock (CN-7).
+- **Kinetic Payload's reach bonus** — `ItemFamily::reaches_past_the_front` and
+  `sweeps_a_rank` already exist, and a class whose signature blow pays *more* on a
+  polearm is exactly the loadout decision `ArmorWeight` and `damage_type` were built for.
+  Force damage is the one damage type in the game that already bypasses the modifier map
+  (`DamageType::None`), so a Rift Knight must **not** simply deal it — see the warning on
+  `UNARMED_ATTACK_TYPE`.
+- **Impact Rupture / Grand Cataclysm** — all-enemy damage plus a gauge effect, at the
+  50/100 rungs. This is the shape Hallowed Ground already has.
+
+**Not buildable without inventing machinery:**
+
+- **Flicker Step** is a *reaction* to being hit. This engine has none, deliberately.
+- **Impact Rupture's landing zone** and **Grand Cataclysm's ten-foot pull** are
+  *positional*. There are no battlefield positions — only ranks, and a rank is relative.
+- Saving throws, proficiency bonus, and short/long rests are a different resource model
+  entirely; the analogues here are a once-a-fight call (`is_once_per_battle`) and a
+  banked resource like the Hunter's Adrenaline.
+
+**Spatial Tether** survives translation intact and is the better half of the fantasy for
+an overworld perk: *Recall Blade* (summon a bonded weapon from sixty feet) and *Inertial
+Nullification* (no fall damage, always lands on its feet) are a **verticality** perk —
+the one class that treats a cliff as a route rather than a wall. That is a real gap: a
+connector is currently the only way to change level.
 
 ## The Order — *a future class, and a hidden one*
 

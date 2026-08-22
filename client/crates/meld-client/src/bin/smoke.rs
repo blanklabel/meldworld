@@ -63,6 +63,9 @@ fn main() {
                 ServerMsg::ShiftWarning { .. }
                 | ServerMsg::Shifted { .. }
                 | ServerMsg::ShiftHeld { .. } => {}
+                // A pack calling for reinforcements is a shout over a sprite; the bodies
+                // themselves arrive as `CombatantsJoined`, which the bot does read.
+                ServerMsg::Reinforcements { .. } => {}
                 // A teleport matters to a renderer, not to a bot reading the snapshot.
                 ServerMsg::PositionCorrection { .. } => {}
                 ServerMsg::Loadouts { .. } => {}

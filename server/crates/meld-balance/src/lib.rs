@@ -388,6 +388,15 @@ pub struct Encounters {
     pub gatekeeper_loot_mult: f64,
     pub undead_rite_loot_mult: f64,
     pub pack_spread: f64,
+    /// How far a pack member roams from its pack's anchor (`CR-11`). Must stay under half
+    /// of `[ai] group_radius`, or a pack wanders out of being one encounter.
+    pub pack_leash: f64,
+    /// `CR-11` THE CALL: a leader under this share of max HP (or with no minions left)
+    /// spends its turn calling, and the pack answers from `pack_call_radius` away, up to
+    /// `pack_call_max` bodies.
+    pub pack_call_hp_fraction: f64,
+    pub pack_call_radius: f64,
+    pub pack_call_max: usize,
     pub undead_rite_chance: f64,
     /// THE END FIGHT (EW): distance past which one encounter becomes three named bosses.
     pub end_fight_min_distance: f64,

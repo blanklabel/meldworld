@@ -702,6 +702,22 @@ hand-copied codepoint lands on a neighbour — `md-tshirt_crew` drew a *keyboard
 that only asked "is this glyph in the font?" passed on it. `nf::ALL` is checked against the
 face's own `glyph_name`, so being wrong now requires naming the wrong thing.
 
+**A SAVED PARTY IS ONLY AS REAL AS ITS EDGES** (`PT-4`). The Drill Yard's named
+compositions (save / load / delete / rename, per account, with the gear each was wearing)
+had been shipped for a while and still read as absent, because four small things each broke
+it on their own: the panel rebuilt on `loadouts.list.len()`, so **the two edits that keep the
+count identical — overwriting a name and renaming one — were exactly the two that never
+repainted**; `delete_loadout` fired its re-read *alongside* the DELETE (the same race
+`save_loadout` had already found and fixed, with the comment still sitting above it), so a
+deleted row lingered; the slot cursor never advanced, so mustering four heroes was
+click-a-slot-then-a-class four times over and clicking a class with no slot chosen
+overwrote whichever one the cursor was left on; and the name field was a bare `Text` node
+with no caret and no placeholder, indistinguishable from a label. **A RENAME IS NOT
+SAVE-THEN-DELETE**: a save captures the party's gear *as it is right now*, so that shortcut
+re-snapshots the equipment as the price of fixing a typo — and remembering a kit you are not
+wearing is the whole reason a loadout stores gear. It is its own endpoint, and it refuses a
+name already in use rather than silently eating the other saved party.
+
 **Town has a nav, not just a plaza.** Every district is a chip in a frosted travel column
 (1/6 width, same as the menu's nav): click it or press its number to go there, and the one
 you are standing in reads as selected so the column doubles as "where am I". Walking still
@@ -1731,6 +1747,54 @@ clash resolves in seconds and "wait it out or step in" is undecidable from an un
 creature. A watched clash is anchored on a **body**, not a clash id (`clash:<anchor>`):
 membership changes every few seconds, so an id would go stale under the watcher, while a
 body is either still swinging or its fight is over.
+
+**A PACK WAS NOTHING BUT PROXIMITY, AND PROXIMITY DECAYS** (`CR-11`). `encounter_class` said
+`leader`/`minion` and nothing linked them, so what made a pack one encounter was only that
+`group_around` reached `[ai] group_radius` from whoever you touched — while each member drew its
+own wander destination inside its own `leash_radius` disc (**9.0, against a group radius of 6.5**).
+Measured with nobody in the world: **10,128 bodies pulled at spawn, 5,583 two minutes later, and a
+fifth of all leaders standing alone**. Members carry their pack's id now and roam a `pack_leash`
+disc around their **leader's spawn point** — a fixed anchor, held under half of `group_radius` by
+test, because the leader's own position drifting would drag the radius its minions are measured
+against along with it. **The reason this went unseen is the lesson**: every pack test in the repo
+ran on a freshly generated arena that had never been STEPPED. A world-gen assertion is not a
+world assertion.
+
+**AND A MIXED PACK WAS SPAWNED AT WAR WITH ITSELF.** `mixed_chance` makes some of the littles a
+different *species*, and a species carries its own **faction** — which is the field `CR-2` reads to
+decide who hunts whom. So **57% of packs (1,253 of 2,196)** held something hostile to their own
+leader and ate themselves before any player arrived: of the leaders left alone after the anchor fix,
+**42 of 48 had every pack member killed**, not wandered off. A pack runs with its leader
+(`join_pack` hands the faction down) — species variety kept, hostility not. The undead rite already
+had exactly this rule ("a rite's retinue is its own dead, whatever the local wildlife is"); it was
+ordinary packs that never got it. Regrowth eroded them the same way, handing back a plain `standard`
+loner, so `Fallen` carries the pack, the rank and the class.
+
+⚠️ **AND MOST OF THE TURF WAR YOU COULD SEE WAS PACKS EATING THEMSELVES.** The two `CR-2`
+clash tests stepped the world 0.2 s and expected a brawl — which worked because the first
+one a stepped world produced was almost always a mixed pack murdering itself three units
+from its own spawn. Real cross-faction clashes still happen everywhere (measured: the first
+lands at ~2.6 s, since placement's group-radius spacing keeps hostile spawns apart on
+purpose and they have to wander into each other), so the tests step until one appears rather
+than staging one — hand-placing two hostile creatures would prove nothing about whether a
+player ever meets one. If you are eyeballing how lively the world looks, expect fewer ⚔ than
+before, and that is the bug being gone rather than the feature.
+
+**A LOSING LEADER CALLS, AND THE CALL COSTS ITS TURN.** The reach is `pack_call_radius`,
+deliberately far past a group radius — that is the whole value: a pack thinned by drift, by a turf
+war, or by the party's opening turns gets its bodies back, and clearing the littles first stops
+being a free line. Armed by EITHER reading of losing (HP under `pack_call_hp_fraction`, **or** no
+living minions left), because a pack fight has two lines and covering one makes the call invisible
+to whoever took the other. Once a fight, capped, and priced by the only thing a creature has to
+spend — a free reinforcement is the pack's health written twice. **It is deliberately NOT an
+authored ability**: an ordinary leader has no kit at all, and an ability's `weight` is read as its
+RARITY elsewhere (`CN-7`'s rebuke picks the rarest), so a new low-weight row would silently change
+what every boss that got it answers an interruption with. The engine only spends the turn and
+reports `Event::Howled` — it has no overworld, exactly as it has no idea what a creature is
+carrying (`Stolen`) — and arrivals come through `Battle::join`, the raid-merge door, built by the
+one shared `meld_run::enemy_fighters` so a called creature is not a second, thinner kind of enemy.
+⚠️ **`Battle::tick` never drained `pending_events`** — only `submit` did — so anything a
+CREATURE's turn reported was silently dropped; the call is the first event to travel that path.
 
 **A CREATURE'S WOUND PERSISTS, AND IT CLOSES** (`CR-2`). A skirmish it survived and a fight
 a party fled from both leave it hurt, so softening something up and coming back for it is a

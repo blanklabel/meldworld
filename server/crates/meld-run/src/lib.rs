@@ -952,36 +952,32 @@ fn hash_id(id: &str) -> u64 {
 // run, at what balance, from which seed, carrying which wounds, in which formation, and
 // whether the party chose the moment. Bundling them into a struct would move the arity
 // rather than remove it.
-#[allow(clippy::too_many_arguments)]
-pub fn build_battle(
-    battle_id: Id,
-    party: &[PartyMember],
+/// Build the enemy `Fighter`s for an encounter (`CR-11` made this two callers instead of
+/// one: a battle being assembled, and reinforcements ANSWERING A CALL into one already
+/// running).
+///
+/// It is extracted rather than copied on purpose. Every property a creature carries into a
+/// fight is set exactly once here — its wound, its rank, its pack role, its kit, its ward,
+/// its resistances, its targeting profile — and the last time this repo kept "one rule, two
+/// call sites" it cost a release each time (the wall-collision line that went into one mover
+/// and not the other; the damage pass that kept the O(n^2) scan the movement pass had
+/// already had fixed above it). A reinforcement that arrived through a second copy of this
+/// would be a creature missing whichever line the copy forgot.
+///
+/// `party_scale` MUST be the scale the battle was built with, not one recomputed from who is
+/// standing in it now: `Battle::join` never rescales enemies, so a creature called into a
+/// fight has to be sized against the party that started it.
+///
+/// `group_base` offsets the group ids so a reinforcement wave cannot collide with the groups
+/// already in the fight. Latecomers therefore form their own group rather than merging into
+/// the knot of their own species already on the field — a group is a property of the
+/// encounter, and arriving separately is a real thing that happened.
+pub fn enemy_fighters(
     enemies: &[EnemyMember],
-    runs: &InstanceRun,
     balance: &Balance,
-    seed: u64,
-    // Per-hero starting HP, aligned with `party`. `None` means full HP. Used to
-    // carry wounds across a run's encounters (no free heal between fights).
-    hp_overrides: &[Option<i32>],
-    // Per-hero saved formation, aligned with `party` (see [`party_fighters`]).
-    row_overrides: &[Option<bool>],
-    // A SURPRISE: the party walked into a creature a Psyker had pinned, so it chose the
-    // moment. Every hero opens with a full gauge and therefore the first move — which is
-    // the entire reason to spend a pin rather than simply avoid the creature.
-    surprise: bool,
-) -> Battle {
-    let mut allies = party_fighters(party, runs, balance, row_overrides);
-    // Creatures scale with how many heroes are facing them, on top of the distance
-    // curve. Four heroes bring ~4x the damage, so a flat encounter would make a full
-    // party's fights the SHORTEST in the game; the ramp is superlinear so the arc runs
-    // the intended way — quick solo fights early, long ones once the party is full.
-    let party_scale = encounter_party_scale(allies.len(), balance);
-    for (f, hp) in allies.iter_mut().zip(hp_overrides.iter()) {
-        if let Some(h) = hp {
-            f.hp = (*h).clamp(0, f.max_hp);
-        }
-    }
-
+    party_scale: f64,
+    group_base: u32,
+) -> Vec<Fighter> {
     // Stable group ids for this encounter, one per creature TYPE present. A boss fighting
     // under its own name is still its species for grouping — what a player sees is a knot
     // of the same thing, and that is what a group-target ability should hit.
@@ -990,7 +986,7 @@ pub fn build_battle(
         let next = groups.len() as u32;
         groups.entry(m.monster_kind.clone()).or_insert(next);
     }
-    let group_of = |kind: &str| groups.get(kind).copied().unwrap_or(0);
+    let group_of = |kind: &str| group_base + groups.get(kind).copied().unwrap_or(0);
 
     // One enemy Fighter per grouped creature, carrying its faction + flee flag so
     // the battle can pit factions against each other.
@@ -1134,6 +1130,44 @@ pub fn build_battle(
         })
         .collect();
     cap_role_hunters(&mut enemy_fighters);
+    enemy_fighters
+}
+
+// Nine, and each one is a distinct fact the assembly needs: who, against what, in which
+// run, at what balance, from which seed, carrying which wounds, in which formation, and
+// whether the party chose the moment. Bundling them into a struct would move the arity
+// rather than remove it.
+#[allow(clippy::too_many_arguments)]
+pub fn build_battle(
+    battle_id: Id,
+    party: &[PartyMember],
+    enemies: &[EnemyMember],
+    runs: &InstanceRun,
+    balance: &Balance,
+    seed: u64,
+    // Per-hero starting HP, aligned with `party`. `None` means full HP. Used to
+    // carry wounds across a run's encounters (no free heal between fights).
+    hp_overrides: &[Option<i32>],
+    // Per-hero saved formation, aligned with `party` (see [`party_fighters`]).
+    row_overrides: &[Option<bool>],
+    // A SURPRISE: the party walked into a creature a Psyker had pinned, so it chose the
+    // moment. Every hero opens with a full gauge and therefore the first move — which is
+    // the entire reason to spend a pin rather than simply avoid the creature.
+    surprise: bool,
+) -> Battle {
+    let mut allies = party_fighters(party, runs, balance, row_overrides);
+    // Creatures scale with how many heroes are facing them, on top of the distance
+    // curve. Four heroes bring ~4x the damage, so a flat encounter would make a full
+    // party's fights the SHORTEST in the game; the ramp is superlinear so the arc runs
+    // the intended way — quick solo fights early, long ones once the party is full.
+    let party_scale = encounter_party_scale(allies.len(), balance);
+    for (f, hp) in allies.iter_mut().zip(hp_overrides.iter()) {
+        if let Some(h) = hp {
+            f.hp = (*h).clamp(0, f.max_hp);
+        }
+    }
+
+    let enemy_fighters = enemy_fighters(enemies, balance, party_scale, 0);
 
     // The encounter class is the strongest present (gatekeeper > elite > standard).
     let encounter_class = enemies

@@ -1266,7 +1266,7 @@ impl Db {
     }
 
     /// Save (or overwrite) a named loadout. Upsert on `(player_id, name)` so saving
-    /// over a name is how you update one — there is no separate rename.
+    /// over a name is how you UPDATE one; [`Self::rename_loadout`] is how you rename one.
     pub async fn save_loadout(
         &self,
         player_id: Uuid,
@@ -1307,6 +1307,54 @@ impl Db {
             }
         }
         Ok(())
+    }
+
+    /// RENAME a saved loadout, keeping everything it stored.
+    ///
+    /// Not "save under the new name and delete the old one", which is what the UI had to
+    /// do without this: `save_loadout` captures the party's gear **as it is right now**, so
+    /// that route would silently re-snapshot a loadout's equipment as the price of
+    /// correcting a typo — and the whole reason a loadout stores gear is that it remembers
+    /// a kit you are not currently wearing.
+    ///
+    /// Renaming onto a name already in use is refused rather than silently eating the other
+    /// row: `(player_id, name)` is unique, and a rename that destroys a different saved
+    /// party is not a rename.
+    pub async fn rename_loadout(
+        &self,
+        player_id: Uuid,
+        from: &str,
+        to: &str,
+    ) -> Result<bool, DbError> {
+        match &self.backend {
+            Backend::Pg(pool) => {
+                let done = sqlx::query(
+                    "UPDATE party_loadouts SET name = $3, updated_at = now()
+                     WHERE player_id = $1 AND name = $2
+                       AND NOT EXISTS (
+                         SELECT 1 FROM party_loadouts WHERE player_id = $1 AND name = $3
+                       )",
+                )
+                .bind(player_id)
+                .bind(from)
+                .bind(to)
+                .execute(pool)
+                .await?;
+                Ok(done.rows_affected() > 0)
+            }
+            Backend::Mem(m) => {
+                let mut g = m.lock().unwrap();
+                if g.loadouts.contains_key(&(player_id, to.to_string())) {
+                    return Ok(false);
+                }
+                let Some(mut row) = g.loadouts.remove(&(player_id, from.to_string())) else {
+                    return Ok(false);
+                };
+                row.name = to.to_string();
+                g.loadouts.insert((player_id, to.to_string()), row);
+                Ok(true)
+            }
+        }
     }
 
     /// Forget a named loadout. Deleting one that is not there is not an error — the

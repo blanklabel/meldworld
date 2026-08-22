@@ -161,6 +161,13 @@ pub struct Fighter {
     /// CR-6 pack role. A leader is shielded by its living minions and lends them
     /// its presence; killing it routs them. `None` for anything not in a pack.
     pub pack_role: PackRole,
+    /// `CR-11`: this leader has already CALLED, so it cannot call again.
+    ///
+    /// Once a fight, and it costs the leader its whole turn — a reinforcement that were
+    /// free would just be the pack's HP written twice. The engine cannot see the overworld,
+    /// so all it does is spend the turn and raise [`Event::Howled`]; who actually answers
+    /// is the server's business, the same division `Event::Stolen` already uses.
+    pub called: bool,
     /// Back-row formation: takes reduced damage and is targeted less often (see
     /// `Battle::apply_damage` / `resolve_monster_turn`). Set for caster heroes in
     /// `meld-run`; false for front-row heroes and creatures.
@@ -341,6 +348,7 @@ impl Fighter {
             flees: false,
             boss_band: 0,
             pack_role: PackRole::None,
+            called: false,
             group_id: None,
             reach: false,
             sweeps: false,
@@ -671,6 +679,17 @@ pub enum Event {
         /// The creature robbed, so the server can size the haul off its tier.
         victim_combatant_id: Id,
     },
+    /// `CR-11` — a pack LEADER called for the rest of its pack, and the server has to
+    /// decide who is close enough to answer.
+    ///
+    /// The engine has no idea what is standing in the overworld, exactly as it has no idea
+    /// what a creature is carrying (`Stolen`) — so it spends the turn, says so, and reports
+    /// the fact. Whoever answers arrives through [`Battle::join`], the same door a raid
+    /// merge comes through.
+    Howled {
+        /// The leader that called, so the server can find its pack and its position.
+        combatant_id: Id,
+    },
     /// An action resolved (player, monster AI, or auto-defend).
     Resolved(Resolution),
     /// The battle reached a terminal state (spike: single party vs enemies).
@@ -706,6 +725,8 @@ pub struct Battle {
     thrown_atk_mult: f64,
     sweep_share: f64,
     gang_switch_chance: f64,
+    /// `CR-11`: a pack leader under this share of its max HP calls for the rest of its pack.
+    pack_call_hp_fraction: f64,
     /// The mark a ganging pack is converging on (CR-9). Shared across the whole side, so
     /// "gang up" means the pack commits together rather than each creature deciding alone.
     gang_target: Option<Id>,
@@ -1037,6 +1058,7 @@ impl Battle {
             thrown_atk_mult: balance.consumable.thrown_atk_mult,
             sweep_share: balance.battle.sweep_share,
             gang_switch_chance: balance.ai.gang_switch_chance,
+            pack_call_hp_fraction: balance.encounters.pack_call_hp_fraction,
             gang_target: None,
             combo_window_ticks: balance.adventure.combo_window_ticks,
             pack_aura_atk_mult: balance.encounters.pack_aura_atk_mult,
@@ -1202,6 +1224,21 @@ impl Battle {
         let views = new.iter().map(Fighter::to_wire).collect();
         self.fighters.extend(new);
         views
+    }
+
+    /// The first group id no fighter in this battle is using (`CR-11`).
+    ///
+    /// A reinforcement wave is grouped after everything already on the field, so a
+    /// latecomer cannot silently land in the group of a creature already in the fight —
+    /// group ids drive group-target abilities, and two knots sharing one id would make an
+    /// ability hit bodies the player never saw it aimed at.
+    pub fn next_group_id(&self) -> u32 {
+        self.fighters
+            .iter()
+            .filter_map(|f| f.group_id)
+            .max()
+            .map(|g| g + 1)
+            .unwrap_or(0)
     }
 
     /// Number of distinct player combatants currently in the battle.
@@ -1553,6 +1590,12 @@ impl Battle {
                     prepend_effects(&mut res, upkeep);
                     events.push(Event::Resolved(res));
                 }
+                // A CREATURE'S turn can report something only the server can settle too —
+                // `CR-11`'s call is the first one that does. `submit` drained this and
+                // `tick` did not, so anything a creature pushed here was silently dropped;
+                // the hazard predates the call (a monster-side `Stolen` would have gone the
+                // same way) and it is drained on both paths now.
+                events.extend(std::mem::take(&mut self.pending_events));
                 self.check_terminal(&mut events);
             }
         }
@@ -4055,6 +4098,33 @@ impl Battle {
     /// faction* — a player, or a rival-faction creature — so a mixed-faction
     /// encounter has creatures fighting each other as well as the party. A
     /// `flees` creature bolts (leaves the battle) once its HP is low.
+    /// `CR-11`: would this creature spend its turn CALLING for the rest of its pack?
+    ///
+    /// Only a leader, only once, and only when it is actually losing — which is either of
+    /// two readings of "losing", because a pack fight has two shapes. A party that focuses
+    /// the leader drops its HP; a party that clears the littles first leaves it alone. Both
+    /// are the moment a beast shouts for help, and covering only one of them would make the
+    /// call invisible against whichever line the player happened to take.
+    ///
+    /// Deliberately NOT an authored ability. An ordinary pack leader has no kit at all
+    /// (`signature_ability` returns `None` for it), and adding one would drag every leader
+    /// into the boss ability machinery — where an ability's `weight` is also read as its
+    /// RARITY, so a new low-weight row would silently become the CN-7 rebuke of every boss
+    /// that got it.
+    fn wants_to_call(&self, i: usize) -> bool {
+        let f = &self.fighters[i];
+        if f.pack_role != PackRole::Leader || f.called || !f.alive || f.max_hp <= 0 {
+            return false;
+        }
+        let hurt = (f.hp as f64) < (f.max_hp as f64) * self.pack_call_hp_fraction;
+        let faction = &f.faction;
+        let alone = !self
+            .fighters
+            .iter()
+            .any(|m| m.alive && m.pack_role == PackRole::Minion && &m.faction == faction);
+        hurt || alone
+    }
+
     fn resolve_monster_turn(&mut self, actor_i: usize) -> Option<Resolution> {
         // Skittish creatures flee a losing battle instead of attacking.
         if self.fighters[actor_i].flees {
@@ -4078,6 +4148,42 @@ impl Battle {
                     }],
                 });
             }
+        }
+
+        // CR-11: A PACK LEADER IN TROUBLE CALLS THE REST OF ITS PACK.
+        //
+        // The overworld reaches much further than `[ai] group_radius`, which is the whole
+        // point of the mechanic: a pack that lost members to drift, to a turf war, or to
+        // the party's opening turns can still get them back — and the party learns that
+        // cutting the littles down first has a cost as well as a benefit. It is priced by
+        // the one thing a creature has to spend: the CALL IS ITS TURN. Once a fight, and
+        // only when it is genuinely losing, so it reads as a beast in trouble rather than
+        // as a second health bar.
+        if self.wants_to_call(actor_i) {
+            self.fighters[actor_i].called = true;
+            self.reset_gauge(actor_i);
+            let id = self.fighters[actor_i].combatant_id.clone();
+            // Reported, not resolved: the engine has no overworld. Whoever is close
+            // enough arrives through `join`, the raid-merge door.
+            self.pending_events.push(Event::Howled { combatant_id: id.clone() });
+            return Some(Resolution {
+                // Shouted for the same reason a gang-up mark is: creatures appearing
+                // mid-fight with no explanation reads as the game cheating.
+                callout_text: Some("A CALL GOES UP FOR THE PACK!".to_string()),
+                action_id: None,
+                actor_id: id.clone(),
+                action: BattleActionKind::Skill,
+                auto: true,
+                flee_success: None,
+                effects: vec![ResolvedEffect {
+                    modifier_flag: None,
+                    target_id: id,
+                    kind: EffectKind::StatusApplied,
+                    amount: None,
+                    status: Some("calling".to_string()),
+                    hp_after: self.fighters[actor_i].hp,
+                }],
+            });
         }
 
         // Attack the *weakest* living fighter hostile to this creature's faction —
@@ -8637,6 +8743,134 @@ mod tests {
             "the Resonant healed the party for free: {healer_before} -> {healer_after} of {full}"
         );
         assert!(healer_after >= 1, "the Resonant killed itself healing");
+    }
+
+    /// `CR-11` THE CALL: a pack leader that is losing spends its turn shouting for the
+    /// rest of its pack, and reports the fact so the server can decide who answers.
+    ///
+    /// It COSTS THE TURN, which is the whole balance of the mechanic — reinforcements that
+    /// were free would just be the pack's health written twice — and it happens **once**.
+    #[test]
+    fn a_losing_pack_leader_calls_for_its_pack_and_pays_its_turn_for_it() {
+        let b = balance();
+        let mut lead = monster("lead", 100, 120);
+        lead.pack_role = PackRole::Leader;
+        // With its escort intact — a leader standing ALONE is itself a reason to call, and
+        // that is the very case the drift used to produce, so it needs a minion here or
+        // this asserts nothing about the HP threshold.
+        let mut escort = monster("min", 400, 1);
+        escort.pack_role = PackRole::Minion;
+        let mut battle = Battle::new(
+            "b".into(),
+            EncounterClass::Standard,
+            vec![player("h", 1)],
+            vec![lead, escort],
+            &b,
+            7,
+        );
+        // At full health with its pack around it, it just fights: a call is what a beast in
+        // trouble does, not its opener.
+        let li = battle.fighters.iter().position(|f| f.combatant_id == "lead").unwrap();
+        assert!(
+            !battle.wants_to_call(li),
+            "a healthy leader with minions should not be calling"
+        );
+
+        // Hurt it past the threshold and let it act.
+        let max = battle.fighters[li].max_hp;
+        battle.fighters[li].hp = (max as f64 * b.encounters.pack_call_hp_fraction * 0.5) as i32;
+        let mut howls = 0;
+        let mut player_hp_lost = false;
+        let hp_before = battle.fighters[0].hp;
+        for _ in 0..400 {
+            for ev in battle.tick() {
+                if let Event::Howled { combatant_id } = ev {
+                    assert_eq!(combatant_id, "lead");
+                    howls += 1;
+                }
+            }
+            if battle.fighters[0].hp < hp_before {
+                player_hp_lost = true;
+            }
+            if howls > 0 && player_hp_lost {
+                break;
+            }
+        }
+        assert_eq!(howls, 1, "a leader called {howls} times; the call is once a fight");
+        assert!(
+            player_hp_lost,
+            "the leader never went back to fighting after calling"
+        );
+    }
+
+    /// AND THE OTHER SHAPE OF LOSING COUNTS TOO.
+    ///
+    /// A pack fight has two lines: focus the leader (its HP drops) or clear the littles
+    /// first (it ends up alone). Both are the moment a beast shouts for help, and arming
+    /// only the HP reading would make the call invisible to the player who took the other
+    /// line — which is the line `CR-7` deliberately made attractive.
+    #[test]
+    fn a_leader_left_without_its_minions_calls_even_at_full_health() {
+        let b = balance();
+        let mut lead = monster("lead", 100, 60);
+        lead.pack_role = PackRole::Leader;
+        let mut minion = monster("min", 20, 60);
+        minion.pack_role = PackRole::Minion;
+        let mut battle = Battle::new(
+            "b".into(),
+            EncounterClass::Standard,
+            vec![player("h", 1)],
+            vec![lead, minion],
+            &b,
+            7,
+        );
+        let li = battle.fighters.iter().position(|f| f.combatant_id == "lead").unwrap();
+        let mi = battle.fighters.iter().position(|f| f.combatant_id == "min").unwrap();
+        // Full health, minion alive: nothing to shout about.
+        assert!(!battle.wants_to_call(li));
+        // Its escort is gone and it is untouched — it still calls.
+        battle.fighters[mi].alive = false;
+        assert!(
+            battle.wants_to_call(li),
+            "a leader whose whole escort is dead should call even at full HP"
+        );
+        // …and nothing that is not a leader ever calls, however badly it is doing.
+        battle.fighters[mi].alive = true;
+        battle.fighters[mi].hp = 1;
+        assert!(!battle.wants_to_call(mi), "a minion called for a pack of its own");
+    }
+
+    /// A reinforcement wave is grouped AFTER everything already fighting (`CR-11`).
+    ///
+    /// Group ids drive group-target abilities, so a latecomer silently landing in the group
+    /// of a creature already on the field would make an ability hit bodies the player never
+    /// saw it aimed at.
+    #[test]
+    fn reinforcements_never_land_in_a_group_that_is_already_fighting() {
+        let b = balance();
+        let mut a = monster("a", 50, 10);
+        a.group_id = Some(0);
+        let mut c = monster("c", 50, 10);
+        c.group_id = Some(1);
+        let mut battle = Battle::new(
+            "b".into(),
+            EncounterClass::Standard,
+            vec![player("h", 10)],
+            vec![a, c],
+            &b,
+            7,
+        );
+        assert_eq!(battle.next_group_id(), 2);
+        let mut late = monster("late", 50, 10);
+        late.group_id = Some(battle.next_group_id());
+        battle.join(vec![late]);
+        assert_eq!(battle.next_group_id(), 3, "a second wave would collide");
+        // Every group id in the fight is still distinct per knot.
+        let used: Vec<u32> = battle.fighters.iter().filter_map(|f| f.group_id).collect();
+        let mut sorted = used.clone();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(sorted.len(), 3, "groups collided: {used:?}");
     }
 
     #[test]

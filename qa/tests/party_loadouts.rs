@@ -232,6 +232,65 @@ async fn loadouts_save_list_and_refuse_what_the_account_cannot_field() {
     assert_eq!(applied["gear_missing"].as_i64().unwrap(), 0);
     assert_eq!(applied["classes"], json!(["explorer"]), "the composition is re-clamped");
 
+    // RENAME keeps what the loadout stored (`PT-2`). There was no rename at all, so the
+    // only way to fix a name was to save the current party under the new one and delete the
+    // old — which RE-SNAPSHOTS the gear, and remembering a kit you are not wearing is the
+    // entire reason a loadout stores gear. So correcting a typo rewrote the contents.
+    let renamed = http
+        .post(format!("{base}/v1/party/loadouts/Kit/rename"))
+        .bearer_auth(&token)
+        .json(&json!({ "new_name": "Delvers" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(renamed.status(), 200, "a rename to a free name should succeed");
+    let after = get(token.clone(), base.clone()).await;
+    let rows = after["data"].as_array().unwrap();
+    let moved = rows
+        .iter()
+        .find(|l| l["name"] == "Delvers")
+        .unwrap_or_else(|| panic!("the renamed loadout is gone: {after}"));
+    assert!(
+        rows.iter().all(|l| l["name"] != "Kit"),
+        "the old name is still there: {after}"
+    );
+    assert_eq!(
+        moved["gear_count"].as_i64().unwrap(),
+        captured,
+        "a rename re-snapshotted the gear instead of keeping it: {moved}"
+    );
+
+    // Renaming ONTO a name already in use is refused rather than silently eating the other
+    // saved party — a rename that destroys a different composition is not a rename.
+    http.post(format!("{base}/v1/party/loadouts"))
+        .bearer_auth(&token)
+        .json(&json!({ "name": "Scout", "classes": ["explorer"] }))
+        .send()
+        .await
+        .unwrap();
+    let clash = http
+        .post(format!("{base}/v1/party/loadouts/Delvers/rename"))
+        .bearer_auth(&token)
+        .json(&json!({ "new_name": "Scout" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(clash.status(), 400, "a rename onto a taken name must be refused");
+    let still = get(token.clone(), base.clone()).await;
+    let names: Vec<&str> =
+        still["data"].as_array().unwrap().iter().filter_map(|l| l["name"].as_str()).collect();
+    assert!(names.contains(&"Delvers") && names.contains(&"Scout"), "{still}");
+
+    // An empty new name is not a name, same rule a save holds.
+    let unnamed_rename = http
+        .post(format!("{base}/v1/party/loadouts/Delvers/rename"))
+        .bearer_auth(&token)
+        .json(&json!({ "new_name": "   " }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(unnamed_rename.status(), 400);
+
     // Unauthenticated callers get nothing.
     let anon = reqwest::Client::new()
         .get(format!("{base}/v1/party/loadouts"))

@@ -165,6 +165,7 @@ Shared object shapes referenced by the detail files.
 | S2C | `world.dungeon_scene` | An authored dungeon's scene to render | — *undocumented* |
 | S2C | `battle.started` | Touch-triggered battle opens | [battle.md](realtime-protocol/battle.md) |
 | S2C | `battle.party_joined` | A second party merges into an active battle | [battle.md](realtime-protocol/battle.md) |
+| S2C | `battle.reinforcements` | A pack leader called; creatures answered from the overworld | [battle.md](realtime-protocol/battle.md) |
 | S2C | `battle.turn_ready` | Actor's gauge is full; 15 s action window opens | [battle.md](realtime-protocol/battle.md) |
 | S2C | `battle.gauge_update` | ATB gauge/HP sync (event-driven + 1 Hz keepalive) | [battle.md](realtime-protocol/battle.md) |
 | C2S | `battle.submit_action` | Submit attack / skill / item / defend / flee | [battle.md](realtime-protocol/battle.md) |

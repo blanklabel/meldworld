@@ -714,7 +714,24 @@ undead_rite_loot_mult = 5.0
 # `[ai] group_radius` — touch one and the whole pack joins. Minions are visibly
 # lesser (a big spider with four little ones); the leader is a step above a
 # standard creature but below an Elite. Never in the spawn section or the tutorial.
-pack_spread = 3.4                # minions scatter within this of the leader (< group_radius)
+pack_spread = 3.0                # minions scatter within this of the leader (< pack_leash)
+# HOW FAR A PACK MEMBER ROAMS FROM ITS PACK (CR-11). A pack used to be nothing but
+# proximity, and proximity decays: every member drew its wander destination from its OWN
+# `[ai] leash_radius` disc (9.0) while `group_radius` (6.5) is what decides whether
+# touching one pulls the others, so two members could legitimately stand 21 apart.
+#
+# MEASURED over three seeds, stepping a generated world with nobody in it: 2,189 leaders
+# pulled 10,128 bodies at spawn (4.63 each) and 5,583 after two minutes of ordinary
+# wandering (2.55) — 45% of every pack gone, with 440 leaders (20%) standing entirely
+# alone. Every pack test ran on an arena that had never been stepped, which is why it was
+# invisible.
+#
+# Members now roam a disc around their LEADER'S SPAWN POINT of this radius. It must stay
+# under HALF of `[ai] group_radius`, or two members on opposite rims stop being one
+# encounter and the drift comes back — `a_pack_cannot_wander_out_of_its_own_encounter`
+# holds that, and `pack_spread` (the spawn scatter) has to fit inside it too, or a minion
+# starts life outside the disc it roams. [TUNABLE]
+pack_leash = 3.1
 leader_hp_mult = 1.7             # the "one big spider" — under an Elite's 2.4
 leader_atk_mult = 1.2
 leader_xp_mult = 1.8
@@ -832,6 +849,23 @@ undead_rite_boss_atk_mult = 1.45
 undead_rite_boss_xp_mult = 4.0
 undead_rite_minion_hp_mult = 0.6 # a rite's minions are tougher than a pack's 0.45
 undead_rite_minion_atk_mult = 0.75
+
+# THE CALL (CR-11). A pack LEADER that is losing spends its turn shouting, and the rest
+# of its pack answers from the overworld — from much further out than `[ai] group_radius`,
+# which is the entire point: a pack thinned by drift, by a turf war, or by the party's
+# opening turns can get its bodies back, and clearing the littles first stops being a free
+# line. It is priced by the only thing a creature has to spend: THE CALL IS ITS TURN, once
+# a fight. Nothing here can turn a hit into a one-shot — same safety argument as the raid
+# tier's cadence knobs.
+#
+# `hp_fraction` OR "no living minions left" arms it, because a pack fight has two shapes: a
+# party that focuses the leader drops its HP, a party that clears the littles leaves it
+# alone. Covering one reading only would make the call invisible against whichever line the
+# player took. `radius` is deliberately far past a group radius and `max` is what stops a
+# dense ring from answering as a mob — a call is reinforcements, not an avalanche. [TUNABLE]
+pack_call_hp_fraction = 0.6
+pack_call_radius = 22.0
+pack_call_max = 3
 
 # PACK AI: a pack should fight like a pack, which also makes clearing one a
 # DECISION — break the leader and the littles rout, or clear the littles first and
