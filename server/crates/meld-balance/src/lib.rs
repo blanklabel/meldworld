@@ -1191,6 +1191,11 @@ pub struct WorldGen {
     pub biome_transition_width: f64,
     pub obstacle_min_radius: f64,
     pub obstacle_max_radius: f64,
+    /// Water's own radius range. A body of water has to be a BODY — sharing the prop range
+    /// made every pond a 2-5 unit puddle. Bounded, because `BlockField`'s spatial-hash cell
+    /// is sized from the largest radius in the world.
+    pub water_min_radius: f64,
+    pub water_max_radius: f64,
     pub path_clear_radius: f64,
     pub path_meander: f64,
     /// Extra WEB trails woven through each section (branches, loops, dead-end spurs)
