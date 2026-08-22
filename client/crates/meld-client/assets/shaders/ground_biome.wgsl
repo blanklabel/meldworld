@@ -140,11 +140,16 @@ fn peak_dome(wxz: vec2<f32>) -> f32 {
 // single source the vertex displaces by and the normal differentiates.
 fn total_height(wxz: vec2<f32>) -> f32 {
     let land = terrain_height_wgsl(wxz + params.terrain_off) + peak_dome(wxz);
-    // The sea bed falls away from the shoreline, so water sits visibly BELOW the land and
-    // the coast reads as a beach rather than a colour change on a flat plane.
+    // A SEA IS A LEVEL, NOT AN OFFSET. This used to subtract a constant depth from the
+    // land — which left the sea surface carrying the terrain's rolling hills, so the ocean
+    // visibly went up and down like a field. Water finds its own level: past the shoreline
+    // the surface IS `sea_level`, flat, regardless of what the heightmap underneath says.
+    // The blend band is the beach — land ramps down to the waterline over a few units
+    // instead of ending in a step the coarse ground grid would stair-step.
     let sea = sea_depth_at(wxz);
-    let drop = params.coast_w.w * smoothstep(0.0, 26.0, max(sea, 0.0));
-    return params.terrain_amp * (land - drop);
+    let level = -params.coast_w.w;
+    let t = smoothstep(-6.0, 10.0, sea);
+    return params.terrain_amp * mix(land, level, t);
 }
 
 // Surface normal by finite differences over `total_height`, so both the rolling base and

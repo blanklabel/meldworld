@@ -328,6 +328,27 @@ fn is_water_kind(kind: &str) -> bool {
     matches!(kind, "pond" | "bog_pool" | "frozen_pond")
 }
 
+/// The radius to give an obstacle of `kind`, drawn from `u` in `0..1`.
+///
+/// **Water gets its own, much larger range, because a body of water has to be a BODY.**
+/// Sharing the prop range (1.1-2.8) made every pond a puddle 2-5 units across — and after
+/// the client was corrected to draw water no wider than it blocks, they became almost
+/// invisible. A tree wants to be tree-sized; a mere does not. This is also the only honest
+/// way to make water big: inflating it on the client alone left walkable ground inside
+/// visible water, which is what put a character underground.
+///
+/// ⚠️ It is bounded on purpose. `BlockField` sizes its spatial-hash cell from the LARGEST
+/// radius in the world, so this number widens the collision grid for every prop in the
+/// game. Measured, one big body parked where it blocked nothing: r=30 was free, r=80 cost
+/// +14%, r=150 cost +63% on the creature tick. Staying under ~12 keeps it in the free band
+/// while still reading as a lake.
+fn obstacle_radius_for(wg: &meld_balance::WorldGen, kind: &str, u: f64) -> f64 {
+    if is_water_kind(kind) {
+        return wg.water_min_radius + u * (wg.water_max_radius - wg.water_min_radius).max(0.0);
+    }
+    wg.obstacle_min_radius + u * (wg.obstacle_max_radius - wg.obstacle_min_radius)
+}
+
 fn obstacles_for_biome(biome: &str) -> &'static [&'static str] {
     match biome {
         "field" | "forest" => &["tree", "boulder", "pond"],
@@ -3583,8 +3604,8 @@ impl Arena {
             attempts += 1;
             let ox = start_x + rng.unit() * length;
             let oy = rng.signed() * (self.lateral - 1.0);
-            let radius =
-                wg.obstacle_min_radius + rng.unit() * (wg.obstacle_max_radius - wg.obstacle_min_radius);
+            let okind = okinds[rng.below(okinds.len())];
+            let radius = obstacle_radius_for(wg, okind, rng.unit());
             let pos = Position::new(ox, oy);
             if dist_to_path(&pos, &self.path) < self.path_clear_radius + radius
                 || dist_to_web(&pos, &self.corridor_web) < self.web_clear() + radius
@@ -3603,7 +3624,9 @@ impl Arena {
             }
             self.obstacles.push(Obstacle {
                 entity_id: format!("obs-{}", self.obstacles.len()),
-                kind: okinds[rng.below(okinds.len())].to_string(),
+                // The SAME kind the radius was drawn for. It used to re-roll here, so a
+                // prop could be sized as a boulder and then born a pond.
+                kind: okind.to_string(),
                 position: pos,
                 radius,
             });
@@ -3867,8 +3890,7 @@ impl Arena {
                 if frng.unit() > keep_prob(ox) {
                     continue;
                 }
-                let radius = wg.obstacle_min_radius
-                    + frng.unit() * (wg.obstacle_max_radius - wg.obstacle_min_radius);
+                let radius = obstacle_radius_for(wg, fill_kind, frng.unit());
                 let pos = Position::new(ox, oy);
                 if dist_to_path(&pos, &self.path) < self.path_clear_radius + radius
                     || dist_to_web(&pos, &self.corridor_web) < self.web_clear() + radius
@@ -5533,8 +5555,11 @@ impl Arena {
                 tries += 1;
                 let ox = start_x + rng.unit() * length;
                 let oy = rng.signed() * (lat - 1.0);
-                let radius = wg.obstacle_min_radius
-                    + rng.unit() * (wg.obstacle_max_radius - wg.obstacle_min_radius);
+                // Decide WHAT this is before sizing it, so water gets water's radius —
+                // the same order `push_section` uses. Sizing first and re-rolling the kind
+                // at push time is how a prop got born a pond after being sized a boulder.
+                let okind = if placed < sparse { scatter[rng.below(scatter.len())] } else { fill };
+                let radius = obstacle_radius_for(wg, okind, rng.unit());
                 let pos = Position::new(ox, oy);
                 if dist_to_path(&pos, &self.corridor_path) < self.path_clear_radius + radius
                     || dist_to_web(&pos, &self.corridor_web) < self.web_clear() + radius
@@ -5547,7 +5572,12 @@ impl Arena {
                 if near.blocked(&pos, radius) {
                     continue;
                 }
-                near.insert(pos, radius);
+                // Water is allowed to pool, exactly as in `push_section`: left out of the
+                // spacing grid so bodies coalesce, still CHECKED against it so a pool
+                // never lands on a creature, a node or a chest.
+                if !is_water_kind(okind) {
+                    near.insert(pos, radius);
+                }
                 let world = bend(pos);
                 if self.monsters.iter().any(|m| m.position.distance_to(&world) < radius + 1.5)
                     || self.resources.iter().any(|r| r.position.distance_to(&world) < radius + 1.5)
@@ -5557,11 +5587,7 @@ impl Arena {
                 }
                 self.obstacles.push(Obstacle {
                     entity_id: format!("obs-shift-{}-{next_id}", self.areas[i].shifted_at),
-                    kind: if placed < sparse {
-                        scatter[rng.below(scatter.len())].to_string()
-                    } else {
-                        fill.to_string()
-                    },
+                    kind: okind.to_string(),
                     position: world,
                     radius,
                 });

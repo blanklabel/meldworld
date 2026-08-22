@@ -1560,6 +1560,18 @@ maze_radial_scale_cap = 24.0     # max × `maze_fill_scale` can multiply an area
 biome_transition_width = 30.0    # world units over which density blends at a section edge
 obstacle_min_radius = 1.1        # smallest feature (a lone tree/rock) — chunky so fill reads as walls
 obstacle_max_radius = 2.8        # largest feature (a cliff/boulder)
+# WATER GETS ITS OWN RANGE, because a body of water has to be a BODY. Sharing the prop
+# range above made every pond a puddle 2-5 units across, and once the client was corrected
+# to draw water no wider than it BLOCKS (you could previously stand inside a visible lake)
+# they became almost invisible. Inflating water on the client alone is not an option — that
+# is exactly what left walkable ground inside the water and put a character underground.
+#
+# ⚠️ Bounded on purpose: `BlockField` sizes its collision cell from the LARGEST radius in
+# the world, so this widens the grid for every prop in the game. Measured with one big body
+# parked where it blocked nothing — r=30 free, r=80 +14%, r=150 +63% on the creature tick —
+# so staying under ~12 keeps it in the free band while still reading as a lake. [TUNABLE]
+water_min_radius = 4.5
+water_max_radius = 10.0
 path_clear_radius = 1.9          # half-width of the guaranteed route's slit. NARROW (was a 4.0 "highway" that read as a corridor) — just wide enough to pass, so the backbone is one trail among the web, not an obvious cleared lane. A route always EXISTS; you have to find it.
 path_meander = 18.0              # how far ±y the clear path wanders between areas
 web_trails_per_area = 5.0        # extra WEB trails woven through each section (branches/loops/spurs) so the overworld is an interconnected maze of routes, not one lane (narrow slits — the dense terrain stays the walls)
