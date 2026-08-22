@@ -61,20 +61,37 @@ fn the_route_point_at_a_depth_is_on_the_route_and_at_that_depth() {
 fn a_distance_is_a_ring_so_the_naive_landing_misses_the_route() {
     let b = Balance::load_default().unwrap();
     let reach = 1269.0;
-    let mut worst = 0.0f64;
-    for seed in [424242u64, 1, 7, 99, 12345] {
+    let mut gaps: Vec<(u64, f64)> = Vec::new();
+    for seed in [424242u64, 1, 7, 99, 12345, 2, 3, 4, 5, 8, 11, 77, 555, 9001, 31337] {
         let a = arena_out_to(&b, seed, reach);
         let p = a.route_point_at(reach);
-        let naive_gap = (p.x - reach).hypot(p.y);
-        worst = worst.max(naive_gap);
-        assert!(
-            naive_gap > 100.0,
-            "seed {seed}: the route happens to pass within {naive_gap:.0}u of (reach, 0) — \
-             if that is true for every seed the fan is no longer bending and this fix is moot"
-        );
+        gaps.push((seed, (p.x - reach).hypot(p.y)));
     }
+    // A DISTRIBUTION, NOT A PER-SEED RULE — and the difference is the whole point.
+    //
+    // This asserted `> 100.0` for every seed and was correct for the five it happened to
+    // list. Retuning creature density shifted the seeded worlds (creature placement draws
+    // from a section's main RNG stream, so changing how many are placed moves everything
+    // drawn after) and seed 99's clear path came to cross the centre line at exactly this
+    // ring: corridor `y = 0` maps to angle 0, so its waypoint bends to `(reach, 0)` and the
+    // gap is EXACTLY zero. That is not the fan flattening — it is a meandering path doing
+    // the one thing it is supposed to do, and a path that never crossed its own centre line
+    // would be the real bug.
+    //
+    // Measured over 15 seeds after the change: 14 are 178-1892u off and one is 0.
+    // What proves the fix is necessary is that the naive landing is usually catastrophic
+    // and can be enormous — not that it is never accidentally right.
+    gaps.sort_by(|a, b| a.1.total_cmp(&b.1));
+    let far = gaps.iter().filter(|(_, g)| *g > 100.0).count();
+    assert!(
+        far * 4 >= gaps.len() * 3,
+        "only {far} of {} seeds land off-route; if the naive landing is usually FINE then \
+         the fan is no longer bending and this fix is moot: {gaps:?}",
+        gaps.len()
+    );
+    let worst = gaps.last().map(|(_, g)| *g).unwrap_or(0.0);
     assert!(
         worst > 500.0,
-        "the worst seed is only {worst:.0}u off-route; the measured spread was 600-1811u"
+        "the worst seed is only {worst:.0}u off-route; the measured spread was 178-1892u"
     );
 }
