@@ -431,6 +431,83 @@ pub fn effect_line(key: &str, balance: &Balance) -> String {
             pct(kp.gift_gauge)
         ),
 
+        // ---- The Order of the Iron Hull. Every row states the tempo it buys as well as
+        // the damage, because tempo is what this order trades damage FOR — a line that
+        // showed only the multiplier would read as a strictly worse Phoenix Guard.
+        "oar_fighter" => dmg(b.iron_hull_oar_mult),
+        "sea_legs" => format!(
+            "+{} dodge, decaying {} each of your turns",
+            pct(b.iron_hull_sea_legs_evasion),
+            pct(b.shifter_flicker_decay)
+        ),
+        "swell_step" => join(&[
+            dmg(b.iron_hull_swell_mult),
+            format!("takes {}", turn(b.iron_hull_swell_drain)),
+        ]),
+        "structural_rooting" => format!(
+            "Barrier for {} of YOUR max HP",
+            pct(b.iron_hull_rooting_barrier_fraction)
+        ),
+        "kinetic_shock" => join(&[
+            dmg(b.iron_hull_shock_mult),
+            "takes its turn outright".to_string(),
+        ]),
+        "hull_resonance" => format!(
+            "Barrier for {} of each ally's max HP",
+            pct(b.iron_hull_resonance_barrier_fraction)
+        ),
+        "resonant_wake" => join(&[
+            format!("{} to EVERY enemy", dmg(b.iron_hull_wake_mult)),
+            format!("{} each", turn(b.iron_hull_wake_drain)),
+            "sound, so a back rank is no protection".to_string(),
+        ]),
+        "toll_of_the_deep" => join(&[
+            format!("{} to EVERY enemy", dmg(b.iron_hull_toll_mult)),
+            format!("Barrier for {} of each ally's max HP", pct(b.iron_hull_toll_barrier_fraction)),
+            "sound, so a back rank is no protection".to_string(),
+            "once a battle".to_string(),
+        ]),
+
+        // ---- The Wall Defense Force's Rift Drop-Trooper. The WINDOW is stated on every
+        // row that has one: it is the price of the whole class, and a tooltip that showed
+        // only the multiplier would be advertising the best numbers in the game with the
+        // cost left off.
+        "blink_lance" => join(&[
+            dmg(b.rift_knight_blink_mult),
+            "arrives behind the line, so rank is no protection".to_string(),
+        ]),
+        "recall_blade" => format!(
+            "+{} of your base attack for the battle",
+            pct(b.rift_knight_recall_atk_fraction)
+        ),
+        "dimensional_dive" => join(&[
+            dmg(b.rift_knight_dive_mult),
+            format!("gone for {}", secs(b.rift_knight_dive_untargetable_ticks, balance)),
+        ]),
+        "blast_gate" => format!(
+            "Barrier for {} of each ally's max HP",
+            pct(b.rift_knight_gate_barrier_fraction)
+        ),
+        "kinetic_payload" => join(&[
+            dmg(b.rift_knight_payload_mult),
+            "arrives behind the line, so rank is no protection".to_string(),
+        ]),
+        "breach_point" => join(&[
+            dmg(b.rift_knight_breach_mult),
+            format!("{} to every other enemy", dmg(b.rift_knight_breach_splash_mult)),
+            format!("gone for {}", secs(b.rift_knight_dive_untargetable_ticks, balance)),
+        ]),
+        "phase_delay" => join(&[
+            format!("untouchable for {}", secs(b.rift_knight_dive_untargetable_ticks, balance)),
+            "return with a full gauge".to_string(),
+            "once a battle".to_string(),
+        ]),
+        "grand_cataclysm" => join(&[
+            format!("{} to EVERY enemy", dmg(b.rift_knight_cataclysm_mult)),
+            format!("{} each", turn(b.rift_knight_cataclysm_drain)),
+            "once a battle".to_string(),
+        ]),
+
         _ => String::new(),
     }
 }

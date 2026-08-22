@@ -188,6 +188,29 @@ pub const AFFIXES: &[AffixDef] = &[
         Some(CharacterClass::Keeper),
         "of the Grafted Bloom",
     ),
+    // THE IRON HULL'S KEYWORD: it walks in already ROOTED. Structural Rooting is the row
+    // the order's whole doctrine hangs on — a Barrier bought by giving up movement — so a
+    // share of that Barrier, standing at the opening bell, is the twist only this order can
+    // spend. Seeded at construction like `barrier`/`regen`, not as a stack of the ability.
+    def(
+        "rooted_start",
+        AffixClass::Keyword,
+        0.3,
+        Some(CharacterClass::IronHull),
+        "of the Deck",
+    ),
+    // THE RIFT KNIGHT'S KEYWORD: the tear is already open. Every one of its rows is a step
+    // through a rift, and the class's cost is that stepping through takes the turn — so
+    // what a Drop-Trooper wants is to arrive SOONER. This part-fills the gauge at the
+    // opening bell (the Explorer's `pace_setter` shape), which is the one twist that pays
+    // a class whose problem is tempo rather than damage.
+    def(
+        "breach_primed",
+        AffixClass::Keyword,
+        0.3,
+        Some(CharacterClass::RiftKnight),
+        "of the Open Breach",
+    ),
     // Extra max durability, read as a PERCENT. The loss per hero death is flat points
     // (`durability_loss_per_fall`), so more durability is literally more deaths
     // survived — which is why craftsmanship can be an affix at all rather than a

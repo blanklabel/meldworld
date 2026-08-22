@@ -1230,6 +1230,38 @@ Use these terms consistently in code, comments, and UI.
   the only rest a party without a Resonant gets. See `Battle::resolve_keeper`.
   *Neither class has its own sprite set yet — `class_frames` falls back to the Explorer's
   until the art lands.*
+- **Iron Hull** — the **Order of the Iron Hull's** ascetic monk: **no armour and no
+  weapon**. It wears Light or Robe, fights with bound hands (`Gauntlet` — wraps, not a
+  held thing, landing the same Blunt as `UNARMED_ATTACK_TYPE`), and survives by not being
+  hit. Deliberately NOT a second Phoenix Guard: the Guard stands still and absorbs, this
+  order rides a blow and returns it (the **Doctrine of Equilibrium**).
+  ⚠️ **Its Dex MUST clear `dodge_dex_floor`** — that check is a `<=`, so a dodge class
+  written at exactly the floor has its whole defensive plan evaluate to ZERO, silently.
+  It shipped that way for one commit: unarmoured, unarmed, and undodging.
+  **UNARMORED DEFENCE** is the other half (the D&D monk's): `def` gains a per-level term
+  nothing else has, sized to out-climb plate slowly — which does not dethrone the wall,
+  because the Guard still has far more HP and heavy armour carries `weight_profile`
+  resistances a robe does not. Equal `def` is not equal toughness. Every damage multiplier sits *below* the
+  Guard's and is paid back in TEMPO — Oar-Fighter, Sea-Legs (L5, self Evasion), Swell-Step
+  (L10, damage + drain), Structural Rooting (L20, the heaviest self Barrier in the game,
+  bought by giving up mobility), Kinetic Shock (L35, takes the turn outright), Hull
+  Resonance (L50, party Barrier), **The Resonant Wake** (L75) and **Toll of the Deep**
+  (L100). Its structural trade is the **acoustic** half: both capstones land as
+  `Ethereal`, the only sound-shaped damage in the game, so a melee order with no armour
+  owns the one martial answer to a back rank that is not a bow. See
+  `Battle::resolve_iron_hull`.
+- **Rift Knight** — the **Wall Defense Force's** Rift Drop-Trooper: a dragoon whose leap
+  is a TELEPORT. **Polearms only** — the issued shock lance, two-handed, so no off-hand
+  and (since `Spear` deliberately does not reach) no ranged answer at all. That is the
+  class rather than a gap in it: a drop-trooper does not shoot over the front line, it
+  teleports past it. Blink Lance → Kinetic Payload (L35), Recall Blade (L5), Dimensional Dive
+  → Breach Point (L50), Blast-Gate Lockout (L20, party Barrier), and the two deep calls,
+  Phase Delay (L75) and Grand Cataclysm (L100). **`Fighter::phased_until` is the
+  primitive**: the knight leaves the field entirely — unreachable AND unable to act —
+  which is what lets it carry the highest single-target numbers in the game, because its
+  damage-per-turn is nothing like its damage-per-blow. Tune
+  `rift_knight_dive_untargetable_ticks` before any multiplier: the window buys survival
+  and costs tempo at once. See `Battle::resolve_rift_knight`.
 - **Phoenix Guard** — the Last City's **anti-undead** order. The tankiest, slowest class
   (most HP + armour, no dodge), and every damaging ability of theirs hits **undead**
   `phoenix_guard_undead_mult` harder. Its ladder is the order's rank ladder: Silvered
@@ -1240,6 +1272,25 @@ Use these terms consistently in code, comments, and UI.
   *every* gauge) and Phoenix Ascendant (L100, heavy all-enemy fire + party Barrier). See `Battle::resolve_phoenix_guard`.
   *The kinetic/oar kit it used to carry belongs to the **Order of the Iron Hull**, a
   future monk class whose `iron_hull` key is reserved.*
+
+**PHASING IS NOT DEATH AND NOT FLEEING.** A Rift Knight mid-Dive is removed from reach and
+from the queue, and it must be modelled as neither of the two things that already remove a
+fighter: flee clears `alive`, so a diving hero would count toward a **party wipe and end the
+fight its own ability was meant to win**. `Fighter::phased_until` is its own flag, enforced
+in `choose_target` — server-side, like the blindness cull, because the client is not the
+thing deciding who a creature swings at. And the reach filter **falls back to the full list
+when it would empty**: a party of four Rift Knights can all be gone at once, and a creature
+with nobody to swing at is the same unbounded soft-lock a gauge CAP causes. Being
+unreachable is worth a turn, never the fight.
+
+**A CLASS IS TEN PLACES, NOT ONE.** The kit is the visible half; the rest is what makes it
+fieldable at all, and most of it fails loudly if you forget (which is the point). The enum
+variant, `[player.<key>]` stats, weapon families + armour weights, the `class_key` mapping,
+the kit in `meld-battle`, an `ability_effects` arm, an **unlock** (a class with no trigger
+can never be played), **`meld_world::CLASS_KEYS` + authored gear nouns** (or the class can
+never find loot), **exactly one keyword affix**, and an **overworld perk**. The battle menu
+and targeting need nothing: both read `meld_proto::skills`, which is the
+never-reintroduce-a-list-of-ability-keys rule paying for itself.
 
 **Abilities are one registry.** [`meld_proto::skills`](shared/meld-proto/src/skills.rs)
 owns every ability's key, name, owning class, unlock level, **org rank**, **description**

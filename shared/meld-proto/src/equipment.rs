@@ -221,6 +221,28 @@ pub fn weapon_families(class: CharacterClass) -> &'static [ItemFamily] {
         // A Keeper's staff is a walking stick, a pestle and a splint — two-handed, so
         // the order that carries the medicine carries nothing else.
         CharacterClass::Keeper => &[ItemFamily::Staff],
+        // NO WEAPON. The order fights with its BODY — bound hands and shins, canvas dyed
+        // with rust scraped off the ship's rivets — and `Gauntlet` is this game's family for
+        // exactly that: wraps rather than a held thing, landing `Blunt`, which is also what
+        // `UNARMED_ATTACK_TYPE` falls back to. So an Iron Hull monk swings the same way
+        // whether or not its hand slot is filled, and what the slot buys is the wrapping.
+        //
+        // The order's lore carries a copper-banded oar and it is deliberately NOT here: a
+        // monk that picks up a two-handed club is a different class, and the whole point of
+        // this one is that its art is transferred momentum through its own frame. The slot
+        // is kept (rather than left empty) so the class still has six live gear slots — an
+        // empty main hand is a sixth of the gear ladder switched off, and no brand, for a
+        // class that scales on gear like every other martial one.
+        CharacterClass::IronHull => &[ItemFamily::Gauntlet],
+        // A POLEARM, and nothing else: the shock lance the Foundry issues at Drop-Lancer.
+        //
+        // `Spear` deliberately does not reach (granting it would silently buff every
+        // Explorer holding one), so this order has NO ranged answer at all — and that is
+        // the class rather than a gap in it. A drop-trooper does not shoot over the front
+        // line, it teleports past it: the Dive is how the back rank gets answered, which is
+        // the whole difference between this order and the Hunter. Two hands, so no off-hand
+        // either — the lance is the entire loadout.
+        CharacterClass::RiftKnight => &[ItemFamily::Spear],
         // A Runner throws and slings as readily as it stabs — the light ranged hand,
         // where the Hunter gets the heavy one. Reach is not the Hunter's private property;
         // what the Hunter has is the BOW.
@@ -252,6 +274,14 @@ pub fn armor_weights(class: CharacterClass) -> &'static [ArmorWeight] {
         CharacterClass::PhoenixGuard => &[ArmorWeight::Heavy, ArmorWeight::Medium],
         CharacterClass::Smithwright => &[ArmorWeight::Heavy, ArmorWeight::Medium],
         CharacterClass::Keeper => &[ArmorWeight::Light, ArmorWeight::Robe],
+        // Ashen sailcloth, hands and shins bound in rust-dyed canvas — no armour at all,
+        // and that is the trade the Doctrine of Equilibrium makes: the order answers a
+        // blow by absorbing and returning it, not by turning it. Robe or padded leather.
+        CharacterClass::IronHull => &[ArmorWeight::Light, ArmorWeight::Robe],
+        // Wall Defense heavy armour, issued at Rank 1. A drop-trooper lands in plate and
+        // the plate is the point — but plate FEARS a hammer, which is what keeps the
+        // dive from being a free opener against the wrong enemy.
+        CharacterClass::RiftKnight => &[ArmorWeight::Heavy, ArmorWeight::Medium],
         CharacterClass::Explorer => &[ArmorWeight::Medium, ArmorWeight::Light],
         CharacterClass::Shifter => &[ArmorWeight::Light],
         CharacterClass::Resonant => &[ArmorWeight::Robe, ArmorWeight::Light],
@@ -335,6 +365,8 @@ pub fn class_from_key(key: &str) -> Option<CharacterClass> {
         "phoenix_guard" => CharacterClass::PhoenixGuard,
         "smithwright" => CharacterClass::Smithwright,
         "keeper" => CharacterClass::Keeper,
+        "iron_hull" => CharacterClass::IronHull,
+        "rift_knight" => CharacterClass::RiftKnight,
         _ => return None,
     })
 }
@@ -444,6 +476,8 @@ pub fn class_key(class: CharacterClass) -> &'static str {
         CharacterClass::PhoenixGuard => "phoenix_guard",
         CharacterClass::Smithwright => "smithwright",
         CharacterClass::Keeper => "keeper",
+        CharacterClass::IronHull => "iron_hull",
+        CharacterClass::RiftKnight => "rift_knight",
     }
 }
 
@@ -496,6 +530,11 @@ pub fn fold_affixes(
             "undead_bane" => b.undead_bane_pct += m,
             "tempered_start" => b.tempered_pct += m,
             "grafted_bloom" => b.spell_power_pct += m,
+            // The Iron Hull walks in already ROOTED, and the Rift Knight walks in with the
+            // tear already open. Both reuse a state the engine models — a Barrier held at
+            // the bell, and a part-filled gauge — rather than inventing machinery.
+            "rooted_start" => b.rooted_pct += m,
+            "breach_primed" => b.start_gauge_pct += m,
             "ward" => b.ward += m,
             "element_power" => {
                 if let Some(el) = &a.element {
@@ -601,6 +640,14 @@ pub struct GearBonus {
     pub tempered_pct: i32,
     /// Keeper: percentage added to its Mnd-driven spell power.
     pub spell_power_pct: i32,
+    /// Iron Hull: percentage of max HP it is already rooted behind at the opening bell.
+    ///
+    /// The Rift Knight's `breach_primed` deliberately has NO field of its own — it folds
+    /// into `start_gauge_pct` beside the Explorer's `pace_setter`, because "the gauge is
+    /// part-filled at the bell" is one state and two names for it would be two code paths
+    /// that drift. The affixes stay distinct (each is class-locked, and they read as
+    /// different things to a player); what they land on is shared.
+    pub rooted_pct: i32,
     /// This hero's MAIN HAND weapon family, as a wire key (`bow`, `sword`, …).
     ///
     /// The family itself rather than a bag of booleans derived from it: reach came first,

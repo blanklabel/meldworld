@@ -211,6 +211,38 @@ pub const UNLOCKS: &[UnlockDef] = &[
         requires: Some("party_slot_3"),
     },
     UnlockDef {
+        key: "class_rift_knight",
+        name: "Rift Knight",
+        kind: UnlockKind::Class(CharacterClass::RiftKnight),
+        // `EliteFelled` was raised at the battle-end site and consumed by NOTHING — a
+        // fully-wired milestone with no unlock behind it. The Wall Defense Force recruits
+        // people who have personally put down something that was going to reach the gate,
+        // so this is the trigger it was waiting for.
+        trigger: Trigger::EliteFelled,
+        trigger_text: "Fell a champion — an Elite, alone or with a party behind you.",
+        banner: "You closed a breach. The Wall Defense Force does not care where it \
+                 happened. A Rift Drop-Trooper does not walk to the fight: it tears a hole \
+                 in the world, steps out of reach entirely, and comes down on whatever it \
+                 picked with everything it never spent getting there.",
+        requires: Some("party_slot_3"),
+    },
+    UnlockDef {
+        key: "class_iron_hull",
+        name: "Iron Hull Monk",
+        kind: UnlockKind::Class(CharacterClass::IronHull),
+        // The deepest bar in the game, and the right one: the order's whole doctrine is
+        // ENDURANCE — equilibrium held over time — so it recruits from people who kept a
+        // full party standing far enough out to prove it. Layered like the other
+        // `HeroesAtLevel` rows, so one milestone can satisfy this and the slot bars at once.
+        trigger: Trigger::HeroesAtLevel { heroes: 4, level: 40 },
+        trigger_text: "Have four heroes at level 40 at the same time, on the same dive.",
+        banner: "Four of you, still standing, that far out. The Order of the Iron Hull has \
+                 one measure and you met it. Their art is not force but EQUILIBRIUM — take \
+                 the blow's momentum, root to the deck, and give it back — and the bell \
+                 they strike is heard by everything in front of you at once.",
+        requires: Some("party_slot_4"),
+    },
+    UnlockDef {
         key: "class_psyker",
         name: "Psyker",
         kind: UnlockKind::Class(CharacterClass::Psyker),
@@ -470,7 +502,7 @@ mod tests {
                 assert!(ri < ui, "{} requires {} which comes later", u.key, req);
             }
         }
-        // Four slots, five classes, and the Explorer is the only free one.
+        // Four slots, ten classes, and the Explorer is the only free one.
         let slots: Vec<i32> = UNLOCKS
             .iter()
             .filter_map(|u| match u.kind {
@@ -481,7 +513,7 @@ mod tests {
         assert_eq!(slots, vec![2, 3, 4], "slot 1 needs no unlock");
         assert_eq!(
             UNLOCKS.iter().filter(|u| matches!(u.kind, UnlockKind::Class(_))).count(),
-            8
+            10
         );
     }
 
@@ -570,7 +602,7 @@ mod tests {
         let all: Vec<String> = UNLOCKS.iter().map(|u| u.key.to_string()).collect();
         assert_eq!(party_slots(&all), 4);
         let classes = owned_classes(&all);
-        assert_eq!(classes.len(), 8, "{classes:?}");
+        assert_eq!(classes.len(), 10, "{classes:?}");
         for c in [
             CharacterClass::Explorer,
             CharacterClass::Hunter,
@@ -580,6 +612,8 @@ mod tests {
             CharacterClass::Psyker,
             CharacterClass::Smithwright,
             CharacterClass::Keeper,
+            CharacterClass::IronHull,
+            CharacterClass::RiftKnight,
         ] {
             assert!(classes.contains(&c), "{c:?} not fieldable with everything owned");
             assert!(unlock_for_class(c).is_some(), "{c:?} has no unlock");

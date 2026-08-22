@@ -18,12 +18,12 @@
 | **Phoenix Guard** | Eradicating undead inside the Last City | `phoenix_guard` | Initiate · Purifier · Exemplar · Luminary · Redeemer · Apotheosis |
 | **Shifters / Runners** | Salvaging The Lost from the Shifting Lands | `shifter` | Flicker Foot · Shift Rat · Runner · Shifter · Void-Dancer · The Named |
 | **The Trace** | Tracking and containing anomalies — including Psykers | `psyker` | Initiate · Tracer · Field Marshal · Lead Investigator · Bureau Chief · Director |
-| **Order of the Iron Hull** | Blunt-force deterrent against leviathans | *future* | Bilge-Scraper · Wake-Striker · Anchor-Priest · Iron-Bound · Deck-Master · Grandmaster |
+| **Order of the Iron Hull** | Blunt-force deterrent against leviathans | `iron_hull` | Bilge-Scraper · Wake-Striker · Anchor-Priest · Iron-Bound · Deck-Master · Grandmaster |
 | **Leviathan's Slumber** | Druids of the coast and the colossal deep | *future* | Tidewatcher · Wave Weaver · Stormspeaker · Deepwalker · Seafather/Seamother · Leviathan's Voice |
 | **The Open Flower** | Druids of agriculture and balance | *future* (`keeper`) | Sprout · Seedling · Budling · Flowerling · Cultivator · Terra |
 | **The Order** | Secret anti-corruption coteries | *future, hidden* | Pacifier · Placater · Peacemaker · Conciliator · Arbiter · Judge |
 | **The Foundry** | Structural iron and magitech metal for the city's infrastructure | *future* (`smithwright`) | Indentured Extractor · Smelter Apprentice · Journeyman Smithwright / Extractor Foreman · Smithwright · Master Smithwright · Master of the Foundry |
-| **Wall Defense Force** | Holding the Great Ivory Wall; closing a breach by drop | *future* (`rift_knight`) | Sentry · Breach Guard · Drop-Lancer · Wall Captain · Garrison Commander · Grand Marshal of the Perimeter |
+| **Wall Defense Force** | Holding the Great Ivory Wall; closing a breach by drop | `rift_knight` | Sentry · Breach Guard · Drop-Lancer · Wall Captain · Garrison Commander · Grand Marshal of the Perimeter |
 
 The **Resonant** is the one class with no order yet — a healer who pays in its own
 blood fits none of the above cleanly, and inventing one to fill the table would be
@@ -179,7 +179,7 @@ contributes the doors.
 Ranks: Flicker Foot 1 · Shift Rat 2 · Runner **5** · Shifter **9** · Void-Dancer
 **13** · The Named **17**.
 
-## Order of the Iron Hull — *a future class*
+## Order of the Iron Hull
 
 A heavily regimented ascetic monastic order confined to a single massive rusting
 vessel patrolling near the Glass Desert and the Last City. A brutal, pragmatic
@@ -208,11 +208,22 @@ across the joists to hold buoyancy; **hull resonance** instead of shouting (enco
 vibration through the ship's skeleton); the **Resonant Wake**, a synchronised hum and
 oar-slam that deafens and deters sea beasts; vertical hammocks lashed to the masts.
 
-**Its kit is already authored** — the rank perks are the ability ladder, and they are
-reserved for it: **Swell-Step** (Anchor-Priest, L5), **Structural Rooting** (Iron-Bound,
-L9), **Kinetic Shock** (Deck-Master, L13), **Toll of the Deep** (Grandmaster, L17),
-with Sea-Legs and Oar-Fighter at the lower ranks. The `iron_hull` class key is
-therefore **reserved, not recycled** — nothing else may claim it.
+**Its kit is BUILT** (`CL-1`), and the rank perks are the ability ladder they always were:
+Oar-Fighter and **Sea-Legs** at the lower ranks, then **Swell-Step** (Anchor-Priest),
+**Structural Rooting** (Iron-Bound), **Kinetic Shock** (Deck-Master), **Hull Resonance**
+and **Toll of the Deep** (Grandmaster) — remapped from the lore's D&D-style L5/9/13/17
+onto this game's `skills::RUNGS`, with **The Resonant Wake** added at 75 so the ladder
+reaches the 50-and-100 rungs every class is held to. The `iron_hull` key was **reserved,
+not recycled**, all the way through — the Phoenix Guard wore a kit borrowed from this order
+for years, and its balance keys are still named `phoenix_guard_swell_*`, `_root_*`,
+`_shock_*` and `_toll_*` after it.
+
+Mechanically the order is **not a second Phoenix Guard**, and the difference is the
+doctrine: the Guard stands still and absorbs, this one rides a blow and hands it back. Every
+damage number sits below the Guard's and is paid back in tempo. What it owns instead is
+**sound** — the Resonant Wake and the bell are the only acoustic damage in the game, and
+they are not physical, so a melee order with no armour is the one martial answer to a back
+rank that is not a bow.
 
 Ranks: Bilge-Scraper 1 · Wake-Striker 2 · Anchor-Priest **5** · Iron-Bound **9** ·
 Deck-Master **13** · Grandmaster of the Hull **17**.
@@ -395,7 +406,7 @@ Foundry **17**.
 > from Kaelen to **Brannek** Deep-Shift to clear the collision with the Iron Hull's
 > Grandmaster Kaelen "Iron-Spine".)*
 
-## Wall Defense Force — *a future class*
+## Wall Defense Force
 
 The **perimeter military** of the Last City, and the only institution in
 [`city-institutions.md`](city-institutions.md) that carries a class: its **Rift
@@ -417,7 +428,7 @@ formation, and tactical spatial displacement — the **Blink-Drop**.
 | 5 | **Garrison Commander** | level 13; mastery of combined-arms sector defence | Full command of a cardinal sector; requisition of reserve golem battalions and Trace contingency units; a seat on the High Defense Council |
 | 6 | **Grand Marshal of the Perimeter** | level 17; unanimous appointment by the Central Council and all four sector cohorts | Operational command of the whole Force and the perimeter architecture; the war room on Floor 50; authority to trigger a city-wide lockdown and the classified countermeasures |
 
-### The Rift Knight — what this engine can and cannot express
+### The Rift Knight — what shipped, and what this engine cannot express
 
 The archetype is **polearm mastery plus spatial manipulation**: micro-fractures in space
 to leave the field and crash back down on a chosen target. Its centre is **Dimensional
@@ -426,13 +437,13 @@ act), then tear back in and land a melee blow carrying kinetic payload, with a b
 a **Reach** weapon and an area rupture at the higher ranks that knocks the landing zone
 prone.
 
-Three of those pieces map cleanly onto what is already built, and three do not. Writing
-that down here rather than discovering it during implementation, because the lesson is
-already canon on the Psyker: *reinventing a mechanic this engine does not have, wearing
-its name, is worse than leaving it out* (see the unbuilt reaction aspects in
-`CLAUDE.md`).
+Three of those pieces mapped cleanly onto what is already built, and three did not. The
+class shipped as `CL-1` with the first three built and the other three deliberately left
+out, because the lesson is already canon on the Psyker: *reinventing a mechanic this engine
+does not have, wearing its name, is worse than leaving it out* (see the unbuilt reaction
+aspects in `CLAUDE.md`).
 
-**Buildable as-is:**
+**Built (`Battle::resolve_rift_knight`):**
 
 - **The Breach / The Plunge** — a self-targeting call that makes the fighter untargetable
   for a window and then resolves a heavy blow. Untargetability is the same kind of state
@@ -449,7 +460,7 @@ its name, is worse than leaving it out* (see the unbuilt reaction aspects in
 - **Impact Rupture / Grand Cataclysm** — all-enemy damage plus a gauge effect, at the
   50/100 rungs. This is the shape Hallowed Ground already has.
 
-**Not buildable without inventing machinery:**
+**Left out, and not reinvented under another name:**
 
 - **Flicker Step** is a *reaction* to being hit. This engine has none, deliberately.
 - **Impact Rupture's landing zone** and **Grand Cataclysm's ten-foot pull** are

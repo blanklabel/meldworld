@@ -26,7 +26,7 @@ pub(crate) struct ClassInfo {
     pub def: u8,
 }
 
-pub(crate) const CLASS_INFO: [ClassInfo; 8] = [
+pub(crate) const CLASS_INFO: [ClassInfo; 10] = [
     ClassInfo { key: "explorer", name: "Explorer", role: "The order that maps and anchors the world \u{2014} tempo and stability, not burst.", hp: 4, atk: 3, spd: 3, mag: 2, def: 3 },
     ClassInfo { key: "hunter", name: "Hunter", role: "The guild that disposes of dangerous creatures \u{2014} the martial baseline.", hp: 4, atk: 4, spd: 3, mag: 1, def: 3 },
     ClassInfo { key: "psyker", name: "Psyker", role: "Psychic channeler. Weaves persistent Foci from the back row.", hp: 2, atk: 1, spd: 3, mag: 5, def: 2 },
@@ -35,6 +35,8 @@ pub(crate) const CLASS_INFO: [ClassInfo; 8] = [
     ClassInfo { key: "phoenix_guard", name: "Phoenix Guard", role: "The Last City's anti-undead order \u{2014} a wall that hits the risen hardest.", hp: 5, atk: 3, spd: 1, mag: 1, def: 5 },
     ClassInfo { key: "smithwright", name: "Smithwright", role: "The Foundry's builder \u{2014} raises the field forge, and buys the party time.", hp: 4, atk: 4, spd: 2, mag: 1, def: 4 },
     ClassInfo { key: "keeper", name: "Keeper", role: "Open Flower grower \u{2014} sets up the still, and keeps everyone standing.", hp: 2, atk: 1, spd: 4, mag: 5, def: 2 },
+    ClassInfo { key: "iron_hull", name: "Iron Hull Monk", role: "Ascetic of the rusting vessel \u{2014} staggers, roots, and answers a back rank with sound.", hp: 4, atk: 3, spd: 3, mag: 2, def: 3 },
+    ClassInfo { key: "rift_knight", name: "Rift Knight", role: "Wall Defense drop-trooper \u{2014} teleports out of reach, then lands on one target.", hp: 3, atk: 5, spd: 3, mag: 1, def: 3 },
 ];
 
 pub(crate) fn class_info(key: &str) -> &'static ClassInfo {

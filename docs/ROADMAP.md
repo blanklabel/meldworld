@@ -2209,6 +2209,60 @@ budgeted so the creature sim never threatens the single-owner loop or the server
   Which order is better depends on the pack, which is the point — a pack fight is a
   *decision* instead of just more HP. Lone creatures, elites, gatekeepers and heroes are
   untouched by all three rules (tested).
+- [x] **CL-1 — The two reserved orders land: the Iron Hull monk and the Rift Knight.**
+  Both keys had been *reserved* rather than recycled for a long time — `iron_hull` because
+  the Phoenix Guard was wearing a kit borrowed from that order (its balance keys are still
+  named `phoenix_guard_swell_*` / `_root_*` / `_shock_*` / `_toll_*` after it), and
+  `rift_knight` because the Wall Defense Force lore named it. The reservation existed so
+  that a hero persisted under either key would never silently wake up as the wrong class;
+  this is that day, and the enum test flips from "must not deserialise" to "must
+  deserialise to ITSELF".
+  - **Order of the Iron Hull** (Hybrid, 8 rows) — **no armour, no weapon**: Light/Robe
+    only, bound hands rather than the lore's oar, and it survives by not being hit.
+    ⚠️ Its Dex was first written at exactly `dodge_dex_floor`, which is a `<=` — so the
+    whole "rides a blow rather than eating it" design evaluated to **zero dodge**,
+    silently, behind a stat line that looked deliberate. **Unarmored Defence** (the D&D
+    monk's) is the other half: a per-level `def` term nothing else in the game has, sized
+    to out-climb plate slowly. Rows: Oar-Fighter · Sea-Legs · Swell-Step ·
+    Structural Rooting · Kinetic Shock · Hull Resonance · The Resonant Wake · Toll of the
+    Deep. The order's authored rank perks became the ladder, remapped from the lore's
+    D&D-style L5/9/13/17 onto `skills::RUNGS`. **It is not a second Phoenix Guard**: the
+    Guard stands and absorbs, this order rides and returns, so every damage multiplier
+    sits *below* the Guard's and is paid back in tempo. Its structural trade is the
+    acoustic half — the Resonant Wake and the bell land as **Ethereal**, the only
+    sound-shaped damage in the game, so a melee order with no armour owns the one martial
+    answer to a back rank that is not a bow.
+  - **Rift Knight** (Martial, 6 rows) — **polearms only**, two-handed, so no off-hand and
+    no ranged answer at all (`Spear` deliberately does not reach). That is the class, not
+    a gap in it: a drop-trooper teleports past the front line instead of shooting over it.
+    Rows: Blink Lance → Kinetic Payload · Recall Blade ·
+    Dimensional Dive → Breach Point · Blast-Gate Lockout · Phase Delay · Grand Cataclysm.
+    A dragoon whose leap is a teleport. **`Fighter::phased_until` is the new primitive**:
+    the knight leaves the field entirely — unreachable and unable to act — which is what
+    lets it carry the highest single-target numbers in the game without being a balance
+    problem, because its damage-per-turn is nothing like its damage-per-blow. Phasing is
+    deliberately NOT modelled as fleeing (which clears `alive`): a diving hero that read as
+    dead would count toward a party wipe and end the fight its own ability was meant to
+    win. And the reach filter FALLS BACK when it would empty — a creature with nobody to
+    swing at is the same unbounded stall a gauge cap causes.
+  - Two lore features are deliberately **left unbuilt** rather than reinvented wearing
+    their names: Flicker Step is a *reaction* and Impact Rupture is *positional*, and this
+    engine has neither (the Psyker's Dampen/Static/Vent are unbuilt for the same reason).
+    The lore's Force damage is **Ethereal**, never `DamageType::None` — None bypasses the
+    modifier map entirely and is TRUE damage, which three classes dealt by accident for a
+    whole release.
+  - Everything a class needs, not just the kit: unlocks (`EliteFelled`, a fully-wired
+    milestone that *no unlock consumed*, now the Rift Knight's; four heroes at 40 for the
+    order whose doctrine is endurance), stat blocks, weapon families and armour weights,
+    one keyword affix each (`rooted_start`, `breach_primed`), gear nouns + `CLASS_KEYS` (or
+    the class can never find loot), `ability_effects` lines, and overworld perks — the
+    Iron Hull's Resonant Wake deterrent and Hull-Listening, the Rift Knight's loot Recall
+    and **Inertial Nullification**, which lets it step off a terrace anywhere. That last is
+    a new traversal verb and is strictly DOWNWARD: "no free climbing" is what keeps a
+    terrace real terrain, and falling is the half that cannot skip content.
+  - The battle menu and targeting needed **no client change at all** — both read
+    `meld_proto::skills`. That is the "never reintroduce a list of ability keys" rule
+    paying for itself.
 - [x] **CR-11 — A pack stays a pack, and calls for the rest of it.** Reported from play:
   "packs exist, but a lot of the time there is no one in one." Two causes, both measured,
   and neither visible to any existing test because **every pack test ran on a freshly

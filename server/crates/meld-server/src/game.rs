@@ -2024,6 +2024,32 @@ pub(crate) fn compute_perks(
             let mult = 1.0 - p.phoenix_guard_aggro_reduction_per_level * lvl as f64;
             out.phoenix_guard_aggro_mult = mult.max(p.phoenix_guard_aggro_mult_floor) as f32;
         }
+        // Iron Hull — the Resonant Wake, and an ear to the ground. The order's etiquette
+        // made into overworld verbs: the hum that deters sea beasts deters everything else
+        // too, and Hull-Listener Gloop's trick of feeling what swims beneath becomes a
+        // creature sense.
+        //
+        // The deterrent has its OWN field rather than writing the Guard's: a party can hold
+        // both orders, and one field would mean whichever arm ran last silently won.
+        if has(CharacterClass::IronHull) {
+            if lvl >= p.iron_hull_wake_at {
+                let mult = 1.0 - p.iron_hull_wake_reduction_per_level * lvl as f64;
+                out.iron_hull_aggro_mult = mult.max(p.iron_hull_wake_mult_floor) as f32;
+            }
+            if lvl >= p.iron_hull_listen_at {
+                out.iron_hull_listen_radius = p.iron_hull_listen_radius_base
+                    + p.iron_hull_listen_radius_per_level * above(p.iron_hull_listen_at);
+            }
+        }
+        // Rift Knight — Recall Blade reaching past the body it was meant for, and Inertial
+        // Nullification: the order that treats a sixty-foot drop as a route.
+        if has(CharacterClass::RiftKnight) {
+            if lvl >= p.rift_knight_recall_at {
+                out.rift_knight_recall_radius = p.rift_knight_recall_radius_base
+                    + p.rift_knight_recall_radius_per_level * above(p.rift_knight_recall_at);
+            }
+            out.rift_knight_drop = lvl >= p.rift_knight_drop_at;
+        }
         out
     }
 }
@@ -2336,7 +2362,16 @@ impl WorldActor {
             let own_idx = me.map(|(i, _)| i);
             // Psyker "Threat Sense": reveal mobs beyond the normal interest radius
             // (dangerous foes sensed at range). Non-mob entities keep the base radius.
-            let mob_radius = (self.perks_for(&r.player_id).hunter_reveal_radius as f64).max(radius);
+            // …and the Iron Hull's ear to the deck feels bodies moving through the ground
+            // at its own range. Two orders, one widened cull, so the FURTHER of the two
+            // wins rather than whichever is read second — the same reason the two aggro
+            // deterrents are combined instead of overwriting each other.
+            let mob_radius = {
+                let p = self.perks_for(&r.player_id);
+                (p.hunter_reveal_radius as f64)
+                    .max(p.iron_hull_listen_radius as f64)
+                    .max(radius)
+            };
             let mob_radius2 = mob_radius * mob_radius;
             // A crafter reads the half of the world its own trade is built on, from
             // further out than the interest radius: the Foundry sees ORE, the Open Flower
@@ -5632,11 +5667,16 @@ impl WorldActor {
         // Movement is ignored while in battle (avatar not `active`). A sub-unit direction is
         // used AS GIVEN by `apply_move` (it only normalises magnitudes above 1), so scaling it
         // is how being webbed or chilled slows a march.
-        self.arena.apply_move(
+        // …and a Rift Drop-Trooper may step off a terrace rather than walk to a connector.
+        // Read here rather than inside the arena: `meld-world` is pure and knows nothing
+        // about classes or perks, so the server answers the question and hands in the bool.
+        let may_drop = self.perks_for(player_id).rift_knight_drop;
+        self.arena.apply_move_with(
             player_id,
             intent.move_dir.x * drag,
             intent.move_dir.y * drag,
             intent.input_seq,
+            may_drop,
         );
         // A bite re-sends the roster. That message already carries every hero's CURRENT HP
         // and afflictions, so the party strip, the over-head condition line and the client's
@@ -9305,7 +9345,12 @@ impl WorldActor {
             let ids: Vec<String> = self.run.runs.iter().map(|r| r.player_id.clone()).collect();
             ids.into_iter()
                 .map(|pid| {
-                    let m = self.perks_for(&pid).phoenix_guard_aggro_mult as f64;
+                    // The STRONGER of the two deterrents, not the last one written: a
+                    // party can field a Phoenix Guard and an Iron Hull monk at once, and
+                    // both orders shrink the same radius by their own doctrine.
+                    let perks = self.perks_for(&pid);
+                    let m = (perks.phoenix_guard_aggro_mult as f64)
+                        .min(perks.iron_hull_aggro_mult as f64);
                     (pid, m)
                 })
                 .collect()
@@ -9714,7 +9759,10 @@ impl WorldActor {
         let inst = &mut *self;
         let players: Vec<String> = inst.run.runs.iter().map(|r| r.player_id.clone()).collect();
         for pid in players {
-            let drops = inst.arena.collect_loot(&pid);
+            // Recall Blade, pointed at the ground: a Rift Knight's loot comes to hand
+            // through a micro-portal instead of being walked over.
+            let reach = inst.perks_for(&pid).rift_knight_recall_radius as f64;
+            let drops = inst.arena.collect_loot_within(&pid, reach);
             if drops.is_empty() {
                 continue;
             }
@@ -11587,6 +11635,14 @@ mod crafter_perk_tests {
             assert_eq!(p.hunter_threat, 0, "{other:?} should not read threat");
             assert_eq!(p.hunter_reveal_radius, 0.0, "{other:?} should not widen the cull");
         }
+        // The Iron Hull widens the same cull by its OWN field, and never by the Hunter's.
+        // Hull-Listening is a different sense with a different reach — an ear against the
+        // deck, not a hunter's eye — and it reads nothing ABOUT what it feels: no level, no
+        // HP, no gauge. Sharing the Hunter's field would have handed the monk the intel too.
+        let monk = compute_perks(&b.perks, &[CharacterClass::IronHull], 50);
+        assert_eq!(monk.hunter_reveal_radius, 0.0, "the monk borrowed the Hunter's eye");
+        assert_eq!(monk.hunter_threat, 0, "listening is not reading");
+        assert!(monk.iron_hull_listen_radius > 0.0, "the monk feels nothing through the deck");
     }
 
     /// A Resonant's walking regen tends only Resonants. Poured over the party it mended

@@ -161,6 +161,15 @@ pub struct Fighter {
     /// CR-6 pack role. A leader is shielded by its living minions and lends them
     /// its presence; killing it routs them. `None` for anything not in a pack.
     pub pack_role: PackRole,
+    /// The tick this fighter comes back out of the interstitial void, or 0 (the Rift
+    /// Knight's Dimensional Dive / Phase Delay).
+    ///
+    /// PHASING IS NOT DEATH AND NOT FLEEING, and it must not be modelled as either. Flee
+    /// clears `alive`, which would make a diving hero count toward a party wipe and end the
+    /// fight; the flag is separate so the knight is still a live combatant that simply
+    /// cannot be reached. Enforced in `choose_target` — server-side, like the blindness
+    /// cull, because the client is not the thing deciding who a creature swings at.
+    pub phased_until: u64,
     /// `CR-11`: this leader has already CALLED, so it cannot call again.
     ///
     /// Once a fight, and it costs the leader its whole turn — a reinforcement that were
@@ -348,6 +357,7 @@ impl Fighter {
             flees: false,
             boss_band: 0,
             pack_role: PackRole::None,
+            phased_until: 0,
             called: false,
             group_id: None,
             reach: false,
@@ -727,6 +737,29 @@ pub struct Battle {
     gang_switch_chance: f64,
     /// `CR-11`: a pack leader under this share of its max HP calls for the rest of its pack.
     pack_call_hp_fraction: f64,
+    // The Order of the Iron Hull (`resolve_iron_hull`).
+    iron_hull_oar_mult: f64,
+    iron_hull_sea_legs_evasion: f64,
+    iron_hull_swell_mult: f64,
+    iron_hull_swell_drain: f64,
+    iron_hull_rooting_barrier_fraction: f64,
+    iron_hull_shock_mult: f64,
+    iron_hull_resonance_barrier_fraction: f64,
+    iron_hull_wake_mult: f64,
+    iron_hull_wake_drain: f64,
+    iron_hull_toll_mult: f64,
+    iron_hull_toll_barrier_fraction: f64,
+    // The Wall Defense Force's Rift Drop-Trooper (`resolve_rift_knight`).
+    rift_knight_blink_mult: f64,
+    rift_knight_recall_atk_fraction: f64,
+    rift_knight_dive_mult: f64,
+    rift_knight_dive_untargetable_ticks: u64,
+    rift_knight_payload_mult: f64,
+    rift_knight_breach_mult: f64,
+    rift_knight_breach_splash_mult: f64,
+    rift_knight_gate_barrier_fraction: f64,
+    rift_knight_cataclysm_mult: f64,
+    rift_knight_cataclysm_drain: f64,
     /// The mark a ganging pack is converging on (CR-9). Shared across the whole side, so
     /// "gang up" means the pack commits together rather than each creature deciding alone.
     gang_target: Option<Id>,
@@ -1059,6 +1092,31 @@ impl Battle {
             sweep_share: balance.battle.sweep_share,
             gang_switch_chance: balance.ai.gang_switch_chance,
             pack_call_hp_fraction: balance.encounters.pack_call_hp_fraction,
+            iron_hull_oar_mult: balance.battle.iron_hull_oar_mult,
+            iron_hull_sea_legs_evasion: balance.battle.iron_hull_sea_legs_evasion,
+            iron_hull_swell_mult: balance.battle.iron_hull_swell_mult,
+            iron_hull_swell_drain: balance.battle.iron_hull_swell_drain,
+            iron_hull_rooting_barrier_fraction: balance.battle.iron_hull_rooting_barrier_fraction,
+            iron_hull_shock_mult: balance.battle.iron_hull_shock_mult,
+            iron_hull_resonance_barrier_fraction: balance
+                .battle
+                .iron_hull_resonance_barrier_fraction,
+            iron_hull_wake_mult: balance.battle.iron_hull_wake_mult,
+            iron_hull_wake_drain: balance.battle.iron_hull_wake_drain,
+            iron_hull_toll_mult: balance.battle.iron_hull_toll_mult,
+            iron_hull_toll_barrier_fraction: balance.battle.iron_hull_toll_barrier_fraction,
+            rift_knight_blink_mult: balance.battle.rift_knight_blink_mult,
+            rift_knight_recall_atk_fraction: balance.battle.rift_knight_recall_atk_fraction,
+            rift_knight_dive_mult: balance.battle.rift_knight_dive_mult,
+            rift_knight_dive_untargetable_ticks: balance
+                .battle
+                .rift_knight_dive_untargetable_ticks,
+            rift_knight_payload_mult: balance.battle.rift_knight_payload_mult,
+            rift_knight_breach_mult: balance.battle.rift_knight_breach_mult,
+            rift_knight_breach_splash_mult: balance.battle.rift_knight_breach_splash_mult,
+            rift_knight_gate_barrier_fraction: balance.battle.rift_knight_gate_barrier_fraction,
+            rift_knight_cataclysm_mult: balance.battle.rift_knight_cataclysm_mult,
+            rift_knight_cataclysm_drain: balance.battle.rift_knight_cataclysm_drain,
             gang_target: None,
             combo_window_ticks: balance.adventure.combo_window_ticks,
             pack_aura_atk_mult: balance.encounters.pack_aura_atk_mult,
@@ -2609,6 +2667,291 @@ impl Battle {
         Ok(self.resolution(actor_i, BattleActionKind::Skill, action_id, effects))
     }
 
+    /// **The Order of the Iron Hull** — the monk order whose art is the Doctrine of
+    /// Equilibrium: every action demands a counter-balance, so every row here answers a
+    /// blow's momentum rather than simply out-hitting it.
+    ///
+    /// It is deliberately NOT a second Phoenix Guard. The Guard stands still and absorbs;
+    /// this order rides, roots and returns — which is why every damage multiplier here sits
+    /// *below* the Guard's equivalent and is paid back in tempo (a stagger, a drain, a
+    /// Barrier). An order that also won the damage comparison would leave the Guard with no
+    /// reason to exist.
+    ///
+    /// ⚠️ The acoustic half (`resonant_wake`, `toll_of_the_deep`) lands as **Ethereal**, not
+    /// as a physical type. That is the class's whole structural trade: a melee order with no
+    /// armour, which in exchange owns the only sound-shaped damage in the game and therefore
+    /// the only martial answer to a back rank that is not a bow. It is NOT
+    /// `DamageType::None` — that bypasses the modifier map entirely and is TRUE damage,
+    /// which three classes dealt by accident for a whole release.
+    fn resolve_iron_hull(
+        &mut self,
+        actor_i: usize,
+        skill: &str,
+        target_id: Option<&str>,
+        action_id: Option<Id>,
+    ) -> Result<Resolution, Reject> {
+        // Sea-Legs — ride the swell. Self-cast, no target.
+        if skill == "sea_legs" {
+            let effects = self.grant_evasion(actor_i, self.iron_hull_sea_legs_evasion);
+            self.fighters[actor_i].defending = false;
+            self.reset_gauge(actor_i);
+            return Ok(self.resolution(actor_i, BattleActionKind::Skill, action_id, effects));
+        }
+        // Structural Rooting — root to the deck and take the world's momentum through your
+        // bones. Root over reach: the Barrier is above the Guard's self-cast because this
+        // order is giving up its mobility for it.
+        if skill == "structural_rooting" {
+            let raw = ((self.fighters[actor_i].max_hp as f64)
+                * self.iron_hull_rooting_barrier_fraction)
+                .round() as i32;
+            let effects = self.grant_barrier(actor_i, raw);
+            self.fighters[actor_i].defending = false;
+            self.reset_gauge(actor_i);
+            return Ok(self.resolution(actor_i, BattleActionKind::Skill, action_id, effects));
+        }
+        // Hull Resonance — the encoded hum through the ship's skeleton, and the whole party
+        // braces to it. A FRACTION of each ally's own max HP, like every party-wide grant:
+        // a flat number is a third of a hero at level 1 and a rounding error at 100.
+        if skill == "hull_resonance" {
+            let allies = self.living_allies();
+            let mut effects = Vec::new();
+            for a in allies {
+                let raw = ((self.fighters[a].max_hp as f64)
+                    * self.iron_hull_resonance_barrier_fraction)
+                    .round() as i32;
+                effects.extend(self.grant_barrier(a, raw));
+            }
+            self.fighters[actor_i].defending = false;
+            self.reset_gauge(actor_i);
+            return Ok(self.resolution(actor_i, BattleActionKind::Skill, action_id, effects));
+        }
+        // THE ACOUSTIC HALF. The Resonant Wake deters, the bell ends things — both reach
+        // every enemy as Ethereal, so a back rank is no protection from either.
+        if matches!(skill, "resonant_wake" | "toll_of_the_deep") {
+            let toll = skill == "toll_of_the_deep";
+            let mult = if toll { self.iron_hull_toll_mult } else { self.iron_hull_wake_mult };
+            let atk = self.fighters[actor_i].atk;
+            let raw = ((atk as f64) * mult).round() as i32;
+            let mut effects = Vec::new();
+            for t in self.living_enemies() {
+                effects.extend(self.apply_ability_damage(t, raw, DamageType::Ethereal));
+                // The Wake DRAGS on what it deafens; the bell is damage and the party's
+                // brace, so it does not also deny — a capstone that did everything would
+                // make the rest of the ladder decoration.
+                if !toll && self.fighters[t].alive && self.deny_gauge(t, Some(self.iron_hull_wake_drain))
+                {
+                    effects.push(ResolvedEffect {
+                        modifier_flag: None,
+                        target_id: self.fighters[t].combatant_id.clone(),
+                        kind: EffectKind::StatusApplied,
+                        amount: None,
+                        status: Some("slowed".to_string()),
+                        hp_after: self.fighters[t].hp,
+                    });
+                }
+            }
+            if toll {
+                for a in self.living_allies() {
+                    let raw = ((self.fighters[a].max_hp as f64)
+                        * self.iron_hull_toll_barrier_fraction)
+                        .round() as i32;
+                    effects.extend(self.grant_barrier(a, raw));
+                }
+            }
+            self.fighters[actor_i].defending = false;
+            self.reset_gauge(actor_i);
+            return Ok(self.resolution(actor_i, BattleActionKind::Skill, action_id, effects));
+        }
+        // Single-target blunt work: Oar-Fighter, Swell-Step (damage + the tempo taken with
+        // it) and Kinetic Shock (heavy, and it takes the turn outright).
+        let (mult, drain) = match skill {
+            "swell_step" => (self.iron_hull_swell_mult, Some(self.iron_hull_swell_drain)),
+            "kinetic_shock" => (self.iron_hull_shock_mult, Some(0.0)),
+            _ => (self.iron_hull_oar_mult, None),
+        };
+        let target = target_id.ok_or(Reject::ValidationError("skill requires a target"))?;
+        let target_i = match self.idx(target) {
+            Some(t) if self.fighters[t].alive => t,
+            _ => self
+                .fighters
+                .iter()
+                .position(|f| f.alive && f.kind != CombatantKind::Player)
+                .ok_or(Reject::NotFound)?,
+        };
+        let scaled_atk = self.phys_atk(actor_i, mult);
+        let def = self.fighters[target_i].def;
+        let defending = self.fighters[target_i].defending;
+        let mut effects = match self.roll_dodge(target_i) {
+            Some(dodge) => dodge,
+            None => self.apply_damage(target_i, self.damage(scaled_atk, def, defending)),
+        };
+        if let Some(amount) = drain {
+            if self.fighters[target_i].alive {
+                // Kinetic Shock takes the turn OUTRIGHT (`None`); Swell-Step takes a share.
+                let knocked = if amount <= 0.0 {
+                    self.deny_gauge(target_i, None)
+                } else {
+                    self.deny_gauge(target_i, Some(amount))
+                };
+                if knocked {
+                    effects.push(ResolvedEffect {
+                        modifier_flag: None,
+                        target_id: self.fighters[target_i].combatant_id.clone(),
+                        kind: EffectKind::StatusApplied,
+                        amount: None,
+                        status: Some("slowed".to_string()),
+                        hp_after: self.fighters[target_i].hp,
+                    });
+                }
+            }
+        }
+        self.fighters[actor_i].defending = false;
+        self.reset_gauge(actor_i);
+        Ok(self.resolution(actor_i, BattleActionKind::Skill, action_id, effects))
+    }
+
+    /// **The Wall Defense Force's Rift Drop-Trooper** — a dragoon whose leap is a teleport.
+    ///
+    /// THE CLASS IS ONE TRADE, AND EVERY ROW PAYS IT: the numbers here are the highest
+    /// single-target values in the game, and they are affordable because a Dive takes the
+    /// knight OUT of the fight for a window. It cannot be hit and it cannot act, so its
+    /// damage-per-turn is nothing like its damage-per-blow, and the party spends that window
+    /// fighting one hero short. Tune `rift_knight_dive_untargetable_ticks` before touching a
+    /// multiplier — the window is the honest dial, because lengthening it buys survival and
+    /// costs tempo at the same time.
+    ///
+    /// The lore's Force damage is **Ethereal** here, not `DamageType::None`: a rift blow
+    /// should be hard to armour against, not immune to every resistance in the game.
+    fn resolve_rift_knight(
+        &mut self,
+        actor_i: usize,
+        skill: &str,
+        target_id: Option<&str>,
+        action_id: Option<Id>,
+    ) -> Result<Resolution, Reject> {
+        // Recall Blade — the bonded lance snaps back already set for the swing.
+        if skill == "recall_blade" {
+            let effects = self.grant_atk(actor_i, self.rift_knight_recall_atk_fraction);
+            self.fighters[actor_i].defending = false;
+            self.reset_gauge(actor_i);
+            return Ok(self.resolution(actor_i, BattleActionKind::Skill, action_id, effects));
+        }
+        // Blast-Gate Lockout — the perimeter's inertial dampening, over the whole party.
+        if skill == "blast_gate" {
+            let allies = self.living_allies();
+            let mut effects = Vec::new();
+            for a in allies {
+                let raw = ((self.fighters[a].max_hp as f64)
+                    * self.rift_knight_gate_barrier_fraction)
+                    .round() as i32;
+                effects.extend(self.grant_barrier(a, raw));
+            }
+            self.fighters[actor_i].defending = false;
+            self.reset_gauge(actor_i);
+            return Ok(self.resolution(actor_i, BattleActionKind::Skill, action_id, effects));
+        }
+        // Phase Delay — stay in the void and pick the moment. The pure defensive call: no
+        // damage at all, but nothing can reach you and you come back ready to act.
+        //
+        // ONCE a fight, and that gate is what keeps it from being degenerate: untargetable
+        // plus a full gauge, on repeat, is a hero that takes every turn and never takes a
+        // hit. (`is_once_per_battle`, spent centrally in `resolve_skill`.)
+        if skill == "phase_delay" {
+            self.fighters[actor_i].phased_until =
+                self.tick_count + self.rift_knight_dive_untargetable_ticks;
+            self.fighters[actor_i].defending = false;
+            // Deliberately NOT `reset_gauge`: coming back ready is the whole ability.
+            self.fighters[actor_i].gauge = 1.0;
+            let effects = vec![ResolvedEffect {
+                modifier_flag: None,
+                target_id: self.fighters[actor_i].combatant_id.clone(),
+                kind: EffectKind::StatusApplied,
+                amount: None,
+                status: Some("phased".to_string()),
+                hp_after: self.fighters[actor_i].hp,
+            }];
+            return Ok(self.resolution(actor_i, BattleActionKind::Skill, action_id, effects));
+        }
+        // Grand Cataclysm — widen the tear into an implosion. Every enemy pulled in, and
+        // every one of them off its footing.
+        if skill == "grand_cataclysm" {
+            let atk = self.fighters[actor_i].atk;
+            let raw = ((atk as f64) * self.rift_knight_cataclysm_mult).round() as i32;
+            let mut effects = Vec::new();
+            for t in self.living_enemies() {
+                effects.extend(self.apply_ability_damage(t, raw, DamageType::Ethereal));
+                if self.fighters[t].alive
+                    && self.deny_gauge(t, Some(self.rift_knight_cataclysm_drain))
+                {
+                    effects.push(ResolvedEffect {
+                        modifier_flag: None,
+                        target_id: self.fighters[t].combatant_id.clone(),
+                        kind: EffectKind::StatusApplied,
+                        amount: None,
+                        status: Some("slowed".to_string()),
+                        hp_after: self.fighters[t].hp,
+                    });
+                }
+            }
+            self.fighters[actor_i].defending = false;
+            self.reset_gauge(actor_i);
+            return Ok(self.resolution(actor_i, BattleActionKind::Skill, action_id, effects));
+        }
+        // The single-target ladder: Blink Lance, its Kinetic Payload upgrade, the Dive, and
+        // the Dive's Breach Point upgrade.
+        let (mult, dives, splash) = match skill {
+            "kinetic_payload" => (self.rift_knight_payload_mult, false, None),
+            "dimensional_dive" => (self.rift_knight_dive_mult, true, None),
+            "breach_point" => (
+                self.rift_knight_breach_mult,
+                true,
+                Some(self.rift_knight_breach_splash_mult),
+            ),
+            _ => (self.rift_knight_blink_mult, false, None),
+        };
+        let target = target_id.ok_or(Reject::ValidationError("skill requires a target"))?;
+        let target_i = match self.idx(target) {
+            Some(t) if self.fighters[t].alive => t,
+            _ => self
+                .fighters
+                .iter()
+                .position(|f| f.alive && f.kind != CombatantKind::Player)
+                .ok_or(Reject::NotFound)?,
+        };
+        // ETHEREAL, and therefore reaching: the knight arrives BEHIND the line rather than
+        // striking across it, so the target's rank is no protection. That is what this order
+        // has instead of a bow, and it is why `Spear` not reaching costs it nothing.
+        let atk = self.fighters[actor_i].atk;
+        let raw = ((atk as f64) * mult).round() as i32;
+        let mut effects = self.apply_ability_damage(target_i, raw, DamageType::Ethereal);
+        // Breach Point lands on a fault: the ground goes out from under everything else too.
+        if let Some(share) = splash {
+            let carried = ((raw as f64) * share).round() as i32;
+            for t in self.living_enemies() {
+                if t != target_i {
+                    effects.extend(self.apply_ability_damage(t, carried, DamageType::Ethereal));
+                }
+            }
+        }
+        // …and the knight is GONE until it lands. The cost half of every Dive: unreachable,
+        // and unable to act, for the same window.
+        if dives {
+            self.fighters[actor_i].phased_until =
+                self.tick_count + self.rift_knight_dive_untargetable_ticks;
+            effects.push(ResolvedEffect {
+                modifier_flag: None,
+                target_id: self.fighters[actor_i].combatant_id.clone(),
+                kind: EffectKind::StatusApplied,
+                amount: None,
+                status: Some("phased".to_string()),
+                hp_after: self.fighters[actor_i].hp,
+            });
+        }
+        self.fighters[actor_i].defending = false;
+        self.reset_gauge(actor_i);
+        Ok(self.resolution(actor_i, BattleActionKind::Skill, action_id, effects))
+    }
+
     /// Resolve a Phoenix Guard skill:
     ///
     /// - `rite_of_rest`   — self-cast: grant Barrier = `max_hp * root_barrier_fraction`.
@@ -2864,6 +3207,12 @@ impl Battle {
             }
             Some("keeper") => {
                 return self.resolve_keeper(actor_i, skill_kind.unwrap(), target_id, action_id)
+            }
+            Some("iron_hull") => {
+                return self.resolve_iron_hull(actor_i, skill_kind.unwrap(), target_id, action_id)
+            }
+            Some("rift_knight") => {
+                return self.resolve_rift_knight(actor_i, skill_kind.unwrap(), target_id, action_id)
             }
             _ => {}
         }
@@ -3600,6 +3949,30 @@ impl Battle {
     }
 
     /// Grant Evasion (a temporary dodge bonus) under the stack ceiling.
+    /// Every living hero in the fight, joined allies included.
+    ///
+    /// Both of these were open-coded at a dozen call sites with the same three-line filter,
+    /// which is the shape a rule drifts in: `gauge_update_msgs` re-deriving the party filter
+    /// inline is exactly how a watcher stopped receiving the one message that moves.
+    fn living_allies(&self) -> Vec<usize> {
+        self.fighters
+            .iter()
+            .enumerate()
+            .filter(|(_, f)| f.alive && f.kind == CombatantKind::Player)
+            .map(|(i, _)| i)
+            .collect()
+    }
+
+    /// Every living enemy in the fight.
+    fn living_enemies(&self) -> Vec<usize> {
+        self.fighters
+            .iter()
+            .enumerate()
+            .filter(|(_, f)| f.alive && f.kind != CombatantKind::Player)
+            .map(|(i, _)| i)
+            .collect()
+    }
+
     fn grant_evasion(&mut self, i: usize, amount: f64) -> Vec<ResolvedEffect> {
         if amount <= 0.0 || !self.take_stack(i, Stack::Evasion) {
             return Vec::new();
@@ -4657,6 +5030,19 @@ impl Battle {
         if hostile.is_empty() {
             return (None, None);
         }
+        // A RIFT KNIGHT MID-DIVE IS NOT THERE. It is still alive and still in the fight —
+        // phasing is deliberately not modelled as fleeing, which clears `alive` and would
+        // count the knight toward a party wipe — so the reach is taken away here instead,
+        // in the one place a creature picks.
+        //
+        // …and it FALLS BACK if that empties the list. A party of four Rift Knights can all
+        // be gone at once, and a creature with nobody to swing at is the same unbounded
+        // soft-lock a gauge cap causes: nothing acts, forever. Being unreachable is worth a
+        // turn, never the fight.
+        let tick = self.tick_count;
+        let reachable: Vec<usize> =
+            hostile.iter().copied().filter(|&i| self.fighters[i].phased_until <= tick).collect();
+        let hostile = if reachable.is_empty() { hostile } else { reachable };
         match self.fighters[actor_i].target_profile {
             TargetProfile::Weakest => (Some(self.weakest_with_cover(&hostile)), None),
             // No pattern: unpredictable rather than stupid. Still respects the rank, so a
@@ -9138,6 +9524,142 @@ mod tests {
         sorted.sort_unstable();
         sorted.dedup();
         assert_eq!(sorted.len(), 3, "groups collided: {used:?}");
+    }
+
+    /// A RIFT KNIGHT MID-DIVE CANNOT BE REACHED — and is still in the fight.
+    ///
+    /// Phasing is deliberately not modelled as fleeing (which clears `alive`): a diving
+    /// hero that read as dead would count toward a party wipe and END the battle its own
+    /// ability was meant to win.
+    #[test]
+    fn a_diving_rift_knight_is_out_of_reach_without_being_out_of_the_fight() {
+        let b = balance();
+        let mut battle = Battle::new(
+            "b".into(),
+            EncounterClass::Standard,
+            // TWO heroes: with a solo party the reach filter would empty and correctly
+            // fall back (see `a_wholly_phased_party_is_still_a_fight`), so a second body
+            // is what makes this a test of the DIVE rather than of the fallback. It is
+            // also the real case — the party fights on one hero short.
+            vec![
+                leveled_player("k", 40, meld_proto::skills::unlock_level("dimensional_dive")),
+                leveled_player("ally", 1, 10),
+            ],
+            vec![monster("m", 400_000, 40)],
+            &b,
+            7,
+        );
+        tick_to_ready(&mut battle, "k");
+        let target = battle.fighters[1].combatant_id.clone();
+        battle
+            .submit(
+                "k",
+                "a1".into(),
+                BattleActionKind::Skill,
+                Some(vec![target]),
+                Some("dimensional_dive".into()),
+                None,
+            )
+            .expect("the Dive should resolve");
+        let ki = battle.idx("k").unwrap();
+        assert!(battle.fighters[ki].alive, "a diving knight was treated as dead");
+        assert!(
+            battle.fighters[ki].phased_until > battle.tick_count(),
+            "the Dive did not take the knight out of reach"
+        );
+        // The creature cannot pick it while it is gone — it swings at whoever stayed.
+        let mi = battle.idx("m").unwrap();
+        let (picked, _) = battle.choose_target(mi);
+        assert_eq!(
+            picked,
+            battle.idx("ally"),
+            "a creature reached a phased hero instead of the one still standing there"
+        );
+        // …and the fight is emphatically still running.
+        assert!(!battle.is_over(), "the Dive ended the battle");
+        // It did land: the creature took real damage on the way out.
+        assert!(battle.fighters[1].hp < battle.fighters[1].max_hp, "the Dive did no damage");
+    }
+
+    /// AND BEING UNREACHABLE MUST NEVER BE A SOFT-LOCK.
+    ///
+    /// A whole party can be mid-dive at once. A creature with nobody to swing at is the
+    /// same unbounded stall a gauge CAP causes — nothing acts, forever — so the reach
+    /// filter falls back to the full list rather than returning nothing. Phasing is worth
+    /// a turn, never the fight.
+    #[test]
+    fn a_wholly_phased_party_is_still_a_fight() {
+        let b = balance();
+        let mut battle = Battle::new(
+            "b".into(),
+            EncounterClass::Standard,
+            vec![player("a", 10), player("c", 10)],
+            vec![monster("m", 500, 10)],
+            &b,
+            7,
+        );
+        let far = battle.tick_count() + 10_000;
+        for i in [0usize, 1] {
+            battle.fighters[i].phased_until = far;
+        }
+        let (picked, _) = battle.choose_target(2);
+        assert!(
+            picked.is_some(),
+            "every hero was out of reach and the creature had nothing to do — that is the \
+             soft-lock, not a defence"
+        );
+    }
+
+    /// The Iron Hull answers a BACK RANK, which is the whole reason a melee order with no
+    /// armour is worth fielding.
+    ///
+    /// Its acoustic capstones land as `Ethereal`, so the rank's physical halving does not
+    /// apply — and they are emphatically NOT `DamageType::None`, which would bypass every
+    /// resistance in the game and make them true damage.
+    #[test]
+    fn the_iron_hulls_sound_is_not_stopped_by_a_back_rank() {
+        let b = balance();
+        let hit = |back: bool, skill: &str| {
+            let mut m = monster("m", 10_000_000, 1);
+            m.back_row = back;
+            let mut bt = Battle::new(
+                "b".into(),
+                EncounterClass::Standard,
+                vec![leveled_player(
+                    "h",
+                    40,
+                    meld_proto::skills::unlock_level("resonant_wake"),
+                )],
+                vec![m],
+                &b,
+                7,
+            );
+            tick_to_ready(&mut bt, "h");
+            let target = bt.fighters[1].combatant_id.clone();
+            let before = bt.fighters[1].hp;
+            bt.submit(
+                "h",
+                "a1".into(),
+                BattleActionKind::Skill,
+                Some(vec![target]),
+                Some(skill.into()),
+                None,
+            )
+            .expect("resolves");
+            before - bt.fighters[1].hp
+        };
+        // Sound reaches the rear exactly as hard as the front.
+        assert_eq!(
+            hit(true, "resonant_wake"),
+            hit(false, "resonant_wake"),
+            "a back rank blunted the Resonant Wake, so it is being treated as physical"
+        );
+        // …while the order's ordinary oarwork is physical and IS blunted by it, or the
+        // comparison above proves nothing about the rank rule still working.
+        assert!(
+            hit(true, "oar_fighter") < hit(false, "oar_fighter"),
+            "the back rank stopped protecting against a physical blow"
+        );
     }
 
     #[test]
