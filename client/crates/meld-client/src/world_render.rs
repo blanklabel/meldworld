@@ -142,6 +142,18 @@ pub(crate) struct GroundBiome {
     tundra: Handle<Image>,
     #[texture(104)]
     mire: Handle<Image>,
+    /// The SEA's own tiles, so the coast is drawn with the same art the city's water and
+    /// every pond/bog-pool/frozen-pond already uses. It was a pair of hardcoded RGB
+    /// constants in the shader at first — which meant the arena and Last City rendered the
+    /// same sea two different ways, in exactly the two scenes `meld_proto::coast` exists to
+    /// keep from disagreeing. Three, keyed off the fragment's biome, because a tundra shore
+    /// is ice and a mire shore is bog: the same mapping `WorldAssets::water_mats` uses.
+    #[texture(107)]
+    water_clear: Handle<Image>,
+    #[texture(108)]
+    water_bog: Handle<Image>,
+    #[texture(109)]
+    water_ice: Handle<Image>,
     #[uniform(106)]
     params: BiomeParams,
 }
@@ -327,6 +339,11 @@ pub(crate) fn setup(
             ashfall: ground_tex[2].clone(),
             tundra: ground_tex[3].clone(),
             mire: ground_tex[4].clone(),
+            // The same three water tiles the pond/bog-pool/frozen-pond props use, so the
+            // arena's coast is drawn with the art the rest of the game's water already is.
+            water_clear: load_tiled(&assets, "ground/water_clear.png"),
+            water_bog: load_tiled(&assets, "ground/water_bog.png"),
+            water_ice: load_tiled(&assets, "ground/water_ice.png"),
             // Rings start empty; `update_ground_biome_rings` fills them from the
             // streamed sections each frame (count 0 ⇒ shader falls back to forest).
             params: BiomeParams::default(),
@@ -617,7 +634,10 @@ pub(crate) fn setup(
         rock_mesh: meshes.add(Cuboid::new(1.0, 0.7, 1.0)),
         wall_mesh: meshes.add(Cuboid::new(1.0, 1.0, 1.0)), // unit cube for solid dungeon walls
         wall_tex: load_tiled(&assets, "ground/tile_street.png"), // cobblestone masonry for walls
-        water_mesh: meshes.add(hd2d::blob_mesh(28)), // organic pool outline, not a circle
+        // A BASIN, not a disc: the rim stays proud of the terrain (no z-fighting) while the
+        // surface sits below it, so water reads as sunk into the ground rather than floating
+        // on it. Worst in the Mire, whose entire maze fill is water.
+        water_mesh: meshes.add(hd2d::blob_basin_mesh(28, 0.16, 0.74)),
         // Bespoke pixel-art water tiles (PixelLab), one per water kind, tiled + drifted
         // by `animate_water`. Replaces the old procedural `water_ripple_texture`.
         water_mats: [

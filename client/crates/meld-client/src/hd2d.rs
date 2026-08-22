@@ -894,6 +894,153 @@ pub fn grass_texture(size: u32) -> Image {
 /// A flat **irregular blob** (triangle fan whose radius wobbles with angle) so pools
 /// don't read as perfect circles. Lies in the XY plane — rotate it flat like a
 /// `Circle`. Spin each instance around Y for variety.
+/// The same organic outline as [`blob_mesh`], but sunk into a **basin**: a rim at local
+/// `z = 0` sloping down to a flat waterline at `-depth`.
+///
+/// **A water tile drawn as a flat disc looks like it is FLOATING**, because that is exactly
+/// what it was — a plane, laid at ground level and then lifted clear of it to dodge
+/// z-fighting. It reads worst in the Mire, where impassable water is the entire maze fill,
+/// so the biome is hundreds of pools hovering over the mud. Giving the water its own bank
+/// fixes it per-prop and needs nothing from the ground: the rim stays proud of the terrain
+/// (still no z-fighting) while the surface sits below it, so the eye reads a dip.
+///
+/// Depth and inset are FRACTIONS of the outline, because the prop is scaled by its own
+/// collision radius — so a big pool gets a deep basin and a puddle gets a shallow one,
+/// without a second constant to keep in step.
+/// [`blob_basin_mesh`], but with its bank **suppressed where a neighbour overlaps** —
+/// `neighbours` are `(x, y, r)` discs in this basin's own local frame.
+///
+/// **This is how many small pools become one body of water.** A mire's entire maze fill is
+/// water, so it renders as dozens of identical blobs stamped on the mud — lily pads, not a
+/// swamp. Merging them by clustering would mean one mesh per cluster and a cluster has no
+/// entity id, which the snapshot reconciler is built around. So instead each pool keeps its
+/// own entity and its own mesh, and simply **drops the rim to the waterline wherever a
+/// neighbour covers it**: adjacent pools then meet flat, with no bank between them, and the
+/// bank only rises along the outer edge of the group. Same triangle count, no topology
+/// change, no clustering pass.
+///
+/// ⚠️ **Visual only — the collision is deliberately left as the many small discs it already
+/// is.** Merging them into one big collider would be the expensive mistake: `BlockField`
+/// sizes its spatial-hash cell from the LARGEST radius in the world, so a single wide body
+/// coarsens the grid for every prop in the game (measured: one r=150 disc, parked where it
+/// blocked nothing, cost +63% on the creature tick). Many small edges are already the cheap
+/// shape; only the picture needed fixing.
+pub fn blob_basin_mesh_merged(
+    sides: usize,
+    depth: f32,
+    inner: f32,
+    neighbours: &[(f32, f32, f32)],
+) -> Mesh {
+    use bevy::render::mesh::{Indices, PrimitiveTopology};
+    use bevy::render::render_asset::RenderAssetUsages;
+    use std::f32::consts::TAU;
+    let n = sides.max(8);
+    let inner = inner.clamp(0.05, 0.95);
+    let outline = |a: f32| {
+        0.78 + 0.16 * (a * 2.0 + 0.7).sin() + 0.10 * (a * 3.0 + 2.1).sin() + 0.05 * (a * 5.0).sin()
+    };
+    let uv = |x: f32, y: f32| [x * 0.5 + 0.5, y * 0.5 + 0.5];
+    let covered = |x: f32, y: f32| {
+        neighbours
+            .iter()
+            .any(|&(nx, ny, nr)| (x - nx).hypot(y - ny) < nr)
+    };
+    let mut positions = vec![[0.0f32, 0.0, -depth]];
+    let mut normals = vec![[0.0f32, 0.0, 1.0]];
+    let mut uvs = vec![[0.5f32, 0.5]];
+    for i in 0..n {
+        let a = i as f32 / n as f32 * TAU;
+        let r = outline(a) * inner;
+        positions.push([a.cos() * r, a.sin() * r, -depth]);
+        normals.push([0.0, 0.0, 1.0]);
+        uvs.push(uv(a.cos() * r, a.sin() * r));
+    }
+    let d_r = 1.0 - inner;
+    for i in 0..n {
+        let a = i as f32 / n as f32 * TAU;
+        let r = outline(a);
+        let (x, y) = (a.cos() * r, a.sin() * r);
+        // A rim vertex inside a neighbouring pool is not a shore — it is the middle of a
+        // bigger body of water, so it sits at the waterline and no bank is drawn there.
+        if covered(x, y) {
+            positions.push([x, y, -depth]);
+            normals.push([0.0, 0.0, 1.0]);
+        } else {
+            positions.push([x, y, 0.0]);
+            let nrm = [-depth * a.cos(), -depth * a.sin(), d_r.max(1e-4)];
+            let len = (nrm[0] * nrm[0] + nrm[1] * nrm[1] + nrm[2] * nrm[2]).sqrt().max(1e-6);
+            normals.push([nrm[0] / len, nrm[1] / len, nrm[2] / len]);
+        }
+        uvs.push(uv(x, y));
+    }
+    let (wl, rim) = (1u32, 1 + n as u32);
+    let mut indices = Vec::with_capacity(n * 9);
+    for i in 0..n {
+        let (i0, i1) = (i as u32, ((i + 1) % n) as u32);
+        indices.extend_from_slice(&[0, wl + i0, wl + i1]);
+        indices.extend_from_slice(&[wl + i0, rim + i0, rim + i1]);
+        indices.extend_from_slice(&[wl + i0, rim + i1, wl + i1]);
+    }
+    let mut mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default());
+    mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs);
+    mesh.insert_indices(Indices::U32(indices));
+    mesh
+}
+
+pub fn blob_basin_mesh(sides: usize, depth: f32, inner: f32) -> Mesh {
+    use bevy::render::mesh::{Indices, PrimitiveTopology};
+    use bevy::render::render_asset::RenderAssetUsages;
+    use std::f32::consts::TAU;
+    let n = sides.max(8);
+    let inner = inner.clamp(0.05, 0.95);
+    // Same lobed outline as `blob_mesh`, so a pool and a basin of the same seed agree.
+    let outline = |a: f32| {
+        0.78 + 0.16 * (a * 2.0 + 0.7).sin() + 0.10 * (a * 3.0 + 2.1).sin() + 0.05 * (a * 5.0).sin()
+    };
+    let uv = |x: f32, y: f32| [x * 0.5 + 0.5, y * 0.5 + 0.5];
+    // Vertex 0 is the basin floor's centre; then the waterline ring, then the rim ring.
+    let mut positions = vec![[0.0f32, 0.0, -depth]];
+    let mut normals = vec![[0.0f32, 0.0, 1.0]];
+    let mut uvs = vec![[0.5f32, 0.5]];
+    for i in 0..n {
+        let a = i as f32 / n as f32 * TAU;
+        let r = outline(a) * inner;
+        positions.push([a.cos() * r, a.sin() * r, -depth]);
+        normals.push([0.0, 0.0, 1.0]);
+        uvs.push(uv(a.cos() * r, a.sin() * r));
+    }
+    let d_r = 1.0 - inner;
+    for i in 0..n {
+        let a = i as f32 / n as f32 * TAU;
+        let r = outline(a);
+        positions.push([a.cos() * r, a.sin() * r, 0.0]);
+        // The bank's normal leans INWARD and up, so the slope catches light differently
+        // from the flat surface — which is what actually sells the dip.
+        let nrm = [-depth * a.cos(), -depth * a.sin(), d_r.max(1e-4)];
+        let len = (nrm[0] * nrm[0] + nrm[1] * nrm[1] + nrm[2] * nrm[2]).sqrt().max(1e-6);
+        normals.push([nrm[0] / len, nrm[1] / len, nrm[2] / len]);
+        uvs.push(uv(a.cos() * r, a.sin() * r));
+    }
+    let (wl, rim) = (1u32, 1 + n as u32);
+    let mut indices = Vec::with_capacity(n * 9);
+    for i in 0..n {
+        let (i0, i1) = (i as u32, ((i + 1) % n) as u32);
+        // Flat floor.
+        indices.extend_from_slice(&[0, wl + i0, wl + i1]);
+        // Bank: waterline ring out to the rim.
+        indices.extend_from_slice(&[wl + i0, rim + i0, rim + i1]);
+        indices.extend_from_slice(&[wl + i0, rim + i1, wl + i1]);
+    }
+    let mut mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default());
+    mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs);
+    mesh.insert_indices(Indices::U32(indices));
+    mesh
+}
+
 pub fn blob_mesh(sides: usize) -> Mesh {
     use bevy::render::mesh::{Indices, PrimitiveTopology};
     use bevy::render::render_asset::RenderAssetUsages;
