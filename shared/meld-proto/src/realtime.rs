@@ -387,6 +387,23 @@ pub mod battle {
         const TYPE: &'static str = "battle.party_joined";
     }
 
+    /// S2C — `CR-11`: a pack LEADER called, and creatures answered from the overworld.
+    ///
+    /// The mirror of [`PartyJoined`], for the other side of the field. A separate message
+    /// rather than a re-sent `battle.started`, because the client has to be able to tell
+    /// "three more things just walked in" from "here is the fight" — a full restart would
+    /// re-run the intro and throw away every bar the player was reading.
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct Reinforcements {
+        pub battle_id: Id,
+        /// The leader that called, so the client can point the shout at the right body.
+        pub called_by: Id,
+        pub joining_enemies: Vec<Combatant>,
+    }
+    impl Message for Reinforcements {
+        const TYPE: &'static str = "battle.reinforcements";
+    }
+
     /// S2C — a combatant's gauge filled; a player's 15s window opens.
     #[derive(Debug, Clone, Serialize, Deserialize)]
     pub struct TurnReady {
@@ -1721,6 +1738,27 @@ mod tests {
         assert_eq!(session::Authenticate::TYPE, "session.authenticate");
         assert_eq!(battle::SubmitAction::TYPE, "battle.submit_action");
         assert_eq!(run::EnterMaze::TYPE, "run.enter_maze");
+    }
+
+    /// A CALL HAS TO REACH THE CLIENT AS ITS OWN EVENT (`CR-11`). Creatures appearing
+    /// mid-fight with nothing on the wire to explain them is the `pack:` lesson again — a
+    /// token nothing renders is a token that does not exist to the player — and re-sending
+    /// `battle.started` instead would throw away every bar being read.
+    #[test]
+    fn reinforcements_round_trip_as_their_own_event() {
+        assert_eq!(battle::Reinforcements::TYPE, "battle.reinforcements");
+        let msg = battle::Reinforcements {
+            battle_id: "b1".to_string(),
+            called_by: "c-lead".to_string(),
+            joining_enemies: Vec::new(),
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        let back: battle::Reinforcements = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.called_by, "c-lead");
+        assert_eq!(back.battle_id, "b1");
+        // snake_case on the wire (CANON §I).
+        assert!(json.contains("\"called_by\""), "{json}");
+        assert!(json.contains("\"joining_enemies\""), "{json}");
     }
 
     // The field-station pair, on the wire: a build is a kind, a request names the

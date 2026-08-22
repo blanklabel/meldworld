@@ -2950,6 +2950,15 @@ pub(crate) struct LoadoutLoadButton(pub String);
 #[derive(Component)]
 pub(crate) struct LoadoutDeleteButton(pub String);
 
+/// Rename a saved composition to whatever is in the name field.
+///
+/// Its own button rather than a rung on Save, because the two are opposite intentions:
+/// Save writes the party you are LOOKING AT over a name, Rename leaves the saved party
+/// alone and only changes what it is called. Collapsing them would mean correcting a typo
+/// overwrote the composition you were trying to keep.
+#[derive(Component)]
+pub(crate) struct LoadoutRenameButton(pub String);
+
 /// Save the current party under the typed name.
 #[derive(Component)]
 pub(crate) struct LoadoutSaveButton;
@@ -3082,7 +3091,16 @@ pub(crate) fn party_panel(
     // and a palette built a moment earlier would offer the Explorer alone and keep
     // offering it for as long as the panel stayed up — a player looking straight at
     // a class they own and cannot pick.
-    let sig = (loadouts.list.len(), unlocks.owned.len(), unlocks.party_slots as i64);
+    // Keyed on the NAMES rather than the count, because the two edits that do not change
+    // the count are exactly the two that looked broken: saving over an existing name, and
+    // renaming one. Both left `len()` identical, so the panel never rebuilt and the player
+    // watched a list that had already changed underneath them do nothing.
+    let names: i64 = loadouts.list.iter().fold(0i64, |acc, l| {
+        // Order-sensitive so a re-ordered list rebuilds too (the server returns
+        // newest-touched first, so a save bumps a row up).
+        l.name.bytes().fold(acc.rotate_left(7), |h, c| h.wrapping_mul(31) ^ i64::from(c))
+    });
+    let sig = (loadouts.list.len(), unlocks.owned.len(), unlocks.party_slots as i64 ^ names);
     if city.party_open == *was_open && (!city.party_open || sig == *shown) {
         return;
     }
@@ -3384,6 +3402,27 @@ pub(crate) fn party_panel(
                             TextColor(Color::srgb(0.92, 0.94, 1.0)),
                         ));
                     });
+                    // Rename, using whatever is in the name field below — the same field
+                    // a save reads, so there is one place to type a name rather than two.
+                    row.spawn((
+                        Button,
+                        LoadoutRenameButton(l.name.clone()),
+                        Node {
+                            padding: UiRect::axes(Val::Px(8.0), Val::Px(6.0)),
+                            border: UiRect::all(Val::Px(1.0)),
+                            ..default()
+                        },
+                        BorderColor(glass::EDGE_SOFT),
+                        BorderRadius::all(Val::Px(6.0)),
+                        BackgroundColor(glass::CHIP_OFF),
+                    ))
+                    .with_children(|b| {
+                        b.spawn((
+                            Text::new("rename"),
+                            TextFont { font_size: 12.0, ..default() },
+                            TextColor(Color::srgb(0.78, 0.82, 0.95)),
+                        ));
+                    });
                     row.spawn((
                         Button,
                         LoadoutDeleteButton(l.name.clone()),
@@ -3432,8 +3471,11 @@ pub(crate) fn party_panel(
                     BackgroundColor(glass::CHIP_OFF),
                 ))
                 .with_children(|f| {
+                    // A PLACEHOLDER, because an empty `Text` node reads as decoration:
+                    // there is no caret and no focus ring here, so a field showing nothing
+                    // at all is indistinguishable from a label. Typing replaces it.
                     f.spawn((
-                        Text::new(String::new()),
+                        Text::new("type a name\u{2026}".to_string()),
                         LoadoutNameText,
                         TextFont { font_size: 13.0, ..default() },
                         TextColor(Color::srgb(0.92, 0.94, 1.0)),
@@ -3549,6 +3591,14 @@ pub(crate) fn party_panel_buttons(
         let slot = session.party_cursor.min(session.party.len().saturating_sub(1));
         session.party[slot] = b.0.to_string();
         session.party_chosen = true;
+        // …and MOVE ON. The cursor used to sit where it was, so mustering four heroes was
+        // click-a-slot-then-a-class four times over, and clicking a class without picking a
+        // slot first silently overwrote whichever one the cursor had been left on. Advancing
+        // makes the obvious gesture — pick four classes in a row — do the obvious thing, and
+        // it wraps rather than sticking on the last slot so a second pass re-dresses the
+        // party from the top.
+        session.party_cursor = (slot + 1) % slots.max(1);
+        city.yard_focus = b.0.to_string();
     }
     for i in &done_q {
         if *i == Interaction::Pressed {
@@ -3590,7 +3640,13 @@ pub(crate) fn loadout_name_input(
     }
     if changed {
         if let Ok(mut t) = q.single_mut() {
-            **t = city.loadout_name.clone();
+            // Back to the placeholder when the buffer empties, or backspacing to nothing
+            // leaves a blank strip that reads as a label rather than a field.
+            **t = if city.loadout_name.is_empty() {
+                "type a name\u{2026}".to_string()
+            } else {
+                city.loadout_name.clone()
+            };
         }
     }
 }
@@ -3600,6 +3656,7 @@ pub(crate) fn loadout_name_input(
 pub(crate) fn loadout_buttons(
     load_q: Query<(&Interaction, &LoadoutLoadButton), Changed<Interaction>>,
     del_q: Query<(&Interaction, &LoadoutDeleteButton), Changed<Interaction>>,
+    ren_q: Query<(&Interaction, &LoadoutRenameButton), Changed<Interaction>>,
     save_q: Query<&Interaction, (Changed<Interaction>, With<LoadoutSaveButton>)>,
     net: NonSend<NetRes>,
     loadouts: Res<LoadoutData>,
@@ -3644,6 +3701,26 @@ pub(crate) fn loadout_buttons(
             net.0.delete_loadout(b.0.clone());
             city.notice = format!("Deleted \"{}\".", b.0);
         }
+    }
+    // RENAME takes the name field's contents and leaves the saved composition alone. It
+    // refuses an empty field rather than inventing a "Party N" the way Save does: an
+    // unnamed save is still a save, but an unnamed rename is a request with no content.
+    for (i, b) in &ren_q {
+        if *i != Interaction::Pressed {
+            continue;
+        }
+        let to = city.loadout_name.trim().to_string();
+        if to.is_empty() {
+            city.notice = "Type the new name first.".to_string();
+            continue;
+        }
+        if to == b.0 {
+            city.notice = format!("\"{to}\" is already its name.");
+            continue;
+        }
+        city.loadout_name.clear();
+        net.0.rename_loadout(b.0.clone(), to.clone());
+        city.notice = format!("Renamed \"{}\" to \"{to}\".", b.0);
     }
     for i in &save_q {
         if *i != Interaction::Pressed {

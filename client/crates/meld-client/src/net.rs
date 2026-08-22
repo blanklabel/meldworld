@@ -752,6 +752,10 @@ pub enum ServerMsg {
     },
     /// A second party merged into the battle (raid merge) — add their combatants.
     CombatantsJoined { combatants: Vec<CombatantView> },
+    /// `CR-11`: creatures answered a pack leader's call. The bodies arrive as
+    /// `CombatantsJoined`; this is the announcement, so the player is told rather than
+    /// left to notice three new health bars.
+    Reinforcements { called_by: String, arrived: usize },
     Gauge { updates: Vec<(String, f64, i32, Vec<String>)> },
     /// Terminal battle resolution — on victory this feeds the after-action
     /// report banner (XP/chits/items/gear gained this encounter).
@@ -1105,6 +1109,10 @@ impl Net {
     /// Forget a named loadout, then refresh.
     pub fn delete_loadout(&self, name: String) {
         self.0.borrow_mut().delete_loadout(name);
+    }
+
+    pub fn rename_loadout(&self, from: String, to: String) {
+        self.0.borrow_mut().rename_loadout(from, to);
     }
 
     /// Apply a saved loadout: the SERVER sets the classes and re-equips the gear it
@@ -1481,14 +1489,53 @@ impl Inner {
         if self.session_token.is_empty() {
             return;
         }
+        let base = self.base.clone();
         let token = self.session_token.clone();
         let mut req = ehttp::Request {
             method: "DELETE".to_string(),
-            ..ehttp::Request::get(format!("{}/v1/party/loadouts/{name}", self.base))
+            ..ehttp::Request::get(format!("{base}/v1/party/loadouts/{name}"))
         };
         req.headers.insert("Authorization", format!("Bearer {token}"));
-        ehttp::fetch(req, |_| {});
-        self.fetch_loadouts();
+        // Re-read INSIDE the write's callback, the same way `save_loadout` does. Fired
+        // alongside it — which is how this shipped — the read races the DELETE and comes
+        // back with the row still in it, so a deleted party stays on screen until something
+        // else happens to refresh the list.
+        let (tx, rx) = mpsc::channel();
+        self.loadouts_rx = Some(rx);
+        ehttp::fetch(req, move |_| {
+            spawn_loadouts_fetch(base, token, tx);
+        });
+    }
+
+    /// Rename a saved party, keeping the gear it stored (`PT-2`).
+    ///
+    /// Its own endpoint rather than save-new-then-delete-old, because a save captures the
+    /// party's CURRENT gear — so the shortcut would rewrite a loadout's contents as the
+    /// price of fixing a typo.
+    fn rename_loadout(&mut self, from: String, to: String) {
+        if self.session_token.is_empty() {
+            return;
+        }
+        let base = self.base.clone();
+        let token = self.session_token.clone();
+        let mut req = ehttp::Request::post(
+            format!("{base}/v1/party/loadouts/{from}/rename"),
+            serde_json::to_vec(&serde_json::json!({ "new_name": to })).unwrap_or_default(),
+        );
+        req.headers.insert("Content-Type", "application/json");
+        req.headers.insert("Authorization", format!("Bearer {token}"));
+        let (tx, rx) = mpsc::channel();
+        self.loadouts_rx = Some(rx);
+        // The server refuses a name already in use rather than eating the other row, so
+        // say so — a rename that silently did nothing is the same bug from this side.
+        let (etx, erx) = mpsc::channel();
+        self.craft_rx = Some(erx);
+        ehttp::fetch(req, move |res| {
+            if let Some(msg) = save_refusal(&res) {
+                let _ = etx.send(msg);
+            }
+            spawn_loadouts_fetch(base, token, tx);
+        });
     }
 
     /// GET `/v1/vendors/apothecary` (Bearer auth) for the shop panel.
@@ -2961,6 +3008,22 @@ impl Inner {
                 if let Ok(p) = serde_json::from_value::<wb::PartyJoined>(raw.payload) {
                     let combatants = p.joining_allies.iter().map(CombatantView::from_wire).collect();
                     self.out.push_back(ServerMsg::CombatantsJoined { combatants });
+                }
+            }
+            // CR-11: a pack leader called and the overworld answered. The same door the
+            // ally merge comes through — `is_player` is what puts a combatant on a side —
+            // but it carries WHO called, so the arrival can be announced instead of three
+            // creatures appearing out of nowhere.
+            "battle.reinforcements" => {
+                if let Ok(p) = serde_json::from_value::<wb::Reinforcements>(raw.payload) {
+                    let combatants: Vec<CombatantView> =
+                        p.joining_enemies.iter().map(CombatantView::from_wire).collect();
+                    let n = combatants.len();
+                    self.out.push_back(ServerMsg::CombatantsJoined { combatants });
+                    self.out.push_back(ServerMsg::Reinforcements {
+                        called_by: p.called_by,
+                        arrived: n,
+                    });
                 }
             }
             "battle.gauge_update" => {

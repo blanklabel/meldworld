@@ -78,14 +78,29 @@ the Last City. The same order drives people around the city for a small fare and
 
 ## Wall Defense Force
 
-The Wall is held by compass quarter, each by a different people:
+The Last City's **perimeter military**, and the one institution here that is also a
+class-bearing order — its Rift Drop-Troopers are written up as the future
+`rift_knight` in [`factions.md`](factions.md), which owns the rank ladder.
 
-| Quarter | Held by |
-|---|---|
-| East | Hobgoblins |
-| North | Dwarves |
-| South | Kobolds |
-| West | Tritons and minotaurs (the boat) |
+**Vision** An unbroken perimeter; civilization held firm against the shifting void.
+**Mission** Garrison the battlements, work the perimeter artillery and the automated
+barriers, and close a breach in seconds rather than minutes — by high-altitude drop,
+heavy polearm formation, and tactical spatial displacement (the **Blink-Drop**).
+
+### The four cardinal garrisons
+
+The Wall is held by compass quarter, each by a different people, and each drilled to a
+different answer:
+
+| Quarter | Held by | What it brings |
+|---|---|---|
+| North | Dwarves | Stonecraft fortification, runic shock-infantry, armoured sentinels on the mountain passes and the Dwarven Ethereal Depot |
+| East | Hobgoblins | Disciplined tactical cohorts, phalanxes, mobile shock lancers drilled on precision |
+| South | Kobolds | Sappers, trench technicians, and the crews of the high-yield fireball cannons and trap-lines |
+| West | Tritons and minotaurs | Naval batteries and cliffside drop-troopers on the Ever Shifting Ocean, aboard armoured vessels (the boat) |
+
+Cutting across all four: the **Rift Drop-Troopers**, elite shock troops who blink or
+drop straight off a sixty-foot parapet onto a breach point.
 
 ### Defense architecture
 
@@ -95,7 +110,51 @@ The Wall is held by compass quarter, each by a different people:
 - **Stabilizers and the field** — maintained by followers of **Terim**.
 
 The Foundry supplies the structural iron and magitech metal all of this is made of
-([`factions.md`](factions.md) → The Foundry).
+([`factions.md`](factions.md) → The Foundry), including the requisitioned shock lances.
+
+### Structure
+
+Strategic oversight runs out of **Floors 46–50 of the Crystal Tower**, where logistics,
+intelligence from The Trace, and deployments are routed across the perimeters. Each
+cardinal garrison is directed by a **Garrison Commander**, who answers to the **Grand
+Marshal of the Perimeter** (war room, Floor 50).
+
+### Beliefs
+
+- **The Wall is the boundary of reality.** If the stone cracks the Shifting Lands take
+  the city; there is no retreating inward.
+- **Verticality is kinetic superiority.** High ground is seized, held, and *weaponised*
+  by rapid descent.
+- **Interdependence over rivalry.** Dwarven stone, Hobgoblin discipline, Kobold
+  artillery and Triton watch are one chain; no sector holds alone.
+- **Speed closes the breach.** An enemy at the wall base is met in seconds.
+
+### Etiquette
+
+- Sector boundaries are strict; crossing commands needs clearance from Crystal Tower
+  Strategic Command.
+- Parapet duty demands absolute sobriety and instant response to the spatial sirens.
+- Artillery and the moving golem barricades always fire *before* infantry deploys, to
+  soften the landing zone.
+- A dropped weapon on the parapet is a court-martial offence — every arm is tethered or
+  bonded. (This is the in-fiction reason the Rift Knight's *Recall Blade* exists.)
+
+### Notable members
+
+- **Grand Marshal Vorn Ash-Blade** (Hobgoblin, Rank 6) — supreme tactical coordinator on
+  Floors 46–50. Runs simulated breach drills and treats the perimeter as an
+  uncompromising game of spatial chess.
+- **Commander Bran the Tide-Horn** (Minotaur, Rank 5) — iron-willed commander of the
+  Western Bluffs, on heavy coastal barges with an oversized anchor-flail for planar sea
+  beasts.
+- **Master Bombardier Tik-Tik** (Kobold, Rank 4) — hyperactive head engineer of the
+  South Wall fireball cannons; obsessed with blast trajectories and experimental
+  incendiaries.
+- **Captain Thordis Iron-Pike** (Dwarf, Rank 4) — North Wall veteran with a runic
+  halberd, who volunteers to dive off the high parapets and impale siege monstrosities
+  before they reach the gates.
+- **Strike-Sergeant Kaelen Swift-Drop** (Harengon, Rank 3) — East Wall jump specialist,
+  in and out of spatial micro-rifts behind enemy skirmish lines to break a charge.
 
 ## The Healery
 

@@ -69,6 +69,38 @@ A client must act on this **only while it is actually spectating**: a fight of t
 
 ---
 
+### `battle.reinforcements` (S2C)
+
+A pack **leader** spent its turn calling, and creatures answered from the overworld and joined the fight against the party (`CR-11`). The enemy-side mirror of `battle.party_joined`.
+
+**Source:** CR-11 (encounter composition); CANON.md §B (joining combatants inserted at gauge 0; enemy stats do not rescale mid-fight).
+**Direction:** S2C — broadcast to the battle's whole audience (every combatant **and** every spectator), through the same `audience_of` funnel every other battle event uses.
+
+**Server behavior**
+
+- **The call costs the leader its turn**, and it happens at most **once per leader per battle**. A free reinforcement would only be the pack's health written twice.
+- Armed when the leader is losing, by **either** reading: its HP is under `[encounters] pack_call_hp_fraction`, **or** it has no living minions left. A pack fight has two lines — focus the leader, or clear the littles first — and arming only one would make the call invisible to whoever took the other.
+- Reach is `[encounters] pack_call_radius`, deliberately wider than `[ai] group_radius`: the point is to reach bodies that were never part of this encounter. Capped at `pack_call_max`, nearest-first, **its own pack before anything else of its faction**.
+- Never answered by: a creature already in a battle, one on another elevation, one **pinned** by a Psyker (the party paid a cooldown for that opening), or a creature with an `owner`/`bounty` (a contract mark is one player's). A dungeon boss has no overworld creatures to call and sends nothing.
+- Arrivals are inserted at `gauge: 0.0`, are locked out of roaming (`in_battle`), and **count toward the encounter's XP and loot** like any other creature in it. They are sized with the scale the battle was *built* with — a call must not rescale the encounter, exactly as a co-op joiner does not.
+- Group ids continue **after** everything already fighting, so a latecomer never lands in the group of a creature already on the field (group ids drive group-target abilities).
+
+**Payload**
+
+| Field | Type | Required | Nullable | Default | Description |
+|-------|------|----------|----------|---------|-------------|
+| battle_id | string (uuid) | Yes | No | — | The battle joined. |
+| called_by | string (uuid) | Yes | No | — | Combatant id of the leader that called, so the client can point the shout at the right body. |
+| joining_enemies | array of Combatant (1–`pack_call_max` items) | Yes | No | — | The new enemy-side combatants, gauges at 0.0. |
+
+**Example**
+
+```json
+{"type": "battle.reinforcements", "seq": 4231, "ts": 1783728119000, "payload": {"battle_id": "0197a600-0001-7abc-9def-0123456789ab", "called_by": "0197a600-00aa-7abc-9def-0123456789ab", "joining_enemies": [{"combatant_id": "0197a600-00dd-7abc-9def-0123456789ab", "kind": "monster", "player_id": null, "monster_kind": "thornback_boar", "level": 12, "hp": 260, "max_hp": 260, "gauge": 0.0, "statuses": ["pack:minion"]}]}}
+```
+
+---
+
 ### `battle.party_joined` (S2C)
 
 A second (or later) party merged into an already-active battle by touching the same enemy — the raid-merge mechanic.

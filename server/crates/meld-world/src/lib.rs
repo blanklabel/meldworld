@@ -1553,6 +1553,32 @@ pub struct MonsterSpawn {
     /// screen, two ranks of five do not, which is why every game that fields packs this
     /// size stacks them.
     pub back_row: bool,
+    /// The **pack** this creature belongs to — its leader's `entity_id`, carried by the
+    /// leader itself as well, and empty for a loner. `CR-11`.
+    ///
+    /// A PACK USED TO BE NOTHING BUT PROXIMITY, AND PROXIMITY DECAYS. `encounter_class`
+    /// said "leader"/"minion" and nothing linked the two, so the only thing making a pack
+    /// a pack was that [`Arena::group_around`] happened to reach `[ai] group_radius` from
+    /// whoever you touched. Then every member wandered independently inside its OWN
+    /// `leash_radius` (9.0, against a group radius of 6.5), so two members could
+    /// legitimately stand 21 units apart. Measured over three seeds: a pack shed **45% of
+    /// itself within two minutes** of ordinary wandering and **a fifth of leaders ended up
+    /// standing entirely alone** — before a player had walked anywhere near them. Every
+    /// pack test ran on a freshly generated arena that had never been stepped, which is
+    /// exactly why it went unseen.
+    ///
+    /// By ID rather than by index, because [`Arena::prune_defeated`] compacts `monsters`
+    /// underneath live membership — the same reason a clash is keyed by entity id.
+    pub pack: Id,
+    /// The pack's anchor: its **leader's** spawn point (own `home` for a loner). Pack
+    /// members wander a disc around THIS rather than around their own homes, which is what
+    /// keeps a pack inside the radius that makes it one encounter.
+    ///
+    /// Denormalised onto every member on purpose: the creature step is the hot path in the
+    /// whole loop (`the_creature_step_stays_linear_in_the_creature_count`) and a per-tick
+    /// per-creature lookup of the leader is the kind of thing that made `step_creatures`
+    /// 1,708 ms a tick at depth.
+    pub pack_home: Position,
     /// Seconds this creature remains PINNED by a Psyker (CL-2), counted down by
     /// [`Arena::step_creatures_with_aggro`]. A pinned creature does not move, chase or
     /// skirmish — but it is still touchable and still fights when reached, because the
@@ -1647,6 +1673,9 @@ impl MonsterSpawn {
             aggression: stats.aggression.clone(),
             set_piece_ward: String::new(),
             back_row: false,
+            // A creature is its own pack of one until placement makes it part of one.
+            pack: String::new(),
+            pack_home: position,
             held_for: 0.0,
             owner: String::new(),
             bounty: String::new(),
@@ -1767,6 +1796,47 @@ impl MonsterSpawn {
         self.atk = ((self.atk as f64) * atk_mult).round().max(1.0) as i32;
         self.xp_reward = ((self.xp_reward as f64) * xp_mult).round().max(0.0) as i64;
         self.encounter_class = class.to_string();
+    }
+
+    /// Re-apply the promotion a regrown creature used to carry (`CR-11`).
+    ///
+    /// Only the two PACK classes: an elite, a gatekeeper, a rite boss or a set piece is a
+    /// one-off event and standing a fresh one up on the same ground would print champions.
+    /// A leader and its littles are ordinary wildlife with a hierarchy, and that is exactly
+    /// what should grow back.
+    fn repromote(&mut self, balance: &Balance, class: &str) {
+        let e = &balance.encounters;
+        match class {
+            "leader" => self.promote(e.leader_hp_mult, e.leader_atk_mult, e.leader_xp_mult, class),
+            "minion" => self.promote(e.minion_hp_mult, e.minion_atk_mult, e.minion_xp_mult, class),
+            _ => {}
+        }
+    }
+
+    /// Enlist this creature in the pack led by `leader` (`CR-11`), anchoring its roaming
+    /// on the pack's home rather than its own.
+    ///
+    /// Called for the LEADER too, with itself — a pack of one member is still a pack, and
+    /// a leader whose own wander was unanchored would drag the radius its minions are
+    /// measured against around behind it.
+    /// A PACK RUNS WITH ITS LEADER, so enlisting also hands over the leader's FACTION.
+    ///
+    /// `mixed_chance` makes some of the littles a different species than what they follow
+    /// — that is the content, "a big spider with four little beetles" — but faction is
+    /// what `CR-2` reads to decide who hunts whom on the overworld, and a species carries
+    /// its own. So a mixed pack was spawned mutually hostile and **ate itself before any
+    /// player arrived**: measured at seed 424242, 1,253 of 2,196 packs (57%) held a faction
+    /// at war with their own leader, and of the leaders left standing alone after two
+    /// minutes, **42 of 48 had every single one of their pack members killed** — not
+    /// wandered off, killed. A pack that murders itself is worse than one that drifts,
+    /// because the ramp's promised quad is gone before it is ever seen.
+    ///
+    /// The undead rite already did exactly this ("a rite's retinue is its own dead,
+    /// whatever the local wildlife is"); it was ordinary packs that never got the rule.
+    fn join_pack(&mut self, leader: &str, leader_home: Position, leader_faction: &str) {
+        self.pack = leader.to_string();
+        self.pack_home = leader_home;
+        self.faction = leader_faction.to_string();
     }
 
     /// Size this encounter for `parties` full parties, and let it say so.
@@ -2022,6 +2092,20 @@ pub struct Fallen {
     pub home: Position,
     pub area_min_x: f64,
     pub area_max_x: f64,
+    /// What it WAS (`CR-11`): the pack it belonged to, that pack's anchor, its rank in the
+    /// formation, and its encounter class.
+    ///
+    /// Regrowth used to hand back a plain `standard` creature whatever fell there, so a
+    /// pack eroded to regrowth as surely as it eroded to drift: fell the minions, wait, and
+    /// the leader is permanently alone with four unaffiliated neighbours. The ground
+    /// remembers what stood on it.
+    pub pack: Id,
+    pub pack_home: Position,
+    pub back_row: bool,
+    pub encounter_class: String,
+    /// The faction it ran under — a pack member's is its LEADER's, not its species',
+    /// so regrowth cannot hand a mixed pack back at war with itself.
+    pub faction: String,
     /// World tick it fell, stamped by `regrow` on the first pass that sees it (the
     /// arena is pure and never asks what time it is).
     pub felled_tick: u64,
@@ -2297,6 +2381,10 @@ pub struct Arena {
     aggro_radius: f64,
     territorial_aggro_radius: f64,
     leash_radius: f64,
+    /// How far a **pack member** roams from its pack's anchor (`[encounters] pack_leash`).
+    /// Held under half of `group_radius` by test, so two members on opposite rims are
+    /// still one encounter (`CR-11`).
+    pack_leash: f64,
     group_radius: f64,
     skirmish_aggro: f64,
     skirmish_range: f64,
@@ -2597,6 +2685,7 @@ impl Arena {
             aggro_radius: balance.ai.aggro_radius,
             territorial_aggro_radius: balance.ai.territorial_aggro_radius,
             leash_radius: balance.ai.leash_radius,
+            pack_leash: balance.encounters.pack_leash,
             group_radius: balance.ai.group_radius,
             skirmish_aggro: balance.ai.skirmish_aggro_radius,
             skirmish_range: balance.ai.skirmish_attack_range,
@@ -2653,6 +2742,9 @@ impl Arena {
         for m in &mut self.monsters {
             m.position = tf(m.position);
             m.home = tf(m.home);
+            // The pack anchor is world-space like `home`, so it bends with it. A member
+            // left anchored in corridor space would roam a disc a quarter-turn away.
+            m.pack_home = tf(m.pack_home);
             // Keep the corridor [start_x, end_x] as a RADIUS band: after the bend a
             // creature's hub-distance is its corridor x, so `step_creatures` clamps its
             // radius to this band and it never wanders out of its biome ring (#10).
@@ -2810,6 +2902,9 @@ impl Arena {
         for m in &mut self.monsters[m0..] {
             m.position = tf(m.position);
             m.home = tf(m.home);
+            // The pack anchor is world-space like `home`, so it bends with it. A member
+            // left anchored in corridor space would roam a disc a quarter-turn away.
+            m.pack_home = tf(m.pack_home);
             // Keep [start_x, end_x] as a radius band (see `radialize`) so streamed
             // creatures also stay inside their own biome ring (#10).
         }
@@ -3142,6 +3237,14 @@ impl Arena {
                     );
                     self.monsters[leader_idx].become_boss(boss);
                     self.monsters[leader_idx].apply_affix(erng.next_u64());
+                    // A rite is a pack with a name on it (CR-11): its retinue holds
+                    // together the same way, or the set-piece the Phoenix Guard unlock
+                    // is earned against arrives as a lone risen boss.
+                    let (rite_id, rite_home, rite_faction) = {
+                        let l = &self.monsters[leader_idx];
+                        (l.entity_id.clone(), l.home, l.faction.clone())
+                    };
+                    self.monsters[leader_idx].join_pack(&rite_id, rite_home, &rite_faction);
                     for _ in 0..enc.undead_rite_minions {
                         let angle = erng.unit() * std::f64::consts::TAU;
                         let dist = enc.pack_spread * (0.4 + 0.6 * erng.unit());
@@ -3170,8 +3273,10 @@ impl Arena {
                             enc.minion_xp_mult,
                             "minion",
                         );
-                        // A rite's retinue is its own dead, whatever the local wildlife is.
-                        self.monsters[midx].faction = "undead".to_string();
+                        // A rite's retinue is its own dead, whatever the local wildlife
+                        // is — `become_boss` has already made the leader undead, and
+                        // `join_pack` hands its faction down.
+                        self.monsters[midx].join_pack(&rite_id, rite_home, &rite_faction);
                     }
                     // Keep the rite a rite: nothing else groups into it.
                     x += balance.ai.group_radius;
@@ -3198,6 +3303,16 @@ impl Arena {
                             enc.leader_xp_mult,
                             "leader",
                         );
+                        // CR-11: the pack becomes a THING, not a coincidence of spacing.
+                        // The leader enlists in its own pack so that the anchor every
+                        // member roams around is a fixed point rather than the leader's
+                        // own drifting position.
+                        let (lead_id, lead_home, lead_faction) = {
+                            let l = &self.monsters[leader_idx];
+                            (l.entity_id.clone(), l.home, l.faction.clone())
+                        };
+                        self.monsters[leader_idx]
+                            .join_pack(&lead_id, lead_home, &lead_faction);
                         // FORMATION. A pack of three or more forms two ranks: the leader
                         // and roughly the front half hold the line, the rest stand behind
                         // it. Below three there is no formation to speak of — two
@@ -3241,6 +3356,7 @@ impl Arena {
                                 enc.minion_xp_mult,
                                 "minion",
                             );
+                            self.monsters[midx].join_pack(&lead_id, lead_home, &lead_faction);
                             // Minion `k` is the (k+1)th body in the pack — the leader is
                             // the first and always holds the front.
                             self.monsters[midx].back_row = ranked && k + 1 >= front;
@@ -4135,6 +4251,7 @@ impl Arena {
         let (wander_pause_chance, wander_pause) =
             (self.wander_pause_chance, self.wander_pause_seconds);
         let (aggro, terr_aggro, leash) = (self.aggro_radius, self.territorial_aggro_radius, self.leash_radius);
+        let pack_leash = self.pack_leash;
         let (skirmish_aggro, skirmish_range) = (self.skirmish_aggro, self.skirmish_range);
         let interval = self.skirmish_interval;
         let obstacles = self.blocking_field();
@@ -4275,11 +4392,26 @@ impl Arena {
                             // squash: `home` is world-space, and in the radial fan a
                             // squashed y biased every creature into walking radially
                             // (in/out) when tangential movement is what reads as roaming.
+                            //
+                            // CR-11: a PACK member roams its pack's disc, not its own.
+                            // Anchored on the leader's spawn point (a fixed point, so the
+                            // radius cannot drift) and sized so two members on opposite
+                            // rims are still one encounter — `pack_leash` is held under
+                            // half of `[ai] group_radius` by test. Without this, every
+                            // member drew independently from its own `leash_radius` disc
+                            // (9.0 against a 6.5 group radius) and the pack simply came
+                            // apart: 45% of it gone in two minutes, a fifth of leaders
+                            // left standing alone.
+                            let (anchor, reach) = if m.pack.is_empty() {
+                                (m.home, leash)
+                            } else {
+                                (m.pack_home, pack_leash)
+                            };
                             let ang = next_unit(&mut m.rng) * std::f64::consts::TAU;
-                            let rad = leash * next_unit(&mut m.rng).sqrt();
+                            let rad = reach * next_unit(&mut m.rng).sqrt();
                             m.wander_to = Some(Position::new(
-                                m.home.x + ang.cos() * rad,
-                                m.home.y + ang.sin() * rad,
+                                anchor.x + ang.cos() * rad,
+                                anchor.y + ang.sin() * rad,
                             ));
                             m.wander_left = wander_leg;
                             if next_unit(&mut m.rng) < wander_pause_chance {
@@ -4593,6 +4725,67 @@ impl Arena {
                 !m.defeated && m.elevation == elev && center.distance_to(&m.position) <= r
             })
             .map(|(i, _)| i)
+            .collect()
+    }
+
+    /// Who ANSWERS a pack leader's call (`CR-11`) — the creatures the server should pull
+    /// into the fight, nearest first, capped at `[encounters] pack_call_max`.
+    ///
+    /// The reach is `pack_call_radius`, deliberately far past `[ai] group_radius`: the whole
+    /// value of the mechanic is that it reaches bodies which would never have been part of
+    /// this encounter, so a pack thinned by drift, by a turf war, or by the party's opening
+    /// turns can get itself back up to strength.
+    ///
+    /// Priority is **its own pack first**, then anything else of its faction — a call is a
+    /// pack calling, and only once that is exhausted is it a beast making noise that its
+    /// neighbours happen to answer. Ordered nearest-first inside each group, so what arrives
+    /// is what was plausibly in earshot.
+    ///
+    /// Excluded, and each for its own reason: anything already `in_battle` (it is busy — and
+    /// pulling it would let one fight cannibalise another), the caller itself, the defeated,
+    /// creatures on another elevation (the same rule `group_around` holds: you cannot join a
+    /// fight a terrace away), a **bounty mark or another player's creature** (an `owner`
+    /// exists precisely so co-op cannot trigger someone's contract, and answering a call is
+    /// no different), and anything **pinned** by a Psyker — a pin is an opening the party
+    /// paid a cooldown for, and having the pinned creature answer a shout would refund it.
+    pub fn answer_the_call(&self, balance: &Balance, caller_id: &str) -> Vec<Id> {
+        let Some(caller) = self.monster_by_id(caller_id) else {
+            return Vec::new();
+        };
+        let enc = &balance.encounters;
+        let reach = enc.pack_call_radius;
+        let mut own: Vec<(f64, &MonsterSpawn)> = Vec::new();
+        let mut kin: Vec<(f64, &MonsterSpawn)> = Vec::new();
+        for m in &self.monsters {
+            if m.entity_id == caller.entity_id
+                || m.defeated
+                || m.in_battle
+                || m.elevation != caller.elevation
+                || m.held_for > 0.0
+                || !m.owner.is_empty()
+                || !m.bounty.is_empty()
+            {
+                continue;
+            }
+            let d = m.position.distance_to(&caller.position);
+            if d > reach {
+                continue;
+            }
+            if !caller.pack.is_empty() && m.pack == caller.pack {
+                own.push((d, m));
+            } else if m.faction == caller.faction {
+                kin.push((d, m));
+            }
+        }
+        let by_distance = |v: &mut Vec<(f64, &MonsterSpawn)>| {
+            v.sort_by(|a, b| a.0.total_cmp(&b.0).then_with(|| a.1.entity_id.cmp(&b.1.entity_id)))
+        };
+        by_distance(&mut own);
+        by_distance(&mut kin);
+        own.into_iter()
+            .chain(kin)
+            .take(enc.pack_call_max)
+            .map(|(_, m)| m.entity_id.clone())
             .collect()
     }
 
@@ -4954,6 +5147,11 @@ impl Arena {
                     home: m.home,
                     area_min_x: m.area_min_x,
                     area_max_x: m.area_max_x,
+                    pack: m.pack.clone(),
+                    pack_home: m.pack_home,
+                    back_row: m.back_row,
+                    encounter_class: m.encounter_class.clone(),
+                    faction: m.faction.clone(),
                     felled_tick: 0,
                 });
             }
@@ -5513,6 +5711,13 @@ impl Arena {
                 MonsterSpawn::build(balance, f.entity_id, &f.monster_kind, f.home, seed);
             fresh.area_min_x = f.area_min_x;
             fresh.area_max_x = f.area_max_x;
+            // What grows back grows back into the pack that stood here (`CR-11`).
+            fresh.repromote(balance, &f.encounter_class);
+            fresh.back_row = f.back_row;
+            if !f.pack.is_empty() {
+                let faction = f.faction.clone();
+                fresh.join_pack(&f.pack, f.pack_home, &faction);
+            }
             self.monsters.push(fresh);
             back += 1;
         }
@@ -6198,6 +6403,234 @@ mod tests {
                 a.ensure_frontier(&b, 1400.0);
             }
             (b, a)
+        }
+
+        /// A PACK IS NEVER AT WAR WITH ITSELF (`CR-11`).
+        ///
+        /// `mixed_chance` makes some of the littles a different SPECIES than what they
+        /// follow, and every species carries its own faction — which is the field `CR-2`
+        /// reads to decide who hunts whom on the overworld. So more than half of all packs
+        /// were spawned mutually hostile and **ate themselves before a player arrived**:
+        /// 1,253 of 2,196 packs at seed 424242, and 42 of the 48 leaders left standing
+        /// alone after two minutes had every pack member *killed* rather than merely
+        /// wandered off. The ramp promised a quad and the quad was gone unseen.
+        ///
+        /// Species variety is kept; hostility is not. A pack runs with its leader.
+        #[test]
+        fn a_pack_is_never_at_war_with_itself() {
+            let (_b, a) = packs(424242);
+            let mut mixed_species = 0;
+            for lead in a.monsters.iter().filter(|m| !m.pack.is_empty() && m.pack == m.entity_id)
+            {
+                let mates: Vec<&MonsterSpawn> = a
+                    .monsters
+                    .iter()
+                    .filter(|m| m.pack == lead.pack && m.entity_id != lead.entity_id)
+                    .collect();
+                if mates.iter().any(|m| m.monster_kind != lead.monster_kind) {
+                    mixed_species += 1;
+                }
+                for m in mates {
+                    assert_eq!(
+                        m.faction, lead.faction,
+                        "a {} follows a {} it is hostile to ({} vs {})",
+                        m.monster_kind, lead.monster_kind, m.faction, lead.faction
+                    );
+                }
+            }
+            // …and the check is not vacuous: mixed packs are still a thing that exists, or
+            // this would be asserting a property of a world with no variety in it.
+            assert!(
+                mixed_species > 0,
+                "no mixed-species pack was generated, so nothing here was tested"
+            );
+        }
+
+        /// WHO ANSWERS A CALL (`CR-11`): its own pack first, then its faction, and each
+        /// exclusion for its own reason.
+        #[test]
+        fn a_call_reaches_its_own_pack_first_and_nobody_it_should_not() {
+            let b = Balance::load_default().unwrap();
+            let (mut a, enc) = (Arena::generate(&b, 4242, false), &b.encounters);
+            // A hand-built neighbourhood, so what is being tested is the RULE rather than
+            // whatever a seed happened to scatter.
+            a.monsters.clear();
+            let mut make = |id: &str, dx: f64, faction: &str| {
+                let mut m = MonsterSpawn::build(
+                    &b,
+                    id.to_string(),
+                    "forest_bloom_stalker",
+                    Position::new(200.0 + dx, 0.0),
+                    7,
+                );
+                m.faction = faction.to_string();
+                a.monsters.push(m);
+            };
+            make("caller", 0.0, "beast");
+            // Its own pack, further away than the strangers…
+            make("mate-far", 18.0, "beast");
+            make("mate-near", 9.0, "beast");
+            // …a same-faction stranger that is closer than either…
+            make("kin-near", 2.0, "beast");
+            // …and every reason to be skipped.
+            make("busy", 3.0, "beast");
+            make("owned", 3.5, "beast");
+            make("pinned", 4.0, "beast");
+            make("enemy-faction", 4.5, "undead");
+            make("upstairs", 5.0, "beast");
+            make("way-out-there", enc.pack_call_radius + 5.0, "beast");
+            let anchor = a.monsters[0].position;
+            for m in a.monsters.iter_mut() {
+                match m.entity_id.as_str() {
+                    "caller" | "mate-far" | "mate-near" => m.join_pack("caller", anchor, "beast"),
+                    "busy" => m.in_battle = true,
+                    "owned" => m.owner = "someone-else".to_string(),
+                    "pinned" => m.held_for = 5.0,
+                    "upstairs" => m.elevation = 1,
+                    _ => {}
+                }
+            }
+            let answered = a.answer_the_call(&b, "caller");
+            assert!(
+                answered.len() <= enc.pack_call_max,
+                "a call pulled {} bodies past the cap of {}",
+                answered.len(),
+                enc.pack_call_max
+            );
+            // Its own pack outranks a closer stranger — a call is a PACK calling.
+            assert!(
+                answered.iter().position(|id| id == "mate-near")
+                    < answered.iter().position(|id| id == "kin-near"),
+                "a stranger answered ahead of the caller's own pack: {answered:?}"
+            );
+            assert!(answered.contains(&"mate-near".to_string()));
+            assert!(answered.contains(&"mate-far".to_string()), "{answered:?}");
+            for never in [
+                "caller",           // itself
+                "busy",             // already in a fight — a call must not cannibalise one
+                "owned",            // somebody else's contract mark
+                "pinned",           // a Psyker paid a cooldown for that opening
+                "enemy-faction",    // it is not on this creature's side
+                "upstairs",         // you cannot join a fight a terrace away
+                "way-out-there",    // out of earshot
+            ] {
+                assert!(
+                    !answered.contains(&never.to_string()),
+                    "`{never}` answered a call it had no business answering: {answered:?}"
+                );
+            }
+        }
+
+        /// A PACK MUST NOT BE ABLE TO WANDER OUT OF BEING ONE ENCOUNTER (`CR-11`).
+        ///
+        /// Structural, and the reason the drift below was possible at all: every member
+        /// roams a disc of `pack_leash` around the pack's anchor, so the worst case is two
+        /// members on opposite rims — `2 x pack_leash`. If that exceeds `group_radius`,
+        /// touching one stops pulling the other and the pack comes apart *by construction*.
+        /// The spawn scatter has to fit inside the disc too, or a minion begins life
+        /// outside the territory it roams and walks inward forever.
+        #[test]
+        fn a_pack_cannot_wander_out_of_its_own_encounter() {
+            let b = Balance::load_default().unwrap();
+            let (leash, spread, group) =
+                (b.encounters.pack_leash, b.encounters.pack_spread, b.ai.group_radius);
+            assert!(
+                leash * 2.0 <= group,
+                "two pack members on opposite rims are {:.1} apart, past a group radius of \
+                 {group:.1} — the pack can wander out of its own fight",
+                leash * 2.0
+            );
+            assert!(
+                spread <= leash,
+                "pack_spread {spread:.1} scatters a minion outside the {leash:.1} disc it \
+                 then roams"
+            );
+        }
+
+        /// AND IT STILL HAS TO BE A PACK ONCE THE WORLD HAS BEEN RUNNING.
+        ///
+        /// The bug this pins was invisible because every pack test in this file ran on a
+        /// freshly generated arena that had never been STEPPED. Measured before the fix,
+        /// over three seeds with no player anywhere in the world: 2,189 leaders pulled
+        /// 10,128 bodies at spawn (4.63 each) and 5,583 after two minutes of ordinary
+        /// wandering (2.55) — 45% of every pack gone, and 440 leaders (20%) standing
+        /// completely alone. The cause was that nothing knew a pack was a pack: each
+        /// member drew its own destination inside its own `leash_radius` disc (9.0)
+        /// while `group_radius` (6.5) is what decides who joins the fight.
+        ///
+        /// So this asserts the OUTCOME rather than the mechanism, and it asserts it with
+        /// the clock running: whatever a pack pulled at spawn it still pulls two minutes
+        /// later, and no leader is ever left on its own.
+        #[test]
+        fn a_pack_is_still_a_pack_after_it_has_wandered() {
+            let (b, mut a) = packs(424242);
+            // Nobody in the world: every creature is on the wander path, which is exactly
+            // the case that used to dissolve them.
+            a.avatars.clear();
+            let leaders: Vec<usize> = a
+                .monsters
+                .iter()
+                .enumerate()
+                .filter(|(_, m)| m.encounter_class == "leader")
+                .map(|(i, _)| i)
+                .collect();
+            assert!(!leaders.is_empty(), "no packs were spawned at all");
+            let at_spawn: Vec<usize> = leaders.iter().map(|&i| a.group_around(i).len()).collect();
+            // Two minutes at the 100 ms authoritative tick.
+            for _ in 0..1200 {
+                a.step_creatures(0.1);
+            }
+            let now: Vec<usize> = leaders.iter().map(|&i| a.group_around(i).len()).collect();
+
+            // NOT zero, and that is deliberate. A pack that lost a fight with a
+            // NEIGHBOURING faction is `CR-2` working: of the leaders still ending up alone
+            // after this fix, 15 of 20 had their pack killed by something else and 4 had a
+            // member chased out of the radius mid-skirmish. Forbidding that outright would
+            // forbid the turf war. What is asserted is the RATE — the bug stood at 20% of
+            // every leader in the world, and ordinary ecology stands at under 1%.
+            let alone = now.iter().filter(|n| **n <= 1).count();
+            assert!(
+                alone * 50 < leaders.len(),
+                "{alone} of {} leaders ended up alone — past 2%, so this is packs coming \
+                 apart rather than packs losing fights",
+                leaders.len()
+            );
+            let (before, after): (usize, usize) =
+                (at_spawn.iter().sum(), now.iter().sum());
+            // Deliberately not exact equality: terrain legitimately keeps a member on the
+            // far side of a rock for a leg, and `group_around` is a live positional read.
+            // The bug was a 45% collapse, so anything past a tenth is the bug returning.
+            assert!(
+                after * 10 >= before * 9,
+                "packs shed their members while wandering: {before} bodies at spawn, \
+                 {after} two minutes later across {} packs",
+                leaders.len()
+            );
+            // …and the measurement is not vacuous: a pack that was never enlisted (every
+            // member roaming its own leash, which is what shipped) really does come apart.
+            let mut loose = packs(424242).1;
+            loose.avatars.clear();
+            for m in loose.monsters.iter_mut() {
+                m.pack.clear();
+            }
+            let loose_leaders: Vec<usize> = loose
+                .monsters
+                .iter()
+                .enumerate()
+                .filter(|(_, m)| m.encounter_class == "leader")
+                .map(|(i, _)| i)
+                .collect();
+            for _ in 0..1200 {
+                loose.step_creatures(0.1);
+            }
+            let loose_after: usize =
+                loose_leaders.iter().map(|&i| loose.group_around(i).len()).sum();
+            assert!(
+                loose_after < after,
+                "the pack anchor is doing nothing: unanchored packs held {loose_after} \
+                 bodies against {after} anchored"
+            );
+            let _ = &b;
         }
 
         /// Every pack that is big enough to HAVE a formation has one, and the leader is

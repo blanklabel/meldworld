@@ -1286,6 +1286,25 @@ struct FallenDto {
     min_x: f64,
     max_x: f64,
     felled_tick: u64,
+    /// What it WAS (`CR-11`): the pack it ran with, that pack's anchor, its rank and its
+    /// encounter class, so a world restored from its seed hands back the pack that stood
+    /// there rather than a scatter of unaffiliated wildlife.
+    ///
+    /// `serde(default)` on every one of them, because a delta written before this existed
+    /// still has to load — §W5's whole claim is that a world is replayable from its seed
+    /// plus this, so a field added here must never invalidate a stored world.
+    #[serde(default)]
+    pack: String,
+    #[serde(default)]
+    pack_x: f64,
+    #[serde(default)]
+    pack_y: f64,
+    #[serde(default)]
+    back_row: bool,
+    #[serde(default)]
+    class: String,
+    #[serde(default)]
+    faction: String,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -1336,6 +1355,12 @@ impl WorldActor {
                     min_x: f.area_min_x,
                     max_x: f.area_max_x,
                     felled_tick: f.felled_tick,
+                    pack: f.pack.clone(),
+                    pack_x: f.pack_home.x,
+                    pack_y: f.pack_home.y,
+                    back_row: f.back_row,
+                    class: f.encounter_class.clone(),
+                    faction: f.faction.clone(),
                 })
                 .collect(),
             stations: self
@@ -1435,6 +1460,11 @@ fn restore_world(balance: &Balance, save: &meld_db::WorldSave) -> Arena {
             home: Position::new(f.x, f.y),
             area_min_x: f.min_x,
             area_max_x: f.max_x,
+            pack: f.pack.clone(),
+            pack_home: Position::new(f.pack_x, f.pack_y),
+            back_row: f.back_row,
+            encounter_class: f.class.clone(),
+            faction: f.faction.clone(),
             felled_tick: f.felled_tick,
         })
         .collect();
@@ -9783,6 +9813,13 @@ impl WorldActor {
                 } => {
                     self.apply_steal(&victim_player_id, kind);
                 }
+                // CR-11: a pack leader spent its turn calling, and the engine — which has
+                // no idea what is standing in the overworld — reported the fact. Deciding
+                // who is close enough to answer is this side's job, exactly as it is for a
+                // Shifter's theft above.
+                BattleEvent::Howled { combatant_id } => {
+                    out.extend(self.answer_the_call(battle_id, &combatant_id));
+                }
                 // A Shifter picked a creature's pocket. The engine reported the theft;
                 // deciding what a creature was carrying is this side's job (economy
                 // and loot live here, and the engine stays pure).
@@ -9957,6 +9994,90 @@ impl WorldActor {
     /// The Shifter's side of a theft: chits scaled off where the creature was met,
     /// and a chance at whatever it was carrying. The engine reports that a pocket was
     /// picked; what was in it is decided here, next to the rest of the economy.
+    /// `CR-11`: creatures answer a pack leader's CALL, walking into a fight already in
+    /// progress.
+    ///
+    /// The enemy-side mirror of [`Self::join_battle`], and it goes through the same door:
+    /// `Battle::join`, which never rescales what is already in the fight. Everything a
+    /// creature carries into battle is built by the one shared `meld_run::enemy_fighters`,
+    /// so a called creature is not a second, thinner kind of enemy — it arrives with its
+    /// wound, its rank, its pack role, its kit and its resistances like anything else.
+    ///
+    /// Sized with the battle's OWN `party_scale` rather than one recomputed now: a co-op
+    /// joiner does not rescale the creatures, so a call must not either, or arriving help
+    /// would quietly inflate the whole encounter.
+    fn answer_the_call(&mut self, battle_id: &str, caller_combatant: &str) -> Vec<Outgoing> {
+        // Which overworld creature is that combatant? A dungeon boss has no
+        // `monster_combatants` at all (it is assembled for the fight rather than standing
+        // in the arena), so there is nothing out there to call and nothing to do.
+        let Some((caller_entity, party_scale, group_base)) =
+            self.battle_by_id(battle_id).and_then(|s| {
+                let eid = s
+                    .monster_combatants
+                    .iter()
+                    .find(|(_, cid)| cid.as_str() == caller_combatant)
+                    .map(|(eid, _)| eid.clone())?;
+                Some((eid, s.party_scale, s.battle.next_group_id()))
+            })
+        else {
+            return Vec::new();
+        };
+        let answering = self.arena.answer_the_call(&self.balance, &caller_entity);
+        if answering.is_empty() {
+            return Vec::new();
+        }
+        // Mint a combatant id per arriving creature, then build them all through the shared
+        // assembly. Held as owned spawns first because `enemy_fighters` borrows the arena
+        // and the joins below mutate it.
+        let arrivals: Vec<(meld_world::MonsterSpawn, String)> = answering
+            .iter()
+            .filter_map(|eid| {
+                self.arena
+                    .monster_by_id(eid)
+                    .map(|m| (m.clone(), Uuid::now_v7().to_string()))
+            })
+            .collect();
+        if arrivals.is_empty() {
+            return Vec::new();
+        }
+        let members: Vec<meld_run::EnemyMember> =
+            arrivals.iter().map(|(m, cid)| (m, cid.clone())).collect();
+        let fighters =
+            meld_run::enemy_fighters(&members, &self.balance, party_scale, group_base);
+
+        let Some(slot) = self.battle_by_id_mut(battle_id) else {
+            return Vec::new();
+        };
+        let joined = slot.battle.join(fighters);
+        for (m, cid) in &arrivals {
+            slot.monster_ids.push(m.entity_id.clone());
+            // The wound write-back needs the bridge for these too, or a creature that
+            // ANSWERED and then survived a flee walks away healed (`CR-2`).
+            slot.monster_combatants.insert(m.entity_id.clone(), cid.clone());
+        }
+        // Out of the roam and into the fight, the same lock the touched group takes.
+        for (m, _) in &arrivals {
+            if let Some(w) = self.arena.monster_by_id_mut(&m.entity_id) {
+                w.in_battle = true;
+            }
+        }
+        tracing::info!(
+            battle_id = %battle_id,
+            called_by = %caller_entity,
+            answered = arrivals.len(),
+            "pack reinforcements answered a call"
+        );
+        let members = self.audience_of_battle(battle_id);
+        broadcast(
+            members.iter().map(String::as_str),
+            &wb::Reinforcements {
+                battle_id: battle_id.to_string(),
+                called_by: caller_combatant.to_string(),
+                joining_enemies: joined,
+            },
+        )
+    }
+
     fn apply_pilfer(&mut self, thief: &str, victim_combatant: &str) -> Vec<Outgoing> {
         let b = &self.balance;
         // Size the haul off the creature's own tier — a deep theft is worth the trip.
@@ -12212,6 +12333,32 @@ mod watching_tests {
     /// feed — one client path for both sources. Its `battle_id` is namespaced so an action
     /// aimed at it can never resolve against a real battle.
     ///
+    /// Step the world until it starts a clash of its own, and report where.
+    ///
+    /// STILL NOT STAGED — hand-placing two hostile creatures would prove nothing about
+    /// whether a player ever meets one, which is the whole point of these tests. But the
+    /// wait got longer, and the reason is worth writing down: before `CR-11`, **57% of
+    /// packs were spawned internally hostile** (a mixed pack's littles carried their own
+    /// species' faction), so the first "turf war" a stepped world produced was almost always
+    /// a pack murdering itself three units from where it spawned — instantly, which is why
+    /// one 0.2 s step used to be enough. A pack runs with its leader now, so a clash has to
+    /// be a genuine cross-faction meeting: two creatures from different packs wandering into
+    /// each other, which placement's group-radius spacing rule keeps apart at spawn on
+    /// purpose. Measured after the fix, the first real clash lands at ~2.6 s.
+    fn step_until_a_clash(w: &mut WorldActor) -> Position {
+        for _ in 0..600 {
+            w.arena.step_creatures(0.1);
+            if let Some(c) = w.arena.clashes.first() {
+                return c.position;
+            }
+        }
+        panic!(
+            "the world started no clashes of its own in 60 s of stepping — hostile factions \
+             are seeded into every biome roster precisely so this happens everywhere, so this \
+             is a content regression rather than a slow seed"
+        );
+    }
+
     /// The clash is not staged: the world is stepped and one of the brawls it starts on
     /// its own is walked over to. Hostile factions are seeded into every biome roster
     /// precisely so this happens everywhere, and a test that hand-placed two creatures
@@ -12219,14 +12366,8 @@ mod watching_tests {
     #[test]
     fn a_creature_clash_is_watched_through_the_same_feed() {
         let mut w = a_fight_and_a_bystander();
-        w.arena.step_creatures(0.2);
-        let (at, members) = w
-            .arena
-            .clashes
-            .iter()
-            .map(|c| (c.position, c.members.clone()))
-            .next()
-            .expect("the world started no clashes of its own");
+        let at = step_until_a_clash(&mut w);
+        let members = w.arena.clashes[0].members.clone();
         if let Some(a) = w.arena.avatar_mut("p2") {
             a.position = at;
         }
@@ -12278,13 +12419,7 @@ mod watching_tests {
     #[test]
     fn a_clashing_creature_says_so_in_the_snapshot() {
         let mut w = a_fight_and_a_bystander();
-        w.arena.step_creatures(0.2);
-        let at = w
-            .arena
-            .clashes
-            .first()
-            .map(|c| c.position)
-            .expect("the world started no clashes of its own");
+        let at = step_until_a_clash(&mut w);
         if let Some(a) = w.arena.avatar_mut("p2") {
             a.position = at;
         }

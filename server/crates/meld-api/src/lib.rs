@@ -61,6 +61,8 @@ pub fn router(state: ApiState) -> Router {
         .route("/v1/party/loadouts", get(list_loadouts).post(save_loadout))
         .route("/v1/party/loadouts/:name", axum::routing::delete(delete_loadout))
         .route("/v1/party/loadouts/:name/apply", post(apply_loadout))
+        // axum 0.7: `:name`, not `{name}` — a braced param silently 404s with an empty body.
+        .route("/v1/party/loadouts/:name/rename", post(rename_loadout))
         .route("/v1/crafting/craft", post(craft))
         .route("/v1/crafting/recipes", get(recipes))
         .route("/v1/crafting/forge", post(forge))
@@ -946,6 +948,49 @@ async fn apply_loadout(
         })),
     )
         .into_response())
+}
+
+#[derive(serde::Deserialize)]
+struct RenameLoadout {
+    new_name: String,
+}
+
+/// `POST /v1/party/loadouts/:name/rename` — rename one, keeping what it stored.
+///
+/// A saved party had no rename at all: the only way to change a name was to save the
+/// current party under the new one and delete the old, which **re-snapshots the gear** —
+/// and remembering a kit you are not wearing is the entire reason a loadout stores gear.
+/// So correcting a typo silently rewrote the loadout's contents.
+async fn rename_loadout(
+    State(st): State<ApiState>,
+    headers: HeaderMap,
+    Path(name): Path<String>,
+    Json(req): Json<RenameLoadout>,
+) -> Result<Response, ApiReject> {
+    let player_id = authenticate(&st, &headers)?;
+    // The same trim and the same 24-character cap a save applies, or a name typed in one
+    // place and a name typed in the other would not be the same name.
+    let to: String = req.new_name.trim().chars().take(24).collect();
+    if to.is_empty() {
+        return Err(ApiReject::validation("A loadout needs a name."));
+    }
+    if to == name {
+        // Nothing to do, and not an error — the caller asked for a state that already holds.
+        return Ok((StatusCode::OK, Json(serde_json::json!({ "renamed": to }))).into_response());
+    }
+    let done = st
+        .db
+        .rename_loadout(player_id, &name, &to)
+        .await
+        .map_err(ApiReject::internal)?;
+    if !done {
+        // Either there was no such loadout or the new name is taken. Refusing beats
+        // silently destroying whichever saved party already owned the name.
+        return Err(ApiReject::validation(
+            "No such saved party, or that name is already taken.",
+        ));
+    }
+    Ok((StatusCode::OK, Json(serde_json::json!({ "renamed": to }))).into_response())
 }
 
 /// `DELETE /v1/party/loadouts/:name` — forget one.
