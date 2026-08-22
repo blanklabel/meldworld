@@ -6637,7 +6637,32 @@ impl WorldActor {
             }
             Err(reject) => {
                 let (code, message) = reject_to_error(&reject);
-                (vec![error(player_id, code, message, Some(raw.seq))], Vec::new())
+                let mut out = vec![error(player_id, code, message, Some(raw.seq))];
+                // HAND THE TURN BACK. A refused action does not resolve the hero's turn, so
+                // server-side it is still sitting on a full gauge `awaiting` input — but the
+                // client dropped it from its `ready` set the moment it fired the order, and
+                // `battle.turn_ready` is only emitted on the not-ready -> ready TRANSITION,
+                // which already happened. So the hero went uncommandable until the 15 s
+                // auto-defend spent its turn, and pressing Second Wind one Adrenaline short
+                // read as the ability locking that hero out of the fight.
+                //
+                // Re-emitting through `emit_battle_events` rather than pushing a message here
+                // is deliberate: `TurnReady` then reaches the same audience funnel every other
+                // battle event does (fighters + spectators), so a watcher's view cannot drift
+                // from the fight's. It is also the GENERAL fix — every refusal, whatever its
+                // cause and whenever it is added, hands the turn back through this one point
+                // rather than each new check remembering to.
+                let still_owed = self
+                    .battle_by_id(&submit.battle_id)
+                    .is_some_and(|slot| slot.battle.awaiting_turn(&actor_cid));
+                if still_owed {
+                    let (evout, _) = self.emit_battle_events(
+                        &submit.battle_id,
+                        vec![meld_battle::Event::TurnReady { combatant_id: actor_cid.clone() }],
+                    );
+                    out.extend(evout);
+                }
+                (out, Vec::new())
             }
         }
     }
@@ -12136,6 +12161,54 @@ mod watching_tests {
             sent(&out, "p2", ws::Error::TYPE).is_some(),
             "a watcher was allowed to act in somebody else's fight"
         );
+    }
+
+    /// **A REFUSED ACTION HANDS THE TURN BACK.** This is the "Second Wind locks the hero
+    /// out" bug at the wire level, and the client half is what makes it a lock-out: the
+    /// client drops a hero from its `ready` set the instant it fires an order, and
+    /// `battle.turn_ready` is only emitted on the not-ready -> ready TRANSITION, which has
+    /// already happened. So a refusal left the hero sitting on a full gauge that the client
+    /// believed was spent — uncommandable, with no menu, until the 15 s auto-defend threw
+    /// its turn away. Pressing an ability one Adrenaline short read, correctly, as that
+    /// ability locking the hero out of the fight.
+    ///
+    /// Asserted on the REFUSAL rather than on any one cause: every check that can reject —
+    /// the ones here today and the ones added later — goes back through this one point.
+    #[test]
+    fn a_refused_action_gives_the_hero_its_turn_back() {
+        let mut w = a_fight_and_a_bystander();
+        let bid = w.battles[0].battle_id.clone();
+        let cid = w.battles[0]
+            .player_combatants
+            .get("p1")
+            .and_then(|c| c.first())
+            .cloned()
+            .expect("the fixture's fighter owns no combatant");
+        // Tick the hero up to a full gauge so it is genuinely owed a turn.
+        for _ in 0..500 {
+            w.battles[0].battle.tick();
+            if w.battles[0].battle.awaiting_turn(&cid) {
+                break;
+            }
+        }
+        assert!(w.battles[0].battle.awaiting_turn(&cid), "the fixture never offered a turn");
+
+        // An Attack with no target: refused, and a stand-in for every other refusal.
+        let mut raw = env(wb::SubmitAction::TYPE);
+        raw.payload = serde_json::json!({
+            "battle_id": bid,
+            "action_id": "a1",
+            "actor_combatant_id": cid,
+            "action": "attack",
+        });
+        let (out, _) = w.handle_submit("p1", raw);
+        assert!(sent(&out, "p1", ws::Error::TYPE).is_some(), "the bad action was accepted");
+        assert!(
+            sent(&out, "p1", wb::TurnReady::TYPE).is_some(),
+            "a refusal left the hero uncommandable - no turn_ready, so the client never \
+             restores it to `ready` and the hero is locked out until the auto-act"
+        );
+        assert!(w.battles[0].battle.awaiting_turn(&cid), "the refusal ate the turn server-side");
     }
 
     /// You cannot watch and swing. Otherwise a player already fighting could open a

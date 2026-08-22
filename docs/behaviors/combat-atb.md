@@ -55,6 +55,9 @@ Resolution ordering rules:
 1. Actions resolve **serially**, one at a time, in the order the server accepts them (server receipt order for player intents; tick order for AI actors whose gauges fill on the same tick). There are no simultaneous resolutions. *(Ordering is a spec-level resolution of a canon gap — flagged in Edge Cases.)*
 2. An action legal when submitted but illegal when it comes up for resolution (target already dead, actor stunned/dead) is dropped; a dropped player action leaves the gauge full and the player may re-submit.
 3. `item` consumption from the `Backpack` happens at resolution time, atomically with the effect.
+4. **A REFUSED ACTION COSTS THE ACTOR NOTHING AND RETURNS ITS TURN.** A rejected intent must not change a single field: no start-of-turn upkeep (no DoT tick, no Regen heal, no Barrier decay), no `action_id` recorded as seen (so re-sending the identical order is not a duplicate), no gauge reset. Every refusal the server can see coming is therefore checked **before** any mutation, and the rejection is accompanied by a fresh `battle.turn_ready` for that actor.
+
+   The `turn_ready` re-emission is required, not cosmetic: a client marks a hero as no-longer-ready the moment it sends the order, and `turn_ready` is otherwise only emitted on the not-ready→ready *transition*, which has already happened. Without it a refused action leaves the actor with a full gauge that the client believes is spent — the hero cannot be commanded and loses its turn to the 15 s auto-defend, so any refusal reads to the player as the ability they pressed locking that hero out of the fight.
 
 ### Turn timeout
 
@@ -166,6 +169,7 @@ flee_chance = clamp(0.60 − 0.10 × max(0, encounter_tier − party_tier), 0.05
 - **Resolution ordering is a canon gap:** CANON defines gauge mechanics but not what happens when several gauges fill on one tick; this spec mandates serial resolution in server-acceptance order. Flagged for design confirmation.
 - **`party_tier` definition is derived:** CANON says "per tier the encounter is above party level tier" without defining a level→tier mapping; this spec uses `floor(avg_run_level / 8)`. Flagged for design confirmation.
 - **Target dies before action resolves:** action is dropped; player actions may be re-submitted (gauge remains full), so a dropped action never silently wastes a turn.
+- **Action refused on submission** (ability not yet unlocked, a once-a-fight call already spent, a resource cost the actor cannot pay, no target given): the actor keeps its turn, its `action_id`, and its exact state, and is re-announced as ready — see Resolution ordering rule 4. A refusal is free however many times it is repeated.
 - **Item drop race:** if B's heal lands the same tick A's side is defeated, defeat wins (terminal outcomes resolve before external injections queued later in the tick); the item is not consumed if the effect cannot apply.
 - **Merge attempt above cap:** no error subscreen; the toucher simply does not enter the battle and remains on the overworld.
 - **All players in a merged battle disconnect:** disconnect rules apply per side; a Gatekeeper battle can proceed with every player side auto-defending until wipe or reconnect ([disconnect-handling.md](./disconnect-handling.md)).
