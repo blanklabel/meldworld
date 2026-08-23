@@ -133,7 +133,7 @@ pub(crate) fn update_ambient_scatter(
         let scale = 0.85 + ((h >> 18) & 0x7F) as f32 / 127.0 * 0.8; // 0.85..1.65
         tf.translation = Vec3::new(wx, 0.02 + crate::world_render::terrain_height(wx, wz), wz);
         tf.scale = Vec3::splat(scale * 1.2 / 2.2);
-        if let Some(m) = mats.get_mut(&blade.mat) {
+        if let Some(mut m) = mats.get_mut(&blade.mat) {
             m.base_color_texture = Some(grass.0[variant].clone());
         }
         *vis = Visibility::Visible;

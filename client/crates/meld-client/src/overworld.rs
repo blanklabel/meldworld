@@ -55,7 +55,7 @@ pub(crate) fn spawn_heat_bar(p: &mut ChildSpawnerCommands) {
             position_type: PositionType::Relative,
             ..default()
         },
-        BorderColor(Color::srgba(1.0, 0.85, 0.7, 0.5)),
+        BorderColor::all(Color::srgba(1.0, 0.85, 0.7, 0.5)),
         // The cold bar: red, and dark enough that the yellow reads off it at a glance.
         BackgroundColor(Color::srgb(0.42, 0.08, 0.06)),
     ))
@@ -320,7 +320,7 @@ pub(crate) fn overworld_ui(mut commands: Commands) {
                 HudText,
                 Text::new(String::new()),
                 TextFont {
-                    font_size: 20.0,
+                    font_size: FontSize::Px(20.0),
                     ..default()
                 },
                 TextColor(Color::srgb(0.9, 0.92, 1.0)),
@@ -348,6 +348,7 @@ pub(crate) fn overworld_ui(mut commands: Commands) {
             p.spawn((
                 JoystickBase,
                 Node {
+                    border_radius: BorderRadius::all(Val::Percent(50.0)),
                     position_type: PositionType::Absolute,
                     width: Val::Px(120.0),
                     height: Val::Px(120.0),
@@ -355,20 +356,19 @@ pub(crate) fn overworld_ui(mut commands: Commands) {
                     display: Display::None,
                     ..default()
                 },
-                BorderColor(Color::srgba(0.7, 0.8, 1.0, 0.5)),
-                BorderRadius::all(Val::Percent(50.0)),
+                BorderColor::all(Color::srgba(0.7, 0.8, 1.0, 0.5)),
                 BackgroundColor(Color::srgba(0.3, 0.4, 0.7, 0.15)),
             ));
             p.spawn((
                 JoystickKnob,
                 Node {
+                    border_radius: BorderRadius::all(Val::Percent(50.0)),
                     position_type: PositionType::Absolute,
                     width: Val::Px(56.0),
                     height: Val::Px(56.0),
                     display: Display::None,
                     ..default()
                 },
-                BorderRadius::all(Val::Percent(50.0)),
                 BackgroundColor(Color::srgba(0.8, 0.88, 1.0, 0.55)),
             ));
             // Full-screen overlay that holds per-mob nameplates (Explorer/Psyker
@@ -387,6 +387,7 @@ pub(crate) fn overworld_ui(mut commands: Commands) {
             p.spawn((
                 MinimapRoot,
                 Node {
+                    border_radius: BorderRadius::all(Val::Px(6.0)),
                     position_type: PositionType::Absolute,
                     right: Val::Px(14.0),
                     top: Val::Px(14.0),
@@ -396,8 +397,7 @@ pub(crate) fn overworld_ui(mut commands: Commands) {
                     display: Display::None,
                     ..default()
                 },
-                BorderColor(Color::srgba(0.6, 0.8, 1.0, 0.5)),
-                BorderRadius::all(Val::Px(6.0)),
+                BorderColor::all(Color::srgba(0.6, 0.8, 1.0, 0.5)),
                 BackgroundColor(glass::GLASS_THIN),
             ));
             // How deep you are, under the map that earned it. Distance is the whole
@@ -407,7 +407,7 @@ pub(crate) fn overworld_ui(mut commands: Commands) {
             p.spawn((
                 MinimapDistance,
                 Text::new(String::new()),
-                TextFont { font_size: 15.0, ..default() },
+                TextFont { font_size: FontSize::Px(15.0), ..default() },
                 TextColor(glass::TEXT),
                 Node {
                     position_type: PositionType::Absolute,
@@ -452,20 +452,20 @@ pub(crate) fn action_button(parent: &mut ChildSpawnerCommands, act: OverworldAct
             Button,
             TouchActionButton(act),
             Node {
+                border_radius: BorderRadius::all(Val::Px(8.0)),
                 width: Val::Px(150.0),
                 padding: UiRect::axes(Val::Px(14.0), Val::Px(11.0)),
                 justify_content: JustifyContent::Center,
                 border: UiRect::all(Val::Px(1.5)),
                 ..default()
             },
-            BorderColor(Color::srgb(0.4, 0.5, 0.8)),
-            BorderRadius::all(Val::Px(8.0)),
+            BorderColor::all(Color::srgb(0.4, 0.5, 0.8)),
             BackgroundColor(glass::GLASS),
         ))
         .with_children(|b| {
             b.spawn((
                 Text::new(label.to_string()),
-                TextFont { font_size: 16.0, ..default() },
+                TextFont { font_size: FontSize::Px(16.0), ..default() },
                 TextColor(Color::srgb(0.88, 0.92, 1.0)),
             ));
         });
@@ -559,8 +559,8 @@ pub(crate) fn hd2d_follow(
         (
             &mut Transform,
             &mut Projection,
-            Option<&mut bevy::core_pipeline::bloom::Bloom>,
-            Option<&mut bevy::core_pipeline::dof::DepthOfField>,
+            Option<&mut bevy::post_process::bloom::Bloom>,
+            Option<&mut bevy::post_process::dof::DepthOfField>,
             Option<&mut bevy::pbr::DistanceFog>,
         ),
         With<Camera3d>,
@@ -1720,7 +1720,7 @@ pub(crate) fn sync_overworld_sprites(
                     commands.spawn((
                         WorldEntity(id.clone()),
                         Collectible,
-                        SceneRoot(scene.clone()),
+                        WorldAssetRoot(scene.clone()),
                         Transform::from_translation(world_pos(e.x, e.y, 0.0))
                             .with_scale(Vec3::splat(*scale))
                             .with_rotation(Quat::from_rotation_y(yaw)),
@@ -1891,7 +1891,7 @@ pub(crate) fn pulse_collectibles(
     for root in &roots {
         for e in std::iter::once(root).chain(child_q.iter_descendants::<Children>(root)) {
             let Ok(mm) = mat_of.get(e) else { continue };
-            let Some(m) = mats.get_mut(&mm.0) else {
+            let Some(mut m) = mats.get_mut(&mm.0) else {
                 continue;
             };
             if m.base_color_texture.is_some() {
@@ -1980,7 +1980,7 @@ pub(crate) fn build_world_walls(
         let prop = |commands: &mut Commands, path: &str, x: f32, z: f32, yaw: f32, scale: f32| {
             commands.spawn((
                 WorldWall,
-                SceneRoot(assets.load(GltfAssetLabel::Scene(0).from_asset(format!("models/{path}.glb")))),
+                WorldAssetRoot(assets.load(GltfAssetLabel::Scene(0).from_asset(format!("models/{path}.glb")))),
                 Transform::from_xyz(x, city_base_y, z)
                     .with_rotation(Quat::from_rotation_y(yaw.to_radians()))
                     .with_scale(Vec3::splat(scale)),
@@ -2163,7 +2163,7 @@ pub(crate) fn spawn_player_avatar(
                         intensity: 0.0,
                         range: 14.0,
                         radius: 0.4,
-                        shadows_enabled: false,
+                        shadow_maps_enabled: false,
                         ..default()
                     },
                     Transform::from_xyz(0.0, 2.2, 0.0),
@@ -2421,7 +2421,7 @@ pub(crate) fn illuminate_players(
     // Self-illumination: warm glow keyed off each sprite's own texture colours.
     let ef = night * 1.15;
     for mh in &sprites {
-        if let Some(m) = mats.get_mut(&mh.0) {
+        if let Some(mut m) = mats.get_mut(&mh.0) {
             // Only the COLOUR here. Which frame lights up is `animate_chars`' business,
             // set alongside the base texture so the two can never disagree — read from
             // here it was a frame stale on whichever frames the scheduler happened to run
@@ -2514,7 +2514,7 @@ pub(crate) fn update_mob_nameplates(
                 if let Some(title) = ent.boss.as_deref().and_then(meld_proto::bosses::display_name) {
                     c.spawn((
                         Text::new(title),
-                        TextFont { font_size: 12.0, ..default() },
+                        TextFont { font_size: FontSize::Px(12.0), ..default() },
                         TextColor(Color::srgb(1.0, 0.6, 0.55)),
                     ));
                 }
@@ -2528,12 +2528,12 @@ pub(crate) fn update_mob_nameplates(
                 if meld_proto::warbands::is_raid(scale.parties) {
                     c.spawn((
                         Text::new(scale.title.to_uppercase()),
-                        TextFont { font_size: 13.0, ..default() },
+                        TextFont { font_size: FontSize::Px(13.0), ..default() },
                         TextColor(Color::srgb(1.0, 0.45, 0.35)),
                     ));
                     c.spawn((
                         Text::new(format!("{} parties", scale.parties)),
-                        TextFont { font_size: 10.0, ..default() },
+                        TextFont { font_size: FontSize::Px(10.0), ..default() },
                         TextColor(Color::srgb(1.0, 0.7, 0.6)),
                     ));
                 }
@@ -2541,7 +2541,7 @@ pub(crate) fn update_mob_nameplates(
                 if ent.quarry {
                     c.spawn((
                         Text::new("QUARRY"),
-                        TextFont { font_size: 11.0, ..default() },
+                        TextFont { font_size: FontSize::Px(11.0), ..default() },
                         TextColor(Color::srgb(1.0, 0.85, 0.35)),
                     ));
                 }
@@ -2550,7 +2550,7 @@ pub(crate) fn update_mob_nameplates(
                 if ent.held {
                     c.spawn((
                         Text::new("HELD"),
-                        TextFont { font_size: 11.0, ..default() },
+                        TextFont { font_size: FontSize::Px(11.0), ..default() },
                         TextColor(Color::srgb(0.62, 0.72, 1.0)),
                     ));
                 }
@@ -2560,14 +2560,14 @@ pub(crate) fn update_mob_nameplates(
                 if ent.clashing {
                     c.spawn((
                         Text::new("\u{f0817}"),
-                        TextFont { font_size: 14.0, ..default() },
+                        TextFont { font_size: FontSize::Px(14.0), ..default() },
                         TextColor(Color::srgb(1.0, 0.55, 0.4)),
                     ));
                 }
                 if !marker.is_empty() {
                     c.spawn((
                         Text::new(marker),
-                        TextFont { font_size: 13.0, ..default() },
+                        TextFont { font_size: FontSize::Px(13.0), ..default() },
                         TextColor(marker_col),
                     ));
                 }
@@ -2575,7 +2575,7 @@ pub(crate) fn update_mob_nameplates(
                     let lvl = ent.mob_level.unwrap_or(0);
                     c.spawn((
                         Text::new(format!("Lv {lvl}")),
-                        TextFont { font_size: 12.0, ..default() },
+                        TextFont { font_size: FontSize::Px(12.0), ..default() },
                         TextColor(Color::srgb(0.95, 0.95, 1.0)),
                     ));
                 }
@@ -2596,7 +2596,7 @@ pub(crate) fn update_mob_nameplates(
                                 border: UiRect::all(Val::Px(1.0)),
                                 ..default()
                             },
-                            BorderColor(Color::srgba(0.0, 0.0, 0.0, 0.7)),
+                            BorderColor::all(Color::srgba(0.0, 0.0, 0.0, 0.7)),
                             BackgroundColor(glass::SCRIM),
                         ))
                         .with_children(|bar| {
@@ -2766,6 +2766,7 @@ pub(crate) fn spawn_dot(p: &mut ChildSpawnerCommands, cx: f32, cy: f32, size: f3
     p.spawn((
         MinimapDot,
         Node {
+            border_radius: BorderRadius::all(Val::Percent(50.0)),
             position_type: PositionType::Absolute,
             left: Val::Px(cx - size / 2.0),
             top: Val::Px(cy - size / 2.0),
@@ -2773,7 +2774,6 @@ pub(crate) fn spawn_dot(p: &mut ChildSpawnerCommands, cx: f32, cy: f32, size: f3
             height: Val::Px(size),
             ..default()
         },
-        BorderRadius::all(Val::Percent(50.0)),
         BackgroundColor(col),
     ));
 }
@@ -3042,8 +3042,8 @@ pub(crate) fn push_quad(
 /// biome-tinted) and the **cliff faces** (dirt/rock) dropping to each lower
 /// neighbour. Vertices are in world space; overworld `y` maps to world Z.
 pub(crate) fn terrace_meshes(sec: &meld_client::net::TerrainSectionView) -> (Mesh, Mesh) {
-    use bevy::render::mesh::{Indices, PrimitiveTopology};
-    use bevy::render::render_asset::RenderAssetUsages;
+    use bevy::mesh::{Indices, PrimitiveTopology};
+    use bevy::asset::RenderAssetUsages;
     let cols = sec.cols as usize;
     let rows = sec.rows as usize;
     let cell = sec.cell as f32;
@@ -3362,7 +3362,7 @@ pub(crate) fn spawn_obstacle(
             let yaw = (hash_pick(id, 360) as f32).to_radians();
             let mut ent = commands.spawn((
                 WorldEntity(id.to_string()),
-                SceneRoot(scene.clone()),
+                WorldAssetRoot(scene.clone()),
                 Transform::from_translation(world_pos(e.x, e.y, 0.0))
                     .with_scale(Vec3::splat(scale))
                     .with_rotation(Quat::from_rotation_y(yaw)),
@@ -3555,8 +3555,8 @@ pub(crate) fn overworld_camera_control(
     mut look: ResMut<hd2d::Look>,
     overlay: Res<Overlay>,
     buttons: Res<ButtonInput<MouseButton>>,
-    mut motion: EventReader<MouseMotion>,
-    mut wheel: EventReader<MouseWheel>,
+    mut motion: MessageReader<MouseMotion>,
+    mut wheel: MessageReader<MouseWheel>,
     touches: Res<Touches>,
     mut pinch: Local<Option<f32>>,
     mut two_mid: Local<Option<Vec2>>,
@@ -4990,7 +4990,7 @@ pub(crate) fn update_action_hud(
                     crate::icons::spawn_icon(row, wa.as_deref(), &pop.kind, 20.0);
                     row.spawn((
                         Text::new(pop.label()),
-                        TextFont { font_size: 17.0, ..default() },
+                        TextFont { font_size: FontSize::Px(17.0), ..default() },
                         TextColor(Color::srgba(0.62, 0.98, 0.7, a)),
                     ));
                 });
@@ -5016,6 +5016,7 @@ pub(crate) fn update_action_hud(
             // never hides the character it belongs to.
             col.spawn((
                 Node {
+                    border_radius: BorderRadius::all(Val::Px(7.0)),
                     flex_direction: FlexDirection::Column,
                     align_items: AlignItems::Center,
                     row_gap: Val::Px(4.0),
@@ -5024,8 +5025,7 @@ pub(crate) fn update_action_hud(
                     ..default()
                 },
                 BackgroundColor(glass::GLASS_THIN),
-                BorderColor(glass::EDGE_SOFT),
-                BorderRadius::all(Val::Px(7.0)),
+                BorderColor::all(glass::EDGE_SOFT),
             ))
             .with_children(|plate| {
                 // Conditions first — above the prompts, because what is wrong with the party
@@ -5067,7 +5067,7 @@ pub(crate) fn update_action_hud(
                                 border: UiRect::all(Val::Px(1.0)),
                                 ..default()
                             },
-                            BorderColor(glass::EDGE_SOFT),
+                            BorderColor::all(glass::EDGE_SOFT),
                             BackgroundColor(Color::srgba(0.02, 0.03, 0.06, 0.7)),
                         ))
                         .with_children(|bar| {
@@ -5157,7 +5157,7 @@ pub(crate) fn update_reach_halo(
     for (e, parent, mm, light) in &mut halos {
         if parent.parent() == root {
             found = true;
-            if let Some(m) = mats.get_mut(&mm.0) {
+            if let Some(mut m) = mats.get_mut(&mm.0) {
                 m.base_color = m.base_color.with_alpha(alpha);
             }
             if let Some(mut light) = light {
@@ -5208,7 +5208,7 @@ pub(crate) fn update_reach_halo(
                 intensity: 0.0,
                 range: 6.5,
                 radius: 0.3,
-                shadows_enabled: false,
+                shadow_maps_enabled: false,
                 ..default()
             },
         ));

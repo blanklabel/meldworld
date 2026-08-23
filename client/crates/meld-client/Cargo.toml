@@ -12,7 +12,7 @@ default-run = "meld-client"
 [dependencies]
 # `webp` decodes the login screen's baked backdrop frames. It is NOT `jpeg`
 # because every zune-jpeg 0.5.x fails to build on the current rustc.
-bevy = { version = "0.16", features = ["mp3", "webp"] }
+bevy = { version = "0.19", features = ["mp3", "webp"] }
 # Networking: ewebsock for the
 # realtime WebSocket, ehttp for the auth HTTP calls. Both are poll/callback based
 # and need no tokio, which keeps the client off the server's async stack.
@@ -28,7 +28,7 @@ meld-proto = { path = "../../../shared/meld-proto" }
 # server workspace exactly like meld-proto does.
 meld-server = { path = "../../../server/crates/meld-server", optional = true }
 tokio = { version = "1", features = ["rt-multi-thread", "net", "time"], optional = true }
-bevy_embedded_assets = { version = "0.13", optional = true }
+bevy_embedded_assets = { version = "0.16", optional = true }
 # Raise the process's open-file limit at startup — Bevy's asset loader opens many
 # files at once and a low soft limit (256 on a GUI/launchd-launched macOS process)
 # makes loads fail with "Too many open files", silently dropping sprites + models.

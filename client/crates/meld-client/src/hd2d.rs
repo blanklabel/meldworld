@@ -11,10 +11,11 @@
 
 use std::time::{Duration, SystemTime};
 
-use bevy::core_pipeline::bloom::Bloom;
-use bevy::core_pipeline::dof::{DepthOfField, DepthOfFieldMode};
+use bevy::post_process::bloom::Bloom;
+use bevy::post_process::dof::{DepthOfField, DepthOfFieldMode};
 use bevy::core_pipeline::tonemapping::Tonemapping;
-use bevy::pbr::{DistanceFog, FogFalloff, NotShadowCaster};
+use bevy::light::NotShadowCaster;
+use bevy::pbr::{DistanceFog, FogFalloff};
 use bevy::prelude::*;
 use bevy::render::view::window::screenshot::{save_to_disk, Screenshot};
 use serde::{Deserialize, Serialize};
@@ -161,7 +162,9 @@ pub fn spawn_camera(commands: &mut Commands, look: &Look, initial: Transform) ->
     #[allow(unused_mut)]
     let mut cam = commands.spawn((
         Camera3d::default(),
-        Camera { hdr: true, ..default() },
+        ambient_light(),
+        Camera::default(),
+        bevy::camera::Hdr,
         Tonemapping::TonyMcMapface,
         bloom_component(look),
         dof_component(look),
@@ -180,7 +183,7 @@ pub fn spawn_camera(commands: &mut Commands, look: &Look, initial: Transform) ->
     cam.insert((
         Msaa::Off,
         bevy::core_pipeline::oit::OrderIndependentTransparencySettings::default(),
-        bevy::core_pipeline::fxaa::Fxaa::default(),
+        bevy::anti_alias::fxaa::Fxaa::default(),
     ));
     cam.id()
 }
@@ -190,7 +193,7 @@ pub fn spawn_sun(commands: &mut Commands, look: &Look) {
     commands.spawn((
         DirectionalLight {
             illuminance: 9000.0,
-            shadows_enabled: true,
+            shadow_maps_enabled: true,
             color: Color::srgb(1.0, 0.96, 0.85),
             ..default()
         },
@@ -616,7 +619,7 @@ pub fn animate_chars(
         } else {
             cs.frames.idle[dir].clone()
         };
-        if let Some(m) = mats.get_mut(&cs.mat) {
+        if let Some(mut m) = mats.get_mut(&cs.mat) {
             // The emissive layer is the SAME frame, set in the same breath. Mirroring it
             // from `illuminate_players` instead means a system in a different tuple, with
             // no ordering against this one, sometimes reads the texture before this frame
@@ -664,8 +667,8 @@ pub fn sprite_material(tint: Color, tex: Handle<Image>) -> StandardMaterial {
 /// form — the cheap HD-2D "impostor" depth trick. `arc_deg` is the total bow
 /// (≈50-70° reads rounded without wrapping too hard).
 pub fn cyl_billboard_mesh(w: f32, h: f32, cols: usize, arc_deg: f32) -> Mesh {
-    use bevy::render::mesh::{Indices, PrimitiveTopology};
-    use bevy::render::render_asset::RenderAssetUsages;
+    use bevy::mesh::{Indices, PrimitiveTopology};
+    use bevy::asset::RenderAssetUsages;
 
     let cols = cols.max(1);
     let arc = arc_deg.to_radians();
@@ -711,8 +714,8 @@ pub fn cyl_billboard_mesh(w: f32, h: f32, cols: usize, arc_deg: f32) -> Mesh {
 /// its UV are pulled up to `crop`. Used to stack a back row tight behind the front
 /// without their legs cluttering.
 pub fn bust_billboard_mesh(w: f32, h: f32, cols: usize, arc_deg: f32, crop: f32) -> Mesh {
-    use bevy::render::mesh::{Indices, PrimitiveTopology};
-    use bevy::render::render_asset::RenderAssetUsages;
+    use bevy::mesh::{Indices, PrimitiveTopology};
+    use bevy::asset::RenderAssetUsages;
 
     let cols = cols.max(1);
     let arc = arc_deg.to_radians();
@@ -754,8 +757,8 @@ pub fn bust_billboard_mesh(w: f32, h: f32, cols: usize, arc_deg: f32, crop: f32)
 /// Flat-shaded per face (verts duplicated with a face normal) so each facet catches
 /// the light + bloom as it spins. `r` is the equator radius, `half_h` the tip reach.
 pub fn diamond_mesh(r: f32, half_h: f32) -> Mesh {
-    use bevy::render::mesh::{Indices, PrimitiveTopology};
-    use bevy::render::render_asset::RenderAssetUsages;
+    use bevy::mesh::{Indices, PrimitiveTopology};
+    use bevy::asset::RenderAssetUsages;
 
     let top = [0.0, half_h, 0.0];
     let bot = [0.0, -half_h, 0.0];
@@ -797,7 +800,7 @@ pub fn diamond_mesh(r: f32, half_h: f32) -> Mesh {
 /// A soft round white sprite (radial alpha falloff, 1 at centre → 0 at the rim) —
 /// a cheap cloud/glow puff needing no art. Use on an unlit alpha-blended billboard.
 pub fn soft_disc_texture(size: u32) -> Image {
-    use bevy::render::render_asset::RenderAssetUsages;
+    use bevy::asset::RenderAssetUsages;
     use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
     let s = size.max(4);
     let c = s as f32 / 2.0;
@@ -849,7 +852,7 @@ fn repeat_sampler(linear: bool) -> bevy::image::ImageSampler {
 }
 
 fn make_tex(s: u32, data: Vec<u8>, linear: bool) -> Image {
-    use bevy::render::render_asset::RenderAssetUsages;
+    use bevy::asset::RenderAssetUsages;
     use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
     let mut img = Image::new(
         Extent3d { width: s, height: s, depth_or_array_layers: 1 },
@@ -943,8 +946,8 @@ pub fn blob_basin_mesh_merged(
     inner: f32,
     neighbours: &[(f32, f32, f32)],
 ) -> Mesh {
-    use bevy::render::mesh::{Indices, PrimitiveTopology};
-    use bevy::render::render_asset::RenderAssetUsages;
+    use bevy::mesh::{Indices, PrimitiveTopology};
+    use bevy::asset::RenderAssetUsages;
     use std::f32::consts::TAU;
     let n = sides.max(8);
     let inner = inner.clamp(0.05, 0.95);
@@ -1002,8 +1005,8 @@ pub fn blob_basin_mesh_merged(
 }
 
 pub fn blob_basin_mesh(sides: usize, depth: f32, inner: f32) -> Mesh {
-    use bevy::render::mesh::{Indices, PrimitiveTopology};
-    use bevy::render::render_asset::RenderAssetUsages;
+    use bevy::mesh::{Indices, PrimitiveTopology};
+    use bevy::asset::RenderAssetUsages;
     use std::f32::consts::TAU;
     let n = sides.max(8);
     let inner = inner.clamp(0.05, 0.95);
@@ -1054,8 +1057,8 @@ pub fn blob_basin_mesh(sides: usize, depth: f32, inner: f32) -> Mesh {
 }
 
 pub fn blob_mesh(sides: usize) -> Mesh {
-    use bevy::render::mesh::{Indices, PrimitiveTopology};
-    use bevy::render::render_asset::RenderAssetUsages;
+    use bevy::mesh::{Indices, PrimitiveTopology};
+    use bevy::asset::RenderAssetUsages;
     use std::f32::consts::TAU;
     let n = sides.max(8);
     let mut positions = vec![[0.0f32, 0.0, 0.0]];

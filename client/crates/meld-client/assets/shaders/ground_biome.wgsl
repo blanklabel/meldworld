@@ -65,16 +65,16 @@ struct BiomeParams {
     shift: vec4<f32>,
 }
 
-@group(2) @binding(100) var t_forest: texture_2d<f32>;
-@group(2) @binding(101) var t_desert: texture_2d<f32>;
-@group(2) @binding(102) var t_ashfall: texture_2d<f32>;
-@group(2) @binding(103) var t_tundra: texture_2d<f32>;
-@group(2) @binding(104) var t_mire: texture_2d<f32>;
-@group(2) @binding(105) var samp: sampler;
-@group(2) @binding(106) var<uniform> params: BiomeParams;
-@group(2) @binding(107) var t_water_clear: texture_2d<f32>;
-@group(2) @binding(108) var t_water_bog: texture_2d<f32>;
-@group(2) @binding(109) var t_water_ice: texture_2d<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(100) var t_forest: texture_2d<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(101) var t_desert: texture_2d<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(102) var t_ashfall: texture_2d<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(103) var t_tundra: texture_2d<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(104) var t_mire: texture_2d<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(105) var samp: sampler;
+@group(#{MATERIAL_BIND_GROUP}) @binding(106) var<uniform> params: BiomeParams;
+@group(#{MATERIAL_BIND_GROUP}) @binding(107) var t_water_clear: texture_2d<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(108) var t_water_bog: texture_2d<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(109) var t_water_ice: texture_2d<f32>;
 
 // The sea's tile for the biome it borders — the same mapping the pond/bog-pool/
 // frozen-pond props use (`WorldAssets::water_mats`), so a tundra shore is ice and a mire

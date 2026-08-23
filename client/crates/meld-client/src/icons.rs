@@ -181,7 +181,7 @@ pub(crate) fn spawn_icon(
     .with_children(|slot| {
         slot.spawn((
             Text::new(g),
-            TextFont { font_size: px * 0.82, ..default() },
+            TextFont { font_size: FontSize::Px(px * 0.82), ..default() },
             TextColor(colour),
         ));
     });
@@ -199,12 +199,12 @@ pub(crate) fn spawn_stack(
     spawn_icon(row, wa, kind, px);
     row.spawn((
         Text::new(format!("x{qty}")),
-        TextFont { font_size: px * 0.70, ..default() },
+        TextFont { font_size: FontSize::Px(px * 0.70), ..default() },
         TextColor(Color::srgb(0.95, 0.85, 0.5)),
     ));
     row.spawn((
         Text::new(display_name(kind)),
-        TextFont { font_size: px * 0.66, ..default() },
+        TextFont { font_size: FontSize::Px(px * 0.66), ..default() },
         TextColor(Color::srgb(0.88, 0.92, 1.0)),
     ));
 }
@@ -226,7 +226,7 @@ pub(crate) fn spawn_gear_icon(row: &mut ChildSpawnerCommands, rarity: Color, px:
     .with_children(|slot| {
         slot.spawn((
             Text::new(nf::KIT.0),
-            TextFont { font_size: px * 0.82, ..default() },
+            TextFont { font_size: FontSize::Px(px * 0.82), ..default() },
             TextColor(rarity),
         ));
     });

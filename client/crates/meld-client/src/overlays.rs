@@ -172,7 +172,7 @@ pub(crate) fn render_overlay(
     let label = |p: &mut ChildSpawnerCommands, text: String, size: f32, color: Color| {
         p.spawn((
             Text::new(text),
-            TextFont { font_size: size, ..default() },
+            TextFont { font_size: size.into(), ..default() },
             TextColor(color),
         ));
     };
@@ -409,6 +409,7 @@ pub(crate) fn render_gear_tooltip(
             GearTooltipRoot,
             GlobalZIndex(1000),
             Node {
+                border_radius: BorderRadius::all(Val::Px(6.0)),
                 position_type: PositionType::Absolute,
                 left: Val::Px(pos.x),
                 top: Val::Px(pos.y),
@@ -420,14 +421,13 @@ pub(crate) fn render_gear_tooltip(
                 ..default()
             },
             BackgroundColor(glass::GLASS),
-            BorderColor(Color::srgb(0.45, 0.55, 0.85)),
-            BorderRadius::all(Val::Px(6.0)),
+            BorderColor::all(Color::srgb(0.45, 0.55, 0.85)),
         ))
         .with_children(|t| {
             for (i, (text, color)) in lines.into_iter().enumerate() {
                 t.spawn((
                     Text::new(text),
-                    TextFont { font_size: if i == 0 { 15.0 } else { 12.0 }, ..default() },
+                    TextFont { font_size: FontSize::Px(if i == 0 { 15.0 } else { 12.0 }), ..default() },
                     TextColor(color),
                 ));
             }
@@ -690,6 +690,7 @@ pub(crate) fn render_loot_report(
         .with_children(|root| {
             root.spawn((
                 Node {
+                    border_radius: BorderRadius::all(Val::Px(10.0)),
                     flex_direction: FlexDirection::Column,
                     row_gap: Val::Px(6.0),
                     align_items: AlignItems::Center,
@@ -697,14 +698,13 @@ pub(crate) fn render_loot_report(
                     border: UiRect::all(Val::Px(2.0)),
                     ..default()
                 },
-                BorderColor(glass::EDGE_SOFT),
+                BorderColor::all(glass::EDGE_SOFT),
                 BackgroundColor(glass::GLASS_THIN),
-                BorderRadius::all(Val::Px(10.0)),
             ))
             .with_children(|p| {
                 p.spawn((
                     Text::new(report.title.clone()),
-                    TextFont { font_size: 28.0, ..default() },
+                    TextFont { font_size: FontSize::Px(28.0), ..default() },
                     TextColor(Color::srgb(0.95, 0.85, 0.5)),
                 ));
                 let totals = match report.xp {
@@ -713,7 +713,7 @@ pub(crate) fn render_loot_report(
                 };
                 p.spawn((
                     Text::new(totals),
-                    TextFont { font_size: 20.0, ..default() },
+                    TextFont { font_size: FontSize::Px(20.0), ..default() },
                     TextColor(Color::srgb(0.85, 0.92, 1.0)),
                 ));
                 // What you hauled out, as a row per stack: the thing's own icon, then
@@ -735,12 +735,12 @@ pub(crate) fn render_loot_report(
                         spawn_gear_chip(row, rarity_color(name), 24.0);
                         row.spawn((
                             Text::new("x1".to_string()),
-                            TextFont { font_size: 17.0, ..default() },
+                            TextFont { font_size: FontSize::Px(17.0), ..default() },
                             TextColor(Color::srgb(0.95, 0.85, 0.5)),
                         ));
                         row.spawn((
                             Text::new(name.clone()),
-                            TextFont { font_size: 16.0, ..default() },
+                            TextFont { font_size: FontSize::Px(16.0), ..default() },
                             TextColor(rarity_color(name)),
                         ));
                         // The WORD, on the row, in the tier's own colour (`GR-6`). This card
@@ -750,7 +750,7 @@ pub(crate) fn render_loot_report(
                         if *ins != Insurance::Standard {
                             row.spawn((
                                 Text::new(ins.label().to_string()),
-                                TextFont { font_size: 14.0, ..default() },
+                                TextFont { font_size: FontSize::Px(14.0), ..default() },
                                 TextColor(insurance_color(*ins)),
                             ));
                         }
@@ -762,7 +762,7 @@ pub(crate) fn render_loot_report(
                 if report.gear.iter().any(|(_, i)| *i == Insurance::Ephemeral) {
                     p.spawn((
                         Text::new(Insurance::Ephemeral.tooltip().to_string()),
-                        TextFont { font_size: 14.0, ..default() },
+                        TextFont { font_size: FontSize::Px(14.0), ..default() },
                         TextColor(insurance_color(Insurance::Ephemeral)),
                     ));
                 }
@@ -773,7 +773,7 @@ pub(crate) fn render_loot_report(
                 for (hero, points, burned) in &report.worn {
                     p.spawn((
                         Text::new(format!("{hero} fell: kit worn -{points} durability")),
-                        TextFont { font_size: 17.0, ..default() },
+                        TextFont { font_size: FontSize::Px(17.0), ..default() },
                         TextColor(glass::WARN),
                     ));
                     // And the part that does not come back. Named piece by piece, because an
@@ -785,7 +785,7 @@ pub(crate) fn render_loot_report(
                     for name in burned {
                         p.spawn((
                             Text::new(format!("{name} burned - Ephemeral, gone with them")),
-                            TextFont { font_size: 15.0, ..default() },
+                            TextFont { font_size: FontSize::Px(15.0), ..default() },
                             TextColor(insurance_color(Insurance::Ephemeral)),
                         ));
                     }
@@ -877,7 +877,7 @@ pub(crate) fn level_up_screen(
                 let label = |p: &mut ChildSpawnerCommands, text: String, size: f32, color: Color| {
                     p.spawn((
                         Text::new(text),
-                        TextFont { font_size: size, ..default() },
+                        TextFont { font_size: size.into(), ..default() },
                         TextColor(color),
                     ));
                 };
@@ -910,12 +910,12 @@ pub(crate) fn level_up_screen(
                         .with_children(|row| {
                             row.spawn((
                                 Text::new(format!("{name}   {before} -> {after}")),
-                                TextFont { font_size: 18.0, ..default() },
+                                TextFont { font_size: FontSize::Px(18.0), ..default() },
                                 TextColor(if gain > 0 { Color::srgb(0.9, 0.95, 1.0) } else { dim }),
                             ));
                             row.spawn((
                                 Text::new(arrow),
-                                TextFont { font_size: 18.0, ..default() },
+                                TextFont { font_size: FontSize::Px(18.0), ..default() },
                                 TextColor(gcol),
                             ));
                         });
@@ -1159,7 +1159,7 @@ pub(crate) fn unlock_banner(
                     let label = |c: &mut ChildSpawnerCommands, t: String, s: f32, col: Color| {
                         c.spawn((
                             Text::new(t),
-                            TextFont { font_size: s, ..default() },
+                            TextFont { font_size: s.into(), ..default() },
                             TextColor(col),
                         ));
                     };

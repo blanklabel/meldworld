@@ -170,7 +170,7 @@ pub(crate) fn spawn_hero_actor(
                     intensity: 0.0,
                     range,
                     radius,
-                    shadows_enabled: false,
+                    shadow_maps_enabled: false,
                     ..default()
                 },
                 Transform::from_xyz(0.0, 1.6, 0.0),
@@ -578,7 +578,7 @@ pub(crate) fn animate_battle_actors(
         let glow = LinearRgba::rgb(ef, ef * 0.9, ef * 0.7);
         // KO: gray the sprite, drop any hit motion — reads as "downed".
         if battle.view(&s.id).map(|c| c.hp <= 0).unwrap_or(false) {
-            if let Some(m) = mats.get_mut(&s.mat) {
+            if let Some(mut m) = mats.get_mut(&s.mat) {
                 let c = s.base.to_srgba();
                 let lum = 0.3 * c.red + 0.5 * c.green + 0.2 * c.blue;
                 m.base_color = Color::srgb(lum * 0.45, lum * 0.45, lum * 0.5);
@@ -639,7 +639,7 @@ pub(crate) fn animate_battle_actors(
             .clamp(0.0, 1.0);
         // White impact flash on the instant of a hit (brighter than base → blooms);
         // otherwise the base tint, warmed toward angry red by the rage fraction.
-        if let Some(m) = mats.get_mut(&s.mat) {
+        if let Some(mut m) = mats.get_mut(&s.mat) {
             if hit_age < feel.white_ttl {
                 m.base_color =
                     lerp_color(s.base, Color::srgb(2.6, 2.6, 2.6), 1.0 - hit_age / feel.white_ttl);
@@ -779,7 +779,7 @@ pub(crate) fn battle_fit(battle: &BattleData) -> f32 {
 /// of the automatic co-op fit, so the framing is auto but adjustable.
 pub(crate) fn battle_zoom_input(
     mut bcam: ResMut<BattleCam>,
-    mut wheel: EventReader<MouseWheel>,
+    mut wheel: MessageReader<MouseWheel>,
     touches: Res<Touches>,
     mut pinch: Local<Option<f32>>,
 ) {
@@ -807,8 +807,8 @@ pub(crate) fn battle_camera(
         (
             &mut Transform,
             &mut Projection,
-            Option<&mut bevy::core_pipeline::bloom::Bloom>,
-            Option<&mut bevy::core_pipeline::dof::DepthOfField>,
+            Option<&mut bevy::post_process::bloom::Bloom>,
+            Option<&mut bevy::post_process::dof::DepthOfField>,
             Option<&mut bevy::pbr::DistanceFog>,
         ),
         With<Camera3d>,
@@ -1455,6 +1455,7 @@ pub(crate) fn cmd_tile(
             Button,
             MenuRow { index },
             Node {
+                border_radius: BorderRadius::all(Val::Px(8.0)),
                 width: Val::Px(w),
                 height: Val::Px(46.0),
                 justify_content: JustifyContent::Center,
@@ -1462,15 +1463,14 @@ pub(crate) fn cmd_tile(
                 border: UiRect::all(Val::Px(1.0)),
                 ..default()
             },
-            BorderColor(border),
+            BorderColor::all(border),
             BackgroundColor(glass::GLASS_THIN),
-            BorderRadius::all(Val::Px(8.0)),
         ))
         .with_children(|t| {
             t.spawn((
                 Text::new(label.to_string()),
                 TextFont {
-                    font_size: 15.0,
+                    font_size: FontSize::Px(15.0),
                     ..default()
                 },
                 TextColor(text),
@@ -1620,6 +1620,7 @@ pub(crate) fn rebuild_command_menu(
         .with_children(|w| {
             w.spawn((
                 Node {
+                    border_radius: BorderRadius::all(Val::Px(12.0)),
                     flex_direction: FlexDirection::Column,
                     align_items: AlignItems::Center,
                     row_gap: Val::Px(6.0),
@@ -1627,9 +1628,8 @@ pub(crate) fn rebuild_command_menu(
                     border: UiRect::all(Val::Px(1.0)),
                     ..default()
                 },
-                BorderColor(glass::EDGE_SOFT),
+                BorderColor::all(glass::EDGE_SOFT),
                 BackgroundColor(glass::GLASS_THIN),
-                BorderRadius::all(Val::Px(12.0)),
             ))
             .with_children(|panel| {
                 // Header: who you're commanding (+ a Tab hint when another ready hero
@@ -1647,13 +1647,13 @@ pub(crate) fn rebuild_command_menu(
                             // Nerd Font (mdi) sword glyph, not a bare unicode symbol
                             // (the default face would tofu that) — see UiFont.
                             Text::new(format!("\u{f04e5} {commanding}")), // sword
-                            TextFont { font_size: 15.0, ..default() },
+                            TextFont { font_size: FontSize::Px(15.0), ..default() },
                             TextColor(gold),
                         ));
                         if can_switch {
                             h.spawn((
                                 Text::new("[Tab] switch".to_string()),
-                                TextFont { font_size: 12.0, ..default() },
+                                TextFont { font_size: FontSize::Px(12.0), ..default() },
                                 TextColor(Color::srgb(0.6, 0.66, 0.8)),
                             ));
                         }
@@ -1686,13 +1686,13 @@ pub(crate) fn rebuild_command_menu(
                     };
                     panel.spawn((
                         Text::new(line),
-                        TextFont { font_size: 12.0, ..default() },
+                        TextFont { font_size: FontSize::Px(12.0), ..default() },
                         TextColor(Color::srgb(0.78, 0.62, 1.0)),
                     ));
                     if !held.is_empty() {
                         panel.spawn((
                             Text::new("each fires again every turn it is held".to_string()),
-                            TextFont { font_size: 10.0, ..default() },
+                            TextFont { font_size: FontSize::Px(10.0), ..default() },
                             TextColor(glass::DIM),
                         ));
                     }
@@ -1752,7 +1752,7 @@ pub(crate) fn rebuild_command_menu(
                         .with_children(|list| {
                             list.spawn((
                                 Text::new(header),
-                                TextFont { font_size: 13.0, ..default() },
+                                TextFont { font_size: FontSize::Px(13.0), ..default() },
                                 TextColor(Color::srgb(0.95, 0.85, 0.5)),
                                 Node {
                                     margin: UiRect::bottom(Val::Px(4.0)),
@@ -1771,6 +1771,7 @@ pub(crate) fn rebuild_command_menu(
                                 let mut row = list.spawn((
                                     MenuRow { index: i },
                                     Node {
+                                        border_radius: BorderRadius::all(Val::Px(3.0)),
                                         width: Val::Percent(100.0),
                                         flex_direction: FlexDirection::Row,
                                         align_items: AlignItems::Center,
@@ -1779,7 +1780,6 @@ pub(crate) fn rebuild_command_menu(
                                         ..default()
                                     },
                                     BackgroundColor(Color::NONE),
-                                    BorderRadius::all(Val::Px(3.0)),
                                 ));
                                 if row_enabled {
                                     row.insert(Button);
@@ -1787,7 +1787,7 @@ pub(crate) fn rebuild_command_menu(
                                 row.with_children(|r| {
                                     r.spawn((
                                         Text::new(label.clone()),
-                                        TextFont { font_size: 18.0, ..default() },
+                                        TextFont { font_size: FontSize::Px(18.0), ..default() },
                                         TextColor(text_color),
                                     ));
                                     // The Adrenaline cost, right-aligned by `SpaceBetween`
@@ -1796,7 +1796,7 @@ pub(crate) fn rebuild_command_menu(
                                     if let Some(cost) = cost {
                                         r.spawn((
                                             Text::new(format!("{cost} AP")),
-                                            TextFont { font_size: 14.0, ..default() },
+                                            TextFont { font_size: FontSize::Px(14.0), ..default() },
                                             TextColor(if row_enabled { glass::DIM } else { text_color }),
                                         ));
                                     }
@@ -1805,7 +1805,7 @@ pub(crate) fn rebuild_command_menu(
                             if !tooltip.is_empty() {
                                 list.spawn((
                                     Text::new(tooltip.clone()),
-                                    TextFont { font_size: 12.0, ..default() },
+                                    TextFont { font_size: FontSize::Px(12.0), ..default() },
                                     TextColor(glass::DIM),
                                     Node {
                                         margin: UiRect::top(Val::Px(6.0)),
@@ -1821,7 +1821,7 @@ pub(crate) fn rebuild_command_menu(
                             if !magnitudes.is_empty() {
                                 list.spawn((
                                     Text::new(magnitudes.clone()),
-                                    TextFont { font_size: 12.0, ..default() },
+                                    TextFont { font_size: FontSize::Px(12.0), ..default() },
                                     TextColor(glass::TITLE),
                                     Node {
                                         margin: UiRect::top(Val::Px(3.0)),
@@ -1846,19 +1846,19 @@ pub(crate) fn rebuild_command_menu(
                             Button,
                             TacticsButton,
                             Node {
+                                border_radius: BorderRadius::all(Val::Px(6.0)),
                                 margin: UiRect::top(Val::Px(6.0)),
                                 padding: UiRect::axes(Val::Px(10.0), Val::Px(4.0)),
                                 border: UiRect::all(Val::Px(1.0)),
                                 ..default()
                             },
-                            BorderColor(glass::EDGE_SOFT),
+                            BorderColor::all(glass::EDGE_SOFT),
                             BackgroundColor(glass::GLASS_THIN),
-                            BorderRadius::all(Val::Px(6.0)),
                         ))
                         .with_children(|b| {
                             b.spawn((
                                 Text::new(label),
-                                TextFont { font_size: 13.0, ..default() },
+                                TextFont { font_size: FontSize::Px(13.0), ..default() },
                                 TextColor(col),
                             ));
                         });
@@ -1930,37 +1930,37 @@ pub(crate) fn meter(parent: &mut ChildSpawnerCommands, frac: f32, height: f32, f
     parent
         .spawn((
             Node {
+                border_radius: BorderRadius::all(Val::Px(3.0)),
                 width: Val::Percent(100.0),
                 height: Val::Px(height),
                 border: UiRect::all(Val::Px(1.0)),
                 overflow: Overflow::clip(), // keep the rounded fill inside the track
                 ..default()
             },
-            BorderColor(Color::srgb(0.35, 0.4, 0.55)),
+            BorderColor::all(Color::srgb(0.35, 0.4, 0.55)),
             BackgroundColor(Color::srgb(0.07, 0.08, 0.12)),
-            BorderRadius::all(Val::Px(3.0)),
         ))
         .with_children(|t| {
             t.spawn((
                 Node {
+                    border_radius: BorderRadius::all(Val::Px(2.0)),
                     width: Val::Percent((frac * 100.0).clamp(0.0, 100.0)),
                     height: Val::Percent(100.0),
                     flex_direction: FlexDirection::Column,
                     ..default()
                 },
                 BackgroundColor(fill),
-                BorderRadius::all(Val::Px(2.0)),
             ))
             .with_children(|f| {
                 // Top sheen: a lighter band across the upper half → a rounded highlight.
                 f.spawn((
                     Node {
+                        border_radius: BorderRadius::all(Val::Px(2.0)),
                         width: Val::Percent(100.0),
                         height: Val::Percent(45.0),
                         ..default()
                     },
                     BackgroundColor(lighten(fill, 1.45)),
-                    BorderRadius::all(Val::Px(2.0)),
                 ));
             });
         });
@@ -1973,6 +1973,7 @@ pub(crate) fn meter_labeled(parent: &mut ChildSpawnerCommands, frac: f32, height
     parent
         .spawn((
             Node {
+                border_radius: BorderRadius::all(Val::Px(3.0)),
                 width: Val::Percent(100.0),
                 height: Val::Px(height),
                 border: UiRect::all(Val::Px(1.0)),
@@ -1981,14 +1982,14 @@ pub(crate) fn meter_labeled(parent: &mut ChildSpawnerCommands, frac: f32, height
                 overflow: Overflow::clip(),
                 ..default()
             },
-            BorderColor(Color::srgb(0.35, 0.4, 0.55)),
+            BorderColor::all(Color::srgb(0.35, 0.4, 0.55)),
             BackgroundColor(Color::srgb(0.07, 0.08, 0.12)),
-            BorderRadius::all(Val::Px(3.0)),
         ))
         .with_children(|t| {
             // Fill: absolute so the centred label stays centred over the whole track.
             t.spawn((
                 Node {
+                    border_radius: BorderRadius::all(Val::Px(2.0)),
                     position_type: PositionType::Absolute,
                     left: Val::Px(0.0),
                     top: Val::Px(0.0),
@@ -1997,12 +1998,11 @@ pub(crate) fn meter_labeled(parent: &mut ChildSpawnerCommands, frac: f32, height
                     ..default()
                 },
                 BackgroundColor(fill),
-                BorderRadius::all(Val::Px(2.0)),
             ));
             // Label on top (later sibling renders above the fill).
             t.spawn((
                 Text::new(label),
-                TextFont { font_size: (height - 3.0).max(10.0), ..default() },
+                TextFont { font_size: FontSize::Px((height - 3.0).max(10.0)), ..default() },
                 TextColor(Color::srgb(0.97, 0.99, 1.0)),
             ));
         });
@@ -2089,6 +2089,7 @@ pub(crate) fn render_watch_banner(
         .with_children(|root| {
             root.spawn((
                 Node {
+                    border_radius: BorderRadius::all(Val::Px(8.0)),
                     flex_direction: FlexDirection::Column,
                     align_items: AlignItems::Center,
                     row_gap: Val::Px(2.0),
@@ -2097,8 +2098,7 @@ pub(crate) fn render_watch_banner(
                     ..default()
                 },
                 BackgroundColor(glass::GLASS_THIN),
-                BorderColor(glass::EDGE_SOFT),
-                BorderRadius::all(Val::Px(8.0)),
+                BorderColor::all(glass::EDGE_SOFT),
             ))
             .with_children(|p| {
                 p.spawn(glass::text("WATCHING".to_string(), 20.0, glass::DIM));
@@ -2183,7 +2183,7 @@ pub(crate) fn render_enemy_panel(
                             c.hp,
                             c.max_hp
                         )),
-                        TextFont { font_size: 14.0, ..default() },
+                        TextFont { font_size: FontSize::Px(14.0), ..default() },
                         TextColor(name_color),
                     ));
                     meter(e, frac, 10.0, hp_fill);
@@ -2302,7 +2302,7 @@ pub(crate) fn update_condition_rims(
                         commands.entity(e).despawn();
                     }
                     if let Ok((_, mm)) = rims.get(held) {
-                        if let Some(m) = mats.get_mut(&mm.0) {
+                        if let Some(mut m) = mats.get_mut(&mm.0) {
                             m.base_color = colour.with_alpha(alpha);
                         }
                     }
@@ -2479,6 +2479,7 @@ pub(crate) fn render_status_icons(
                 let (glyph, color, _label) = effects[phase % effects.len()];
                 p.spawn((
                     Node {
+                        border_radius: BorderRadius::all(Val::Px(15.0)),
                         position_type: PositionType::Absolute,
                         left: Val::Px(head.x - 15.0),
                         top: Val::Px(head.y - 30.0),
@@ -2489,14 +2490,13 @@ pub(crate) fn render_status_icons(
                         border: UiRect::all(Val::Px(1.5)),
                         ..default()
                     },
-                    BorderColor(color),
-                    BorderRadius::all(Val::Px(15.0)),
+                    BorderColor::all(color),
                     BackgroundColor(glass::GLASS),
                 ))
                 .with_children(|b| {
                     b.spawn((
                         Text::new(glyph),
-                        TextFont { font_size: 18.0, ..default() },
+                        TextFont { font_size: FontSize::Px(18.0), ..default() },
                         TextColor(color),
                         // Placed, not centred. `left` puts the INK's centre on the badge's
                         // centre (see `status_icon_ink`); vertical needs nothing, because
@@ -2570,6 +2570,12 @@ pub(crate) fn render_ally_parties(
         .spawn((
             AllyPartyStrips,
             Node {
+                border_radius: BorderRadius {
+                                top_left: Val::Px(0.0),
+                                top_right: Val::Px(0.0),
+                                bottom_left: Val::Px(12.0),
+                                bottom_right: Val::Px(12.0),
+                            },
                 position_type: PositionType::Absolute,
                 top: Val::Px(0.0), // flush to the top — no buffer
                 left: Val::Px(0.0),
@@ -2581,15 +2587,9 @@ pub(crate) fn render_ally_parties(
                 border: UiRect::all(Val::Px(1.0)),
                 ..default()
             },
-            BorderColor(glass::EDGE_SOFT),
+            BorderColor::all(glass::EDGE_SOFT),
             BackgroundColor(glass::GLASS_THIN),
             // Flat top edge (against the screen), rounded bottom.
-            BorderRadius {
-                top_left: Val::Px(0.0),
-                top_right: Val::Px(0.0),
-                bottom_left: Val::Px(12.0),
-                bottom_right: Val::Px(12.0),
-            },
         ))
         .with_children(|box_| {
             // Header: "Allies (N)" + a clickable collapse/expand toggle.
@@ -2602,25 +2602,25 @@ pub(crate) fn render_ally_parties(
             .with_children(|hdr| {
                 hdr.spawn((
                     Text::new(format!("Allies ({})", order.len())),
-                    TextFont { font_size: 13.0, ..default() },
+                    TextFont { font_size: FontSize::Px(13.0), ..default() },
                     TextColor(Color::srgb(0.72, 0.85, 1.0)),
                 ));
                 hdr.spawn((
                     Button,
                     AllyCollapseBtn,
                     Node {
+                        border_radius: BorderRadius::all(Val::Px(5.0)),
                         padding: UiRect::axes(Val::Px(7.0), Val::Px(1.0)),
                         border: UiRect::all(Val::Px(1.0)),
                         ..default()
                     },
-                    BorderColor(glass::EDGE_SOFT),
+                    BorderColor::all(glass::EDGE_SOFT),
                     BackgroundColor(glass::GLASS_THIN),
-                    BorderRadius::all(Val::Px(5.0)),
                 ))
                 .with_children(|b| {
                     b.spawn((
                         Text::new(if collapsed { "[+]" } else { "[-]" }),
-                        TextFont { font_size: 13.0, ..default() },
+                        TextFont { font_size: FontSize::Px(13.0), ..default() },
                         TextColor(Color::srgb(0.85, 0.9, 1.0)),
                     ));
                 });
@@ -2651,7 +2651,7 @@ pub(crate) fn render_ally_parties(
                     .with_children(|col| {
                         col.spawn((
                             Text::new(label),
-                            TextFont { font_size: 12.0, ..default() },
+                            TextFont { font_size: FontSize::Px(12.0), ..default() },
                             TextColor(Color::srgb(0.7, 0.82, 1.0)),
                         ));
                         col.spawn(Node {
@@ -2690,6 +2690,7 @@ pub(crate) fn ally_cell(
     parent
         .spawn((
             Node {
+                border_radius: BorderRadius::all(Val::Px(7.0)),
                 width: Val::Px(112.0),
                 flex_direction: FlexDirection::Column,
                 row_gap: Val::Px(2.0),
@@ -2697,18 +2698,17 @@ pub(crate) fn ally_cell(
                 border: UiRect::all(Val::Px(1.0)),
                 ..default()
             },
-            BorderColor(glass::EDGE_SOFT),
+            BorderColor::all(glass::EDGE_SOFT),
             BackgroundColor(if hurt {
                 Color::srgba(0.4, 0.12, 0.14, 0.5)
             } else {
                 Color::srgba(0.09, 0.12, 0.22, 0.4)
             }),
-            BorderRadius::all(Val::Px(7.0)),
         ))
         .with_children(|cell| {
             cell.spawn((
                 Text::new(name),
-                TextFont { font_size: 13.0, ..default() },
+                TextFont { font_size: FontSize::Px(13.0), ..default() },
                 TextColor(if c.hp == 0 {
                     Color::srgb(0.55, 0.55, 0.6)
                 } else {
@@ -2764,6 +2764,7 @@ pub(crate) fn party_cell(
             Button,
             PartyCellButton { id: id.to_string() },
             Node {
+                border_radius: BorderRadius::all(Val::Px(10.0)),
                 flex_grow: 1.0,
                 flex_basis: Val::Px(0.0),
                 flex_direction: FlexDirection::Row,
@@ -2773,7 +2774,7 @@ pub(crate) fn party_cell(
                 ..default()
             },
             // Flash the edge toward bright gold-white as the turn comes up.
-            BorderColor(if atb_pop > 0.0 {
+            BorderColor::all(if atb_pop > 0.0 {
                 lerp_color(base_border, Color::srgb(1.0, 0.98, 0.7), atb_pop)
             } else {
                 base_border
@@ -2792,7 +2793,6 @@ pub(crate) fn party_cell(
             } else {
                 glass::GLASS_THIN
             }),
-            BorderRadius::all(Val::Px(10.0)),
         ))
         .with_children(|cell| {
             // Compact 3-line readout: name + Lv/tag, HP bar (number inside), ATB bar.
@@ -2814,7 +2814,7 @@ pub(crate) fn party_cell(
                 .with_children(|line| {
                     line.spawn((
                         Text::new(name),
-                        TextFont { font_size: 16.0, ..default() },
+                        TextFont { font_size: FontSize::Px(16.0), ..default() },
                         TextColor(if c.hp == 0 {
                             Color::srgb(0.55, 0.55, 0.6)
                         } else {
@@ -2836,13 +2836,13 @@ pub(crate) fn party_cell(
                         if !tag.is_empty() {
                             right.spawn((
                                 Text::new(tag),
-                                TextFont { font_size: 13.0, ..default() },
+                                TextFont { font_size: FontSize::Px(13.0), ..default() },
                                 TextColor(tag_color),
                             ));
                         }
                         right.spawn((
                             Text::new(format!("Lv{}", c.level)),
-                            TextFont { font_size: 12.0, ..default() },
+                            TextFont { font_size: FontSize::Px(12.0), ..default() },
                             TextColor(Color::srgb(0.95, 0.85, 0.4)),
                         ));
                     });
@@ -2902,7 +2902,7 @@ pub(crate) fn party_cell(
                             };
                             row.spawn((
                                 Text::new(label),
-                                TextFont { font_size: 12.0, ..default() },
+                                TextFont { font_size: FontSize::Px(12.0), ..default() },
                                 TextColor(if filled {
                                     Color::srgb(0.8, 0.6, 1.0)
                                 } else {
@@ -3114,7 +3114,7 @@ pub(crate) fn render_hit_fx(
                     },
                     Text::new(hit.text.clone()),
                     TextFont {
-                        font_size: feel.number_size * hit.scale,
+                        font_size: FontSize::Px(feel.number_size * hit.scale),
                         ..default()
                     },
                     TextColor(hit.color.with_alpha(alpha)),
@@ -3136,6 +3136,7 @@ pub(crate) fn render_hit_fx(
                 // then ignored.
                 p.spawn((
                     Node {
+                        border_radius: BorderRadius::all(Val::Px(6.0)),
                         position_type: PositionType::Absolute,
                         left: Val::Px(w * 0.5 - 90.0),
                         top: Val::Px(h * 0.12 + i as f32 * 34.0),
@@ -3145,13 +3146,12 @@ pub(crate) fn render_hit_fx(
                     },
                     // The cue fades out, so the shared glass carries the fade.
                     BackgroundColor(glass::GLASS.with_alpha(glass::GLASS.alpha() * alpha)),
-                    BorderColor(Color::srgba(1.0, 0.9, 0.4, alpha)),
-                    BorderRadius::all(Val::Px(6.0)),
+                    BorderColor::all(Color::srgba(1.0, 0.9, 0.4, alpha)),
                 ))
                 .with_children(|b| {
                     b.spawn((
                         Text::new(c.text.clone()),
-                        TextFont { font_size: 22.0, ..default() },
+                        TextFont { font_size: FontSize::Px(22.0), ..default() },
                         TextColor(Color::srgba(1.0, 0.92, 0.55, alpha)),
                     ));
                 });
@@ -3174,7 +3174,7 @@ pub(crate) fn render_hit_fx(
                         ..default()
                     },
                     Text::new(label),
-                    TextFont { font_size: 14.0, ..default() },
+                    TextFont { font_size: FontSize::Px(14.0), ..default() },
                     TextColor(col),
                 ));
             }
