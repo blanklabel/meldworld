@@ -1879,6 +1879,28 @@ than staging one — hand-placing two hostile creatures would prove nothing abou
 player ever meets one. If you are eyeballing how lively the world looks, expect fewer ⚔ than
 before, and that is the bug being gone rather than the feature.
 
+**LIKE DOES NOT FIGHT LIKE, AND A FACTION IS NOT A SPECIES** (`CR-13`). `HOSTILE_PAIRS` is an
+allow-list of who dislikes whom, not "different means enemies" — `beast` and `construct`
+simply ignore each other, which is what lets a mixed pack keep both identities. But a
+creature's faction is handed DOWN: `become_boss` gives a rite's retinue the boss's lineage
+and `join_pack` conscripts a minion, so faction is a property of the pack, never of the
+kind. Measured across three seeded worlds: **all 15 species held more than one faction, and
+every one of them held two that are hostile to each other** — a `thornback_boar` in a
+construct-led pack would hunt an ordinary boar beside it. `creatures_at_odds` /
+`battle_at_odds` check SPECIES first and unconditionally, and all four call sites (two
+overworld, two in battle) go through them, because a pack that walks past each other outside
+and then tears itself apart when the fight starts is the worst of both.
+⚠️ `CR-11` made this worse before it made it better: handing the leader's faction down
+unconditionally fixed the inside of a pack and widened the outside from two factions per
+species to five. **Conscription is the exception now** — a minion keeps its own faction
+unless it is genuinely at war with its leader. ⚠️ Which is exactly why the UNDEAD RITE
+writes `faction = "undead"` on its retinue **explicitly** rather than leaving it to
+`join_pack`: an ordinary pack is an alliance, but a rite is a RAISING, so it conscripts
+unconditionally — including the species the hostility table happens not to mind. Relying on
+the helper silently let living retainers into a rite. The one deliberate omission: a RISEN boar and
+a living boar are the same species and so will not fight; adding `UNDEAD` as a carve-out is
+a one-line change, in one place, if that reads wrong in play.
+
 **A LOSING LEADER CALLS, AND THE CALL COSTS ITS TURN.** The reach is `pack_call_radius`,
 deliberately far past a group radius — that is the whole value: a pack thinned by drift, by a turf
 war, or by the party's opening turns gets its bodies back, and clearing the littles first stops

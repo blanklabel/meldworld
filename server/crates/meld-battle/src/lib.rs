@@ -4972,6 +4972,9 @@ impl Battle {
     /// hostile heuristic (with back-row protection) of the basic AI.
     fn ability_targets(&mut self, actor_i: usize, target: AbilityTarget) -> Vec<usize> {
         let actor_faction = self.fighters[actor_i].faction.clone();
+        // LIKE DOES NOT FIGHT LIKE (CR-13): the species travels with the faction, because
+        // a creature's faction is handed down by whatever pack promoted it.
+        let actor_kind = self.fighters[actor_i].monster_kind.clone();
         let actor_id = self.fighters[actor_i].combatant_id.clone();
         match target {
             AbilityTarget::SelfCast => vec![actor_i],
@@ -4986,7 +4989,12 @@ impl Battle {
                 .filter(|(_, f)| {
                     f.alive
                         && f.combatant_id != actor_id
-                        && meld_proto::factions::battle_hostile(&actor_faction, &f.faction)
+                        && meld_proto::factions::battle_at_odds(
+                        &actor_faction,
+                        actor_kind.as_deref().unwrap_or_default(),
+                        &f.faction,
+                        f.monster_kind.as_deref().unwrap_or_default(),
+                    )
                 })
                 .map(|(i, _)| i)
                 .collect(),
@@ -5015,6 +5023,9 @@ impl Battle {
     /// game cheating.
     fn choose_target(&mut self, actor_i: usize) -> (Option<usize>, Option<String>) {
         let actor_faction = self.fighters[actor_i].faction.clone();
+        // LIKE DOES NOT FIGHT LIKE (CR-13): the species travels with the faction, because
+        // a creature's faction is handed down by whatever pack promoted it.
+        let actor_kind = self.fighters[actor_i].monster_kind.clone();
         let actor_id = self.fighters[actor_i].combatant_id.clone();
         let hostile: Vec<usize> = self
             .fighters
@@ -5023,7 +5034,12 @@ impl Battle {
             .filter(|(_, f)| {
                 f.alive
                     && f.combatant_id != actor_id
-                    && meld_proto::factions::battle_hostile(&actor_faction, &f.faction)
+                    && meld_proto::factions::battle_at_odds(
+                        &actor_faction,
+                        actor_kind.as_deref().unwrap_or_default(),
+                        &f.faction,
+                        f.monster_kind.as_deref().unwrap_or_default(),
+                    )
             })
             .map(|(i, _)| i)
             .collect();
@@ -6295,9 +6311,17 @@ mod tests {
     }
 
     /// A creature of a specific faction.
+    /// A creature of a named FACTION — and therefore of its own species.
+    ///
+    /// `monster` stamps every fixture with the same `forest_bloom_stalker`, so before
+    /// `CR-13` a "beast" and a "fiend" built here were two of the same animal wearing
+    /// different faction labels. That was invisible while hostility was decided by faction
+    /// alone, and it is exactly the confusion the rule exists to end: like does not fight
+    /// like, whatever a pack relabelled it. A rival has to be a different creature.
     fn creature(id: &str, hp: i32, speed: i32, faction: &str) -> Fighter {
         let mut m = monster(id, hp, speed);
         m.faction = faction.to_string();
+        m.monster_kind = Some(format!("{faction}_fixture"));
         m
     }
 

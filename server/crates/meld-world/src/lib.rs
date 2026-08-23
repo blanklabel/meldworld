@@ -38,7 +38,7 @@ use meld_proto::enums::Insurance;
 use meld_proto::affixes as aff;
 use meld_proto::uniques as uq;
 use meld_proto::equipment as eq;
-use meld_proto::factions::creatures_hostile;
+use meld_proto::factions::creatures_at_odds;
 use meld_proto::Id;
 
 /// Distance → difficulty formulas (world-generation.md). Structure in code;
@@ -1876,7 +1876,21 @@ impl MonsterSpawn {
     fn join_pack(&mut self, leader: &str, leader_home: Position, leader_faction: &str) {
         self.pack = leader.to_string();
         self.pack_home = leader_home;
-        self.faction = leader_faction.to_string();
+        // CONSCRIPTION IS THE EXCEPTION, NOT THE RULE (`CR-13`). Handing the leader's
+        // faction down UNCONDITIONALLY is what `CR-11` did, and it fixed a pack eating
+        // itself — but it also meant every species ended up holding every faction that had
+        // ever led a pack it was in. Measured across three seeded worlds: all 15 species
+        // held more than one faction, and every one of them held two that are hostile to
+        // each other.
+        //
+        // A minion keeps its OWN faction when it is not at war with the pack it runs with:
+        // `beast` and `construct` are not a hostile pair, so a boar can follow a golem and
+        // still be a boar. Only a genuinely hostile pairing is overwritten — a rite's dead
+        // are its own dead whatever they were in life, and that conscription is one the
+        // setting means.
+        if meld_proto::factions::creatures_hostile(&self.faction, leader_faction) {
+            self.faction = leader_faction.to_string();
+        }
     }
 
     /// Size this encounter for `parties` full parties, and let it say so.
@@ -3313,10 +3327,16 @@ impl Arena {
                             enc.minion_xp_mult,
                             "minion",
                         );
-                        // A rite's retinue is its own dead, whatever the local wildlife
-                        // is — `become_boss` has already made the leader undead, and
-                        // `join_pack` hands its faction down.
                         self.monsters[midx].join_pack(&rite_id, rite_home, &rite_faction);
+                        // A RITE'S RETINUE IS ITS OWN DEAD, whatever the local wildlife is,
+                        // and that conscription is UNCONDITIONAL — which is why it is
+                        // written here rather than left to `join_pack`. That helper only
+                        // relabels a minion when it is genuinely at war with its leader
+                        // (`CR-13`), because an ordinary pack is an alliance and a boar
+                        // following a golem should stay a boar. A rite is not an alliance;
+                        // it is a raising. Everything in it has been made undead, including
+                        // the things whose own faction the table happens not to mind.
+                        self.monsters[midx].faction = "undead".to_string();
                     }
                     // Keep the rite a rite: nothing else groups into it.
                     x += balance.ai.group_radius;
@@ -4298,10 +4318,21 @@ impl Arena {
         let obstacles = self.blocking_field();
         // Combat state of every creature, snapshotted so a creature can target
         // another without aliasing the `&mut` iteration below. (pos, faction, alive, def).
-        let cs: Vec<(Position, String, bool, i32)> = self
+        // The species rides along with the faction: `creatures_at_odds` needs BOTH, because
+        // a creature's faction is handed down by whatever pack promoted it and is therefore
+        // not a property of its kind (CR-13).
+        let cs: Vec<(Position, String, bool, i32, String)> = self
             .monsters
             .iter()
-            .map(|m| (m.position, m.faction.clone(), !m.defeated && !m.in_battle, m.def))
+            .map(|m| {
+                (
+                    m.position,
+                    m.faction.clone(),
+                    !m.defeated && !m.in_battle,
+                    m.def,
+                    m.monster_kind.clone(),
+                )
+            })
             .collect();
         // Spatial hash of live creatures (by index into `cs`) so the skirmish-target
         // search is ~O(nearby) instead of scanning every creature per creature
@@ -4313,7 +4344,7 @@ impl Arena {
         let cell = skirmish_aggro.max(1.0);
         let cell_of = |p: &Position| ((p.x / cell).floor() as i32, (p.y / cell).floor() as i32);
         let mut grid: HashMap<(i32, i32), Vec<usize>> = HashMap::new();
-        for (j, (pos, _, alive, _)) in cs.iter().enumerate() {
+        for (j, (pos, _, alive, _, _)) in cs.iter().enumerate() {
             if *alive {
                 grid.entry(cell_of(pos)).or_default().push(j);
             }
@@ -4364,8 +4395,8 @@ impl Arena {
                             if j == i {
                                 continue;
                             }
-                            let (pos, fac, _, _) = &cs[j];
-                            if !creatures_hostile(&m.faction, fac) {
+                            let (pos, fac, _, _, kind) = &cs[j];
+                            if !creatures_at_odds(&m.faction, &m.monster_kind, fac, kind) {
                                 continue;
                             }
                             let d = m.position.distance_to(pos);
@@ -4512,10 +4543,18 @@ impl Arena {
         // Any two living hostile-faction creatures within attack range hit each
         // other on their own cooldown — passive creatures fight back too, they just
         // never gave chase. Uses post-movement positions.
-        let now: Vec<(Position, String, bool, i32)> = self
+        let now: Vec<(Position, String, bool, i32, String)> = self
             .monsters
             .iter()
-            .map(|m| (m.position, m.faction.clone(), !m.defeated && !m.in_battle, m.def))
+            .map(|m| {
+                (
+                    m.position,
+                    m.faction.clone(),
+                    !m.defeated && !m.in_battle,
+                    m.def,
+                    m.monster_kind.clone(),
+                )
+            })
             .collect();
         // Spatial hash of the POST-MOVEMENT positions, for the same reason the movement
         // pass above has one — and it is the same bug: that pass was fixed and this one,
@@ -4532,7 +4571,7 @@ impl Arena {
         let dcell = skirmish_range.max(1.0);
         let dcell_of = |p: &Position| ((p.x / dcell).floor() as i32, (p.y / dcell).floor() as i32);
         let mut dgrid: HashMap<(i32, i32), Vec<usize>> = HashMap::new();
-        for (j, (pos, _, alive, _)) in now.iter().enumerate() {
+        for (j, (pos, _, alive, _, _)) in now.iter().enumerate() {
             if *alive {
                 dgrid.entry(dcell_of(pos)).or_default().push(j);
             }
@@ -4560,8 +4599,8 @@ impl Arena {
                         if j == i {
                             continue;
                         }
-                        let (pos, fac, alive, def) = &now[j];
-                        if !*alive || !creatures_hostile(&m.faction, fac) {
+                        let (pos, fac, alive, def, kind) = &now[j];
+                        if !*alive || !creatures_at_odds(&m.faction, &m.monster_kind, fac, kind) {
                             continue;
                         }
                         let d = m.position.distance_to(pos);
@@ -6485,6 +6524,54 @@ mod tests {
             (b, a)
         }
 
+        /// AND NO CREATURE IS EVER AT WAR WITH ITS OWN SPECIES (`CR-13`).
+        ///
+        /// `CR-11` stopped a pack eating ITSELF by handing the leader's faction down to its
+        /// minions. That fixed the inside of a pack and broke the outside: a faction is not
+        /// a property of a species, so a `thornback_boar` conscripted into a construct-led
+        /// pack would hunt an ordinary `thornback_boar` standing next to it. Measured across
+        /// three seeded worlds, **all 15 species held more than one faction and every one of
+        /// them held two that were hostile to each other**.
+        ///
+        /// Asserted against the WORLD rather than against the rule, because the rule is
+        /// easy to hold and easy to route around — this walks every creature actually
+        /// standing in a generated world and asks whether any two of a kind would swing.
+        #[test]
+        fn no_creature_in_the_world_is_at_war_with_its_own_kind() {
+            let (_b, a) = packs(424242);
+            let mut kinds: std::collections::HashMap<&str, Vec<&MonsterSpawn>> = Default::default();
+            for m in a.monsters.iter().filter(|m| !m.defeated) {
+                kinds.entry(m.monster_kind.as_str()).or_default().push(m);
+            }
+            let mut split_species = 0;
+            for (kind, group) in &kinds {
+                let factions: std::collections::HashSet<&str> =
+                    group.iter().map(|m| m.faction.as_str()).collect();
+                if factions.len() > 1 {
+                    split_species += 1;
+                }
+                for a1 in group {
+                    for b1 in group {
+                        assert!(
+                            !meld_proto::factions::creatures_at_odds(
+                                &a1.faction, &a1.monster_kind, &b1.faction, &b1.monster_kind
+                            ),
+                            "two {kind} would fight each other ({} vs {})",
+                            a1.faction,
+                            b1.faction
+                        );
+                    }
+                }
+            }
+            // …and the check is NOT vacuous: species really do still hold several factions
+            // (a hostile minion is still conscripted, and a boss still carries its lineage).
+            // If this ever hits zero the assertion above is proving nothing.
+            assert!(
+                split_species > 0,
+                "no species holds more than one faction any more, so nothing was tested"
+            );
+        }
+
         /// A PACK IS NEVER AT WAR WITH ITSELF (`CR-11`).
         ///
         /// `mixed_chance` makes some of the littles a different SPECIES than what they
@@ -6511,10 +6598,23 @@ mod tests {
                     mixed_species += 1;
                 }
                 for m in mates {
-                    assert_eq!(
-                        m.faction, lead.faction,
-                        "a {} follows a {} it is hostile to ({} vs {})",
-                        m.monster_kind, lead.monster_kind, m.faction, lead.faction
+                    // PEACE IS "NOT AT ODDS", NOT "IDENTICAL". This asserted equality when
+                    // `join_pack` relabelled every minion, and equality is the wrong bar:
+                    // `CR-13` lets a member keep its own faction whenever that is not a
+                    // hostile pairing, so a boar following a golem is a mixed pack that
+                    // works rather than one that has been flattened into one name.
+                    assert!(
+                        !meld_proto::factions::creatures_at_odds(
+                            &m.faction,
+                            &m.monster_kind,
+                            &lead.faction,
+                            &lead.monster_kind
+                        ),
+                        "a {} ({}) follows a {} ({}) it is hostile to",
+                        m.monster_kind,
+                        m.faction,
+                        lead.monster_kind,
+                        lead.faction
                     );
                 }
             }
