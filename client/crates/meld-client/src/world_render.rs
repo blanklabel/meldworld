@@ -6,7 +6,8 @@ use std::collections::HashMap;
 
 use bevy::gltf::GltfAssetLabel;
 use bevy::pbr::{ExtendedMaterial, MaterialExtension};
-use bevy::render::render_resource::{AsBindGroup, ShaderRef};
+use bevy::render::render_resource::AsBindGroup;
+use bevy::shader::ShaderRef;
 
 /// How far the sea bed falls away from the shoreline, in world units. Presentation only —
 /// the server's coastline is a flat predicate, and nothing swims — so this lives here
@@ -216,9 +217,9 @@ pub(crate) struct WorldAssets {
     /// Real 3D prop models (Kenney Nature Kit, CC0) keyed by terrain-obstacle kind →
     /// several `(scene, baked_scale)` variants (picked per-entity by id hash), so the
     /// world is built from actual geometry instead of flat billboards.
-    pub(crate) prop_scenes: HashMap<String, Vec<(Handle<Scene>, f32)>>,
+    pub(crate) prop_scenes: HashMap<String, Vec<(Handle<WorldAsset>, f32)>>,
     /// 3D harvest-node models keyed by resource content id → `(scene, baked_scale)`.
-    pub(crate) resource_scenes: HashMap<String, (Handle<Scene>, f32)>,
+    pub(crate) resource_scenes: HashMap<String, (Handle<WorldAsset>, f32)>,
     pub(crate) portal_sprite: Handle<Image>,
     pub(crate) portal_mesh: Handle<Mesh>,
     pub(crate) portal_mat: Handle<StandardMaterial>,
@@ -280,13 +281,16 @@ impl WorldAssets {
 
 /// Load an image with a Repeat sampler so it tiles across the big ground plane.
 pub(crate) fn load_tiled(assets: &AssetServer, path: &str) -> Handle<Image> {
-    assets.load_with_settings(path, |s: &mut ImageLoaderSettings| {
-        s.sampler = ImageSampler::Descriptor(ImageSamplerDescriptor {
-            address_mode_u: ImageAddressMode::Repeat,
-            address_mode_v: ImageAddressMode::Repeat,
-            ..ImageSamplerDescriptor::nearest()
-        });
-    })
+    assets
+        .load_builder()
+        .with_settings(|s: &mut ImageLoaderSettings| {
+            s.sampler = ImageSampler::Descriptor(ImageSamplerDescriptor {
+                address_mode_u: ImageAddressMode::Repeat,
+                address_mode_v: ImageAddressMode::Repeat,
+                ..ImageSamplerDescriptor::nearest()
+            });
+        })
+        .load(path.to_string())
 }
 
 /// Build the HD-2D world: camera + post stack, sun, the lit ground, and the shared
@@ -376,7 +380,7 @@ pub(crate) fn setup(
     // Shared assets. HD-2D split: 2D pixel sprites for the actors (heroes + monster
     // billboards, from DCSS/RLTiles — public domain), real 3D models for the world
     // (obstacles + harvest nodes, from Kenney Nature Kit — CC0). See assets/ATTRIBUTIONS.md.
-    let ld = |p: &str| assets.load::<Image>(p);
+    let ld = |p: &str| assets.load::<Image>(p.to_string());
     // Creature content id → billboard (biome-appropriate). Kinds come from
     // `meld-world::creatures_for_biome`.
     let monster_sprites: HashMap<String, Handle<Image>> = [
@@ -413,7 +417,7 @@ pub(crate) fn setup(
     // Load a Kenney Nature Kit GLB as a spawnable 3D scene, paired with a baked scale
     // that brings its native size to a sensible world height (computed from each
     // model's bounding box; see assets/ATTRIBUTIONS.md).
-    let sc = |p: &str, s: f32| -> (Handle<Scene>, f32) {
+    let sc = |p: &str, s: f32| -> (Handle<WorldAsset>, f32) {
         (
             assets.load(GltfAssetLabel::Scene(0).from_asset(format!("models/nature/{p}.glb"))),
             s,
@@ -422,7 +426,7 @@ pub(crate) fn setup(
     // Terrain-obstacle kind → real 3D model variants (picked per entity by id hash),
     // so every biome's cover is actual geometry that lights and casts shadow. Water
     // kinds (pond/lava/…) stay flat pools; hard fallbacks use the boulder mesh.
-    let prop_scenes: HashMap<String, Vec<(Handle<Scene>, f32)>> = [
+    let prop_scenes: HashMap<String, Vec<(Handle<WorldAsset>, f32)>> = [
         (
             "tree",
             vec![
@@ -527,7 +531,7 @@ pub(crate) fn setup(
     .collect();
     // Resource content id → 3D harvest-node model (reagents read as plants/fungi,
     // ores as rocks/stones). Kinds from `meld-world::resources_for_biome`.
-    let resource_scenes: HashMap<String, (Handle<Scene>, f32)> = [
+    let resource_scenes: HashMap<String, (Handle<WorldAsset>, f32)> = [
         ("bloom_herb", sc("flower_purpleA", 3.299)),
         ("heartoak_bark", sc("log", 4.041)),
         ("sun_salts", sc("stone_smallC", 7.337)),
@@ -757,7 +761,7 @@ pub(crate) fn setup(
     // Pushed WAY out (was a ring at 165-220 that loomed as a wall on every side and read
     // as a corridor); now beyond ~300u it's a faint fogged silhouette on the horizon, not
     // an arena wall. Fewer of them, too, so gaps of open sky show between.
-    let backdrop: Vec<Handle<Scene>> = ["cliff_large_rock", "rock_largeA", "cliff_cornerLarge_rock"]
+    let backdrop: Vec<Handle<WorldAsset>> = ["cliff_large_rock", "rock_largeA", "cliff_cornerLarge_rock"]
         .into_iter()
         .map(|p| assets.load(GltfAssetLabel::Scene(0).from_asset(format!("models/nature/{p}.glb"))))
         .collect();
@@ -768,7 +772,7 @@ pub(crate) fn setup(
         let size = 14.0 + rnd() * 12.0;
         commands.spawn((
             Backdrop { off },
-            SceneRoot(backdrop[i % backdrop.len()].clone()),
+            WorldAssetRoot(backdrop[i % backdrop.len()].clone()),
             Transform::from_translation(Vec3::new(off.x, -0.5, off.y))
                 .with_scale(Vec3::splat(size))
                 .with_rotation(Quat::from_rotation_y(rnd() * std::f32::consts::TAU)),
@@ -855,7 +859,7 @@ pub(crate) fn setup(
     // that `tile_ground_detail` recycles onto a player-anchored grid, so coverage
     // is endless with a bounded entity count. Position + type + visibility all
     // derive from the world cell, so a spot always looks the same (no popping).
-    let detail_scenes: Vec<(Handle<Scene>, f32)> = [
+    let detail_scenes: Vec<(Handle<WorldAsset>, f32)> = [
         ("flower_purpleA", 2.6),
         ("flower_redA", 2.6),
         ("plant_bushSmall", 2.2),
@@ -881,7 +885,7 @@ pub(crate) fn setup(
         for gx in -DETAIL_K..=DETAIL_K {
             commands.spawn((
                 GroundDetail { slot: IVec2::new(gx, gz), last: IVec2::splat(i32::MIN) },
-                SceneRoot(placeholder.clone()),
+                WorldAssetRoot(placeholder.clone()),
                 Transform::default(),
                 Visibility::Hidden,
             ));
@@ -933,7 +937,7 @@ pub(crate) fn setup(
                 intensity: 14_000.0,
                 range: 4.5,
                 radius: 0.1,
-                shadows_enabled: false,
+                shadow_maps_enabled: false,
                 ..default()
             });
         }
@@ -1064,7 +1068,7 @@ pub(crate) fn ground_focus(cam: &Transform) -> Vec3 {
 /// Loaded small nature props for the cosmetic ground-detail field: `(scene, base_scale)`.
 #[derive(Resource)]
 pub(crate) struct DetailKit {
-    scenes: Vec<(Handle<Scene>, f32)>,
+    scenes: Vec<(Handle<WorldAsset>, f32)>,
 }
 
 /// One recyclable cosmetic ground-detail prop. `slot` is its fixed offset (in cells)
@@ -1223,7 +1227,7 @@ pub(crate) fn tile_ground_detail(
     kit: Option<Res<DetailKit>>,
     state: Res<State<Screen>>,
     mut q: Query<
-        (&mut GroundDetail, &mut Transform, &mut Visibility, &mut SceneRoot),
+        (&mut GroundDetail, &mut Transform, &mut Visibility, &mut WorldAssetRoot),
         Without<Camera3d>,
     >,
 ) {
@@ -1433,7 +1437,7 @@ pub(crate) fn update_ground_biome_rings(
     mut mats: ResMut<Assets<GroundMat>>,
 ) {
     let Ok(handle) = ground_q.single() else { return };
-    let Some(mat) = mats.get_mut(&handle.0) else { return };
+    let Some(mut mat) = mats.get_mut(&handle.0) else { return };
     // THE COASTLINE, from the server's own arc. Zeroed off the Overworld: Last City is a
     // separate scene laid out in its own coordinates, so painting the world's sea into it
     // would put water through the plaza. Giving the city its own shore is follow-up work —
@@ -1924,13 +1928,14 @@ pub(crate) fn apply_sky(
     ashfall: Res<Ashfall>,
     dungeon: Res<DungeonSceneRes>,
     mut clear: ResMut<ClearColor>,
-    mut ambient: ResMut<AmbientLight>,
+    mut ambient_q: Query<&mut AmbientLight>,
     mut mats: ResMut<Assets<StandardMaterial>>,
     mut sun_q: Query<(&mut Transform, &mut DirectionalLight)>,
     mut fog_q: Query<&mut bevy::pbr::DistanceFog, With<Camera3d>>,
     mut stars: Query<&mut Visibility, With<Star>>,
 ) {
     use std::f32::consts::TAU;
+    let Ok(mut ambient) = ambient_q.single_mut() else { return };
     let sun_h = ((sky.t - 0.25) * TAU).sin(); // +1 at noon, -1 at midnight
     // Slower transition = a longer golden hour at dawn/dusk.
     let day = ((sun_h + 0.14) / 0.36).clamp(0.0, 1.0); // 0 night → 1 day
@@ -2006,7 +2011,7 @@ pub(crate) fn apply_sky(
     }
 
     if let Some(sm) = skymats {
-        if let Some(m) = mats.get_mut(&sm.cloud) {
+        if let Some(mut m) = mats.get_mut(&sm.cloud) {
             let g = (0.14 + day * 0.86) * (1.0 - rain * 0.25);
             m.emissive = LinearRgba::rgb(0.72 * g, 0.75 * g, 0.82 * g);
             m.base_color = Color::srgba(1.0, 1.0, 1.0, (0.72 + day * 0.28) * (1.0 - rain * 0.2));
@@ -2123,7 +2128,7 @@ pub(crate) fn animate_water(
         Vec2::new(t * 0.035, t * 0.055),
     );
     for handle in wa.water_mats.values() {
-        if let Some(m) = mats.get_mut(handle) {
+        if let Some(mut m) = mats.get_mut(handle) {
             m.uv_transform = xf;
         }
     }

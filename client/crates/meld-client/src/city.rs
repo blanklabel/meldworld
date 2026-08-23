@@ -275,13 +275,13 @@ pub(crate) fn city_hud(
             .with_children(|t| {
                 t.spawn((
                     Text::new("THE LAST CITY"),
-                    TextFont { font_size: 34.0, ..default() },
+                    TextFont { font_size: FontSize::Px(34.0), ..default() },
                     TextColor(amber),
                 ));
                 t.spawn((
                     CityVaultText,
                     Text::new("The Vault-Deep is being tallied..."),
-                    TextFont { font_size: 16.0, ..default() },
+                    TextFont { font_size: FontSize::Px(16.0), ..default() },
                     TextColor(teal),
                 ));
             });
@@ -292,7 +292,7 @@ pub(crate) fn city_hud(
                 panel.spawn((
                     CityStatusText,
                     Text::new(""),
-                    TextFont { font_size: 18.0, ..default() },
+                    TextFont { font_size: FontSize::Px(18.0), ..default() },
                     TextColor(glass::TITLE),
                 ));
                 // The anvil's heat is struck here too, so the bar lives in the same
@@ -305,6 +305,7 @@ pub(crate) fn city_hud(
             p.spawn((
                 TapActionBar,
                 Node {
+                    border_radius: BorderRadius::all(Val::Px(10.0)),
                     position_type: PositionType::Absolute,
                     right: Val::Px(16.0),
                     bottom: Val::Px(16.0),
@@ -316,8 +317,7 @@ pub(crate) fn city_hud(
                     ..default()
                 },
                 // Invisible until the tour highlights it (see `TapActionBar`).
-                BorderColor(Color::NONE),
-                BorderRadius::all(Val::Px(10.0)),
+                BorderColor::all(Color::NONE),
             ))
             .with_children(|bar| {
                 for (act, label) in [
@@ -353,20 +353,20 @@ fn city_button(parent: &mut ChildSpawnerCommands, act: CityAct, label: &str) {
             Button,
             CityActionButton(act),
             Node {
+                border_radius: BorderRadius::all(Val::Px(8.0)),
                 width: Val::Px(150.0),
                 padding: UiRect::axes(Val::Px(14.0), Val::Px(11.0)),
                 justify_content: JustifyContent::Center,
                 border: UiRect::all(Val::Px(1.5)),
                 ..default()
             },
-            BorderColor(glass::EDGE),
-            BorderRadius::all(Val::Px(8.0)),
+            BorderColor::all(glass::EDGE),
             BackgroundColor(glass::ACTIVE),
         ))
         .with_children(|b| {
             b.spawn((
                 Text::new(label.to_string()),
-                TextFont { font_size: 16.0, ..default() },
+                TextFont { font_size: FontSize::Px(16.0), ..default() },
                 TextColor(Color::srgb(0.98, 0.9, 0.68)),
             ));
         });
@@ -381,11 +381,13 @@ pub(crate) fn highlight_tap_action_bar(
     mut bar: Query<&mut BorderColor, With<TapActionBar>>,
 ) {
     let Ok(mut border) = bar.single_mut() else { return };
-    border.0 = if tutorial.town_step == Some(crate::tutorial::TAP_ACTION_BAR_STEP) {
-        glass::ACTIVE_EDGE
-    } else {
-        Color::NONE
-    };
+    *border = BorderColor::all(
+        if tutorial.town_step == Some(crate::tutorial::TAP_ACTION_BAR_STEP) {
+            glass::ACTIVE_EDGE
+        } else {
+            Color::NONE
+        },
+    );
 }
 
 /// Handle taps on the city action buttons — the same effects as the `city_input`
@@ -400,7 +402,7 @@ pub(crate) fn city_action_buttons(
     mut tab: ResMut<OverlayTab>,
     mut inv: ResMut<InventoryData>,
     mut next: ResMut<NextState<Screen>>,
-    mut exit: EventWriter<AppExit>,
+    mut exit: MessageWriter<AppExit>,
 ) {
     for (interaction, btn) in &q {
         if *interaction != Interaction::Pressed {
@@ -456,8 +458,8 @@ pub(crate) fn city_action_buttons(
 /// A flat road quad (XZ plane, centred at origin) of `len`×`width`, UV-tiled so the
 /// cobblestone texture repeats (~2.5 world units per tile) instead of stretching.
 fn road_mesh(len: f32, width: f32) -> Mesh {
-    use bevy::render::mesh::{Indices, PrimitiveTopology};
-    use bevy::render::render_asset::RenderAssetUsages;
+    use bevy::mesh::{Indices, PrimitiveTopology};
+    use bevy::asset::RenderAssetUsages;
     let (hl, hw) = (len * 0.5, width * 0.5);
     let tile = 2.5;
     let (u, v) = (len / tile, width / tile);
@@ -580,7 +582,7 @@ pub(crate) fn city_scene(
         }
         commands.spawn((
             CityScene,
-            SceneRoot(
+            WorldAssetRoot(
                 assets.load(GltfAssetLabel::Scene(0).from_asset(format!("models/{path}.glb"))),
             ),
             Transform::from_xyz(*x, 0.0, *z)
@@ -647,7 +649,7 @@ pub(crate) fn city_scene(
                         intensity: 32_000.0,
                         range: 15.0,
                         radius: 0.5,
-                        shadows_enabled: false,
+                        shadow_maps_enabled: false,
                         ..default()
                     },
                     Transform::from_xyz(0.0, h * 0.78, 0.0),
@@ -1146,8 +1148,8 @@ pub(crate) fn city_camera(
         (
             &mut Transform,
             &mut Projection,
-            Option<&mut bevy::core_pipeline::bloom::Bloom>,
-            Option<&mut bevy::core_pipeline::dof::DepthOfField>,
+            Option<&mut bevy::post_process::bloom::Bloom>,
+            Option<&mut bevy::post_process::dof::DepthOfField>,
             Option<&mut bevy::pbr::DistanceFog>,
         ),
         With<Camera3d>,
@@ -1456,7 +1458,7 @@ mod tests {
     fn yard_app() -> App {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins)
-            .insert_non_send_resource(NetRes(crate::net::start("http://127.0.0.1:1".into())))
+            .insert_non_send(NetRes(crate::net::start("http://127.0.0.1:1".into())))
             .insert_resource(ButtonInput::<KeyCode>::default())
             .insert_resource(CityUi { party_open: true, ..Default::default() })
             .insert_resource(HeroRename::default())
@@ -3028,6 +3030,7 @@ fn yard_card(
             Button,
             tags,
             Node {
+                border_radius: BorderRadius::all(Val::Px(10.0)),
                 width: Val::Px(w),
                 flex_direction: FlexDirection::Column,
                 align_items: AlignItems::Center,
@@ -3036,9 +3039,8 @@ fn yard_card(
                 border: UiRect::all(Val::Px(2.0)),
                 ..default()
             },
-            BorderColor(glass::EDGE),
+            BorderColor::all(glass::EDGE),
             BackgroundColor(glass::GLASS_DEEP),
-            BorderRadius::all(Val::Px(10.0)),
         ))
         .with_children(|c| {
             c.spawn((
@@ -3049,13 +3051,13 @@ fn yard_card(
             c.spawn((
                 Text::new(label.to_string()),
                 label_tag,
-                TextFont { font_size: 17.0, ..default() },
+                TextFont { font_size: FontSize::Px(17.0), ..default() },
                 TextColor(Color::srgb(0.92, 0.94, 1.0)),
             ));
             c.spawn((
                 Text::new(sub.to_string()),
                 sub_tag,
-                TextFont { font_size: 13.0, ..default() },
+                TextFont { font_size: FontSize::Px(13.0), ..default() },
                 TextColor(Color::srgb(0.6, 0.65, 0.8)),
             ));
         });
@@ -3140,14 +3142,14 @@ pub(crate) fn party_panel(
         .with_children(|p| {
             p.spawn((
                 Text::new("THE DRILL YARD"),
-                TextFont { font_size: 34.0, ..default() },
+                TextFont { font_size: FontSize::Px(34.0), ..default() },
                 TextColor(Color::srgb(0.98, 0.9, 0.68)),
             ));
             p.spawn((
                 Text::new(format!(
                     "{slots} of 4 slots earned \u{2014} click a hero, then a class. [R] renames."
                 )),
-                TextFont { font_size: 16.0, ..default() },
+                TextFont { font_size: FontSize::Px(16.0), ..default() },
                 TextColor(Color::srgb(0.6, 0.65, 0.8)),
             ));
 
@@ -3185,6 +3187,7 @@ pub(crate) fn party_panel(
                     } else {
                         row.spawn((
                             Node {
+                                border_radius: BorderRadius::all(Val::Px(10.0)),
                                 width: Val::Px(118.0),
                                 flex_direction: FlexDirection::Column,
                                 align_items: AlignItems::Center,
@@ -3193,14 +3196,13 @@ pub(crate) fn party_panel(
                                 border: UiRect::all(Val::Px(2.0)),
                                 ..default()
                             },
-                            BorderColor(glass::EDGE_SOFT),
+                            BorderColor::all(glass::EDGE_SOFT),
                             BackgroundColor(glass::CHIP_OFF),
-                            BorderRadius::all(Val::Px(10.0)),
                         ))
                         .with_children(|c| {
                             c.spawn((
                                 Text::new(format!("{}\nlocked", i + 1)),
-                                TextFont { font_size: 14.0, ..default() },
+                                TextFont { font_size: FontSize::Px(14.0), ..default() },
                                 TextColor(Color::srgb(0.45, 0.48, 0.58)),
                             ));
                         });
@@ -3214,19 +3216,19 @@ pub(crate) fn party_panel(
                 Button,
                 YardRenameButton,
                 Node {
+                    border_radius: BorderRadius::all(Val::Px(6.0)),
                     padding: UiRect::axes(Val::Px(12.0), Val::Px(6.0)),
                     border: UiRect::all(Val::Px(1.0)),
                     ..default()
                 },
-                BorderColor(glass::EDGE_SOFT),
-                BorderRadius::all(Val::Px(6.0)),
+                BorderColor::all(glass::EDGE_SOFT),
                 BackgroundColor(glass::CHIP_OFF),
             ))
             .with_children(|b| {
                 b.spawn((
                     Text::new("Rename this hero"),
                     YardRenameText,
-                    TextFont { font_size: 14.0, ..default() },
+                    TextFont { font_size: FontSize::Px(14.0), ..default() },
                     TextColor(Color::srgb(0.92, 0.94, 1.0)),
                 ));
             });
@@ -3263,6 +3265,7 @@ pub(crate) fn party_panel(
             // deciding whether to field it.
             p.spawn((
                 Node {
+                    border_radius: BorderRadius::all(Val::Px(12.0)),
                     width: Val::Px(780.0),
                     flex_direction: FlexDirection::Row,
                     column_gap: Val::Px(16.0),
@@ -3270,9 +3273,8 @@ pub(crate) fn party_panel(
                     border: UiRect::all(Val::Px(1.0)),
                     ..default()
                 },
-                BorderColor(glass::EDGE),
+                BorderColor::all(glass::EDGE),
                 BackgroundColor(glass::GLASS_DEEP),
-                BorderRadius::all(Val::Px(12.0)),
             ))
             .with_children(|d| {
                 d.spawn((
@@ -3290,13 +3292,13 @@ pub(crate) fn party_panel(
                     col.spawn((
                         Text::new(focus.name.to_string()),
                         YardDetailName,
-                        TextFont { font_size: 26.0, ..default() },
+                        TextFont { font_size: FontSize::Px(26.0), ..default() },
                         TextColor(Color::srgb(1.0, 0.85, 0.45)),
                     ));
                     col.spawn((
                         Text::new(focus.role.to_string()),
                         YardDetailRole,
-                        TextFont { font_size: 15.0, ..default() },
+                        TextFont { font_size: FontSize::Px(15.0), ..default() },
                         TextColor(Color::srgb(0.78, 0.82, 0.95)),
                     ));
                     col.spawn(Node {
@@ -3325,7 +3327,7 @@ pub(crate) fn party_panel(
                                     .with_children(|r| {
                                         r.spawn((
                                             Text::new(name.to_string()),
-                                            TextFont { font_size: 12.0, ..default() },
+                                            TextFont { font_size: FontSize::Px(12.0), ..default() },
                                             TextColor(Color::srgb(0.6, 0.65, 0.8)),
                                             Node { width: Val::Px(34.0), ..default() },
                                         ));
@@ -3333,12 +3335,12 @@ pub(crate) fn party_panel(
                                             r.spawn((
                                                 YardStatFill { stat: si as u8, seg },
                                                 Node {
+                                                    border_radius: BorderRadius::all(Val::Px(2.0)),
                                                     width: Val::Px(20.0),
                                                     height: Val::Px(9.0),
                                                     ..default()
                                                 },
                                                 BackgroundColor(glass::CHIP_OFF),
-                                                BorderRadius::all(Val::Px(2.0)),
                                             ));
                                         }
                                     });
@@ -3347,7 +3349,7 @@ pub(crate) fn party_panel(
                         body.spawn((
                             Text::new(crate::screens::kit_text(focus)),
                             YardDetailKit,
-                            TextFont { font_size: 13.0, ..default() },
+                            TextFont { font_size: FontSize::Px(13.0), ..default() },
                             TextColor(Color::srgb(0.7, 0.85, 0.7)),
                         ));
                     });
@@ -3357,14 +3359,14 @@ pub(crate) fn party_panel(
             // the point is recognising a team at a glance ("Delvers", "Boss squad").
             p.spawn((
                 Text::new("Saved parties"),
-                TextFont { font_size: 13.0, ..default() },
+                TextFont { font_size: FontSize::Px(13.0), ..default() },
                 TextColor(Color::srgb(0.6, 0.65, 0.8)),
                 Node { margin: UiRect::top(Val::Px(6.0)), ..default() },
             ));
             if loadouts.list.is_empty() {
                 p.spawn((
                     Text::new("none yet"),
-                    TextFont { font_size: 13.0, ..default() },
+                    TextFont { font_size: FontSize::Px(13.0), ..default() },
                     TextColor(Color::srgb(0.45, 0.48, 0.58)),
                 ));
             }
@@ -3380,13 +3382,13 @@ pub(crate) fn party_panel(
                         Button,
                         LoadoutLoadButton(l.name.clone()),
                         Node {
+                            border_radius: BorderRadius::all(Val::Px(6.0)),
                             flex_grow: 1.0,
                             padding: UiRect::axes(Val::Px(9.0), Val::Px(6.0)),
                             border: UiRect::all(Val::Px(1.0)),
                             ..default()
                         },
-                        BorderColor(glass::EDGE_SOFT),
-                        BorderRadius::all(Val::Px(6.0)),
+                        BorderColor::all(glass::EDGE_SOFT),
                         BackgroundColor(glass::CHIP_OFF),
                     ))
                     .with_children(|b| {
@@ -3398,7 +3400,7 @@ pub(crate) fn party_panel(
                             .join(" / ");
                         b.spawn((
                             Text::new(format!("{}  —  {comp}", l.name)),
-                            TextFont { font_size: 13.0, ..default() },
+                            TextFont { font_size: FontSize::Px(13.0), ..default() },
                             TextColor(Color::srgb(0.92, 0.94, 1.0)),
                         ));
                     });
@@ -3408,18 +3410,18 @@ pub(crate) fn party_panel(
                         Button,
                         LoadoutRenameButton(l.name.clone()),
                         Node {
+                            border_radius: BorderRadius::all(Val::Px(6.0)),
                             padding: UiRect::axes(Val::Px(8.0), Val::Px(6.0)),
                             border: UiRect::all(Val::Px(1.0)),
                             ..default()
                         },
-                        BorderColor(glass::EDGE_SOFT),
-                        BorderRadius::all(Val::Px(6.0)),
+                        BorderColor::all(glass::EDGE_SOFT),
                         BackgroundColor(glass::CHIP_OFF),
                     ))
                     .with_children(|b| {
                         b.spawn((
                             Text::new("rename"),
-                            TextFont { font_size: 12.0, ..default() },
+                            TextFont { font_size: FontSize::Px(12.0), ..default() },
                             TextColor(Color::srgb(0.78, 0.82, 0.95)),
                         ));
                     });
@@ -3427,18 +3429,18 @@ pub(crate) fn party_panel(
                         Button,
                         LoadoutDeleteButton(l.name.clone()),
                         Node {
+                            border_radius: BorderRadius::all(Val::Px(6.0)),
                             padding: UiRect::axes(Val::Px(8.0), Val::Px(6.0)),
                             border: UiRect::all(Val::Px(1.0)),
                             ..default()
                         },
-                        BorderColor(glass::EDGE_SOFT),
-                        BorderRadius::all(Val::Px(6.0)),
+                        BorderColor::all(glass::EDGE_SOFT),
                         BackgroundColor(glass::CHIP_OFF),
                     ))
                     .with_children(|b| {
                         b.spawn((
                             Text::new("x"),
-                            TextFont { font_size: 13.0, ..default() },
+                            TextFont { font_size: FontSize::Px(13.0), ..default() },
                             TextColor(Color::srgb(0.9, 0.6, 0.6)),
                         ));
                     });
@@ -3456,18 +3458,18 @@ pub(crate) fn party_panel(
             .with_children(|row| {
                 row.spawn((
                     Text::new("Name:"),
-                    TextFont { font_size: 13.0, ..default() },
+                    TextFont { font_size: FontSize::Px(13.0), ..default() },
                     TextColor(Color::srgb(0.6, 0.65, 0.8)),
                 ));
                 row.spawn((
                     Node {
+                        border_radius: BorderRadius::all(Val::Px(5.0)),
                         flex_grow: 1.0,
                         padding: UiRect::axes(Val::Px(8.0), Val::Px(5.0)),
                         border: UiRect::all(Val::Px(1.0)),
                         ..default()
                     },
-                    BorderColor(glass::EDGE_SOFT),
-                    BorderRadius::all(Val::Px(5.0)),
+                    BorderColor::all(glass::EDGE_SOFT),
                     BackgroundColor(glass::CHIP_OFF),
                 ))
                 .with_children(|f| {
@@ -3477,7 +3479,7 @@ pub(crate) fn party_panel(
                     f.spawn((
                         Text::new("type a name\u{2026}".to_string()),
                         LoadoutNameText,
-                        TextFont { font_size: 13.0, ..default() },
+                        TextFont { font_size: FontSize::Px(13.0), ..default() },
                         TextColor(Color::srgb(0.92, 0.94, 1.0)),
                     ));
                 });
@@ -3486,20 +3488,20 @@ pub(crate) fn party_panel(
                 Button,
                 LoadoutSaveButton,
                 Node {
+                    border_radius: BorderRadius::all(Val::Px(6.0)),
                     padding: UiRect::axes(Val::Px(10.0), Val::Px(6.0)),
                     margin: UiRect::top(Val::Px(2.0)),
                     justify_content: JustifyContent::Center,
                     border: UiRect::all(Val::Px(1.0)),
                     ..default()
                 },
-                BorderColor(glass::EDGE_SOFT),
-                BorderRadius::all(Val::Px(6.0)),
+                BorderColor::all(glass::EDGE_SOFT),
                 BackgroundColor(glass::CHIP_OFF),
             ))
             .with_children(|b| {
                 b.spawn((
                     Text::new("Save this party"),
-                    TextFont { font_size: 13.0, ..default() },
+                    TextFont { font_size: FontSize::Px(13.0), ..default() },
                     TextColor(Color::srgb(0.92, 0.94, 1.0)),
                 ));
             });
@@ -3507,20 +3509,20 @@ pub(crate) fn party_panel(
                 Button,
                 PartyDoneButton,
                 Node {
+                    border_radius: BorderRadius::all(Val::Px(8.0)),
                     padding: UiRect::axes(Val::Px(12.0), Val::Px(8.0)),
                     margin: UiRect::top(Val::Px(4.0)),
                     justify_content: JustifyContent::Center,
                     border: UiRect::all(Val::Px(1.5)),
                     ..default()
                 },
-                BorderColor(glass::EDGE),
-                BorderRadius::all(Val::Px(8.0)),
+                BorderColor::all(glass::EDGE),
                 BackgroundColor(glass::ACTIVE),
             ))
             .with_children(|b| {
                 b.spawn((
                     Text::new("Done"),
-                    TextFont { font_size: 15.0, ..default() },
+                    TextFont { font_size: FontSize::Px(15.0), ..default() },
                     TextColor(Color::srgb(0.98, 0.9, 0.68)),
                 ));
             });
@@ -3793,8 +3795,8 @@ pub(crate) fn party_panel_refresh(
         } else {
             glass::EDGE
         };
-        if bc.0 != want {
-            *bc = BorderColor(want);
+        if bc.top != want {
+            *bc = BorderColor::all(want);
         }
     }
     if let Ok(mut t) = rename_text.single_mut() {
@@ -3979,6 +3981,7 @@ pub(crate) fn render_travel_column(
         p.spawn((
             TravelColumn,
             Node {
+                border_radius: BorderRadius::all(Val::Px(10.0)),
                 position_type: PositionType::Absolute,
                 left: Val::Px(18.0),
                 top: Val::Px(90.0),
@@ -3991,8 +3994,7 @@ pub(crate) fn render_travel_column(
                 ..default()
             },
             BackgroundColor(glass::GLASS),
-            BorderColor(if highlighted { glass::ACTIVE_EDGE } else { glass::EDGE }),
-            BorderRadius::all(Val::Px(10.0)),
+            BorderColor::all(if highlighted { glass::ACTIVE_EDGE } else { glass::EDGE }),
         ))
         .with_children(|col| {
             col.spawn(glass::text("THE LAST CITY", 19.0, glass::TITLE));
@@ -4056,6 +4058,7 @@ pub(crate) fn render_district_nameplates(
             p.spawn((
                 DistrictNameplate,
                 Node {
+                    border_radius: BorderRadius::all(Val::Px(6.0)),
                     position_type: PositionType::Absolute,
                     left: Val::Px(s.x),
                     top: Val::Px(s.y),
@@ -4064,8 +4067,7 @@ pub(crate) fn render_district_nameplates(
                     ..default()
                 },
                 BackgroundColor(glass::GLASS_THIN),
-                BorderColor(glass::EDGE_SOFT),
-                BorderRadius::all(Val::Px(6.0)),
+                BorderColor::all(glass::EDGE_SOFT),
             ))
             .with_children(|b| {
                 // Name over purpose, the same pairing the nav chip and the walk-up prompt

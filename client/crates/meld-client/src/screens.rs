@@ -143,13 +143,14 @@ fn field_box(
         .with_children(|r| {
             r.spawn((
                 Text::new(label.to_string()),
-                TextFont { font_size: 14.0, ..default() },
+                TextFont { font_size: FontSize::Px(14.0), ..default() },
                 TextColor(glass::DIM),
             ));
             r.spawn((
                 Button,
                 field_tag,
                 Node {
+                    border_radius: BorderRadius::all(Val::Px(6.0)),
                     width: Val::Px(180.0),
                     height: Val::Px(30.0),
                     align_items: AlignItems::Center,
@@ -157,15 +158,14 @@ fn field_box(
                     border: UiRect::all(Val::Px(1.5)),
                     ..default()
                 },
-                BorderColor(glass::EDGE_SOFT),
+                BorderColor::all(glass::EDGE_SOFT),
                 BackgroundColor(glass::GLASS_DEEP),
-                BorderRadius::all(Val::Px(6.0)),
             ))
             .with_children(|b| {
                 b.spawn((
                     Text::new(String::new()),
                     text_tag,
-                    TextFont { font_size: 15.0, ..default() },
+                    TextFont { font_size: FontSize::Px(15.0), ..default() },
                     TextColor(glass::TEXT),
                 ));
             });
@@ -225,6 +225,7 @@ pub(crate) fn join_ui(
 
             p.spawn((
                 Node {
+                    border_radius: BorderRadius::all(Val::Px(14.0)),
                     width: Val::Px(560.0),
                     flex_direction: FlexDirection::Column,
                     align_items: AlignItems::Center,
@@ -234,19 +235,18 @@ pub(crate) fn join_ui(
                     ..default()
                 },
                 BackgroundColor(glass::GLASS),
-                BorderColor(glass::EDGE_SOFT),
-                BorderRadius::all(Val::Px(14.0)),
+                BorderColor::all(glass::EDGE_SOFT),
                 ZIndex(2),
             ))
             .with_children(|p| {
                 p.spawn((
                     Text::new("MELDWORLD"),
-                    TextFont { font_size: 44.0, ..default() },
+                    TextFont { font_size: FontSize::Px(44.0), ..default() },
                     TextColor(glass::TITLE),
                 ));
                 p.spawn((
                     Text::new("Log in \u{2014} then muster your party in the Last City."),
-                    TextFont { font_size: 17.0, ..default() },
+                    TextFont { font_size: FontSize::Px(17.0), ..default() },
                     TextColor(glass::DIM),
                     Node { margin: UiRect::bottom(Val::Px(6.0)), ..default() },
                 ));
@@ -265,12 +265,12 @@ pub(crate) fn join_ui(
                 });
                 p.spawn((
                     Text::new("Type, TAB to switch field, ENTER to log in \u{2014} first login creates your account."),
-                    TextFont { font_size: 13.0, ..default() },
+                    TextFont { font_size: FontSize::Px(13.0), ..default() },
                     TextColor(glass::DIM),
                 ));
                 p.spawn((
                     Text::new("username 3\u{2013}20 \u{b7} password 8+ characters"),
-                    TextFont { font_size: 12.0, ..default() },
+                    TextFont { font_size: FontSize::Px(12.0), ..default() },
                     TextColor(Color::srgba(0.72, 0.78, 0.9, 0.6)),
                 ));
 
@@ -281,12 +281,13 @@ pub(crate) fn join_ui(
                 // known. What belongs on a login screen is a reason to log in.
                 p.spawn((
                     Text::new("The Vanguard \u{2014} deepest of the season"),
-                    TextFont { font_size: 16.0, ..default() },
+                    TextFont { font_size: FontSize::Px(16.0), ..default() },
                     TextColor(glass::TITLE),
                     Node { margin: UiRect::top(Val::Px(12.0)), ..default() },
                 ));
                 p.spawn((
                     Node {
+                        border_radius: BorderRadius::all(Val::Px(12.0)),
                         width: Val::Percent(100.0),
                         flex_direction: FlexDirection::Column,
                         row_gap: Val::Px(3.0),
@@ -294,15 +295,14 @@ pub(crate) fn join_ui(
                         border: UiRect::all(Val::Px(1.0)),
                         ..default()
                     },
-                    BorderColor(glass::EDGE_SOFT),
+                    BorderColor::all(glass::EDGE_SOFT),
                     BackgroundColor(glass::GLASS_DEEP),
-                    BorderRadius::all(Val::Px(12.0)),
                 ))
                 .with_children(|d| {
                     d.spawn((
                         Text::new("reading the board..."),
                         JoinBoardText,
-                        TextFont { font_size: 14.0, ..default() },
+                        TextFont { font_size: FontSize::Px(14.0), ..default() },
                         TextColor(glass::TEXT),
                     ));
                 });
@@ -310,7 +310,7 @@ pub(crate) fn join_ui(
                 p.spawn((
                     StatusText,
                     Text::new(""),
-                    TextFont { font_size: 15.0, ..default() },
+                    TextFont { font_size: FontSize::Px(15.0), ..default() },
                     TextColor(glass::WARN),
                     Node { margin: UiRect::top(Val::Px(8.0)), ..default() },
                 ));
@@ -552,10 +552,10 @@ pub(crate) fn join_login_refresh(
         **t = format!("{masked}{caret}");
     }
     if let Ok(mut b) = user_border.single_mut() {
-        *b = BorderColor(if login.0 == Some(0) { gold } else { glass::EDGE_SOFT });
+        *b = BorderColor::all(if login.0 == Some(0) { gold } else { glass::EDGE_SOFT });
     }
     if let Ok(mut b) = pass_border.single_mut() {
-        *b = BorderColor(if login.0 == Some(1) { gold } else { glass::EDGE_SOFT });
+        *b = BorderColor::all(if login.0 == Some(1) { gold } else { glass::EDGE_SOFT });
     }
 }
 
@@ -578,13 +578,13 @@ pub(crate) fn lobby_ui(mut commands: Commands) {
         .with_children(|p| {
             p.spawn((
                 Text::new("CO-OP LOBBY"),
-                TextFont { font_size: 40.0, ..default() },
+                TextFont { font_size: FontSize::Px(40.0), ..default() },
                 TextColor(Color::srgb(0.85, 0.9, 1.0)),
             ));
             p.spawn((
                 LobbyText,
                 Text::new(""),
-                TextFont { font_size: 20.0, ..default() },
+                TextFont { font_size: FontSize::Px(20.0), ..default() },
                 TextColor(Color::srgb(0.8, 0.88, 1.0)),
             ));
             // Tap actions. Which are visible depends on lobby state (`render_lobby`
@@ -629,19 +629,19 @@ fn lobby_button(parent: &mut ChildSpawnerCommands, act: LobbyAct, label: &str) {
             Button,
             LobbyButton(act),
             Node {
+                border_radius: BorderRadius::all(Val::Px(8.0)),
                 display: Display::None,
                 padding: UiRect::axes(Val::Px(18.0), Val::Px(10.0)),
                 border: UiRect::all(Val::Px(1.5)),
                 ..default()
             },
-            BorderColor(glass::EDGE_SOFT),
-            BorderRadius::all(Val::Px(8.0)),
+            BorderColor::all(glass::EDGE_SOFT),
             BackgroundColor(glass::GLASS),
         ))
         .with_children(|b| {
             b.spawn((
                 Text::new(label.to_string()),
-                TextFont { font_size: 18.0, ..default() },
+                TextFont { font_size: FontSize::Px(18.0), ..default() },
                 TextColor(Color::srgb(0.9, 0.94, 1.0)),
             ));
         });
@@ -845,7 +845,7 @@ pub(crate) fn ended_ui(mut commands: Commands, end: Res<EndInfo>) {
             p.spawn((
                 Text::new(title),
                 TextFont {
-                    font_size: 40.0,
+                    font_size: FontSize::Px(40.0),
                     ..default()
                 },
                 TextColor(color),
@@ -857,7 +857,7 @@ pub(crate) fn ended_ui(mut commands: Commands, end: Res<EndInfo>) {
                 p.spawn((
                     Text::new(format!("{hero} fell: kit worn -{points} durability")),
                     TextFont {
-                        font_size: 18.0,
+                        font_size: FontSize::Px(18.0),
                         ..default()
                     },
                     TextColor(Color::srgb(0.95, 0.75, 0.35)),
@@ -869,7 +869,7 @@ pub(crate) fn ended_ui(mut commands: Commands, end: Res<EndInfo>) {
                     p.spawn((
                         Text::new(format!("{name} burned - Ephemeral, gone with them")),
                         TextFont {
-                            font_size: 16.0,
+                            font_size: FontSize::Px(16.0),
                             ..default()
                         },
                         TextColor(Color::srgb(0.98, 0.62, 0.35)),
@@ -880,7 +880,7 @@ pub(crate) fn ended_ui(mut commands: Commands, end: Res<EndInfo>) {
                 p.spawn((
                     Text::new("Repair at the Forge before your next dive.".to_string()),
                     TextFont {
-                        font_size: 16.0,
+                        font_size: FontSize::Px(16.0),
                         ..default()
                     },
                     TextColor(Color::srgb(0.7, 0.75, 0.85)),
@@ -889,7 +889,7 @@ pub(crate) fn ended_ui(mut commands: Commands, end: Res<EndInfo>) {
             p.spawn((
                 Text::new("Tap a button below, or press ENTER to return / ESC to quit"),
                 TextFont {
-                    font_size: 18.0,
+                    font_size: FontSize::Px(18.0),
                     ..default()
                 },
                 TextColor(Color::srgb(0.6, 0.65, 0.8)),
@@ -926,18 +926,18 @@ fn ended_button(parent: &mut ChildSpawnerCommands, act: EndedAct, label: &str, b
             Button,
             EndedButton(act),
             Node {
+                border_radius: BorderRadius::all(Val::Px(8.0)),
                 padding: UiRect::axes(Val::Px(20.0), Val::Px(12.0)),
                 border: UiRect::all(Val::Px(1.5)),
                 ..default()
             },
-            BorderColor(Color::srgb(0.5, 0.6, 0.85)),
-            BorderRadius::all(Val::Px(8.0)),
+            BorderColor::all(Color::srgb(0.5, 0.6, 0.85)),
             BackgroundColor(bg),
         ))
         .with_children(|b| {
             b.spawn((
                 Text::new(label.to_string()),
-                TextFont { font_size: 18.0, ..default() },
+                TextFont { font_size: FontSize::Px(18.0), ..default() },
                 TextColor(Color::srgb(0.95, 0.97, 1.0)),
             ));
         });
@@ -947,7 +947,7 @@ pub(crate) fn ended_input(
     keys: Res<ButtonInput<KeyCode>>,
     mut session: ResMut<Session>,
     mut next: ResMut<NextState<Screen>>,
-    mut exit: EventWriter<AppExit>,
+    mut exit: MessageWriter<AppExit>,
 ) {
     // Return to the hub — banked loot (or, on death, your insured blue gear) is
     // waiting there. `city_ui` re-fetches the Vault and re-arms the next dive.
@@ -967,7 +967,7 @@ pub(crate) fn ended_buttons(
     q: Query<(&Interaction, &EndedButton), Changed<Interaction>>,
     mut session: ResMut<Session>,
     mut next: ResMut<NextState<Screen>>,
-    mut exit: EventWriter<AppExit>,
+    mut exit: MessageWriter<AppExit>,
 ) {
     for (interaction, btn) in &q {
         if *interaction != Interaction::Pressed {

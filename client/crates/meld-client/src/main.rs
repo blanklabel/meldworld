@@ -111,7 +111,7 @@ fn main() {
                         title: "MELDWORLD".to_string(),
                         // Open BIG: borderless-fullscreen so the world + sprites are
                         // readable; the resolution is the windowed fallback.
-                        resolution: (1280.0_f32, 800.0_f32).into(),
+                        resolution: (1280u32, 800u32).into(),
                         mode: default_window_mode(),
                         ..default()
                     }),
@@ -123,11 +123,10 @@ fn main() {
         .add_plugins(MaterialPlugin::<GroundMat>::default())
         // Daytime sky blue behind the diorama (the fog fades the ground into it).
         .insert_resource(ClearColor(Color::srgb(0.53, 0.72, 0.93)))
-        .insert_resource(hd2d::ambient_light())
         .init_resource::<hd2d::Look>()
         .init_resource::<hd2d::LookWatch>()
         .init_resource::<overworld::CamLift>()
-        .insert_non_send_resource(NetRes(net::start(base)))
+        .insert_non_send(NetRes(net::start(base)))
         // Demo and autoplay are mutually exclusive; demo skips networking.
         // `?city` connects via the autoplay path but parks in the hub (see CityIdle).
         .insert_resource(Autoplay((autoplay_flag() || city_idle_flag()) && !demo_flag()))
@@ -622,8 +621,8 @@ fn announce_plugin(app: &mut App) {
         Update,
         (level_up_screen, unlock_banner).run_if(
             in_state(Screen::Overworld)
-                .or(in_state(Screen::City))
-                .or(in_state(Screen::Ended)),
+                .or_else(in_state(Screen::City))
+                .or_else(in_state(Screen::Ended)),
         ),
     )
     .add_systems(

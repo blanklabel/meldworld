@@ -33,12 +33,7 @@ pub(crate) fn load_ui_font(mut commands: Commands, mut fonts: ResMut<Assets<Font
     // every text node fell back to Bevy's default face, which has the Latin glyphs but
     // none of the private-use icon codepoints, so all the HUD icons rendered as tofu
     // boxes. Compiling the bytes in makes the symbol-capable font ALWAYS present.
-    match Font::try_from_bytes(UI_FONT_BYTES.to_vec()) {
-        Ok(font) => {
-            commands.insert_resource(UiFont(fonts.add(font)));
-        }
-        Err(e) => error!("bundled UI font failed to parse: {e}"),
-    }
+    commands.insert_resource(UiFont(fonts.add(Font::from_bytes(UI_FONT_BYTES.to_vec()))));
 }
 
 /// Retro-fit the bundled font onto every text node, so all UI (spawned across many
@@ -49,8 +44,8 @@ pub(crate) fn load_ui_font(mut commands: Commands, mut fonts: ResMut<Assets<Font
 pub(crate) fn apply_ui_font(ui: Option<Res<UiFont>>, mut q: Query<&mut TextFont>) {
     let Some(ui) = ui else { return };
     for mut tf in &mut q {
-        if tf.font.id() != ui.0.id() {
-            tf.font = ui.0.clone();
+        if tf.font != FontSource::Handle(ui.0.clone()) {
+            tf.font = ui.0.clone().into();
         }
     }
 }

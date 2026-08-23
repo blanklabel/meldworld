@@ -1149,6 +1149,7 @@ fn explored_map(
         let (px, py) = map_to_px(x, y, bounds, W, H);
         p.spawn((
             Node {
+                border_radius: BorderRadius::all(Val::Px(size / 2.0)),
                 position_type: PositionType::Absolute,
                 left: Val::Px(px - size / 2.0),
                 top: Val::Px(py - size / 2.0),
@@ -1157,7 +1158,6 @@ fn explored_map(
                 ..default()
             },
             BackgroundColor(color),
-            BorderRadius::all(Val::Px(size / 2.0)),
         ));
     };
     col.spawn((

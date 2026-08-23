@@ -8,8 +8,8 @@
 //! you can dial in the look on a real display and tell me the numbers to bake in.
 //! Native only (the HD-2D post needs a real GPU): `cargo run -p meld-client --bin hd2d`.
 
-use bevy::core_pipeline::bloom::Bloom;
-use bevy::core_pipeline::dof::{DepthOfField, DepthOfFieldMode};
+use bevy::post_process::bloom::Bloom;
+use bevy::post_process::dof::{DepthOfField, DepthOfFieldMode};
 use bevy::core_pipeline::tonemapping::Tonemapping;
 use bevy::pbr::{DistanceFog, FogFalloff};
 use bevy::prelude::*;
@@ -141,11 +141,6 @@ fn main() {
                 }),
         )
         .insert_resource(ClearColor(Color::srgb(0.02, 0.03, 0.06)))
-        .insert_resource(AmbientLight {
-            color: Color::srgb(0.6, 0.7, 0.95),
-            brightness: 220.0,
-            ..default()
-        })
         .init_resource::<Look>()
         .init_resource::<ShotN>()
         .init_resource::<LookWatch>()
@@ -206,7 +201,12 @@ fn setup(
     let cam = commands
         .spawn((
             Camera3d::default(),
-            Camera { hdr: true, ..default() },
+        AmbientLight {
+            color: Color::srgb(0.6, 0.7, 0.95),
+            brightness: 220.0,
+            ..default()
+        },
+            Camera::default(), bevy::camera::Hdr,
             Tonemapping::TonyMcMapface,
             bloom_component(&look),
             dof_component(&look),
@@ -220,7 +220,7 @@ fn setup(
     commands.spawn((
         DirectionalLight {
             illuminance: 9000.0,
-            shadows_enabled: true,
+            shadow_maps_enabled: true,
             color: Color::srgb(1.0, 0.96, 0.85),
             ..default()
         },
@@ -378,7 +378,7 @@ fn setup(
     // On-screen readout.
     commands.spawn((
         Text::new(""),
-        TextFont { font_size: 15.0, ..default() },
+        TextFont { font_size: FontSize::Px(15.0), ..default() },
         TextColor(Color::srgb(0.9, 0.95, 1.0)),
         Node {
             position_type: PositionType::Absolute,

@@ -77,6 +77,7 @@ pub fn scrim() -> impl Bundle {
 pub fn panel(width: Val) -> impl Bundle {
     (
         Node {
+            border_radius: BorderRadius::all(Val::Px(RADIUS)),
             width,
             // Never taller than the window. Measured in VIEWPORT height, not percent:
             // a percentage resolves against the parent, and the parent here is an
@@ -91,8 +92,7 @@ pub fn panel(width: Val) -> impl Bundle {
             ..default()
         },
         BackgroundColor(GLASS),
-        BorderColor(EDGE),
-        BorderRadius::all(Val::Px(RADIUS)),
+        BorderColor::all(EDGE),
     )
 }
 
@@ -105,6 +105,7 @@ pub fn panel(width: Val) -> impl Bundle {
 pub fn panel_capped(width: Val, max_width: Val) -> impl Bundle {
     (
         Node {
+            border_radius: BorderRadius::all(Val::Px(RADIUS)),
             width,
             max_width,
             max_height: Val::Vh(92.0),
@@ -116,8 +117,7 @@ pub fn panel_capped(width: Val, max_width: Val) -> impl Bundle {
             ..default()
         },
         BackgroundColor(GLASS),
-        BorderColor(EDGE),
-        BorderRadius::all(Val::Px(RADIUS)),
+        BorderColor::all(EDGE),
     )
 }
 
@@ -126,6 +126,7 @@ pub fn panel_capped(width: Val, max_width: Val) -> impl Bundle {
 pub fn panel_row(width: Val) -> impl Bundle {
     (
         Node {
+            border_radius: BorderRadius::all(Val::Px(RADIUS)),
             width,
             flex_direction: FlexDirection::Row,
             align_items: AlignItems::Center,
@@ -135,8 +136,7 @@ pub fn panel_row(width: Val) -> impl Bundle {
             ..default()
         },
         BackgroundColor(GLASS),
-        BorderColor(EDGE),
-        BorderRadius::all(Val::Px(RADIUS)),
+        BorderColor::all(EDGE),
     )
 }
 
@@ -145,6 +145,7 @@ pub fn panel_row(width: Val) -> impl Bundle {
 pub fn hud(width: Val) -> impl Bundle {
     (
         Node {
+            border_radius: BorderRadius::all(Val::Px(6.0)),
             width,
             flex_direction: FlexDirection::Column,
             align_items: AlignItems::Center,
@@ -154,8 +155,7 @@ pub fn hud(width: Val) -> impl Bundle {
             ..default()
         },
         BackgroundColor(GLASS_THIN),
-        BorderColor(EDGE_SOFT),
-        BorderRadius::all(Val::Px(6.0)),
+        BorderColor::all(EDGE_SOFT),
     )
 }
 
@@ -165,6 +165,7 @@ pub fn hud(width: Val) -> impl Bundle {
 pub fn inset(focused: bool) -> impl Bundle {
     (
         Node {
+            border_radius: BorderRadius::all(Val::Px(5.0)),
             width: Val::Percent(100.0),
             flex_direction: FlexDirection::Column,
             row_gap: Val::Px(3.0),
@@ -173,8 +174,7 @@ pub fn inset(focused: bool) -> impl Bundle {
             ..default()
         },
         BackgroundColor(GLASS_DEEP),
-        BorderColor(if focused { EDGE } else { EDGE_SOFT }),
-        BorderRadius::all(Val::Px(5.0)),
+        BorderColor::all(if focused { EDGE } else { EDGE_SOFT }),
     )
 }
 
@@ -188,6 +188,7 @@ pub fn chip(on: bool) -> impl Bundle {
 pub fn chip_sized(on: bool, min_width: Val) -> impl Bundle {
     (
         Node {
+            border_radius: BorderRadius::all(Val::Px(5.0)),
             min_width,
             justify_content: JustifyContent::Center,
             padding: UiRect::axes(Val::Px(12.0), Val::Px(7.0)),
@@ -195,8 +196,7 @@ pub fn chip_sized(on: bool, min_width: Val) -> impl Bundle {
             ..default()
         },
         BackgroundColor(if on { CHIP_ON } else { CHIP_OFF }),
-        BorderColor(if on { EDGE } else { EDGE_SOFT }),
-        BorderRadius::all(Val::Px(5.0)),
+        BorderColor::all(if on { EDGE } else { EDGE_SOFT }),
     )
 }
 
@@ -206,6 +206,7 @@ pub fn chip_sized(on: bool, min_width: Val) -> impl Bundle {
 pub fn row_chip(on: bool) -> impl Bundle {
     (
         Node {
+            border_radius: BorderRadius::all(Val::Px(5.0)),
             width: Val::Percent(100.0),
             justify_content: JustifyContent::FlexStart,
             align_items: AlignItems::Center,
@@ -215,8 +216,7 @@ pub fn row_chip(on: bool) -> impl Bundle {
             ..default()
         },
         BackgroundColor(if on { CHIP_ON } else { CHIP_OFF }),
-        BorderColor(if on { EDGE } else { EDGE_SOFT }),
-        BorderRadius::all(Val::Px(5.0)),
+        BorderColor::all(if on { EDGE } else { EDGE_SOFT }),
     )
 }
 
@@ -249,7 +249,7 @@ pub fn divider() -> impl Bundle {
 pub fn text(content: impl Into<String>, size: f32, color: Color) -> impl Bundle {
     (
         Text::new(content.into()),
-        TextFont { font_size: size, ..default() },
+        TextFont { font_size: size.into(), ..default() },
         TextColor(color),
     )
 }
@@ -323,6 +323,7 @@ pub fn column(frac: f32) -> impl Bundle {
     let shrink = 0.0;
     (
         Node {
+            border_radius: BorderRadius::all(Val::Px(RADIUS)),
             width: Val::Percent(frac),
             min_width: min,
             flex_grow: grow,
@@ -336,8 +337,7 @@ pub fn column(frac: f32) -> impl Bundle {
             ..default()
         },
         BackgroundColor(GLASS),
-        BorderColor(EDGE),
-        BorderRadius::all(Val::Px(RADIUS)),
+        BorderColor::all(EDGE),
     )
 }
 
