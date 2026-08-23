@@ -1,9 +1,15 @@
-//! A new account dives with ONE hero, not four.
+//! A new account dives with ONE hero, not four — on a NORMAL dive.
 //!
 //! `clamp_party_to_unlocks` cut an unearned party down correctly and `form_run` then
 //! padded it straight back up to `party_size_per_player`, so a player who had unlocked
 //! only the Explorer was handed four copies of it. The cap is a ceiling, not a grant —
 //! and this is the end-to-end check, because the two halves were individually right.
+//!
+//! Deliberately `"tutorial": false`: the guided `[T]` dive is a later, INTENTIONAL
+//! exception to this exact clamp (it lets a brand-new account try up to 4 chosen
+//! classes for that one dive — see `clamp_tutorial_party`/`qa/tests/
+//! tutorial_party_and_portal.rs`), so asserting the clamp under `tutorial: true` would
+//! now fail this test for the very reason it exists to be lenient.
 //!
 //! Requires Postgres: set `MELD_DATABASE_URL` (see qa/scripts/local_pg.sh).
 
@@ -80,7 +86,7 @@ async fn a_fresh_account_fields_one_hero_however_many_it_asks_for() {
                 ws.send(Message::Text(
                     json!({"type":"run.enter_maze","seq":seq,"ts":0,"payload":{
                         "party":["explorer","explorer","explorer","explorer"],
-                        "tutorial":true
+                        "tutorial":false
                     }})
                     .to_string(),
                 ))

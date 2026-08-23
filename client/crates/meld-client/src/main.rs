@@ -48,6 +48,7 @@ mod overlays; // inventory/equip/status, gear tooltip, loot report, level-up
 mod overworld; // movement/camera, sprite reconciler, terrain, followers, minimap
 mod screens; // Join, co-op Lobby, Ended summary
 mod tutorial; // onboarding: the town welcome tour + the first-dive briefing
+mod tutorial_predive; // the [T] guided dive's own pre-dive welcome + 4-class picker
 mod world_render; // asset load + scene setup, biome ground, sky/weather/water
 pub(crate) use battle::*;
 pub(crate) use city::*;
@@ -193,6 +194,7 @@ fn main() {
         .init_resource::<UnlocksRes>()
         .init_resource::<Tutorial>()
         .init_resource::<TutorialRun>()
+        .init_resource::<tutorial_predive::TutorialPreDive>()
         .init_resource::<LoadoutData>()
         .init_resource::<WorldFrame>()
         .init_resource::<HeroRename>()
@@ -276,7 +278,11 @@ fn main() {
         )
         .add_systems(
             OnExit(Screen::City),
-            (despawn::<CityRoot>, despawn::<CityScene>),
+            (
+                despawn::<CityRoot>,
+                despawn::<CityScene>,
+                despawn::<tutorial_predive::TutorialPreDiveRoot>,
+            ),
         )
         .add_systems(
             Update,
@@ -325,6 +331,12 @@ fn main() {
                 // touches that module's own `TapActionBar` marker.
                 city::highlight_tap_action_bar,
             )
+                .run_if(in_state(Screen::City)),
+        )
+        // Onboarding: the [T]-dive's own pre-dive welcome + 4-class picker.
+        .add_systems(
+            Update,
+            (tutorial_predive::render_tutorial_predive, tutorial_predive::tutorial_predive_buttons)
                 .run_if(in_state(Screen::City)),
         )
         // Lobby (co-op)
@@ -380,7 +392,8 @@ fn main() {
                 // leaving an orphaned card no longer-running system will clear.
                 despawn::<tutorial::TutorialCaptionRoot>,
                 despawn::<tutorial::TutorialExplainRoot>,
-                despawn::<tutorial::TutorialCompleteRoot>,
+                despawn::<tutorial::ChestExplainRoot>,
+                despawn::<tutorial::ExitTutorialRoot>,
             ),
         )
         .add_systems(
@@ -429,8 +442,9 @@ fn main() {
             Update,
             (
                 tutorial::dungeon_explain_card,
-                tutorial::tutorial_complete_popup,
-                tutorial::tutorial_complete_buttons,
+                tutorial::chest_explain_card,
+                tutorial::render_exit_tutorial_button,
+                tutorial::exit_tutorial_click,
             )
                 .run_if(in_state(Screen::Overworld)),
         )
@@ -540,6 +554,7 @@ fn main() {
                 // last frame's badges (e.g. a lingering Regen heart) orphan onto the
                 // overworld and never clear. Tear them down on battle exit.
                 despawn::<StatusIconLayer>,
+                despawn::<BattleIntroRoot>,
             ),
         )
         .add_systems(
@@ -585,6 +600,14 @@ fn main() {
                     mocks::mock_tally_setup,
                 ),
             )
+                .run_if(in_state(Screen::Battle)),
+        )
+        // Onboarding: the guided [T]-dive's first-fight command-menu walkthrough.
+        // A separate call rather than folded into the Battle tuple above, which is
+        // already nested once to stay under Bevy's arity cap.
+        .add_systems(
+            Update,
+            (battle_intro_card, battle_intro_buttons, battle_intro_keyboard)
                 .run_if(in_state(Screen::Battle)),
         )
         // Ended — the extract/death summary. Clean any lingering world/battle actors
@@ -1154,10 +1177,21 @@ enum TutorialStep {
     Harvest,
     Fight,
     Dungeon,
-    /// The "What is a Dungeon?" card is up, waiting to be dismissed.
+    /// The "What is a Dungeon?" card is up — expanded to also BE the
+    /// walkthrough's completion moment (Keep going / Go back to town), so
+    /// there is no separate "Done" step stacked after it.
     Explain,
-    /// The "you have completed the tutorial" popup is up.
-    Done,
+}
+
+/// The first tutorial battle's paced, one-at-a-time Attack/Defend/Skill/Flee
+/// explainer — a sub-state of `TutorialStep::Fight`. Order matches the d-pad
+/// cross's own layout (`rebuild_command_menu`).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum BattleIntroStep {
+    Attack,
+    Defend,
+    Skill,
+    Flee,
 }
 
 #[derive(Resource, Default)]
@@ -1171,6 +1205,24 @@ struct TutorialRun {
     step: Option<TutorialStep>,
     harvested: bool,
     chest_opened: bool,
+    /// `Some` while the first fight's paced command-menu explainer is showing
+    /// (and swallowing normal battle input); `None` once it's finished, skipped,
+    /// or this isn't the tutorial's first fight.
+    battle_intro: Option<BattleIntroStep>,
+    /// True while the "What's in a Chest?" explainer is actually showing.
+    chest_explain: bool,
+    /// True once that explainer has been shown at all — never re-armed, so a
+    /// LATER chest (e.g. the dungeon's own loot chest) doesn't show it again.
+    chest_explained: bool,
+}
+
+impl TutorialRun {
+    /// Arm the Fight step and its battle-intro walkthrough together — the two
+    /// always begin in lockstep, so every call site sets them as one unit.
+    fn arm_fight(&mut self) {
+        self.step = Some(TutorialStep::Fight);
+        self.battle_intro = Some(BattleIntroStep::Attack);
+    }
 }
 
 /// Marker for spawned path-trail dots (despawned when the path changes).

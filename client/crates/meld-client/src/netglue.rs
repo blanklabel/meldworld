@@ -254,6 +254,9 @@ pub(crate) fn pump_net(
                     announce.tutorial_run.step = Some(TutorialStep::Harvest);
                     announce.tutorial_run.harvested = false;
                     announce.tutorial_run.chest_opened = false;
+                    announce.tutorial_run.battle_intro = None;
+                    announce.tutorial_run.chest_explain = false;
+                    announce.tutorial_run.chest_explained = false;
                 } else {
                     announce.tutorial_run.step = None;
                 }
@@ -520,8 +523,17 @@ pub(crate) fn pump_net(
                 {
                     announce.tutorial_run.chest_opened = true;
                     if announce.tutorial_run.harvested {
-                        announce.tutorial_run.step = Some(TutorialStep::Fight);
+                        announce.tutorial_run.arm_fight();
                     }
+                }
+                // A one-shot explainer, first chest EVER this dive — additive to the
+                // loot toast above, not a replacement for it (see `chest_explain_card`).
+                // Gated on `chest_explained` (never re-armed), not `chest_explain`
+                // (which clears again once dismissed) — otherwise a LATER chest, e.g.
+                // the dungeon's own loot chest, would show it a second time.
+                if announce.tutorial_run.step.is_some() && !announce.tutorial_run.chest_explained {
+                    announce.tutorial_run.chest_explained = true;
+                    announce.tutorial_run.chest_explain = true;
                 }
             }
             ServerMsg::ChannelStarted { fill_ms, method, .. } => {
@@ -551,6 +563,9 @@ pub(crate) fn pump_net(
                 // own "Go back to town" button must not leave stale walkthrough
                 // state armed for the player's next, non-tutorial dive.
                 announce.tutorial_run.step = None;
+                announce.tutorial_run.battle_intro = None;
+                announce.tutorial_run.chest_explain = false;
+                announce.tutorial_run.chest_explained = false;
             }
             ServerMsg::InventoryData {
                 chits,
@@ -616,7 +631,7 @@ pub(crate) fn pump_net(
                 {
                     announce.tutorial_run.harvested = true;
                     if announce.tutorial_run.chest_opened {
-                        announce.tutorial_run.step = Some(TutorialStep::Fight);
+                        announce.tutorial_run.arm_fight();
                     }
                 }
             }
