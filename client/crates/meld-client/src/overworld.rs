@@ -382,24 +382,9 @@ pub(crate) fn overworld_ui(mut commands: Commands) {
                     ..default()
                 },
             ));
-            // Shifter corner minimap (top-right). Hidden until the perk unlocks it;
-            // populated with dots by `update_minimap`.
-            p.spawn((
-                MinimapRoot,
-                Node {
-                    border_radius: BorderRadius::all(Val::Px(6.0)),
-                    position_type: PositionType::Absolute,
-                    right: Val::Px(14.0),
-                    top: Val::Px(14.0),
-                    width: Val::Px(140.0),
-                    height: Val::Px(140.0),
-                    border: UiRect::all(Val::Px(2.0)),
-                    display: Display::None,
-                    ..default()
-                },
-                BorderColor::all(Color::srgba(0.6, 0.8, 1.0, 0.5)),
-                BackgroundColor(glass::GLASS_THIN),
-            ));
+            // (The corner minimap is gone — it lives in the menu's Map column now, where
+            // it has 460x260 instead of 140px and shares a surface with the dive's
+            // remembered ground. See `crate::minimap`.)
             // How deep you are, under the map that earned it. Distance is the whole
             // difficulty axis, so it belongs beside the reading of the ground rather
             // than in a corner of its own — and it shows only when the Explorer's map
@@ -717,7 +702,7 @@ pub(crate) fn coop_door_near(world: &Overworld, me: Option<(f32, f32)>) -> Optio
 /// [E] would act on, or the fact that you are mid-channel. Nothing otherwise — a
 /// permanent control list is noise a player stops reading on the second dive, so the
 /// controls live in the menu's Guide column and the backpack in its own. Distance
-/// reads under the Explorer's minimap ([`update_minimap_distance`]) and, for everyone,
+/// reads under the Explorer's depth line ([`update_minimap_distance`]) and, for everyone,
 /// on the menu's Map column (see [`update_run_stats`]).
 /// (Passive-perk hints like "Regen"/"Bulwark" were dropped too: the party always has a
 /// Resonant, so "Regen" was always on and read as a stuck status badge.)
@@ -2371,14 +2356,9 @@ pub(crate) struct NameplateRoot;
 /// One mob nameplate (rebuilt each frame).
 #[derive(Component)]
 pub(crate) struct Nameplate;
-/// Root UI node for the Shifter corner minimap.
-#[derive(Component)]
-pub(crate) struct MinimapRoot;
-/// One minimap dot (rebuilt each frame).
-#[derive(Component)]
-pub(crate) struct MinimapDot;
-
-/// The depth readout under the minimap.
+/// The depth readout that used to sit under the corner minimap. The map moved to the
+/// menu's Map column ([`crate::minimap`]); this line stayed, because "how deep am I" is a
+/// HUD fact you need while walking and not a thing you open a menu for.
 #[derive(Component)]
 pub(crate) struct MinimapDistance;
 
@@ -2658,76 +2638,6 @@ pub(crate) fn wounded(e: &OwEntity) -> bool {
     matches!((e.hp, e.max_hp), (Some(hp), Some(max)) if max > 0 && hp < max)
 }
 
-/// Rebuild the corner minimap. It is the EXPLORER's — `compute_perks` grants
-/// `explorer_map` only with one in the party (the order whose vision is "a world
-/// known" carries the map); the Shifter contributes just the dungeon-door dots.
-/// The panel shows/hides by the map tier; dots plot entities within
-/// `explorer_map_radius` of the player — mobs + portal (tier ≥1), chests (≥2),
-/// harvestables (≥3), self at centre.
-#[allow(clippy::type_complexity)]
-pub(crate) fn update_minimap(
-    mut commands: Commands,
-    perks: Res<PerksRes>,
-    world: Res<Overworld>,
-    session: Res<Session>,
-    mut root_q: Query<(Entity, &mut Node), With<MinimapRoot>>,
-    old: Query<Entity, With<MinimapDot>>,
-) {
-    for e in &old {
-        commands.entity(e).despawn();
-    }
-    let Ok((root, mut node)) = root_q.single_mut() else {
-        return;
-    };
-    let tier = perks.0.explorer_map;
-    node.display = if tier >= 1 { Display::Flex } else { Display::None };
-    if tier == 0 {
-        return;
-    }
-    let Some(me) = world.entities.get(&session.player_id) else {
-        return;
-    };
-    // Panel is 140px; keep dots inside a 64px radius from its centre.
-    const HALF: f32 = 70.0;
-    const R: f32 = 64.0;
-    let radius = perks.0.explorer_map_radius.max(1.0);
-    let scale = R / radius;
-    let shifter_sense = perks.0.shifter_dungeon_radius;
-    commands.entity(root).with_children(|p| {
-        // The player, dead centre.
-        spawn_dot(p, HALF, HALF, 6.0, Color::srgb(1.0, 1.0, 1.0));
-        for e in world.entities.values() {
-            let (col, size) = match e.kind {
-                EntityKind::Monster => (Color::srgb(1.0, 0.4, 0.35), 5.0),
-                EntityKind::Portal => (Color::srgb(0.4, 0.85, 1.0), 6.0),
-                EntityKind::Chest if tier >= 2 => (Color::srgb(1.0, 0.82, 0.3), 5.0),
-                EntityKind::Resource if tier >= 3 => (Color::srgb(0.5, 0.95, 0.5), 4.0),
-                // A dungeon door is the SHIFTER's contribution to the map, not the
-                // Explorer's: Shift-sense reads the instability a doorway leaks, so
-                // entrances plot only while a Runner is in the party, and only inside
-                // that Runner's sense radius.
-                EntityKind::Entrance if shifter_sense > 0.0 => {
-                    (Color::srgb(0.85, 0.55, 1.0), 7.0)
-                }
-                _ => continue,
-            };
-            // An entrance is limited by the Runner's sense, everything else by the
-            // map's reach.
-            if e.kind == EntityKind::Entrance {
-                let d = ((e.x - me.x).powi(2) + (e.y - me.y).powi(2)).sqrt();
-                if d > shifter_sense {
-                    continue;
-                }
-            }
-            let (dx, dy) = ((e.x - me.x) * scale, (e.y - me.y) * scale);
-            if dx.abs() > R || dy.abs() > R {
-                continue; // outside the minimap's world radius
-            }
-            spawn_dot(p, HALF + dx, HALF + dy, size, col);
-        }
-    });
-}
-
 /// The depth readout under the minimap: distance, its tier, and the biome it is in.
 /// Rides the Explorer's map perk, so it appears and vanishes with the panel above it.
 pub(crate) fn update_minimap_distance(
@@ -2759,23 +2669,6 @@ pub(crate) fn update_minimap_distance(
     if **text != line {
         **text = line;
     }
-}
-
-/// Spawn one absolutely-positioned minimap dot centred at (`cx`,`cy`) px.
-pub(crate) fn spawn_dot(p: &mut ChildSpawnerCommands, cx: f32, cy: f32, size: f32, col: Color) {
-    p.spawn((
-        MinimapDot,
-        Node {
-            border_radius: BorderRadius::all(Val::Percent(50.0)),
-            position_type: PositionType::Absolute,
-            left: Val::Px(cx - size / 2.0),
-            top: Val::Px(cy - size / 2.0),
-            width: Val::Px(size),
-            height: Val::Px(size),
-            ..default()
-        },
-        BackgroundColor(col),
-    ));
 }
 
 /// Deterministically pick an index in `0..n` from an entity id (FNV-1a). Lets a
@@ -3321,7 +3214,7 @@ pub(crate) fn spawn_obstacle(
     // Prefer the bespoke HD-2D pixel billboard for this obstacle (PixelLab art),
     // scaled by the collision radius. Water pools keep their animated shader (below),
     // where the moving surface reads better than a flat sprite.
-    let is_water = matches!(name, "pond" | "frozen_pond" | "bog_pool");
+    let is_water = meld_proto::coast::is_water_kind(name);
     if !is_water {
         // Trees draw from a variety pool (oak/pine/birch/dead/willow/bushy) picked by
         // id-hash, with an extra per-id size factor on top of the radius so a forest
@@ -3499,9 +3392,14 @@ pub(crate) fn class_display(key: &str) -> String {
 /// Colour for a terrain obstacle kind — greenery, stone, water and lava read
 /// distinctly so the map's geography is legible.
 pub(crate) fn obstacle_color(kind: &str) -> Color {
+    // Water asks the shared predicate rather than re-listing the kinds: this palette was
+    // the third copy of that list, and the one most likely to be missed, since a new
+    // water kind rendering in stone-grey looks like art rather than a bug.
+    if meld_proto::coast::is_water_kind(kind) {
+        return Color::srgb(0.22, 0.4, 0.6);
+    }
     match kind {
         "tree" | "cactus" | "mire_root" | "fungal_wall" => Color::srgb(0.18, 0.42, 0.22), // foliage
-        "pond" | "frozen_pond" | "bog_pool" => Color::srgb(0.22, 0.4, 0.6), // water
         "lava" => Color::srgb(0.75, 0.32, 0.12), // molten
         "ice_spire" | "snow_drift" => Color::srgb(0.72, 0.82, 0.9), // ice
         // cliffs, boulders, dunes, spires, cinder rock — stone tones

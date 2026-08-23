@@ -325,7 +325,7 @@ fn maze_fill_scale(
 /// Is this fill kind WATER? Water is the one fill that may pool: two bog pools touching
 /// make a bigger mere, where two touching boulders are just a clipping bug.
 fn is_water_kind(kind: &str) -> bool {
-    matches!(kind, "pond" | "bog_pool" | "frozen_pond")
+    meld_proto::coast::is_water_kind(kind)
 }
 
 /// The radius to give an obstacle of `kind`, drawn from `u` in `0..1`.

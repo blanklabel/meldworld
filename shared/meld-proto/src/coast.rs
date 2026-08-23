@@ -290,3 +290,37 @@ mod tests {
         assert!(!is_ocean(-500.0, 400.0, 0.0));
     }
 }
+
+/// Is this obstacle kind **water**? The module already owns where the *sea* is
+/// ([`is_ocean`]); this is the other half of the same question — the pools scattered
+/// inland, which are water by KIND rather than by geometry.
+///
+/// **It lives here because it was written three times and was one edit from
+/// disagreeing.** `meld_world::is_water_kind` decides which fills may POOL (two bog
+/// pools touching make a bigger mere, where two touching boulders are a clipping bug);
+/// the client's prop spawner decides which get a basin, a water tile and a drifting
+/// surface; the client's palette decides which read blue. Three lists of the same three
+/// strings, in two workspaces — so a new water kind (a lava pool, a tarn, a flooded
+/// crater) lands in the world, pools correctly, and renders as a *boulder*, because the
+/// spawner's copy never heard about it. That is the `GearBonus` bug and the
+/// wall-collision bug and the `push_section`/`reroll_props` bug, again.
+///
+/// Adding a kind here gives it pooling, a basin, a tile and a colour at once.
+pub fn is_water_kind(kind: &str) -> bool {
+    matches!(kind, "pond" | "bog_pool" | "frozen_pond")
+}
+
+#[cfg(test)]
+mod water_kind_tests {
+    use super::*;
+
+    #[test]
+    fn the_three_water_kinds_are_water_and_a_boulder_is_not() {
+        for k in ["pond", "bog_pool", "frozen_pond"] {
+            assert!(is_water_kind(k), "{k} should be water");
+        }
+        for k in ["boulder", "tree", "cliff", "lava_vent", ""] {
+            assert!(!is_water_kind(k), "{k} should not be water");
+        }
+    }
+}

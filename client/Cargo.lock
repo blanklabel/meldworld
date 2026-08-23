@@ -856,6 +856,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "bevy_ecs_tilemap"
+version = "0.19.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a0110f93feeaf310d87accf3820a21ebda01063bac12eba9c35e417092a80c34"
+dependencies = [
+ "bevy",
+ "log",
+]
+
+[[package]]
 name = "bevy_embedded_assets"
 version = "0.16.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4004,6 +4014,7 @@ name = "meld-client"
 version = "0.1.0"
 dependencies = [
  "bevy",
+ "bevy_ecs_tilemap",
  "bevy_embedded_assets",
  "ehttp",
  "ewebsock",

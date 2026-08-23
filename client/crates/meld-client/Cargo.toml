@@ -22,6 +22,11 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 uuid = { version = "1", features = ["v4", "v7"] }
 meld-proto = { path = "../../../shared/meld-proto" }
+# The two maps (corner minimap + the menu's explored map) are tile GRIDS, and were
+# drawn as one absolutely-positioned UI node per cell — rebuilt from scratch every
+# frame. bevy_ecs_tilemap renders a grid as chunked meshes with per-tile indices
+# mutated in place, which is what a map wants: allocate once, repaint.
+bevy_ecs_tilemap = "0.19"
 
 # Extras for the `embedded-server` build. Optional, so a normal
 # `cargo build -p meld-client` never compiles the server stack. Paths reach into the
