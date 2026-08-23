@@ -40,6 +40,7 @@ mod feel; // battle-feel timings/magnitudes, in one runtime-tunable place
 mod flags; // launch-time `MELD_*` / `?query` toggles
 mod icons; // one icon per item kind: its own sprite if we drew it, else a type glyph
 mod menu; // the three-column cascading main menu (nav -> section -> pane)
+mod minimap; // the corner map's GROUND: a bevy_ecs_tilemap grid rendered to a texture
 mod mocks; // offline screenshot/demo seeds
 mod music; // one looping background track per screen (assets/music/*.mp3)
 mod netglue; // server messages → state, demo driver, despawn + font install
@@ -121,11 +122,15 @@ fn main() {
         .init_state::<Screen>()
         // The biome-blending ground material (see `GroundBiome`).
         .add_plugins(MaterialPlugin::<GroundMat>::default())
+        // The corner map's ground. A map is a GRID, and it was being drawn as one
+        // absolutely-positioned UI node per cell, respawned every frame.
+        .add_plugins(bevy_ecs_tilemap::TilemapPlugin)
         // Daytime sky blue behind the diorama (the fog fades the ground into it).
         .insert_resource(ClearColor(Color::srgb(0.53, 0.72, 0.93)))
         .init_resource::<hd2d::Look>()
         .init_resource::<hd2d::LookWatch>()
         .init_resource::<overworld::CamLift>()
+        .init_resource::<minimap::MapView>()
         .insert_non_send(NetRes(net::start(base)))
         // Demo and autoplay are mutually exclusive; demo skips networking.
         // `?city` connects via the autoplay path but parks in the hub (see CityIdle).
@@ -204,7 +209,7 @@ fn main() {
         .init_resource::<GearHold>()
         .add_systems(
             Startup,
-            (setup, load_ui_font, apply_class_flag, mock_battle_setup, mock_overlay_setup, ambient::setup_ambient, music::setup_music),
+            (setup, load_ui_font, apply_class_flag, mock_battle_setup, mock_overlay_setup, ambient::setup_ambient, music::setup_music, minimap::setup),
         )
         // run in every state: net pump, demo autopilot, the HD-2D file channel
         // (hot-reload look params + honour screenshot requests), cloud drift, and
@@ -456,8 +461,7 @@ fn main() {
                 // Overworld class perks ("party sense").
                 update_explorer_lamp,
                 update_mob_nameplates,
-                update_minimap,
-                update_minimap_distance,
+                (minimap::track_map_view, minimap::repaint, update_minimap_distance),
                 (remember_explored, station_input, heat_input, update_heat_bar),
                 overworld::update_blind_mask,
                 overworld::update_hurt_flash,

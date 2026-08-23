@@ -458,6 +458,7 @@ pub(crate) fn render_main_menu(
         Res<BountyData>,
     ),
     wa: Option<Res<WorldAssets>>,
+    ground: Option<Res<crate::minimap::MinimapTiles>>,
     existing: Query<Entity, With<MainMenuRoot>>,
 ) {
     if !(overlay.is_changed()
@@ -645,7 +646,7 @@ pub(crate) fn render_main_menu(
                                 col.spawn(glass::text(line, 19.0, glass::TEXT));
                             }
                             col.spawn(glass::divider());
-                            explored_map(col, perks, explored);
+                            explored_map(col, perks, explored, ground.as_deref());
                         }
                         MenuSection::Quests => {
                             quest_column(col, bounties);
@@ -1118,6 +1119,7 @@ fn explored_map(
     col: &mut ChildSpawnerCommands,
     perks: &PerksRes,
     explored: &crate::overworld::ExploredMap,
+    ground: Option<&crate::minimap::MinimapTiles>,
 ) {
     use crate::overworld::{landmark_color, map_bounds, map_to_px, MAP_CELL};
 
@@ -1165,14 +1167,34 @@ fn explored_map(
             width: Val::Px(W),
             height: Val::Px(H),
             position_type: PositionType::Relative,
+            overflow: Overflow::clip(),
             ..default()
         },
         BackgroundColor(Color::srgba(0.05, 0.08, 0.12, 0.55)),
     ))
     .with_children(|panel| {
+        // The GROUND, under everything: biome, coast, water and terrace height, drawn by
+        // `minimap::repaint` into its own texture through its own camera. It covers the
+        // whole panel at the same scale `map_to_px` fits the walk to, so a tile and the
+        // dot on top of it name the same place.
+        if let Some(g) = ground {
+            panel.spawn((
+                ImageNode::new(g.image.clone()),
+                Node {
+                    position_type: PositionType::Absolute,
+                    left: Val::Px(0.0),
+                    top: Val::Px(0.0),
+                    width: Val::Percent(100.0),
+                    height: Val::Percent(100.0),
+                    ..default()
+                },
+            ));
+        }
         for (cx, cy) in &explored.visited {
             let (x, y) = (*cx as f32 * MAP_CELL, *cy as f32 * MAP_CELL);
-            plot(panel, x, y, step, Color::srgba(0.55, 0.72, 0.85, 0.35));
+            // Walked ground is a light WASH now rather than the map itself — the terrain
+            // beneath it is the picture, and this only says "you have been here".
+            plot(panel, x, y, step, Color::srgba(0.75, 0.88, 1.0, 0.16));
         }
         for ((cx, cy), what) in &explored.seen {
             let (x, y) = (*cx as f32 * MAP_CELL, *cy as f32 * MAP_CELL);
