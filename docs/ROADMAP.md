@@ -2263,6 +2263,37 @@ budgeted so the creature sim never threatens the single-owner loop or the server
   - The battle menu and targeting needed **no client change at all** — both read
     `meld_proto::skills`. That is the "never reintroduce a list of ability keys" rule
     paying for itself.
+- [x] **CR-13 — Like does not fight like, and a faction is not a species.** Reported from
+  play: "we need to be careful that 'like' monsters don't attack each other… certain
+  monsters from different factions may not attack other factions and may actually join a
+  pack." Half of that already held — `HOSTILE_PAIRS` is an allow-list, so `beast` and
+  `construct` genuinely ignore each other — and half was broken everywhere.
+  - **A creature's faction is handed down, not inherited from its kind.** `become_boss`
+    gives a rite's retinue the boss's lineage; `join_pack` conscripts a minion. Measured
+    over three seeded worlds: **all 15 species held more than one faction, and every one of
+    them held two that are hostile to each other**, so two of the same animal would hunt
+    each other for no reason a player could read.
+  - ⚠️ **`CR-11` widened this from two factions per species to five** by handing the
+    leader's faction down unconditionally — it fixed the inside of a pack and broke the
+    outside.
+  - `creatures_at_odds` / `battle_at_odds` check **species first and unconditionally**, and
+    all four call sites (overworld chase, the overworld damage pass, and two in battle) go
+    through them — one rule, one function, because a pack that ignores itself outside and
+    brawls the moment a fight starts is the worst of both.
+  - **Conscription is now the exception**: a minion keeps its own faction unless it is
+    genuinely at war with its leader, so a boar can follow a golem and still be a boar.
+    That is the "may actually join a pack" half, and it falls straight out of the allow-list
+    already being sparse.
+  - ⚠️ **The undead rite therefore conscripts EXPLICITLY**, not via `join_pack`. Making
+    conscription conditional broke a canon rule on the way past — "a rite's retinue is its
+    own dead, whatever the local wildlife is" — because a species the table does not mind
+    (construct beside undead) would have kept its own name and walked into the set-piece
+    alive. An ordinary pack is an alliance; a rite is a raising.
+  - Packs at war with their own leader: **0**. Turf war survives (cross-faction clashes
+    still fire), held by a non-vacuity assert so the test cannot quietly stop proving
+    anything.
+  - Deliberately NOT carved out: a risen boar and a living boar are the same species and so
+    will not fight. One line, in one place, if that reads wrong in play.
 - [x] **CR-12 — Fewer packs, and room to walk between them.** Reported from play, right
   after `CR-11` landed: "maybe we should lower the number of spawned packs and put more
   space in between creatures." Both halves were right, and `CR-11` is *why* — packs used to
