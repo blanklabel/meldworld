@@ -295,7 +295,32 @@ pub fn apply_post(
 
 /// Seed the [`LOOK_FILE`] template if absent, so tuning persists across restarts.
 pub fn seed_look_file(look: &Look) {
-    if std::fs::metadata(LOOK_FILE).is_err() {
+    // ⚠️ A REBUILD BEATS A STALE TUNING FILE, AND THIS USED TO BE THE OTHER WAY ROUND.
+    //
+    // The look file persists in /tmp between runs, and it OVERRIDES the compiled defaults.
+    // Written once and never refreshed, that means any value ever seeded — possibly weeks
+    // ago, from a build long since replaced — silently outranks the code, forever. Change a
+    // default in `Look`, rebuild, run, and nothing happens: the old file is still winning.
+    //
+    // It cost a real debugging session. Bloom and fog defaults were fixed, merged, rebuilt
+    // and confirmed present in the binary, and the game still rendered with the old numbers,
+    // which reads exactly like a stale build — the one thing it was not. `cargo clean` would
+    // never have helped.
+    //
+    // So the compiled defaults win whenever the BINARY IS NEWER than the file: a rebuild is
+    // the developer saying "these are the numbers now". Hand-tuning between runs still
+    // persists, which is the whole point of the file — it just stops surviving the rebuild
+    // that was meant to replace it.
+    let stale = match (std::fs::metadata(LOOK_FILE), std::env::current_exe()) {
+        (Ok(f), Ok(exe)) => match (f.modified(), std::fs::metadata(&exe).and_then(|m| m.modified())) {
+            (Ok(file_t), Ok(exe_t)) => exe_t > file_t,
+            _ => false,
+        },
+        // No file yet: seed it.
+        (Err(_), _) => true,
+        _ => false,
+    };
+    if stale {
         if let Ok(s) = serde_json::to_string_pretty(look) {
             let _ = std::fs::write(LOOK_FILE, s);
         }
