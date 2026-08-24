@@ -62,15 +62,28 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     let body = mix(water.shallow.rgb, water.deep.rgb, openness);
     var col = mix(bed, body, openness * 0.85);
 
-    // The surface: the same crests the ocean has, steeper where the water is open.
-    let n_water = water_normal(wxz * scale, t, mix(0.10, 1.0, openness) * steep);
+    // ⚠️ ICE DOES NOT RIPPLE. `steep <= 0` marks a FROZEN body, and it keeps the mesh's own
+    // flat normal instead of a wave one — no crests, no motion. A frozen pond with a swell
+    // rolling across it is the single most obviously wrong thing water can do, and it was
+    // doing it, because "water" was one material behaviour with three palettes.
+    //
+    // Everything else about it stays: ice is still smooth, still catches the sky, still has a
+    // rim where it thins at the bank. It is a mirror, not a puddle.
+    var n_water = in.world_normal;
+    if (steep > 0.0) {
+        n_water = water_normal(wxz * scale, t, mix(0.10, 1.0, openness) * steep);
+    }
 
     // Fresnel against the real view vector. Exponent 3 rather than a physical 5 for the
     // same reason the ocean uses 3: our camera looks DOWN at a fixed pitch, and a true
     // curve leaves water matte from every angle a player actually has.
     let fres = pow(clamp(1.0 - max(dot(n_water, pbr_input.V), 0.0), 0.0, 1.0), 3.0);
     let sky = mix(vec3<f32>(0.46, 0.66, 0.90), vec3<f32>(0.84, 0.92, 1.0), fres);
-    col = mix(col, sky, fres * 0.65 * openness);
+    // ⚠️ A DARK POOL READS BY WHAT IT REFLECTS. Deep water that is nearly black and matte is
+    // indistinguishable from a hole; it is the sky caught on its surface that says "liquid".
+    // So the sky term carries more weight here than on the open sea, where depth colour and
+    // surf already do that work.
+    col = mix(col, sky, fres * 0.85 * openness);
 
     // A rim where the water thins to nothing — the bank, not a beach.
     let rim = 1.0 - smoothstep(0.0, 0.22, depth);

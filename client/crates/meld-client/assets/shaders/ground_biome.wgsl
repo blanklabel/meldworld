@@ -192,6 +192,12 @@ fn vertex(vertex: Vertex) -> VertexOutput {
     return out;
 }
 
+/// 1.0 where a biome's water is ice. Tundra (3) is the only frozen coast; kept as a function
+/// so the sea and its drift cannot disagree about which shores are solid.
+fn frozen_of(bi: i32) -> f32 {
+    return select(0.0, 1.0, bi == 3);
+}
+
 // The tinted ground colour for biome index `bi` at `uv`. Tints make each biome read
 // distinctly under the cool ambient: forest/desert as-authored, Ashfall a charred
 // burnt-red with ember-glow crevices, Tundra a cold frost-blue, Mire a sickly green.
@@ -308,7 +314,8 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         // The tile still underlies it — this is OUR sea, not a generic blue — but it is the
         // BED seen through water now rather than the surface itself, so it darkens with
         // depth and the surface terms below sit on top.
-        var water = water_color(here_biome, wuv + vec2<f32>(t * 0.004, t * 0.006));
+        let drift = (1.0 - frozen_of(here_biome)) * t;
+        var water = water_color(here_biome, wuv + vec2<f32>(drift * 0.004, drift * 0.006));
         // Open water is BLUE-GREEN, not grey. Multiplying the bed's tile toward a neutral
         // slate is what made the sea read as wet concrete: the tile carries its own hue and
         // a desaturated multiplier drags everything toward it. Keeping green well above red
@@ -320,7 +327,18 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         // The surface: a wave normal, steeper out in open water than in the shallows where
         // the bed drags. Ripples are per-pixel, so their size does not depend on how the
         // ground plane is tessellated.
-        let n_water = water_normal(wxz2, t, mix(0.12, 0.55, openness));
+        //
+        // ⚠️ EXCEPT WHERE THE SEA IS FROZEN. A tundra coast draws with the ice tile, and ice
+        // does not swell — the same rule the frozen ponds follow in `water_surface.wgsl`. The
+        // shore keeps its foam line (a frozen sea still meets the land somewhere) but the
+        // surface holds still, so the ice fields read as solid rather than as a blue ocean
+        // wearing a white texture.
+        let frozen = frozen_of(here_biome);
+        let n_water = mix(
+            water_normal(wxz2, t, mix(0.12, 0.55, openness)),
+            vec3<f32>(0.0, 1.0, 0.0),
+            frozen,
+        );
 
         // Fresnel against the actual view vector — the reason water reads as water at a
         // glancing angle and as its own depth from overhead.

@@ -130,7 +130,9 @@ pub(crate) fn update_ambient_scatter(
         // there freezes each blade at whatever angle it happened to be assigned. Grass that
         // is bent and motionless is worse than grass standing straight.
         if blade.last.is_some() {
-            let lean = (t * (1.4 + wind * 1.6) + blade.phase).sin() * (0.03 + wind * 0.30);
+            // Grass moves MORE than the canopy, not less: it is lighter, and it is what the
+            // eye reads wind from first. ~8 degrees in a breeze, ~30 in a storm.
+            let lean = (t * (1.4 + wind * 1.6) + blade.phase).sin() * (0.06 + wind * 0.50);
             tf.rotation = Quat::from_rotation_z(lean);
         }
         let dx = (blade.idx as i32 % GRID) - GRID / 2;

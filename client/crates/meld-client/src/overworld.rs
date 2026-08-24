@@ -303,7 +303,10 @@ pub(crate) fn update_heat_bar(
     }
 }
 
-pub(crate) fn overworld_ui(mut commands: Commands) {
+pub(crate) fn overworld_ui(
+    mut commands: Commands,
+    ground: Option<Res<crate::minimap::MinimapTiles>>,
+) {
     commands
         .spawn((
             OverworldRoot,
@@ -382,9 +385,47 @@ pub(crate) fn overworld_ui(mut commands: Commands) {
                     ..default()
                 },
             ));
-            // (The corner minimap is gone — it lives in the menu's Map column now, where
-            // it has 460x260 instead of 140px and shares a surface with the dive's
-            // remembered ground. See `crate::minimap`.)
+            // The corner minimap, BACK — and now sharing the Map column's rendered ground
+            // rather than being a panel of dots on glass. Both surfaces sample the same
+            // texture; `minimap::track_map_view` frames it for whichever is being looked at
+            // (player-centred out here, the walked rectangle when the Map column is open).
+            //
+            // It was removed when the ground arrived, on the argument that 140px cannot show
+            // a 64px tile. That was true of the TILES and false of the panel: a glance at
+            // where the monsters are is worth having without opening a menu, and the ground
+            // under it reads as colour and coastline even when the texture detail does not.
+            p.spawn((
+                MinimapRoot,
+                Node {
+                    border_radius: BorderRadius::all(Val::Px(6.0)),
+                    position_type: PositionType::Absolute,
+                    right: Val::Px(14.0),
+                    top: Val::Px(14.0),
+                    width: Val::Px(140.0),
+                    height: Val::Px(140.0),
+                    border: UiRect::all(Val::Px(2.0)),
+                    overflow: Overflow::clip(),
+                    display: Display::None,
+                    ..default()
+                },
+                BorderColor::all(Color::srgba(0.6, 0.8, 1.0, 0.5)),
+                BackgroundColor(glass::GLASS_THIN),
+            ))
+            .with_children(|p| {
+                if let Some(g) = &ground {
+                    p.spawn((
+                        ImageNode::new(g.image.clone()),
+                        Node {
+                            position_type: PositionType::Absolute,
+                            left: Val::Px(0.0),
+                            top: Val::Px(0.0),
+                            width: Val::Percent(100.0),
+                            height: Val::Percent(100.0),
+                            ..default()
+                        },
+                    ));
+                }
+            });
             // How deep you are, under the map that earned it. Distance is the whole
             // difficulty axis, so it belongs beside the reading of the ground rather
             // than in a corner of its own — and it shows only when the Explorer's map
@@ -2356,7 +2397,88 @@ pub(crate) struct NameplateRoot;
 /// One mob nameplate (rebuilt each frame).
 #[derive(Component)]
 pub(crate) struct Nameplate;
-/// The depth readout that used to sit under the corner minimap. The map moved to the
+/// Root UI node for the corner minimap.
+#[derive(Component)]
+pub(crate) struct MinimapRoot;
+/// One minimap dot, rebuilt each frame.
+#[derive(Component)]
+pub(crate) struct MinimapDot;
+
+/// Rebuild the corner minimap's blips over its ground. The Explorer's map perk gates it.
+#[allow(clippy::type_complexity)]
+pub(crate) fn update_minimap(
+    mut commands: Commands,
+    perks: Res<PerksRes>,
+    world: Res<Overworld>,
+    session: Res<Session>,
+    view: Res<crate::minimap::MapView>,
+    mut root_q: Query<(Entity, &mut Node), With<MinimapRoot>>,
+    old: Query<Entity, With<MinimapDot>>,
+) {
+    for e in &old {
+        commands.entity(e).despawn();
+    }
+    let Ok((root, mut node)) = root_q.single_mut() else { return };
+    let tier = perks.0.explorer_map;
+    node.display = if tier >= 1 { Display::Flex } else { Display::None };
+    if tier == 0 {
+        return;
+    }
+    let Some(me) = world.entities.get(&session.player_id) else { return };
+    const HALF: f32 = 70.0;
+    const R: f32 = 68.0;
+    // The dots must use the SAME framing the ground was drawn at, or the blips float over a
+    // map of somewhere else. `MapView` is that framing, so there is one answer to "what is
+    // this panel showing" rather than two that drift.
+    let units = view.units.max(0.0001);
+    let scale = R / (units * crate::minimap::corner_tiles_half());
+    let shifter_sense = perks.0.shifter_dungeon_radius;
+    commands.entity(root).with_children(|p| {
+        spawn_dot(p, HALF, HALF, 6.0, Color::srgb(1.0, 1.0, 1.0));
+        for e in world.entities.values() {
+            let (col, size) = match e.kind {
+                EntityKind::Monster => (Color::srgb(1.0, 0.4, 0.35), 5.0),
+                EntityKind::Portal => (Color::srgb(0.4, 0.85, 1.0), 6.0),
+                EntityKind::Chest if tier >= 2 => (Color::srgb(1.0, 0.82, 0.3), 5.0),
+                EntityKind::Resource if tier >= 3 => (Color::srgb(0.5, 0.95, 0.5), 4.0),
+                EntityKind::Entrance if shifter_sense > 0.0 => {
+                    (Color::srgb(0.85, 0.55, 1.0), 7.0)
+                }
+                _ => continue,
+            };
+            if e.kind == EntityKind::Entrance {
+                let d = ((e.x - me.x).powi(2) + (e.y - me.y).powi(2)).sqrt();
+                if d > shifter_sense {
+                    continue;
+                }
+            }
+            let (dx, dy) = ((e.x - me.x) * scale, (e.y - me.y) * scale);
+            if dx.abs() > R || dy.abs() > R {
+                continue;
+            }
+            spawn_dot(p, HALF + dx, HALF + dy, size, col);
+        }
+    });
+}
+
+/// Spawn one absolutely-positioned map dot centred at (`cx`,`cy`) px.
+pub(crate) fn spawn_dot(p: &mut ChildSpawnerCommands, cx: f32, cy: f32, size: f32, col: Color) {
+    p.spawn((
+        MinimapDot,
+        Node {
+            border_radius: BorderRadius::all(Val::Percent(50.0)),
+            position_type: PositionType::Absolute,
+            left: Val::Px(cx - size / 2.0),
+            top: Val::Px(cy - size / 2.0),
+            width: Val::Px(size),
+            height: Val::Px(size),
+            ..default()
+        },
+        BackgroundColor(col),
+    ));
+}
+
+/// The depth readout beneath the corner minimap. The map moved to the
 /// menu's Map column ([`crate::minimap`]); this line stayed, because "how deep am I" is a
 /// HUD fact you need while walking and not a thing you open a menu for.
 #[derive(Component)]
