@@ -209,6 +209,23 @@ pub fn sea_depth(x: f32, z: f32, arc_half_rad: f32) -> f32 {
     past_fan.min(past_spit).min(past_neck)
 }
 
+/// How far past LAST CITY's own shoreline `(x, z)` is, **in city-scene coordinates** —
+/// negative on the spit, positive at sea. The city's twin of [`sea_depth`].
+///
+/// The city is a separate scene laid out in its own coordinates, so [`is_ocean`] cannot
+/// answer there (the world's shoreline, expressed in city space, runs through the plaza).
+/// Its spit is the simple one the constants describe: land within `CITY_SHORE_HALF_WIDTH`
+/// of the centreline and short of `CITY_TIP_REACH`, sea beyond either.
+///
+/// It is a DEPTH rather than a predicate for the same reason [`sea_depth`] is: the ground
+/// shader smoothsteps over it to make the plaza dip into a real bay, and a boolean has no
+/// magnitude to ramp. Both the shader and the scenery cull read this one function, so the
+/// city cannot grow a second hand-placed shoreline — which is exactly what it had, three
+/// water planes laid a hair above the lawn, quietly missing every fix the world's sea got.
+pub fn city_sea_depth(x: f32, z: f32) -> f32 {
+    (x.abs() - CITY_SHORE_HALF_WIDTH).max(z - CITY_TIP_REACH)
+}
+
 /// Is `(x, z)` walkable ground as far as the *coast* is concerned? The inverse of
 /// [`is_ocean`], named for the call sites that read as "can I stand here".
 pub fn is_land(x: f32, z: f32, arc_half_rad: f32) -> bool {
@@ -254,6 +271,30 @@ mod tests {
             }
         }
         assert!(checked > 10_000, "the sweep covered almost nothing ({checked} points)");
+    }
+
+    /// The city's depth field is the city's shoreline — the one the ground shader dips on
+    /// and the one scenery is culled against. Same discipline as
+    /// `the_depth_field_agrees_with_the_predicate` for the world: a magnitude and a
+    /// boolean describing one coast must never disagree about where it is.
+    #[test]
+    fn the_citys_depth_field_is_its_shoreline() {
+        for xi in -40..=40 {
+            for zi in -40..=40 {
+                let (x, z) = (xi as f32 * 2.7, zi as f32 * 2.7);
+                let depth = city_sea_depth(x, z);
+                let sea = x.abs() > CITY_SHORE_HALF_WIDTH || z > CITY_TIP_REACH;
+                if depth.abs() > 1e-3 {
+                    assert_eq!(depth > 0.0, sea, "({x}, {z}) disagrees about the city's coast");
+                }
+            }
+        }
+        // And the city actually HAS a bay to dip into: the plaza at the origin is dry, and
+        // both flanks and the tip are wet. A shoreline that put water through the fountain
+        // would satisfy the agreement above and still be wrong.
+        assert!(city_sea_depth(0.0, 0.0) < 0.0, "the plaza must be dry ground");
+        assert!(city_sea_depth(CITY_SHORE_HALF_WIDTH + 5.0, 0.0) > 0.0, "left flank is sea");
+        assert!(city_sea_depth(0.0, CITY_TIP_REACH + 5.0) > 0.0, "past the tip is sea");
     }
 
     #[test]

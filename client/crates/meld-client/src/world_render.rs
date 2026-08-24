@@ -1532,6 +1532,10 @@ pub(crate) fn drift_clouds(
 /// Only meaningful on the Overworld: Last City is a separate scene in its own coordinates
 /// (its `coast` uniform is zeroed for exactly that reason), and a zero arc means corridor
 /// mode, which has no sea at all.
+/// How far inland Last City's beach ramp reaches — must match the land-side half of the
+/// ground shader's `smoothstep(-14.0, 0.0, sea)` blend band.
+const CITY_BEACH: f32 = 14.0;
+
 pub(crate) fn on_open_water(frame: &crate::WorldFrame, screen: &Screen, wx: f32, wz: f32) -> bool {
     match screen {
         // The maze: ask the shoreline itself.
@@ -1549,8 +1553,13 @@ pub(crate) fn on_open_water(frame: &crate::WorldFrame, screen: &Screen, wx: f32,
         // and ahead past the tip. Reading the constants rather than repeating the numbers
         // is what keeps this from becoming a third hand-placed shoreline.
         Screen::City => {
-            use meld_proto::coast::{CITY_SHORE_HALF_WIDTH as SHORE, CITY_TIP_REACH as TIP};
-            wx.abs() > SHORE || wz > TIP
+            // ⚠️ AND A MARGIN INLAND, WHICH THE OVERWORLD DOES NOT NEED. The city's ground
+            // now DIPS into its bay (see `sea_depth_at`), but city scenery is still placed
+            // at flat y=0 — `tile_ground_detail` rides the heightmap only where
+            // `terrain_amp` is 1. So a bush standing anywhere on the beach ramp would hang
+            // in the air over the slope. Culling the ramp as well as the water costs a few
+            // units of shoreline planting and avoids floating scenery entirely.
+            meld_proto::coast::city_sea_depth(wx, wz) > -CITY_BEACH
         }
         _ => false,
     }
@@ -1802,7 +1811,21 @@ pub(crate) fn update_ground_biome_rings(
     // precision in the thousands, and a session left running overnight would see the swell
     // quantise and then stop moving. 3600 is long enough that the wrap never lines up with
     // anything a player can perceive.
-    mat.extension.params.sea_anim = Vec4::new((now % 3600.0) as f32, 0.0, 0.0, 0.0);
+    // `yz` is LAST CITY's own spit (shore half-width, tip reach), zero everywhere else —
+    // see `sea_depth_at`. The city is a separate scene in its own coordinates, so the
+    // world's shoreline cannot be reused there; handing the city's own down this uniform is
+    // what lets ONE shader draw both seas, instead of the city keeping three hand-placed
+    // water planes that quietly missed every fix the world's sea received.
+    let (city_shore, city_tip) = if *state.get() == Screen::City {
+        (
+            meld_proto::coast::CITY_SHORE_HALF_WIDTH,
+            meld_proto::coast::CITY_TIP_REACH,
+        )
+    } else {
+        (0.0, 0.0)
+    };
+    mat.extension.params.sea_anim =
+        Vec4::new((now % 3600.0) as f32, city_shore, city_tip, 0.0);
     // Roll the ground into hills+cliffs ONLY in the Overworld. The City + menus are
     // hand-placed for FLAT ground (a level plaza), so displacing it there tilts every
     // prop and shades the troughs into blue "corridor" ribbons — flatten it (amp 0).

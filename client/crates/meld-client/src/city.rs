@@ -502,7 +502,6 @@ pub(crate) fn city_scene(
     look: Res<hd2d::Look>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut mats: ResMut<Assets<StandardMaterial>>,
-    mut water_mats: ResMut<Assets<crate::world_render::WaterMat>>,
 ) {
     let Some(wa) = wa else { return };
 
@@ -514,73 +513,26 @@ pub(crate) fn city_scene(
         perceptual_roughness: 0.95,
         ..default()
     });
-    // --- THE SEA. Last City stands on a spit, so water on both flanks and ahead past
-    // the tip. This scene is laid out in its own coordinates and cannot sample
-    // `coast::is_ocean` (its ground is a hand-placed plaza, not the world's terrain), so
-    // it takes the shoreline from `coast`'s constants — and
-    // `the_city_actually_fits_on_its_own_spit` holds those against the real spit, which is
-    // what stops this being a second hand-placed shoreline that drifts from the world's.
+    // --- THE SEA. Last City stands on a spit, so water on both flanks and ahead past the
+    // tip. Orientation: The Threshold sits at -z ("leave town"), so -z is the way to the
+    // maze (world east) and +z runs out to the tip; the flanks are ±x.
     //
-    // Orientation: The Threshold sits at -z ("leave town"), so -z is the way to the maze
-    // (world east) and +z runs out to the tip. The flanks are ±x.
-    {
-        use meld_proto::coast::{CITY_SHORE_HALF_WIDTH as SHORE, CITY_TIP_REACH as TIP};
-        const SEA: f32 = 420.0;
-        // ⚠️ WATER SHOULD ALWAYS SIT IN A DEPRESSION, AND THIS ONE CANNOT YET.
-        //
-        // The arena's sea does: its ground genuinely dips to `SEA_DEPTH` (7 units) below the
-        // land past the shoreline, so the water is IN the world. Last City's cannot, because
-        // its ground is a hand-placed flat plane that runs well past the shoreline — so
-        // anything below y=0 is simply occluded by the lawn. A banked basin mesh was tried
-        // (the seam at ground level, falling away from there) and the grass swallowed it
-        // whole: the bay vanished and the city read as a meadow to the horizon, which is
-        // strictly worse than water sitting a hair too high.
-        //
-        // The real fix is to give the city its OWN coast in the ground shader, so the plane
-        // dips the way the arena's does. `update_ground_biome_rings` deliberately zeroes the
-        // `coast` uniform outside the Overworld (the world's shoreline in city coordinates
-        // would put sea through the plaza), so that means city-space coast params — the
-        // follow-up already noted there. Until then the sea sits just over the grass.
-        const SEA_Y: f32 = 0.05;
-        // THE SEA GETS ITS OWN MATERIAL, in `mode 1` (open water — deep everywhere), not
-        // the pond's basin. A pool is deepest in its middle and shallows to a rim; an ocean
-        // does neither, and reusing the basin material would put a bright shallow ring
-        // around the middle of the bay.
-        let water = water_mats.add(crate::world_render::WaterMat {
-            base: StandardMaterial {
-                base_color: Color::srgb(0.9, 0.94, 1.0),
-                base_color_texture: Some(crate::world_render::load_tiled(
-                    &assets,
-                    "ground/water_clear.png",
-                )),
-                perceptual_roughness: 0.10,
-                metallic: 0.15,
-                alpha_mode: AlphaMode::Blend,
-                ..default()
-            },
-            extension: crate::world_render::WaterSurface {
-                // (time — driven by `animate_water`, wave_scale, steepness, mode 1 = open)
-                params: Vec4::new(0.0, 0.30, 1.0, 1.0),
-                deep: Vec4::new(0.08, 0.28, 0.44, 1.0),
-                shallow: Vec4::new(0.36, 0.66, 0.74, 1.0),
-                edge: Vec4::new(0.86, 0.94, 1.0, 0.0),
-            },
-        });
-        for side in [-1.0_f32, 1.0] {
-            commands.spawn((
-                CityScene,
-                Mesh3d(meshes.add(road_mesh(SEA, SEA))),
-                MeshMaterial3d(water.clone()),
-                Transform::from_xyz(side * (SHORE + SEA * 0.5), SEA_Y, 0.0),
-            ));
-        }
-        commands.spawn((
-            CityScene,
-            Mesh3d(meshes.add(road_mesh(SEA, SEA))),
-            MeshMaterial3d(water.clone()),
-            Transform::from_xyz(0.0, SEA_Y, TIP + SEA * 0.5),
-        ));
-    }
+    // ⚠️ THERE ARE NO WATER PLANES HERE ANY MORE, AND THAT IS THE FIX.
+    //
+    // The city's sea used to be three hand-placed quads sitting at y=0.05 — a hair
+    // ABOVE the lawn, because the plaza is flat and there was nothing for water to sit
+    // IN. That is precisely the "two hand-placed shorelines drift" failure
+    // `meld_proto::coast` exists to prevent, and it had already drifted: the city's sea
+    // silently missed every fix the world's sea got (the fresnel glaze, the per-biome
+    // depth tint, the swell), because they were never the same water.
+    //
+    // The ground shader draws it now, from the city's own spit handed down
+    // `sea_anim.yz` — so the plaza dips into a real bay, the waves reach its shore, and
+    // any future change to how water looks lands in both scenes by construction.
+    //
+    // What made this possible was a one-word fix elsewhere: `terrain_amp` flattens the
+    // LAND, not the sea. It used to scale the whole height expression, so at the City's
+    // amp of 0 the sea level was multiplied to zero along with the hills.
 
     // Central plaza (a paved square around the fountain).
     commands.spawn((
