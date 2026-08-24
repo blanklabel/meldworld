@@ -87,7 +87,21 @@ impl Default for Look {
             focus: 26.0,   // track cam_dist so the followed hero stays sharp
             aperture: 2.2, // tilt-shift: softens the far field for a diorama look while
                            // the followed hero (focus tracks cam_dist) + near play stay sharp
-            bloom: 0.4, // warm HDR glow — lets emissives (portals, node glows, fiery mobs) read
+            // ⚠️ 0.15, NOT 0.4 — AND THE REASON IS THE SHADOW FIX. Bevy's `Bloom::NATURAL`
+            // ships at 0.15 and 0.5 is its "old school" preset, so 0.4 was near-maximum
+            // glow. That was survivable while the world was 5-7x too dark (the ground was
+            // shadowing itself with an undisplaced copy — see `NotShadowCaster` on
+            // `WorldGround`): almost nothing was bright enough to bloom, so a huge intensity
+            // read as a tasteful rim on portals and embers.
+            //
+            // With the world correctly lit, everything is bright enough, and the same value
+            // smears the entire frame into milk — which also made open water read as a
+            // glowing HOLE rather than a surface, because bloom eats exactly the shading
+            // gradients that tell you something is water.
+            //
+            // A brightness knob tuned against a lighting bug has to be retuned when the bug
+            // is fixed. Emissives still read; they are emissive.
+            bloom: 0.15,
             // Fog hugs the walkable corridor so you can't see off into an endless
             // plain, but is loose enough forward that the NEXT biome fades into view
             // ahead of you as you approach a border (the ground cross-fades by world
@@ -95,7 +109,10 @@ impl Default for Look {
             // Open the view WAY out so the overworld reads as an open field, not a tunnel
             // (heavy fog was a big part of the "corridor" feel — you could only see a strip
             // ahead). The distant backdrop skyline sits past this and fogs into the sky.
-            fog_start: 70.0,
+            // Pushed out with the bloom, for the same reason: fog is near-white, and against
+            // a properly-lit world it was hazing the mid-field that used to be too dark to
+            // notice. The far distance still dissolves into the sky.
+            fog_start: 145.0,
             fog_end: 260.0,
             sun_pitch: 55.0,
             sun_yaw: 40.0,

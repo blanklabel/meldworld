@@ -2455,9 +2455,28 @@ pub(crate) fn update_mob_nameplates(
             }
             // Project a point above the mob's head to the screen.
             let head = gtf.translation() + Vec3::Y * 2.6;
+            // ⚠️ BEHIND THE CAMERA STILL PROJECTS. `world_to_viewport` returns `Ok` for a
+            // point behind the viewer, with coordinates that land wherever the perspective
+            // divide throws them — which is how a boss forty units behind the party ends up
+            // as a nameplate pinned in the TOP-LEFT CORNER of the screen. It has been in
+            // most of today's captures ("Rustfang", with a health bar, floating in the sky)
+            // and reads as a UI glitch because it is one.
+            //
+            // So the projection is not enough on its own: the point has to be in FRONT of
+            // the camera, and inside the viewport.
+            if cam_tf.forward().dot(head - cam_tf.translation()) <= 0.0 {
+                continue;
+            }
             let Some(s) = cam.world_to_viewport(cam_tf, head).ok() else {
                 continue;
             };
+            // ...and on screen. A plate half a screen out is not information, it is clutter
+            // clinging to an edge.
+            if let Some(size) = cam.logical_viewport_size() {
+                if s.x < 0.0 || s.y < 0.0 || s.x > size.x || s.y > size.y {
+                    continue;
+                }
+            }
             // Threat marker (Hunter): elites/gatekeepers, then aggressive mobs.
             let ec = ent.encounter_class.as_deref().unwrap_or("standard");
             let aggr = ent.aggression.as_deref().unwrap_or("passive");

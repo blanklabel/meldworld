@@ -15,6 +15,12 @@ use bevy::shader::ShaderRef;
 /// rather than in `meld_proto::coast`: it decides how water LOOKS, not where it is.
 pub(crate) const SEA_DEPTH: f32 = 7.0;
 
+/// How wide a disc of snow follows the player, and how high it starts. Wider and lower
+/// than the rain's: snow is legible further out because it falls slowly, and starting it
+/// too high wastes flakes above the camera where nobody sees them.
+const SNOW_RADIUS: f32 = 34.0;
+const SNOW_FALL_TOP: f32 = 16.0;
+
 use meld_client::hd2d::{self, CharacterFrames};
 
 use super::*;
@@ -173,6 +179,13 @@ impl MaterialExtension for GroundBiome {
     /// Custom vertex shader displaces the ground into rolling hills (`terrain_height`).
     fn vertex_shader() -> ShaderRef {
         "shaders/ground_biome.wgsl".into()
+    }
+    /// ⚠️ THE SHADOW AND DEPTH PASSES TAKE THEIR VERTEX STAGE FROM HERE, not from
+    /// `vertex_shader`. Leave it unimplemented and the ground is rasterized FLAT into the
+    /// shadow map while the visible ground rolls into hills — so the terrain shadows itself
+    /// with a sheet that is never drawn, measured at 7x darker across the whole world.
+    fn prepass_vertex_shader() -> ShaderRef {
+        "shaders/ground_prepass.wgsl".into()
     }
 }
 
@@ -397,6 +410,8 @@ pub(crate) fn load_tiled(assets: &AssetServer, path: &str) -> Handle<Image> {
 #[derive(Resource)]
 pub(crate) struct WaveLib(#[allow(dead_code)] Handle<Shader>);
 
+
+
 pub(crate) fn setup(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -469,19 +484,12 @@ pub(crate) fn setup(
     });
     commands.spawn((
         WorldGround,
-        // ⚠️ THE GROUND MUST NOT CAST. It has a CUSTOM VERTEX SHADER that displaces the
-        // plane into rolling hills — and `MaterialExtension` takes its shadow/prepass vertex
-        // stage from a SEPARATE hook we do not override, so the shadow map rasterizes this
-        // plane FLAT while the visible ground is displaced. The flat caster then shadows the
-        // real hills wherever they sit below it, which put most of the world in shade all
-        // day: raising the sun 9,200 -> 21,000 lux moved the ground 33.3 -> 34.4 because the
-        // light was never the problem, the shadow mask was.
-        //
-        // A ground plane has nothing to cast onto but itself, so not casting costs nothing —
-        // props, characters and terrain props still cast onto it. Fixing it the other way
-        // (a displacing shadow vertex stage) is the same work `ground_biome.wgsl` needs
-        // before any depth prepass can be enabled out here.
-        NotShadowCaster,
+        // The ground CASTS, and correctly. It was briefly `NotShadowCaster` because the
+        // shadow pass rasterized this plane FLAT while the visible ground rolled into hills,
+        // so the terrain shadowed itself with a sheet that is never drawn. That was a missing
+        // `prepass_vertex_shader` (see `GroundBiome`) rather than a reason to stop casting:
+        // with the displacement applied in the shadow pass too, hills shade each other again,
+        // which is where the scene's contrast comes from.
         // Square (was 2000×600, a corridor) so the WG-4 radial fan has ground in
         // every direction the player roams. SUBDIVIDED into a fine grid so the ground
         // shader's vertex displacement (`terrain_height`) reads as smooth rolling hills
@@ -1043,6 +1051,46 @@ pub(crate) fn setup(
             Mesh3d(drop_mesh.clone()),
             MeshMaterial3d(drop_mat.clone()),
             Transform::from_translation(off),
+            Visibility::Hidden,
+        ));
+    }
+
+    // ── Snow (tundra) ───────────────────────────────────────────────────────
+    // Soft, slow flakes anchored on the player, shown only in the tundra. They reuse the
+    // cloud puff texture rather than adding art: at flake scale it is just a soft dot,
+    // which is exactly what a snowflake needs to be at this resolution.
+    // ⚠️ WHITE SNOW ON WHITE GROUND IS INVISIBLE. The tundra's tile is the brightest in the
+    // game (mean luminance 243), so a white flake at 85% alpha simply vanishes into it —
+    // which is exactly how the first pass rendered: animating correctly, and unseeable.
+    // A flake reads by being BRIGHTER than even that, so it is pushed emissive and lifted
+    // into bloom's range rather than tinted darker, which would read as ash.
+    let flake_mat = mats.add(StandardMaterial {
+        base_color: Color::srgba(1.0, 1.0, 1.0, 0.95),
+        base_color_texture: Some(images.add(hd2d::cloud_texture(48))),
+        emissive: LinearRgba::rgb(1.9, 2.0, 2.3), // brighter than the snowfield it falls on
+        unlit: true,
+        alpha_mode: AlphaMode::Blend,
+        double_sided: true,
+        cull_mode: None,
+        ..default()
+    });
+    let flake_mesh = meshes.add(Rectangle::new(1.0, 1.0));
+    for _ in 0..420 {
+        let ang = rnd() * std::f32::consts::TAU;
+        let r = rnd() * rnd() * SNOW_RADIUS; // biased inward: distant flakes are invisible anyway
+        let off = Vec3::new(ang.cos() * r, rnd() * SNOW_FALL_TOP, ang.sin() * r);
+        // ⚠️ FLAKES ARE BIGGER THAN THEY SOUND. At 0.16-0.36 units these were physically
+        // right and visually nothing: a few pixels of white against the brightest ground in
+        // the game. Snow reads at this camera distance by being generous — closer to a
+        // drifting mote than a crystal.
+        let sz = 0.34 + rnd() * 0.40;
+        commands.spawn((
+            Snowflake { off, phase: rnd() * std::f32::consts::TAU },
+            Mesh3d(flake_mesh.clone()),
+            MeshMaterial3d(flake_mat.clone()),
+            Transform::from_translation(off).with_scale(Vec3::splat(sz)),
+            hd2d::Billboard,
+            NotShadowCaster,
             Visibility::Hidden,
         ));
     }
@@ -1932,6 +1980,20 @@ pub(crate) struct RainDrop {
     off: Vec3,
 }
 
+/// A snowflake, camera-anchored like the rain. `off` is its position relative to the
+/// player; `phase` gives each flake its own sideways wander so they do not fall as a sheet.
+///
+/// ⚠️ Snow is NOT rain with a different colour, and the difference is the whole effect.
+/// Rain falls fast and straight and only during a storm. Snow is slow, it drifts sideways,
+/// and in the tundra it falls in FAIR weather too — a cold biome is snowing most of the
+/// time, and gating it on the storm phase would leave the ice fields looking like a
+/// summer meadow between weather cycles.
+#[derive(Component)]
+pub(crate) struct Snowflake {
+    off: Vec3,
+    phase: f32,
+}
+
 /// The single storm cloud that carries the rain. `off` is its xz offset from the
 /// camera; it drifts on the wind and the rain falls in the disk beneath it.
 #[derive(Component)]
@@ -2352,6 +2414,74 @@ pub(crate) fn anchor_sky_fx(
 /// Drift the rain cloud over the play area and rain ONLY in the disk beneath it, so
 /// the shower reads as "that cloud is raining" rather than a screen-wide slab. The
 /// cloud + drops are shown only while it's raining.
+/// Fall, drift and wrap the snow — and show it only where it belongs.
+///
+/// Snow is anchored on the player and wraps within a disc, the same trick the rain uses: a
+/// bounded pool of flakes that never runs out because it recycles. What differs is the
+/// MOTION, and that is the whole read: rain falls fast and straight, snow falls slowly and
+/// wanders sideways, each flake on its own phase so they never descend as a sheet.
+///
+/// ⚠️ It falls in FAIR weather too. Gating snow on the storm phase — which is what rain
+/// does — would leave the ice fields looking like a summer meadow between weather cycles,
+/// and a tundra that is only occasionally cold is not a tundra. Weather scales how HARD it
+/// snows, never whether it snows at all.
+pub(crate) fn drive_snow(
+    cam_q: Query<&Transform, With<Camera3d>>,
+    time: Res<Time>,
+    sky: Res<Sky>,
+    stats: Res<crate::RunStats>,
+    state: Res<State<Screen>>,
+    mut flakes: Query<(&mut Snowflake, &mut Transform, &mut Visibility), Without<Camera3d>>,
+) {
+    let cam = cam_q.single().map(|t| t.translation).unwrap_or(Vec3::ZERO);
+    // Tundra only, and only out in the world: Last City is a separate scene with its own
+    // weather-free framing, and snow over the plaza would be a permanent blizzard indoors.
+    // ⚠️ CASE-INSENSITIVE, because `RunStats.biome` is TITLE-CASED for the HUD readout
+    // ("336 m · T3 · Tundra") while every biome key in the codebase is lowercase. Comparing
+    // against `"tundra"` matches nothing, and the failure is silent: the snow animates
+    // perfectly and simply never becomes visible. It cost two wrong hypotheses here — first
+    // contrast, then falling through displaced terrain — before a garish diagnostic proved
+    // the flakes were not being drawn at all.
+    let snowing =
+        *state.get() == Screen::Overworld && stats.biome.eq_ignore_ascii_case("tundra");
+    let dt = time.delta_secs();
+    let t = time.elapsed_secs();
+    // A storm drives it harder and slants it further; fair weather is a gentle fall.
+    let hard = 0.45 + sky.weather * 0.55;
+    let slant = (0.6 + sky.wind * 2.4) * hard;
+    for (mut f, mut tf, mut v) in &mut flakes {
+        *v = if snowing { Visibility::Inherited } else { Visibility::Hidden };
+        if !snowing {
+            continue;
+        }
+        f.off.y -= (2.6 + 3.4 * hard) * dt;
+        // Downwind travel, so a storm visibly blows the fall sideways.
+        f.off.x += slant * dt;
+        if f.off.y < 0.0 {
+            f.off.y = SNOW_FALL_TOP;
+        }
+        // Wrap in x so the downwind drift never empties the upwind side.
+        if f.off.x > SNOW_RADIUS {
+            f.off.x -= 2.0 * SNOW_RADIUS;
+        }
+        // The wander: each flake on its own phase, so the fall reads as air moving rather
+        // than as a curtain sliding.
+        let wob = ((t * 0.8 + f.phase).sin() * 0.55 + (t * 1.9 + f.phase * 1.7).sin() * 0.22)
+            * (0.4 + hard);
+        // ⚠️ HEIGHT IS RELATIVE TO THE CAMERA, NOT ABSOLUTE. The rain gets away with an
+        // absolute `y` because it falls from a cloud at a fixed altitude; snow anchored the
+        // same way falls through terrain that `total_height` displaces by up to ±15 units,
+        // so on any raised ground the whole snowfall is UNDERGROUND. It animated perfectly
+        // and could not be seen — including against a cloud shadow, which is what proved it
+        // was not a contrast problem.
+        tf.translation = Vec3::new(
+            cam.x + f.off.x + wob,
+            cam.y + f.off.y - SNOW_FALL_TOP * 0.62,
+            cam.z + f.off.z + wob * 0.6,
+        );
+    }
+}
+
 pub(crate) fn drive_rain(
     cam_q: Query<&Transform, With<Camera3d>>,
     time: Res<Time>,
@@ -2451,6 +2581,51 @@ mod ground_uniform_tests {
     /// world in the running game. So hold the size here and read the field list out of
     /// the shader source: adding a field to one side and not the other fails a test
     /// instead of a screenshot.
+    /// The ground is rasterized TWICE — once to draw it, once to record its depth for the
+    /// shadow map — and the two stages live in different FILES because Bevy refuses two
+    /// `@vertex` entry points in one module, while moving the field into an imported library
+    /// fails at pipeline creation ("Bindings for [32] conflict with other resource": a
+    /// material uniform declared inside an imported module collides rather than resolving).
+    ///
+    /// So the height field is duplicated, and duplication in this repo is only ever
+    /// acceptable when it is CHECKED. If the two copies drift, the ground casts a shadow
+    /// shaped like a world that is not the one being drawn — which is the exact bug this
+    /// stage was added to fix, and it cost 7x the brightness of every biome.
+    #[test]
+    fn the_two_ground_shaders_share_one_height_field() {
+        let main = include_str!("../assets/shaders/ground_biome.wgsl");
+        let prepass = include_str!("../assets/shaders/ground_prepass.wgsl");
+
+        /// One top-level item, from its `fn name(` (or `struct name {`) to the closing brace
+        /// in column 0, whitespace-normalised so reformatting is not a false alarm.
+        fn item(src: &str, head: &str) -> String {
+            let a = src.find(head).unwrap_or_else(|| panic!("missing `{head}`"));
+            let b = src[a..].find("\n}").unwrap_or_else(|| panic!("`{head}` never closes")) + a + 2;
+            src[a..b].split_whitespace().collect::<Vec<_>>().join(" ")
+        }
+
+        for head in [
+            "struct BiomeParams {",
+            "fn terrain_height_wgsl(",
+            "fn spit_half_width(",
+            "fn sea_depth_at(",
+            "fn peak_dome(",
+            "fn total_height(",
+            "fn terrain_normal(",
+        ] {
+            assert_eq!(
+                item(main, head),
+                item(prepass, head),
+                "`{head}` differs between the ground's DRAW pass and its SHADOW pass — the \
+                 terrain will cast a shadow shaped like a world it does not render"
+            );
+        }
+
+        // Both must also carry the uniform at the same binding, or one pass reads nothing.
+        let binding = "@binding(106) var<uniform> params: BiomeParams;";
+        assert!(main.contains(binding) && prepass.contains(binding), "the uniform moved");
+    }
+
     #[test]
     fn the_ground_uniform_matches_the_shader_that_reads_it() {
         let size = <biome_params::BiomeParams as ShaderType>::min_size().get();
