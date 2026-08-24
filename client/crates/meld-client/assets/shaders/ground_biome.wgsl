@@ -63,6 +63,11 @@ struct BiomeParams {
     // rings, so the doomed region draws as an annulus in the same frame as everything
     // else — no second coordinate system to keep in sync. Intensity 0 = nothing pending.
     shift: vec4<f32>,
+    // Open-water animation: `(seconds, 0, 0, 0)`. The sea needs a clock and this shader had
+    // none — which is why the ocean was a static tile while every pond prop drifted its own
+    // material UVs from `animate_water`. A vec4 rather than a bare f32 so it lands 16-byte
+    // aligned after `shift` and needs no new padding on either side of the mirror.
+    sea_anim: vec4<f32>,
 }
 
 @group(#{MATERIAL_BIND_GROUP}) @binding(100) var t_forest: texture_2d<f32>;
@@ -205,6 +210,54 @@ fn biome_color(bi: i32, uv: vec2<f32>) -> vec4<f32> {
     return textureSample(t_mire, samp, uv) * vec4<f32>(0.75, 0.95, 0.7, 1.0);
 }
 
+// ---------------------------------------------------------------------------------------
+// OPEN WATER
+//
+// The sea is shaded here, per fragment, rather than by a water crate over a water mesh —
+// and the reason is `sea_depth_at`. Every mesh-based attempt in this game founders on the
+// same thing: our water is centimetres deep. A pond basin is half a unit; the city's sea
+// plane sits five centimetres over its own grass. Anything that shades by measuring the
+// distance from the surface to the bed (Beer's law over a depth buffer, which is what
+// `bevy_water` does) has almost nothing to measure and resolves to "no water".
+//
+// This shader already knows the answer analytically. `sea_depth_at` returns how far into
+// the sea a point is IN WORLD UNITS, unbounded, straight from `meld_proto::coast` — the
+// same function the server collides against. So depth here is tens of units where geometry
+// offered fractions, and it costs no prepass, no depth texture, and no mesh at all.
+//
+// Detail is per-pixel for the same reason Seascape is: the wave field and its normal are
+// evaluated at the fragment, so ripple density is independent of how finely the ground
+// plane happens to be tessellated.
+
+// Summed directional waves. Each octave is rotated off the last so the crests never line
+// up into a visible grid, which is the tell that gives away cheap procedural water.
+fn wave_height(p_in: vec2<f32>, t: f32) -> f32 {
+    var q = p_in;
+    var h = 0.0;
+    var amp = 1.0;
+    var freq = 0.075;
+    for (var i = 0; i < 4; i = i + 1) {
+        let a = sin(q.x * freq + t * 1.05) * cos(q.y * freq * 0.87 - t * 0.71);
+        let b = sin((q.x + q.y) * freq * 1.31 - t * 0.93);
+        h = h + (a + b * 0.6) * amp;
+        amp = amp * 0.5;
+        freq = freq * 1.93;
+        // ~16 degrees per octave.
+        q = vec2<f32>(q.x * 0.961 - q.y * 0.276, q.x * 0.276 + q.y * 0.961);
+    }
+    return h;
+}
+
+// The surface normal, by finite-differencing the same field. `steep` scales how much the
+// slope tilts the normal — the wave field is unitless, so this is where it becomes a look.
+fn water_normal(p: vec2<f32>, t: f32, steep: f32) -> vec3<f32> {
+    let e = 0.75;
+    let h = wave_height(p, t);
+    let hx = wave_height(p + vec2<f32>(e, 0.0), t);
+    let hz = wave_height(p + vec2<f32>(0.0, e), t);
+    return normalize(vec3<f32>((h - hx) * steep, e, (h - hz) * steep));
+}
+
 @fragment
 fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> FragmentOutput {
     var pbr_input = pbr_input_from_standard_material(in, is_front);
@@ -264,13 +317,57 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         // Static, unlike the pool props: `animate_water` drifts THEIR material UVs from the
         // clock, and this shader has no time uniform to do the same. The tile is the fix
         // that mattered; a moving surface wants a `time` binding and is its own change.
-        let wuv = in.world_position.xz * params.uv_scale * 0.5;
-        var water = water_color(here_biome, wuv);
-        // Depth still reads: shallows keep the tile bright, open water darkens toward it.
-        water = vec4<f32>(water.rgb * mix(1.0, 0.42, smoothstep(0.0, 60.0, max(sea, 0.0))), 1.0);
-        // A pale line right at the waterline, so the shore is a place you can aim at.
-        let surf = 1.0 - smoothstep(0.0, 3.5, abs(sea));
-        let wet = mix(water, vec4<f32>(0.72, 0.86, 0.88, 1.0), surf * 0.45);
+        let t = params.sea_anim.x;
+        let wxz2 = in.world_position.xz;
+        let wuv = wxz2 * params.uv_scale * 0.5;
+
+        // How much of a sea this fragment is: shallows keep the tile and the bed, open
+        // water becomes surface. Everything below fades in on this, so the shoreline is a
+        // gradient rather than a rim where one material stops and another starts.
+        let openness = smoothstep(0.0, 26.0, max(sea, 0.0));
+
+        // The tile still underlies it — this is OUR sea, not a generic blue — but it is the
+        // BED seen through water now rather than the surface itself, so it darkens with
+        // depth and the surface terms below sit on top.
+        var water = water_color(here_biome, wuv + vec2<f32>(t * 0.004, t * 0.006));
+        // Open water is BLUE-GREEN, not grey. Multiplying the bed's tile toward a neutral
+        // slate is what made the sea read as wet concrete: the tile carries its own hue and
+        // a desaturated multiplier drags everything toward it. Keeping green well above red
+        // holds the sea on the cyan side of the ground it borders, which is what separates
+        // water from wet sand at a glance.
+        let deep_tint = mix(vec3<f32>(1.0, 1.0, 1.0), vec3<f32>(0.09, 0.30, 0.46), openness);
+        water = vec4<f32>(water.rgb * deep_tint, 1.0);
+
+        // The surface: a wave normal, steeper out in open water than in the shallows where
+        // the bed drags. Ripples are per-pixel, so their size does not depend on how the
+        // ground plane is tessellated.
+        let n_water = water_normal(wxz2, t, mix(0.12, 0.55, openness));
+
+        // Fresnel against the actual view vector — the reason water reads as water at a
+        // glancing angle and as its own depth from overhead.
+        // Exponent 3, not 5: a physical Fresnel is nearly nothing until the view is very
+        // glancing, and our camera looks DOWN at a fixed pitch — a true curve leaves the sea
+        // matte from every angle the player actually has. This is a look, not a measurement.
+        let fres = pow(clamp(1.0 - max(dot(n_water, pbr_input.V), 0.0), 0.0, 1.0), 3.0);
+        // We have no skybox to sample, so the sky is reconstructed from the same colour the
+        // frame is cleared to, brightened toward the horizon.
+        let sky = mix(vec3<f32>(0.46, 0.66, 0.90), vec3<f32>(0.84, 0.92, 1.0), fres);
+        water = vec4<f32>(mix(water.rgb, sky, fres * 0.9 * openness), 1.0);
+
+        // Hand the wave normal to the PBR pass so the SUN does the specular. A hand-rolled
+        // glint would not track the day/night cycle; this one is lit by the same light
+        // everything else is, and goes out at dusk because the sun does.
+        pbr_input.N = normalize(mix(pbr_input.N, n_water, openness));
+        pbr_input.world_normal = pbr_input.N;
+        pbr_input.material.perceptual_roughness =
+            mix(pbr_input.material.perceptual_roughness, 0.06, openness);
+        pbr_input.material.reflectance = mix(pbr_input.material.reflectance, vec3<f32>(0.55), openness);
+
+        // Foam where the waves break on the shore: the waterline, modulated by the wave
+        // field so it moves with the swell instead of ringing the coast at a fixed radius.
+        let swell = wave_height(wxz2 * 1.7, t * 1.3) * 0.5;
+        let surf = 1.0 - smoothstep(0.0, 3.2, abs(sea - swell));
+        let wet = mix(water, vec4<f32>(0.86, 0.93, 0.96, 1.0), surf * 0.55);
         blended = mix(blended, wet, clamp(smoothstep(-0.5, 2.5, sea), 0.0, 1.0));
     }
 

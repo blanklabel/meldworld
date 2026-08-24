@@ -93,6 +93,11 @@ mod biome_params {
         /// the doomed annulus needs no second coordinate system. `intensity == 0` is the
         /// resting state and costs the shader one compare.
         pub(crate) shift: Vec4,
+        /// Open-water animation: `(seconds, 0, 0, 0)`. The sea needs a clock and this
+        /// shader had none — the ocean was a static tile while every pond prop drifted its
+        /// own material UVs from [`animate_water`]. A `Vec4` rather than a bare `f32` so it
+        /// lands 16-byte aligned after `shift` and adds no padding to either mirror.
+        pub(crate) sea_anim: Vec4,
     }
 
     impl Default for BiomeParams {
@@ -115,6 +120,7 @@ mod biome_params {
                     super::SEA_DEPTH,
                 ),
                 shift: Vec4::ZERO,
+                sea_anim: Vec4::ZERO,
                 peaks: [Vec4::ZERO; PEAK_SLOTS],
                 peak_count: 0,
                 _pad_pc0: 0,
@@ -649,7 +655,7 @@ pub(crate) fn setup(
         // A BASIN, not a disc: the rim stays proud of the terrain (no z-fighting) while the
         // surface sits below it, so water reads as sunk into the ground rather than floating
         // on it. Worst in the Mire, whose entire maze fill is water.
-        water_mesh: meshes.add(hd2d::blob_basin_mesh(28, 0.16, 0.74)),
+        water_mesh: meshes.add(hd2d::blob_basin_mesh(28, hd2d::WATER_BASIN_DEPTH, 0.74)),
         pad_mesh: meshes.add(hd2d::blob_mesh(14)),
         pad_mats: [
             LinearRgba::rgb(0.16, 0.34, 0.15),
@@ -666,7 +672,18 @@ pub(crate) fn setup(
         })
         .collect(),
         // Bespoke pixel-art water tiles (PixelLab), one per water kind, tiled + drifted
-        // by `animate_water`. Replaces the old procedural `water_ripple_texture`.
+        // by `animate_water`.
+        //
+        // ⚠️ These are POOLS, and they are deliberately still plain `StandardMaterial`s.
+        // The open sea is shaded in `ground_biome.wgsl` instead, because that path has real
+        // DEPTH to work with (`sea_depth_at`, analytic, tens of world units) where a pool
+        // basin has half a unit and the city's sea plane has five centimetres. Anything
+        // that shades water by measuring surface-to-bed distance — Beer's law over a depth
+        // buffer, which is what every water crate does — has nothing to measure here and
+        // resolves to "no water". That was tried, at length; the shader is what worked.
+        //
+        // Giving the pools the same treatment means giving them an analytic depth too, and
+        // that is its own change.
         water_mats: [
             ("pond", "ground/water_clear.png", LinearRgba::rgb(0.02, 0.06, 0.1)),
             ("bog_pool", "ground/water_bog.png", LinearRgba::rgb(0.03, 0.06, 0.03)),
@@ -1458,6 +1475,11 @@ pub(crate) fn update_ground_biome_rings(
     let now = clock.elapsed_secs_f64();
     let k = tell.intensity(now);
     mat.extension.params.shift = Vec4::new(tell.inner, tell.outer, k, 0.0);
+    // The sea's clock. Wrapped rather than raw elapsed seconds: f32 loses sub-frame
+    // precision in the thousands, and a session left running overnight would see the swell
+    // quantise and then stop moving. 3600 is long enough that the wrap never lines up with
+    // anything a player can perceive.
+    mat.extension.params.sea_anim = Vec4::new((now % 3600.0) as f32, 0.0, 0.0, 0.0);
     // Roll the ground into hills+cliffs ONLY in the Overworld. The City + menus are
     // hand-placed for FLAT ground (a level plaza), so displacing it there tilts every
     // prop and shades the troughs into blue "corridor" ribbons — flatten it (amp 0).
@@ -2172,7 +2194,7 @@ mod ground_uniform_tests {
             .0;
         for field in [
             "rings", "count", "uv_scale", "blend_half", "terrain_amp", "terrain_off",
-            "_pad_peaks", "peaks", "peak_count", "shift",
+            "_pad_peaks", "peaks", "peak_count", "shift", "sea_anim",
         ] {
             assert!(body.contains(&format!("{field}:")), "the shader is missing `{field}`");
         }
@@ -2190,8 +2212,8 @@ mod ground_uniform_tests {
         );
         assert_eq!(
             order.last().copied(),
-            Some("shift"),
-            "the Shift's tell must stay last — it is what the 16-byte tail rounds to: {order:?}"
+            Some("sea_anim"),
+            "the last field is what the 16-byte tail rounds to: {order:?}"
         );
     }
 }

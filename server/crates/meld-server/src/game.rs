@@ -4749,6 +4749,24 @@ impl GameState {
                 let capped = l.min(self.balance.runs.max_hero_level);
                 (((capped - 1) as f64) / per).round() as i32
             });
+        // `MELD_COAST=<distance>` — DEV/QA: start on the SHORELINE, looking at open water.
+        //
+        // ⚠️ THIS EXISTS BECAUSE THE SEA WAS UNPHOTOGRAPHABLE, and that cost a full day of
+        // tuning water nobody could see. Every other hard-to-reach state in this game has a
+        // flag for exactly this reason — `MELD_CITY` parks in the hub, `MELD_BATTLE` stages a
+        // fight, `MELD_TALLY` holds a haul that otherwise rolls off before a capture lands,
+        // `MELD_WORLD_FEEL=sky_t=` pins the time of day because nightfall arrives mid-session
+        // and ruins the frame. The coastline had none: autoplay walks EAST into the maze, the
+        // survey camera frames whatever the party is standing on, and the water is a wedge
+        // behind you. Four separate water diagnoses were tuned against frames that turned out
+        // not to contain any sea at all.
+        //
+        // A rendering feature you cannot put on screen on demand cannot be developed, only
+        // guessed at.
+        let coast_distance = std::env::var("MELD_COAST")
+            .ok()
+            .and_then(|v| v.trim().parse::<f64>().ok())
+            .filter(|d| *d > 0.0);
         let departure_hub_distance = dev_distance.unwrap_or(0);
         let speed = self.balance.world.avatar_speed_tiles_per_sec;
 
@@ -4994,6 +5012,39 @@ impl GameState {
         //
         // The rest of PG-2 is still not wired — extraction still assumes d0 is the start —
         // which is exactly why this is a TEST flag and not a departure hub.
+        // MELD_COAST: stream out to the requested radius and stand the party on the SHORE,
+        // just inside the fan's edge, so open water is a few paces away and fills the frame
+        // when the camera looks outward. The fan spans |theta| <= arc_half and everything
+        // past it is sea (bar the city's spit, which is the OTHER side of the gap), so the
+        // shoreline is that edge at any radius — see `meld_proto::coast::is_ocean`, the same
+        // predicate the ground shader paints from and movement collides against.
+        if let Some(reach) = coast_distance {
+            let inst_balance = inst.balance.clone();
+            for _ in 0..256 {
+                if inst.arena.ensure_frontier(&inst_balance, reach + 40.0).is_empty() {
+                    break;
+                }
+            }
+            let arc_half = (inst_balance.worldgen.radial_arc_degrees.to_radians() * 0.5).max(0.0);
+            // Just INSIDE the edge: on land, with the water within sight. Landing in the sea
+            // would be a party standing on something it cannot walk on.
+            let theta = arc_half * 0.97;
+            let landing = meld_proto::common::Position {
+                x: reach * theta.cos(),
+                y: reach * theta.sin(),
+            };
+            for pid in &party_ids {
+                if let Some(a) = inst.arena.avatar_mut(pid) {
+                    a.position = landing;
+                    a.elevation = 0;
+                }
+            }
+            tracing::warn!(
+                distance = reach,
+                theta_deg = theta.to_degrees(),
+                "MELD_COAST: party started on the shoreline (DEV/QA)"
+            );
+        }
         if departure_hub_distance > 0 {
             let reach = departure_hub_distance as f64;
             // `inst.balance`, NOT `self.balance`. The world was built from a CLONE carrying
