@@ -19,6 +19,9 @@
     mesh_functions,
     view_transformations::position_world_to_clip,
 }
+// The wave field lives in one place — see `water_wave.wgsl`. The sea, the maze's pools and
+// Last City's water all read the same crests.
+#import meld::water_wave::{wave_height, water_normal}
 
 // Continuous overworld terrain height — MUST match `world_render::terrain_height` in
 // Rust exactly (that places entities/camera; this displaces the ground vertices).
@@ -207,6 +210,11 @@ fn biome_color(bi: i32, uv: vec2<f32>) -> vec4<f32> {
     if (bi == 3) {
         return textureSample(t_tundra, samp, uv) * vec4<f32>(0.72, 0.86, 1.15, 1.0);
     }
+    // The mire's sour green, left as AUTHORED. This was briefly raised to (1.0, 1.35, 0.85)
+    // to compensate for the swamp reading as permanent dusk — but the dusk was the GROUND
+    // SHADOWING ITSELF (see `NotShadowCaster` on `WorldGround`), not the tint. Lifting a
+    // tint to pay for a lighting bug is how a biome ends up looking like a sunny meadow the
+    // moment the real bug is fixed.
     return textureSample(t_mire, samp, uv) * vec4<f32>(0.75, 0.95, 0.7, 1.0);
 }
 
@@ -228,35 +236,6 @@ fn biome_color(bi: i32, uv: vec2<f32>) -> vec4<f32> {
 // Detail is per-pixel for the same reason Seascape is: the wave field and its normal are
 // evaluated at the fragment, so ripple density is independent of how finely the ground
 // plane happens to be tessellated.
-
-// Summed directional waves. Each octave is rotated off the last so the crests never line
-// up into a visible grid, which is the tell that gives away cheap procedural water.
-fn wave_height(p_in: vec2<f32>, t: f32) -> f32 {
-    var q = p_in;
-    var h = 0.0;
-    var amp = 1.0;
-    var freq = 0.075;
-    for (var i = 0; i < 4; i = i + 1) {
-        let a = sin(q.x * freq + t * 1.05) * cos(q.y * freq * 0.87 - t * 0.71);
-        let b = sin((q.x + q.y) * freq * 1.31 - t * 0.93);
-        h = h + (a + b * 0.6) * amp;
-        amp = amp * 0.5;
-        freq = freq * 1.93;
-        // ~16 degrees per octave.
-        q = vec2<f32>(q.x * 0.961 - q.y * 0.276, q.x * 0.276 + q.y * 0.961);
-    }
-    return h;
-}
-
-// The surface normal, by finite-differencing the same field. `steep` scales how much the
-// slope tilts the normal — the wave field is unitless, so this is where it becomes a look.
-fn water_normal(p: vec2<f32>, t: f32, steep: f32) -> vec3<f32> {
-    let e = 0.75;
-    let h = wave_height(p, t);
-    let hx = wave_height(p + vec2<f32>(e, 0.0), t);
-    let hz = wave_height(p + vec2<f32>(0.0, e), t);
-    return normalize(vec3<f32>((h - hx) * steep, e, (h - hz) * steep));
-}
 
 @fragment
 fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> FragmentOutput {

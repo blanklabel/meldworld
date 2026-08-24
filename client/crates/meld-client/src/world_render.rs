@@ -5,6 +5,7 @@
 use std::collections::HashMap;
 
 use bevy::gltf::GltfAssetLabel;
+use bevy::light::NotShadowCaster;
 use bevy::pbr::{ExtendedMaterial, MaterialExtension};
 use bevy::render::render_resource::AsBindGroup;
 use bevy::shader::ShaderRef;
@@ -175,6 +176,92 @@ impl MaterialExtension for GroundBiome {
     }
 }
 
+/// The SKY: a camera-anchored gradient dome with a sun in it.
+///
+/// See `sky_dome.wgsl`. The sky used to be a single `ClearColor`, which is fine behind a
+/// diorama and wrong for anything that reflects it — water most of all.
+#[derive(Asset, AsBindGroup, Reflect, Debug, Clone)]
+pub(crate) struct SkyDome {
+    #[uniform(100)]
+    pub(crate) horizon: Vec4,
+    #[uniform(100)]
+    pub(crate) zenith: Vec4,
+    /// `xyz` direction TO the sun, `w` the daylight factor.
+    #[uniform(100)]
+    pub(crate) sun_dir: Vec4,
+    /// `rgb` the sun's colour, `a` how far its glow bleeds.
+    #[uniform(100)]
+    pub(crate) sun_col: Vec4,
+}
+
+impl Material for SkyDome {
+    fn fragment_shader() -> ShaderRef {
+        "shaders/sky_dome.wgsl".into()
+    }
+    /// A backdrop, not geometry: never occludes, never lit, never shadows.
+    fn alpha_mode(&self) -> AlphaMode {
+        AlphaMode::Opaque
+    }
+    /// ⚠️ CULLING OFF, or the dome does not draw AT ALL. We stand INSIDE this sphere, so
+    /// every face we look at is a back face — and a custom `Material` defaults to back-face
+    /// culling, unlike `StandardMaterial` where `cull_mode` is a field you can see. The
+    /// first version compiled, booted, threw no errors and rendered absolutely nothing;
+    /// only a garish diagnostic colour proved the geometry was being thrown away rather
+    /// than the gradient being too subtle.
+    fn specialize(
+        _pipeline: &bevy::pbr::MaterialPipeline,
+        descriptor: &mut bevy::render::render_resource::RenderPipelineDescriptor,
+        _layout: &bevy::mesh::MeshVertexBufferLayoutRef,
+        _key: bevy::pbr::MaterialPipelineKey<Self>,
+    ) -> Result<(), bevy::render::render_resource::SpecializedMeshPipelineError> {
+        descriptor.primitive.cull_mode = None;
+        Ok(())
+    }
+}
+
+/// Marks the sky dome so [`anchor_sky_dome`] can keep it centred on the camera.
+#[derive(Component)]
+pub(crate) struct SkyDomeMesh;
+
+/// Keep the dome centred on the camera. A sky that moves relative to the viewer reads as a
+/// ball you could walk to; one that never moves reads as infinitely far away.
+pub(crate) fn anchor_sky_dome(
+    cam_q: Query<&Transform, With<Camera3d>>,
+    mut q: Query<&mut Transform, (With<SkyDomeMesh>, Without<Camera3d>)>,
+) {
+    let Ok(cam) = cam_q.single() else { return };
+    for mut tf in &mut q {
+        tf.translation = cam.translation;
+    }
+}
+
+/// Standing water that is a MESH: the maze's pools and Last City's sea.
+///
+/// See `water_surface.wgsl`. Depth comes from the SHAPE (a basin is deepest in the middle)
+/// rather than from a depth buffer, because our water is centimetres deep and every
+/// measured approach resolves it to nothing.
+#[derive(Asset, AsBindGroup, Reflect, Debug, Clone)]
+pub(crate) struct WaterSurface {
+    /// `(seconds, wave_scale, steepness, mode)`; mode 0 = basin, 1 = open plane.
+    #[uniform(100)]
+    pub(crate) params: Vec4,
+    #[uniform(100)]
+    pub(crate) deep: Vec4,
+    #[uniform(100)]
+    pub(crate) shallow: Vec4,
+    #[uniform(100)]
+    pub(crate) edge: Vec4,
+}
+
+impl MaterialExtension for WaterSurface {
+    fn fragment_shader() -> ShaderRef {
+        "shaders/water_surface.wgsl".into()
+    }
+}
+
+/// Water-surface material type (StandardMaterial lighting + the wave extension).
+pub(crate) type WaterMat = ExtendedMaterial<StandardMaterial, WaterSurface>;
+
 /// The blended-biome ground material type (StandardMaterial lighting + our extension).
 pub(crate) type GroundMat = ExtendedMaterial<StandardMaterial, GroundBiome>;
 
@@ -249,7 +336,7 @@ pub(crate) struct WorldAssets {
     /// Per-water-kind materials (`pond`/`bog_pool`/`frozen_pond`), each wearing a
     /// bespoke pixel-art water tile and drifting via [`animate_water`]. Keyed by the
     /// `SnapshotEntity` obstacle name; fall back to `pond` via [`Self::water_mat`].
-    pub(crate) water_mats: HashMap<String, Handle<StandardMaterial>>,
+    pub(crate) water_mats: HashMap<String, Handle<WaterMat>>,
     pub(crate) ground_tex: Vec<Handle<Image>>, // per-biome textures; also dress terrace tops/cliffs
 }
 
@@ -259,7 +346,7 @@ impl WorldAssets {
     /// its art does).
     /// The water material for an obstacle kind (`pond`/`bog_pool`/`frozen_pond`),
     /// falling back to the clear `pond` water for any unmapped kind.
-    pub(crate) fn water_mat(&self, kind: &str) -> Handle<StandardMaterial> {
+    pub(crate) fn water_mat(&self, kind: &str) -> Handle<WaterMat> {
         self.water_mats
             .get(kind)
             .or_else(|| self.water_mats.get("pond"))
@@ -301,16 +388,29 @@ pub(crate) fn load_tiled(assets: &AssetServer, path: &str) -> Handle<Image> {
 
 /// Build the HD-2D world: camera + post stack, sun, the lit ground, and the shared
 /// asset handles. Replaces the old flat Camera2d overworld (CANON D16 all-Bevy).
+/// Keeps `water_wave.wgsl` alive.
+///
+/// A shader library only registers its `#define_import_path` once the asset is LOADED, and
+/// nothing else references this file — no material names it as a `ShaderRef`, because it is
+/// imported rather than run. Without a handle held somewhere it is never loaded, and every
+/// pipeline that imports it fails to build at run time while compiling perfectly.
+#[derive(Resource)]
+pub(crate) struct WaveLib(#[allow(dead_code)] Handle<Shader>);
+
 pub(crate) fn setup(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut mats: ResMut<Assets<StandardMaterial>>,
     mut ground_mats: ResMut<Assets<GroundMat>>,
+    mut water_mats: ResMut<Assets<WaterMat>>,
+    mut sky_mats: ResMut<Assets<SkyDome>>,
     mut images: ResMut<Assets<Image>>,
     assets: Res<AssetServer>,
     look: Res<hd2d::Look>,
 ) {
     hd2d::seed_look_file(&look);
+    // Load the shared wave library and hold it (see `WaveLib`).
+    commands.insert_resource(WaveLib(assets.load("shaders/water_wave.wgsl")));
 
     // Camera parked at a nice diorama angle for the menu screens; `hd2d_follow`
     // re-aims it at the player once in the overworld.
@@ -369,6 +469,19 @@ pub(crate) fn setup(
     });
     commands.spawn((
         WorldGround,
+        // ⚠️ THE GROUND MUST NOT CAST. It has a CUSTOM VERTEX SHADER that displaces the
+        // plane into rolling hills — and `MaterialExtension` takes its shadow/prepass vertex
+        // stage from a SEPARATE hook we do not override, so the shadow map rasterizes this
+        // plane FLAT while the visible ground is displaced. The flat caster then shadows the
+        // real hills wherever they sit below it, which put most of the world in shade all
+        // day: raising the sun 9,200 -> 21,000 lux moved the ground 33.3 -> 34.4 because the
+        // light was never the problem, the shadow mask was.
+        //
+        // A ground plane has nothing to cast onto but itself, so not casting costs nothing —
+        // props, characters and terrain props still cast onto it. Fixing it the other way
+        // (a displacing shadow vertex stage) is the same work `ground_biome.wgsl` needs
+        // before any depth prepass can be enabled out here.
+        NotShadowCaster,
         // Square (was 2000×600, a corridor) so the WG-4 radial fan has ground in
         // every direction the player roams. SUBDIVIDED into a fine grid so the ground
         // shader's vertex displacement (`terrain_height`) reads as smooth rolling hills
@@ -671,36 +784,71 @@ pub(crate) fn setup(
             })
         })
         .collect(),
-        // Bespoke pixel-art water tiles (PixelLab), one per water kind, tiled + drifted
-        // by `animate_water`.
-        //
-        // ⚠️ These are POOLS, and they are deliberately still plain `StandardMaterial`s.
-        // The open sea is shaded in `ground_biome.wgsl` instead, because that path has real
-        // DEPTH to work with (`sea_depth_at`, analytic, tens of world units) where a pool
-        // basin has half a unit and the city's sea plane has five centimetres. Anything
-        // that shades water by measuring surface-to-bed distance — Beer's law over a depth
-        // buffer, which is what every water crate does — has nothing to measure here and
-        // resolves to "no water". That was tried, at length; the shader is what worked.
-        //
-        // Giving the pools the same treatment means giving them an analytic depth too, and
-        // that is its own change.
+        // Bespoke pixel-art water tiles (PixelLab), one per water kind — the BED, seen
+        // through the wave surface `water_surface.wgsl` puts on top of them. Each kind
+        // carries its own water: a bog is opaque and sour, a frozen pond is bright and
+        // hard-rimmed, a clear pond is somewhere between.
         water_mats: [
-            ("pond", "ground/water_clear.png", LinearRgba::rgb(0.02, 0.06, 0.1)),
-            ("bog_pool", "ground/water_bog.png", LinearRgba::rgb(0.03, 0.06, 0.03)),
-            ("frozen_pond", "ground/water_ice.png", LinearRgba::rgb(0.05, 0.08, 0.12)),
+            (
+                "pond",
+                "ground/water_clear.png",
+                Vec4::new(0.10, 0.34, 0.48, 1.0),  // deep
+                Vec4::new(0.42, 0.72, 0.76, 1.0),  // shallow
+                Vec4::new(0.82, 0.92, 0.98, 0.45), // rim (a = how strongly it reads)
+            ),
+            (
+                "bog_pool",
+                "ground/water_bog.png",
+                // A bog barely transmits light, and its shallows are only a little less
+                // sour than its depths — so there is no beach-blue gradient in a swamp.
+                // ⚠️ BOG WATER IS MOST OF THE MIRE'S SURFACE, so these two are what that
+                // biome's brightness actually IS — not the ground tile under them. The
+                // mire's fill kind is `bog_pool` at a 7.5x multiplier ("MOSTLY water: the
+                // swamp is a flooded maze, land is the trail"), so lifting the terrain tint
+                // barely moved it and lifting these moved it a lot.
+                Vec4::new(0.23, 0.37, 0.19, 1.0),
+                Vec4::new(0.40, 0.54, 0.27, 1.0),
+                Vec4::new(0.44, 0.52, 0.28, 0.30),
+            ),
+            (
+                "frozen_pond",
+                "ground/water_ice.png",
+                Vec4::new(0.28, 0.48, 0.60, 1.0),
+                Vec4::new(0.74, 0.89, 0.95, 1.0),
+                Vec4::new(0.97, 0.99, 1.0, 0.60),
+            ),
         ]
         .iter()
-        .map(|(kind, tex, emissive)| {
+        .map(|(kind, tex, deep, shallow, edge)| {
             (
                 kind.to_string(),
-                mats.add(StandardMaterial {
-                    base_color: Color::srgb(0.9, 0.94, 1.0),
-                    base_color_texture: Some(load_tiled(&assets, tex)),
-                    emissive: *emissive, // faint sky sheen
-                    perceptual_roughness: 0.12, // reflective
-                    metallic: 0.1,
-                    alpha_mode: AlphaMode::Blend,
-                    ..default()
+                water_mats.add(WaterMat {
+                    base: StandardMaterial {
+                        base_color: Color::srgb(0.9, 0.94, 1.0),
+                        base_color_texture: Some(load_tiled(&assets, tex)),
+                        perceptual_roughness: 0.12,
+                        metallic: 0.1,
+                        // ⚠️ OPAQUE, NOT BLEND, AND IT IS WORTH 3.5x THE MIRE'S BRIGHTNESS.
+                        // The mire is "MOSTLY water: the swamp is a flooded maze" — 740
+                        // pools inside the interest radius — and blended water multiplies
+                        // whatever is behind it, so hundreds of overlapping surfaces
+                        // compounded into a void. Measured at pinned noon in fair weather:
+                        // mean luminance 18.5 blended against 64.7 opaque, in a biome where
+                        // the desert reads 95.
+                        //
+                        // It is also the correct model, not just the bright one: this shader
+                        // composites the bed into the water itself, so alpha-blending the
+                        // result over the bed AGAIN counts it twice.
+                        alpha_mode: AlphaMode::Opaque,
+                        ..default()
+                    },
+                    extension: WaterSurface {
+                        // (time, wave_scale, steepness, mode 0 = basin)
+                        params: Vec4::new(0.0, 0.55, 0.7, 0.0),
+                        deep: *deep,
+                        shallow: *shallow,
+                        edge: *edge,
+                    },
                 }),
             )
         })
@@ -789,12 +937,42 @@ pub(crate) fn setup(
         let size = 14.0 + rnd() * 12.0;
         commands.spawn((
             Backdrop { off },
+            // ⚠️ NEVER A SHADOW CASTER. These are horizon SILHOUETTES — rock models scaled
+            // 14-26x sitting 320-460 units out — and they are anchored to the CAMERA, so
+            // they follow the player. Left casting, eight objects that size threw shade
+            // across the whole play area and the shade travelled with you: the world read
+            // as permanent overcast in every biome, worst in the mire whose ground is
+            // already the second-darkest in the set. Several bugs got misdiagnosed off
+            // captures that were really just standing in this.
+            //
+            // `no_billboard_shadows` does not catch them: that only marks `Billboard`
+            // entities, and these are glTF meshes. Anything spawned huge and far out needs
+            // this by hand.
+            NotShadowCaster,
             WorldAssetRoot(backdrop[i % backdrop.len()].clone()),
             Transform::from_translation(Vec3::new(off.x, -0.5, off.y))
                 .with_scale(Vec3::splat(size))
                 .with_rotation(Quat::from_rotation_y(rnd() * std::f32::consts::TAU)),
         ));
     }
+
+    // THE SKY DOME: a big inside-out sphere centred on the camera, carrying the gradient +
+    // sun. Radius sits inside the far plane but outside everything else the world draws, and
+    // `cull_mode: Front` so we see its inside. `NotShadowCaster` because a sky that shadows
+    // the world is the same class of bug as the ground shadowing itself.
+    let sky_dome_mat = sky_mats.add(SkyDome {
+        horizon: Vec4::new(0.62, 0.76, 0.92, 1.0),
+        zenith: Vec4::new(0.24, 0.46, 0.82, 1.0),
+        sun_dir: Vec4::new(0.0, 1.0, 0.0, 1.0),
+        sun_col: Vec4::new(1.0, 0.96, 0.86, 0.6),
+    });
+    commands.spawn((
+        SkyDomeMesh,
+        NotShadowCaster,
+        Mesh3d(meshes.add(Sphere::new(900.0).mesh().ico(4).unwrap())),
+        MeshMaterial3d(sky_dome_mat),
+        Transform::default(),
+    ));
 
     // Stars — tiny emissive points on a camera-anchored dome, shown only at night.
     let star_mesh = meshes.add(Sphere::new(0.12));
@@ -1239,10 +1417,54 @@ pub(crate) fn drift_clouds(
 /// spot always looks identical and props never appear to slide or flicker — they only
 /// re-derive (at the grid's edge, off-screen) as new cells scroll in.
 #[allow(clippy::type_complexity)]
+/// Is this world point OPEN SEA, and therefore no place for scenery?
+///
+/// **Both scatter systems place by world position and neither asked.** So mushrooms, grass
+/// tufts and bushes were strewn across the ocean — a whole meadow floating on open water,
+/// which is the first thing anyone notices about the coast.
+///
+/// One predicate, both call sites ([`tile_ground_detail`] and
+/// [`crate::ambient::update_ambient_scatter`]), because two copies of "where is the water"
+/// is the exact drift that has bitten this repo repeatedly — the wall-collision line that
+/// went into one mover and not the other, the maze density written twice, and `is_water_kind`
+/// living in three places at once.
+///
+/// It asks [`meld_proto::coast`], the same shoreline the ground shader paints and the server
+/// collides against, so scenery stops exactly where the water starts rather than at some
+/// second hand-placed line.
+///
+/// Only meaningful on the Overworld: Last City is a separate scene in its own coordinates
+/// (its `coast` uniform is zeroed for exactly that reason), and a zero arc means corridor
+/// mode, which has no sea at all.
+pub(crate) fn on_open_water(frame: &crate::WorldFrame, screen: &Screen, wx: f32, wz: f32) -> bool {
+    match screen {
+        // The maze: ask the shoreline itself.
+        Screen::Overworld => {
+            frame.have
+                && meld_proto::coast::is_ocean(
+                    wx,
+                    wz,
+                    frame.radial_arc_degrees.to_radians() * 0.5,
+                )
+        }
+        // Last City is a SEPARATE SCENE in its own coordinates — its `coast` uniform is
+        // deliberately zeroed, so `is_ocean` cannot answer here. Its sea is authored from
+        // the same constants instead (`city_scene`): water on both flanks past the shore,
+        // and ahead past the tip. Reading the constants rather than repeating the numbers
+        // is what keeps this from becoming a third hand-placed shoreline.
+        Screen::City => {
+            use meld_proto::coast::{CITY_SHORE_HALF_WIDTH as SHORE, CITY_TIP_REACH as TIP};
+            wx.abs() > SHORE || wz > TIP
+        }
+        _ => false,
+    }
+}
+
 pub(crate) fn tile_ground_detail(
     cam_q: Query<&Transform, With<Camera3d>>,
     kit: Option<Res<DetailKit>>,
     state: Res<State<Screen>>,
+    frame: Res<crate::WorldFrame>,
     mut q: Query<
         (&mut GroundDetail, &mut Transform, &mut Visibility, &mut WorldAssetRoot),
         Without<Camera3d>,
@@ -1278,6 +1500,11 @@ pub(crate) fn tile_ground_detail(
         let yaw = ((h >> 24) & 0xff) as f32 / 255.0 * std::f32::consts::TAU;
         let sc = base * (0.7 + ((h >> 48) & 0xff) as f32 / 255.0 * 0.7);
         let (wx, wz) = ((cell.x as f32 + jx) * DETAIL_CELL, (cell.y as f32 + jz) * DETAIL_CELL);
+        // Nothing grows on the sea.
+        if on_open_water(&frame, state.get(), wx, wz) {
+            *vis = Visibility::Hidden;
+            continue;
+        }
         tf.translation = Vec3::new(wx, amp * terrain_height(wx, wz), wz);
         tf.rotation = Quat::from_rotation_y(yaw);
         tf.scale = Vec3::splat(sc);
@@ -1955,6 +2182,7 @@ pub(crate) fn apply_sky(
     mut sun_q: Query<(&mut Transform, &mut DirectionalLight)>,
     mut fog_q: Query<&mut bevy::pbr::DistanceFog, With<Camera3d>>,
     mut stars: Query<&mut Visibility, With<Star>>,
+    mut sky_doms: ResMut<Assets<SkyDome>>,
 ) {
     use std::f32::consts::TAU;
     let Ok(mut ambient) = ambient_q.single_mut() else { return };
@@ -2011,7 +2239,7 @@ pub(crate) fn apply_sky(
         let moon = Color::srgb(0.55, 0.65, 0.95);
         light.color = mix_col(moon, mix_col(warm, noon, day), day);
         // Full sun by day; a dim cool moon fill at night.
-        light.illuminance = (day * 9200.0 + (1.0 - day) * 550.0) * (1.0 - rain * 0.55);
+        light.illuminance = (day * 21000.0 + (1.0 - day) * 550.0) * (1.0 - rain * 0.55);
     }
 
     // Moonlit-blue at night (not black), warm-white by day.
@@ -2021,6 +2249,46 @@ pub(crate) fn apply_sky(
     if ash > 0.0 {
         ambient.color = mix_col(ambient.color, Color::srgb(0.9, 0.45, 0.32), ash * 0.6);
         ambient.brightness *= 1.0 - ash * 0.4;
+    }
+
+    // THE SKY DOME, from the same numbers the clear colour comes from — one source for
+    // "what colour is the sky", so the dome, the fog and the water's reflection cannot
+    // drift apart the way three hand-tuned palettes would.
+    for (_, m) in sky_doms.iter_mut() {
+        // Horizon keeps the sky colour we already compute; the zenith goes deeper. Real
+        // skies are darkest overhead, and it is the CONTRAST between the two that makes a
+        // gradient read as air rather than as a wash.
+        m.horizon = Vec4::new(
+            sky_col.to_linear().red,
+            sky_col.to_linear().green,
+            sky_col.to_linear().blue,
+            1.0,
+        );
+        let deep = mix_col(sky_col, Color::srgb(0.10, 0.22, 0.52), 0.55 * day);
+        m.zenith = Vec4::new(
+            deep.to_linear().red,
+            deep.to_linear().green,
+            deep.to_linear().blue,
+            1.0,
+        );
+        // The sun's direction, from the same pitch/yaw the light uses — so the glow in the
+        // sky sits where the shadows say it should.
+        let pitch = (sun_h.abs() * 66.0).max(12.0).to_radians();
+        let yaw = (40.0 + (sky.t - 0.5) * 55.0).to_radians();
+        let dir = Vec3::new(
+            yaw.sin() * pitch.cos(),
+            pitch.sin() * sun_h.signum().max(0.0).max(0.08),
+            yaw.cos() * pitch.cos(),
+        )
+        .normalize();
+        m.sun_dir = Vec4::new(dir.x, dir.y, dir.z, day);
+        let sc = mix_col(Color::srgb(1.0, 0.62, 0.40), Color::srgb(1.0, 0.97, 0.90), day);
+        m.sun_col = Vec4::new(
+            sc.to_linear().red,
+            sc.to_linear().green,
+            sc.to_linear().blue,
+            0.35 + dusk * 0.45,
+        );
     }
 
     let star_vis = if day < 0.22 && rain < 0.45 {
@@ -2136,23 +2404,27 @@ pub(crate) fn drive_rain(
     }
 }
 
-/// Scroll the shared water ripple so pools shimmer + drift (all water at once).
+/// Drive EVERY water surface's clock: the maze's pools and Last City's sea alike.
+///
+/// The bed tile still drifts (it is what made a still pond read as water before there were
+/// waves at all) and the wave field now advances with it. Wrapped rather than raw elapsed
+/// seconds, for the same reason the ocean's clock is: f32 loses sub-frame precision in the
+/// thousands, so a session left running overnight would see the swell quantise and stop.
 pub(crate) fn animate_water(
     time: Res<Time>,
-    wa: Option<Res<WorldAssets>>,
-    mut mats: ResMut<Assets<StandardMaterial>>,
+    mut mats: ResMut<Assets<WaterMat>>,
 ) {
-    let Some(wa) = wa else { return };
-    let t = time.elapsed_secs();
+    let t = time.elapsed_secs() % 3600.0;
     let xf = bevy::math::Affine2::from_scale_angle_translation(
         Vec2::splat(2.2),
         0.0,
         Vec2::new(t * 0.035, t * 0.055),
     );
-    for handle in wa.water_mats.values() {
-        if let Some(mut m) = mats.get_mut(handle) {
-            m.uv_transform = xf;
-        }
+    // Every water material, not just the ones `WorldAssets` knows about — Last City builds
+    // its own sea, and a per-kind list is a list the city gets left off.
+    for (_, m) in mats.iter_mut() {
+        m.base.uv_transform = xf;
+        m.extension.params.x = t;
     }
 }
 
