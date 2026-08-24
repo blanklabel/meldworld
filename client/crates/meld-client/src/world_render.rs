@@ -916,7 +916,7 @@ pub(crate) fn setup(
         let w = 58.0 + rnd() * 66.0;
         let h = w * (0.28 + rnd() * 0.12);
         commands.spawn((
-            Cloud { off, y },
+            Cloud { world: off, y },
             Mesh3d(puff.clone()),
             MeshMaterial3d(cloud_mat.clone()),
             Transform::from_xyz(off.x, y, off.y).with_scale(Vec3::new(w, h, 1.0)),
@@ -929,7 +929,7 @@ pub(crate) fn setup(
         let off = Vec2::new((rnd() - 0.5) * 300.0, (rnd() - 0.5) * 300.0);
         let sz = 34.0 + rnd() * 46.0;
         commands.spawn((
-            Cloud { off, y: 0.28 },
+            Cloud { world: off, y: 0.28 },
             CloudShadow,
             Mesh3d(puff.clone()),
             MeshMaterial3d(cloud_shadow_mat.clone()),
@@ -1451,12 +1451,35 @@ pub(crate) fn anchor_backdrop(
     }
 }
 
-/// A drifting sky cloud: `off` is its position **relative to the camera** on the xz
-/// plane (so clouds stay overhead as you travel), `y` its altitude.
+/// A drifting sky cloud. `world` is its ABSOLUTE world xz — wind is the only thing that
+/// moves it — and `y` its altitude.
+///
+/// ⚠️ IT USED TO BE AN OFFSET FROM THE CAMERA, AND THAT WAS TWO BUGS IN ONE FIELD.
+/// `drift_clouds` placed each cloud at `cam.xz + off`, which rigidly welds the entire sky
+/// to the camera transform:
+///
+///   * **the clouds follow you.** Walk a hundred units and the same puffs are overhead in
+///     the same arrangement, so the sky is wallpaper and the world stops feeling travelled.
+///   * **and it wrecks the shadows when you SPIN.** Eleven of these are `CloudShadow`
+///     quads — dark discs laid flat ON THE GROUND — so orbiting the camera drags eleven
+///     big shadow patches across the terrain. Nothing was wrong with the real shadow map;
+///     what was sweeping around was scenery pretending to be shade.
+///
+/// Anchoring is toroidal now: the cloud lives at a world position, and only which COPY of
+/// it you see is chosen relative to the view. And the anchor is [`ground_focus`], not the
+/// camera — the camera orbits AROUND that point, so it is the one thing in the rig that
+/// does not move when you spin. Every future "keep it around the player" system wants that
+/// same anchor for the same reason.
 #[derive(Component)]
 pub(crate) struct Cloud {
-    off: Vec2,
+    world: Vec2,
     y: f32,
+}
+
+/// Wrap `v` into `[-r, r)` — the toroidal fold that lets a world-fixed object be recycled
+/// around a moving viewer without ever sliding relative to the ground.
+fn wrap_around(v: f32, r: f32) -> f32 {
+    (v + r).rem_euclid(2.0 * r) - r
 }
 
 /// Wind speed (world units/sec) the clouds drift east.
@@ -1469,16 +1492,18 @@ pub(crate) fn drift_clouds(
     cam_q: Query<&Transform, With<Camera3d>>,
     mut q: Query<(&mut Cloud, &mut Transform), Without<Camera3d>>,
 ) {
-    let cam = cam_q.single().map(|t| t.translation).unwrap_or(Vec3::ZERO);
+    let Ok(cam) = cam_q.single() else { return };
+    let focus = ground_focus(cam);
     const R: f32 = 420.0;
     for (mut c, mut tf) in &mut q {
-        c.off.x += CLOUD_WIND * time.delta_secs();
-        if c.off.x > R {
-            c.off.x -= 2.0 * R;
-        }
-        tf.translation.x = cam.x + c.off.x;
-        tf.translation.z = cam.z + c.off.y;
-        tf.translation.y = c.y;
+        // Wind is the ONLY thing that moves a cloud. Everything else here is choosing
+        // which copy of a world-fixed cloud is the one in front of you.
+        c.world.x += CLOUD_WIND * time.delta_secs();
+        let rel = Vec2::new(
+            wrap_around(c.world.x - focus.x, R),
+            wrap_around(c.world.y - focus.z, R),
+        );
+        tf.translation = Vec3::new(focus.x + rel.x, c.y, focus.z + rel.y);
     }
 }
 
