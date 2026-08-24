@@ -21,7 +21,7 @@
 }
 // The wave field lives in one place — see `water_wave.wgsl`. The sea, the maze's pools and
 // Last City's water all read the same crests.
-#import meld::water_wave::{wave_height, water_normal}
+#import meld::water_wave::{wave_height, water_normal, sea_swell}
 
 // Continuous overworld terrain height — MUST match `world_render::terrain_height` in
 // Rust exactly (that places entities/camera; this displaces the ground vertices).
@@ -87,6 +87,19 @@ struct BiomeParams {
 // The sea's tile for the biome it borders — the same mapping the pond/bog-pool/
 // frozen-pond props use (`WorldAssets::water_mats`), so a tundra shore is ice and a mire
 // shore is bog rather than every coast being the same blue.
+/// The colour deep water takes on, per biome. **The tile alone cannot carry this**: depth
+/// is a multiplier over the bed, so a bog tile multiplied by a blue deep tint comes out
+/// blue — which is what made every mire's open water the same slate as the forest coast
+/// while the bog PONDS beside it (mesh water, `water_mats`) were correctly green. The two
+/// halves of "the swamps are greenish" lived in two places and only one of them was true.
+/// Frozen shores barely darken at all: ice is a surface, not a depth.
+fn deep_tint_of(bi: i32) -> vec3<f32> {
+    if (bi == 3) { return vec3<f32>(0.62, 0.72, 0.80); }   // tundra — pale, shallow ice
+    if (bi == 4) { return vec3<f32>(0.13, 0.29, 0.16); }   // mire — peat green
+    if (bi == 2) { return vec3<f32>(0.20, 0.20, 0.26); }   // ashfall — slick grey water
+    return vec3<f32>(0.09, 0.30, 0.46);                    // open sea
+}
+
 fn water_color(bi: i32, uv: vec2<f32>) -> vec4<f32> {
     if (bi == 3) { return textureSample(t_water_ice, samp, uv); }   // tundra
     if (bi == 4) { return textureSample(t_water_bog, samp, uv); }   // mire
@@ -157,7 +170,13 @@ fn total_height(wxz: vec2<f32>) -> f32 {
     let sea = sea_depth_at(wxz);
     let level = -params.coast_w.w;
     let t = smoothstep(-6.0, 10.0, sea);
-    return params.terrain_amp * mix(land, level, t);
+    // …and then the SWELL rides on top of that level, as real displaced geometry rather
+    // than as a normal (see `sea_swell`). Faded in on the same 0..26 ramp the fragment
+    // shader calls `openness`, so the waterline itself stays flat and the beach does not
+    // develop a heaving edge; the sea only starts to breathe once it is properly open.
+    let open = smoothstep(0.0, 26.0, max(sea, 0.0));
+    let swell = sea_swell(wxz, params.sea_anim.x) * open;
+    return params.terrain_amp * (mix(land, level, t) + swell);
 }
 
 // Surface normal by finite differences over `total_height`, so both the rolling base and
@@ -321,7 +340,7 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         // a desaturated multiplier drags everything toward it. Keeping green well above red
         // holds the sea on the cyan side of the ground it borders, which is what separates
         // water from wet sand at a glance.
-        let deep_tint = mix(vec3<f32>(1.0, 1.0, 1.0), vec3<f32>(0.09, 0.30, 0.46), openness);
+        let deep_tint = mix(vec3<f32>(1.0, 1.0, 1.0), deep_tint_of(here_biome), openness);
         water = vec4<f32>(water.rgb * deep_tint, 1.0);
 
         // The surface: a wave normal, steeper out in open water than in the shallows where
@@ -348,17 +367,42 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         let fres = pow(clamp(1.0 - max(dot(n_water, pbr_input.V), 0.0), 0.0, 1.0), 3.0);
         // We have no skybox to sample, so the sky is reconstructed from the same colour the
         // frame is cleared to, brightened toward the horizon.
-        let sky = mix(vec3<f32>(0.46, 0.66, 0.90), vec3<f32>(0.84, 0.92, 1.0), fres);
-        water = vec4<f32>(mix(water.rgb, sky, fres * 0.9 * openness), 1.0);
+        //
+        // ⚠️ AND THE REFLECTION IS A GLAZE, NOT A COAT. This mixed `fres * 0.9` of a
+        // near-WHITE sky over the water, and our camera's fixed 22-30 degree pitch keeps
+        // the view permanently glancing — so `fres` sits around 0.5-0.6 the whole time and
+        // open water came out a flat slate `(0.44, 0.59, 0.65)` instead of the deep
+        // `(0.07, 0.26, 0.42)` the depth tint had just computed one line above. The entire
+        // depth ramp was being painted over by a colour a fragment away from white.
+        //
+        // What made this hard to catch is that it does not look BROKEN, it looks HAZY: the
+        // wave normals still perturb `fres`, so the swell survives as faint pale streaks in
+        // the reflection. Water with visible ripples that is nonetheless the wrong colour
+        // reads as "the sea is far away", not as a bug — and it read that way through
+        // several passes that went looking at fog, at depth, and at mesh density instead.
+        // It was found by rendering the sea's UNLIT BASE COLOUR, which is the only way to
+        // tell a bad surface from bad lighting on a good one; every probe that measured the
+        // lit frame was measuring the two multiplied together.
+        let sky = mix(vec3<f32>(0.30, 0.48, 0.70), vec3<f32>(0.62, 0.76, 0.92), fres);
+        water = vec4<f32>(mix(water.rgb, sky, fres * 0.30 * openness), 1.0);
 
         // Hand the wave normal to the PBR pass so the SUN does the specular. A hand-rolled
         // glint would not track the day/night cycle; this one is lit by the same light
         // everything else is, and goes out at dusk because the sun does.
-        pbr_input.N = normalize(mix(pbr_input.N, n_water, openness));
+        // ⚠️ THE CHOP PERTURBS THE SWELL, IT DOES NOT REPLACE IT. This used to `mix` the
+        // geometric normal toward the ripple normal, which at full openness threw the
+        // surface normal away entirely — harmless while the sea was a flat plane (the
+        // normal it discarded was straight up), and destructive the moment the swell became
+        // real geometry: every wave the vertex stage had just displaced would have shaded
+        // as though it were still flat, which is the exact "texture on a sheet" look the
+        // displacement is there to end. Adding the ripple's lateral slope keeps both.
+        pbr_input.N = normalize(pbr_input.N + vec3<f32>(n_water.x, 0.0, n_water.z) * openness);
         pbr_input.world_normal = pbr_input.N;
         pbr_input.material.perceptual_roughness =
             mix(pbr_input.material.perceptual_roughness, 0.06, openness);
-        pbr_input.material.reflectance = mix(pbr_input.material.reflectance, vec3<f32>(0.55), openness);
+        // 0.55 is mirror-bright — water's real F0 is nearer 0.02, and a smooth surface at
+        // that reflectance adds a second pale wash on top of the glaze above.
+        pbr_input.material.reflectance = mix(pbr_input.material.reflectance, vec3<f32>(0.22), openness);
 
         // Foam where the waves break on the shore: the waterline, modulated by the wave
         // field so it moves with the swell instead of ringing the coast at a fixed radius.

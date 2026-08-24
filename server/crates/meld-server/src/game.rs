@@ -1120,6 +1120,15 @@ impl WatchFeed {
 /// task (a `WorldActor`). Today the server runs exactly one, owned inline by
 /// `GameState`; the tick and world-pure logic are being migrated onto it so the
 /// eventual per-world task split is a change of transport, not a rewrite.
+/// `MELD_BARREN=1` — DEV/QA: suppress every creature in the world.
+///
+/// Read once at the server boundary like the other `MELD_*` overrides, so `meld-world`
+/// stays pure. See the call site in the world tick for why the strip is per-tick.
+fn barren_world() -> bool {
+    static BARREN: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *BARREN.get_or_init(|| std::env::var("MELD_BARREN").is_ok_and(|v| v.trim() != "0"))
+}
+
 struct WorldActor {
     balance: Arc<Balance>,
     /// Fire-and-forget persistence sink (a clone of `GameState`'s), so world-owned
@@ -9484,7 +9493,26 @@ impl WorldActor {
         let mut created_sections: Vec<usize> = Vec::new();
         {
             let balance = self.balance.clone();
-            self.arena.step_creatures_with_aggro(dt, &aggro_mult);
+            // `MELD_BARREN=1` — DEV/QA: a world with nothing living in it.
+            //
+            // Art and shader work does not want creatures. A boar standing in front of the
+            // water is the frame you were trying to take, and every capture then has to be
+            // retried until the wildlife wanders off — which is how a water diagnosis gets
+            // taken against whatever happened to be on screen. It is also the CHEAP way to
+            // hold a world open: `step_creatures` is the expensive half of the tick (the
+            // damage pass was 1,708 ms a tick at d1269 before `AX-6`), so a barren world
+            // streams the deep frontier for a survey shot at a fraction of the cost.
+            //
+            // Stripped every tick rather than at generation because the world STREAMS: a
+            // one-time clear empties the sections that exist when the flag is read and
+            // quietly repopulates as the frontier grows, which is the worst of both — a
+            // harness that looks barren near the hub and is not further out. Clearing an
+            // already-empty `Vec` is free, so the steady-state cost is one branch.
+            if barren_world() {
+                self.arena.monsters.clear();
+            } else {
+                self.arena.step_creatures_with_aggro(dt, &aggro_mult);
+            }
             // Stream in new sections as the frontier player advances (endless world).
             // Difficulty is radial (distance = hypot from the hub), so in the radial
             // world the frontier is the player's RADIUS; in corridor mode it's x.

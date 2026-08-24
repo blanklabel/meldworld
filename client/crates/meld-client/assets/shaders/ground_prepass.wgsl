@@ -27,6 +27,7 @@
     prepass_io::{Vertex, VertexOutput},
     view_transformations::position_world_to_clip,
 }
+#import meld::water_wave::sea_swell
 
 struct BiomeParams {
     rings: array<vec4<f32>, 32>,
@@ -145,7 +146,13 @@ fn total_height(wxz: vec2<f32>) -> f32 {
     let sea = sea_depth_at(wxz);
     let level = -params.coast_w.w;
     let t = smoothstep(-6.0, 10.0, sea);
-    return params.terrain_amp * mix(land, level, t);
+    // …and then the SWELL rides on top of that level, as real displaced geometry rather
+    // than as a normal (see `sea_swell`). Faded in on the same 0..26 ramp the fragment
+    // shader calls `openness`, so the waterline itself stays flat and the beach does not
+    // develop a heaving edge; the sea only starts to breathe once it is properly open.
+    let open = smoothstep(0.0, 26.0, max(sea, 0.0));
+    let swell = sea_swell(wxz, params.sea_anim.x) * open;
+    return params.terrain_amp * (mix(land, level, t) + swell);
 }
 
 // Surface normal by finite differences over `total_height`, so both the rolling base and

@@ -78,12 +78,17 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     // same reason the ocean uses 3: our camera looks DOWN at a fixed pitch, and a true
     // curve leaves water matte from every angle a player actually has.
     let fres = pow(clamp(1.0 - max(dot(n_water, pbr_input.V), 0.0), 0.0, 1.0), 3.0);
-    let sky = mix(vec3<f32>(0.46, 0.66, 0.90), vec3<f32>(0.84, 0.92, 1.0), fres);
+    // Dimmed with the open sea's (see `ground_biome.wgsl`): a near-white sky reflected at
+    // our permanently-glancing camera pitch is what made every body of water in the game
+    // read as pale slate. A pond keeps MORE of it than the sea does — it is shallow, so the
+    // sky on its surface is most of what says "liquid" — but 0.85 of near-white was a
+    // mirror, which is why ponds and mires showed an edge and nothing inside it.
+    let sky = mix(vec3<f32>(0.30, 0.48, 0.70), vec3<f32>(0.62, 0.76, 0.92), fres);
     // ⚠️ A DARK POOL READS BY WHAT IT REFLECTS. Deep water that is nearly black and matte is
     // indistinguishable from a hole; it is the sky caught on its surface that says "liquid".
     // So the sky term carries more weight here than on the open sea, where depth colour and
     // surf already do that work.
-    col = mix(col, sky, fres * 0.85 * openness);
+    col = mix(col, sky, fres * 0.45 * openness);
 
     // A rim where the water thins to nothing — the bank, not a beach.
     let rim = 1.0 - smoothstep(0.0, 0.22, depth);

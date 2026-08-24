@@ -988,6 +988,14 @@ pure) let you load a SPECIFIC world on demand instead of random-walking into it:
 - **`MELD_BIOME=<forest|desert|ashfall|tundra|mire>`** pins *every* section to that
   biome (and forces the tutorial off), so you can inspect one biome's maze directly.
 - **`MELD_SEED=<u64>`** fixes the world layout for reproducible screenshots/repros.
+- **`MELD_BARREN=1`** strips every creature from the world, every tick. Art and shader
+  work does not want wildlife: a boar standing in front of the water is the frame you were
+  trying to take, and a capture retried until the fauna wanders off is a capture taken
+  against whatever happened to be on screen. It is also the cheap way to hold a deep world
+  open — `step_creatures` is the expensive half of the tick — so a survey shot at the
+  frontier costs a fraction of a populated one. Per-tick rather than at generation because
+  the world STREAMS; a one-time clear looks barren near the hub and quietly repopulates
+  further out, which is the worst of both.
 - **`MELD_DUNGEON=<name>`** forces which authored dungeon a descent loads (any
   `[[floor]]` def in the content pool, e.g. `guardia_forest`), so you can screenshot
   a *specific* dungeon instead of whichever the entrance rolled.

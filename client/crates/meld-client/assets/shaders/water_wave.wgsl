@@ -82,3 +82,31 @@ fn water_normal(p: vec2<f32>, t: f32, steep: f32) -> vec3<f32> {
     let hz = wave_height(p + vec2<f32>(0.0, e), t);
     return normalize(vec3<f32>((h - hx) * steep, e, (h - hz) * steep));
 }
+
+/// THE LONG SWELL — the half of a sea that has to be GEOMETRY.
+///
+/// ⚠️ EVERYTHING ABOVE THIS IS A NORMAL, AND A NORMAL CANNOT MAKE A SILHOUETTE. Our water
+/// was a wave normal painted on a flat plane, and no amount of tuning gets a crest to break
+/// the horizon, occlude what is behind it, or catch the light on one face and not the other.
+/// Reference oceans (Seascape and its kin) raymarch a displaced heightfield, which is why
+/// they have wave *shapes* and ours read as a flat sheet with texture on it — a difference
+/// of geometry, not of colour, which is why three passes of colour tuning never closed it.
+///
+/// We do not need a raymarcher to get it: the open sea is part of the sliding GROUND MESH,
+/// which is already vertex-displaced by `total_height`. So the swell is free — it is the
+/// same displacement the hills use, and `terrain_normal` differentiates it into correct
+/// lighting with no extra code.
+///
+/// ⚠️ WAVELENGTH IS BOUNDED BY THE VERTEX GRID (`GROUND_CELL`, ~5 world units). These three
+/// components are ~49, ~32 and ~25 units long, so the coarsest has ten vertices to its
+/// crest and the finest five. Anything shorter aliases into a shimmering mess as the plane
+/// slides, and shorter is what the per-fragment chop above is FOR: the split is swell in
+/// geometry, chop in the normal.
+fn sea_swell(wxz: vec2<f32>, t: f32) -> f32 {
+    let a = sin(dot(wxz, vec2<f32>(0.118, 0.052)) + t * 0.55);
+    let b = sin(dot(wxz, vec2<f32>(-0.061, 0.186)) + t * 0.41);
+    let c = sin(dot(wxz, vec2<f32>(0.203, 0.149)) + t * 0.83);
+    // Crests sharper than troughs, the same asymmetry `wave_dx` gives the chop.
+    let h = a * 0.62 + b * 0.42 + c * 0.20;
+    return (h + abs(h) * 0.35) * 0.85;
+}
