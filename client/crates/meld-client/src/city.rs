@@ -526,10 +526,21 @@ pub(crate) fn city_scene(
     {
         use meld_proto::coast::{CITY_SHORE_HALF_WIDTH as SHORE, CITY_TIP_REACH as TIP};
         const SEA: f32 = 420.0;
-        // ABOVE the grass, not below it. The city's ground plane runs well past the
-        // shoreline, so water tucked underneath it is simply invisible — which is exactly
-        // how this shipped the first time. Sat just over the grass and under nothing else
-        // (the streets stop well inside the shore), it reads as sea meeting a flat bank.
+        // ⚠️ WATER SHOULD ALWAYS SIT IN A DEPRESSION, AND THIS ONE CANNOT YET.
+        //
+        // The arena's sea does: its ground genuinely dips to `SEA_DEPTH` (7 units) below the
+        // land past the shoreline, so the water is IN the world. Last City's cannot, because
+        // its ground is a hand-placed flat plane that runs well past the shoreline — so
+        // anything below y=0 is simply occluded by the lawn. A banked basin mesh was tried
+        // (the seam at ground level, falling away from there) and the grass swallowed it
+        // whole: the bay vanished and the city read as a meadow to the horizon, which is
+        // strictly worse than water sitting a hair too high.
+        //
+        // The real fix is to give the city its OWN coast in the ground shader, so the plane
+        // dips the way the arena's does. `update_ground_biome_rings` deliberately zeroes the
+        // `coast` uniform outside the Overworld (the world's shoreline in city coordinates
+        // would put sea through the plaza), so that means city-space coast params — the
+        // follow-up already noted there. Until then the sea sits just over the grass.
         const SEA_Y: f32 = 0.05;
         // THE SEA GETS ITS OWN MATERIAL, in `mode 1` (open water — deep everywhere), not
         // the pond's basin. A pool is deepest in its middle and shallows to a rim; an ocean

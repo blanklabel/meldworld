@@ -25,6 +25,10 @@ pub(crate) struct GrassBlade {
     idx: usize,
     mat: Handle<StandardMaterial>,
     last: Option<(i32, i32)>,
+    /// This blade's own sway offset, from its cell hash, so neighbours never lean in
+    /// lockstep. Stored rather than recomputed because the cell block below only runs when
+    /// a blade CHANGES cell, and the lean has to move every frame.
+    phase: f32,
 }
 
 impl GrassBlade {
@@ -32,7 +36,7 @@ impl GrassBlade {
     /// can be hidden.
     #[cfg(test)]
     pub(crate) fn for_test() -> Self {
-        Self { idx: 0, mat: Handle::default(), last: None }
+        Self { idx: 0, mat: Handle::default(), last: None, phase: 0.0 }
     }
 }
 
@@ -78,7 +82,7 @@ pub(crate) fn setup_ambient(
     for i in 0..N_BLADES {
         let mat = mats.add(hd2d::sprite_material(Color::WHITE, grass[i % grass.len()].clone()));
         commands.spawn((
-            GrassBlade { idx: i, mat: mat.clone(), last: None },
+            GrassBlade { idx: i, mat: mat.clone(), last: None, phase: 0.0 },
             Mesh3d(quad.clone()),
             MeshMaterial3d(mat),
             Transform::default(),
@@ -100,6 +104,8 @@ pub(crate) fn update_ambient_scatter(
     session: Res<Session>,
     terrain: Res<Terrain>,
     grass: Res<AmbientGrass>,
+    time: Res<Time>,
+    sky: Option<Res<crate::world_render::Sky>>,
     frame: Res<crate::WorldFrame>,
     state: Res<State<crate::Screen>>,
     mut mats: ResMut<Assets<StandardMaterial>>,
@@ -114,9 +120,19 @@ pub(crate) fn update_ambient_scatter(
         }
         return;
     };
+    let t = time.elapsed_secs();
+    let wind = sky.map(|s| s.wind).unwrap_or(0.0);
     let bx = (p.x / SPACING).round() as i32;
     let bz = (p.z / SPACING).round() as i32;
     for (mut blade, mut tf, mut vis) in &mut blades {
+        // ⚠️ THE LEAN RUNS EVERY FRAME, ABOVE THE CELL GUARD. Everything below only executes
+        // when a blade moves to a NEW cell — which is almost never — so a sway computed down
+        // there freezes each blade at whatever angle it happened to be assigned. Grass that
+        // is bent and motionless is worse than grass standing straight.
+        if blade.last.is_some() {
+            let lean = (t * (1.4 + wind * 1.6) + blade.phase).sin() * (0.03 + wind * 0.30);
+            tf.rotation = Quat::from_rotation_z(lean);
+        }
         let dx = (blade.idx as i32 % GRID) - GRID / 2;
         let dz = (blade.idx as i32 / GRID) - GRID / 2;
         let cell = (bx + dx, bz + dz);
@@ -140,6 +156,12 @@ pub(crate) fn update_ambient_scatter(
         let scale = 0.85 + ((h >> 18) & 0x7F) as f32 / 127.0 * 0.8; // 0.85..1.65
         tf.translation = Vec3::new(wx, 0.02 + crate::world_render::terrain_height(wx, wz), wz);
         tf.scale = Vec3::splat(scale * 1.2 / 2.2);
+        // Grass leans on the wind, like everything else that grows — the trees have tossed on
+        // `sky.wind` since `animate_sway` shipped while the grass beneath them stood perfectly
+        // still, and the eye takes wind from the SMALL stuff first: a gale you can only see in
+        // the canopy is a gale nobody believes. The lean itself is applied above, every frame;
+        // this only records the blade's offset so neighbours never sway in lockstep.
+        blade.phase = (h >> 24) as f32 * 0.0246;
         if let Some(mut m) = mats.get_mut(&blade.mat) {
             m.base_color_texture = Some(grass.0[variant].clone());
         }
