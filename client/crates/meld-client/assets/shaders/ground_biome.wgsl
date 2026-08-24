@@ -128,6 +128,21 @@ fn spit_half_width(d: f32) -> f32 {
 // `meld_proto::coast::is_ocean` but signed, so the shoreline can fade instead of snapping
 // to a hard edge one texel wide.
 fn sea_depth_at(wxz: vec2<f32>) -> f32 {
+    // LAST CITY IS THE SAME SEA, DRAWN BY THE SAME SHADER. The city is its own scene in
+    // its own coordinates and cannot use the world's radial fan (that shoreline, expressed
+    // in city space, runs straight through the plaza), so it hands its OWN spit down:
+    // `sea_anim.yz` is (shore half-width, tip reach), nonzero only in the City.
+    //
+    // It used to be three hand-placed water planes instead, sitting a hair ABOVE the lawn
+    // because the flat plaza had nothing to dip into — the exact "two hand-placed
+    // shorelines that drift" this module was written to prevent, and it had already drifted
+    // (the city's sea missed every fix the world's sea got, because they were not the same
+    // water). One shoreline, one shader, both scenes.
+    if (params.sea_anim.y > 0.0) {
+        let past_flank = abs(wxz.x) - params.sea_anim.y;   // out past either flank
+        let past_tip = wxz.y - params.sea_anim.z;          // out past the tip (+z)
+        return max(past_flank, past_tip);
+    }
     let arc_half = params.coast.x;
     if (arc_half <= 0.0) { return -1000.0; }          // corridor mode: no gap, no sea
     let d = length(wxz);
@@ -199,7 +214,12 @@ fn total_height(wxz: vec2<f32>) -> f32 {
     // because the waves have to reach the SHORE — a flat dead margin around every coast is
     // the other half of what made this read as a basin instead of a sea.
     let swell = sea_swell(wxz, params.sea_anim.x) * smoothstep(0.0, 9.0, max(sea, 0.0));
-    return params.terrain_amp * (mix(land, level, t) + swell);
+    // ⚠️ `terrain_amp` FLATTENS THE LAND, NOT THE SEA. It used to scale the whole
+    // expression, which is right for the hills (the City and the menus are hand-placed for
+    // a level plaza) and wrong for the water: at amp 0 the sea level got multiplied to zero
+    // too, so the city's ground could not dip and its water had to be laid ON TOP of the
+    // grass. Flatten the land, let the water find its level, and the City gets a real bay.
+    return mix(params.terrain_amp * land, level + swell, t);
 }
 
 // Surface normal by finite differences over `total_height`, so both the rolling base and
