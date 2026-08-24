@@ -482,7 +482,7 @@ fn main() {
                 // Overworld class perks ("party sense").
                 update_explorer_lamp,
                 update_mob_nameplates,
-                (minimap::track_map_view, minimap::repaint, update_minimap_distance),
+                (minimap::track_map_view, minimap::repaint, update_minimap, update_minimap_distance),
                 (remember_explored, station_input, heat_input, update_heat_bar),
                 overworld::update_blind_mask,
                 overworld::update_hurt_flash,

@@ -410,14 +410,36 @@ pub(crate) fn repaint(
 /// This is its own system rather than a line inside the menu's render because the two run
 /// on different clocks: `render_main_menu` rebuilds the panel only when something it reads
 /// changes, while the ground has to keep up with the party walking under an open map.
+/// Half the grid's width in tiles — what a corner panel showing the whole texture spans.
+pub(crate) fn corner_tiles_half() -> f32 {
+    TILES_X as f32 * 0.5
+}
+
 pub(crate) fn track_map_view(
     menu: Res<crate::MainMenu>,
     explored: Res<crate::overworld::ExploredMap>,
+    perks: Res<crate::PerksRes>,
+    world: Res<crate::Overworld>,
+    session: Res<crate::Session>,
     mut view: ResMut<MapView>,
 ) {
+    // TWO SURFACES, ONE TEXTURE. The Map column wants the whole walked rectangle; the corner
+    // panel wants a tight ring around the player. Rather than render twice, the framing
+    // follows whichever is being looked at — the menu when it is open, the player otherwise.
     let open = menu.section == Some(crate::MenuSection::Map) && explored.walked;
     if !open {
-        view.open = false;
+        // Corner mode: centred on the party, spanning the Explorer's own map radius.
+        if perks.0.explorer_map == 0 {
+            view.open = false;
+            return;
+        }
+        let Some(me) = world.entities.get(&session.player_id) else {
+            view.open = false;
+            return;
+        };
+        view.open = true;
+        view.centre = Vec2::new(me.x, me.y);
+        view.units = (perks.0.explorer_map_radius.max(1.0) * 2.0) / TILES_X as f32;
         return;
     }
     // The panel's pixel size, from `explored_map`. One place would be better than two;

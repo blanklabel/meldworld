@@ -814,9 +814,19 @@ pub(crate) fn setup(
                 // mire's fill kind is `bog_pool` at a 7.5x multiplier ("MOSTLY water: the
                 // swamp is a flooded maze, land is the trail"), so lifting the terrain tint
                 // barely moved it and lifting these moved it a lot.
-                Vec4::new(0.23, 0.37, 0.19, 1.0),
-                Vec4::new(0.40, 0.54, 0.27, 1.0),
-                Vec4::new(0.44, 0.52, 0.28, 0.30),
+                // ⚠️ BOG WATER MUST NOT BE THE COLOUR OF BOG. The first pass gave it
+                // (0.23, 0.37, 0.19) — and the mire's ground tile averages (0.33, 0.32, 0.20).
+                // The water was painted the same olive as the land it sits in, so a pool read
+                // as a slightly different patch of ground with a rim around it: "you see the
+                // edge of them and nothing else."
+                //
+                // Real standing bog water is DARK and reflective — a near-black mirror in a
+                // green field, which is the contrast that says "this is not ground". Deep goes
+                // almost to black, the shallows keep just enough peat to look foul, and the
+                // rim reads harder so the bank stays legible.
+                Vec4::new(0.03, 0.05, 0.04, 1.0),
+                Vec4::new(0.13, 0.17, 0.11, 1.0),
+                Vec4::new(0.42, 0.48, 0.30, 0.55),
             ),
             (
                 "frozen_pond",
@@ -851,8 +861,9 @@ pub(crate) fn setup(
                         ..default()
                     },
                     extension: WaterSurface {
-                        // (time, wave_scale, steepness, mode 0 = basin)
-                        params: Vec4::new(0.0, 0.55, 0.7, 0.0),
+                        // `(time, wave_scale, steepness, mode 0 = basin)`. Steepness 0 means
+                        // FROZEN — see `water_surface.wgsl`; the frozen pond sets it below.
+                        params: Vec4::new(0.0, 0.55, if *kind == "frozen_pond" { 0.0 } else { 0.7 }, 0.0),
                         deep: *deep,
                         shallow: *shallow,
                         edge: *edge,
@@ -2564,8 +2575,12 @@ pub(crate) fn animate_water(
     // Every water material, not just the ones `WorldAssets` knows about — Last City builds
     // its own sea, and a per-kind list is a list the city gets left off.
     for (_, m) in mats.iter_mut() {
-        m.base.uv_transform = xf;
-        m.extension.params.x = t;
+        // Frozen water (steepness 0) neither ripples NOR drifts: scrolling the bed tile under
+        // a still surface is the same lie as a wave on ice, just quieter.
+        if m.extension.params.z > 0.0 {
+            m.base.uv_transform = xf;
+            m.extension.params.x = t;
+        }
     }
 }
 

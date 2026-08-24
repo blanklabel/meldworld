@@ -113,7 +113,20 @@ impl Default for Look {
             // a properly-lit world it was hazing the mid-field that used to be too dark to
             // notice. The far distance still dissolves into the sky.
             fog_start: 145.0,
-            fog_end: 260.0,
+            // ⚠️ EVERYTHING PAST `fog_end` IS PURE FOG COLOUR — a near-white wall. At 260 that
+            // wall stood just past the shoreline, so the sea dissolved into it a few dozen
+            // metres out and the coast read as "the water is gone".
+            //
+            // It was survivable when `fog_start` was 70 and the whole world was a dim,
+            // close-pressed diorama. Once the ground stopped shadowing itself and the haze was
+            // pulled back to 145, the band became a hard 115-unit ramp into white.
+            //
+            // ⚠️ AND EVERY SCREENSHOT I TOOK OF THE SEA OVERRODE IT. The look file in my
+            // captures ran `fog_end` at 600-1200, so the water always receded properly for me
+            // and hit a wall for anyone playing the defaults. Same failure as pinning
+            // `fair_secs` and never seeing the wind: the harness hid the bug it should have
+            // exposed. Defaults are what ship — measure those.
+            fog_end: 700.0,
             sun_pitch: 55.0,
             sun_yaw: 40.0,
             orbit: false,
