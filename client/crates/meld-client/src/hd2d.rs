@@ -185,6 +185,18 @@ pub fn spawn_camera(commands: &mut Commands, look: &Look, initial: Transform) ->
         bevy::core_pipeline::oit::OrderIndependentTransparencySettings::default(),
         bevy::anti_alias::fxaa::Fxaa::default(),
     ));
+    // NOTE: no depth prepass. It was added for `bevy_water`, whose depth model needs one,
+    // and it BREAKS THE MAZE: `GroundBiome` has a custom vertex shader that displaces the
+    // ground into rolling hills, and `MaterialExtension` takes its prepass vertex stage
+    // from a separate hook (`prepass_vertex_shader`) we do not override — so the prepass
+    // rasterizes the ground FLAT, and every part of the real displaced ground below the
+    // flat version fails the depth test and is never drawn. The world renders as a strip of
+    // land on the high ridge with clear-colour sky beneath it.
+    //
+    // The sea shader needs no prepass at all: its depth is analytic (`sea_depth_at`). If a
+    // future effect DOES want scene depth — a volumetric dust storm is the obvious one —
+    // `ground_biome.wgsl` needs a prepass vertex entry applying the same `total_height`
+    // displacement FIRST.
     cam.id()
 }
 
@@ -908,6 +920,20 @@ pub fn grass_texture(size: u32) -> Image {
 /// player's feet the result was a character walking around underground. Scale by
 /// `r / BLOB_MAX_RADIUS` and the widest lobe lands exactly on the collision edge.
 pub const BLOB_MAX_RADIUS: f32 = 1.035;
+
+/// How far a water basin's surface sits below its rim.
+///
+/// **This is bounded by the ground, not by taste.** A pool is a bowl mesh drawn ON TOP of
+/// the flat ground plane — nothing cuts a hole in the ground — so the deeper the bowl, the
+/// more of its surface the surrounding ground occludes as the camera flattens out. Past
+/// roughly half a unit the water starts disappearing behind its own bank at our survey
+/// pitch, which reads as a pool that is there from one angle and gone from another.
+///
+/// A pool is therefore shallow by construction, which is exactly why the OPEN SEA is shaded
+/// in `ground_biome.wgsl` from an analytic depth (`sea_depth_at`, tens of world units)
+/// rather than from geometry. Giving pools water of that quality means giving them an
+/// analytic depth too; the bowl only sets their silhouette.
+pub const WATER_BASIN_DEPTH: f32 = 0.45;
 
 /// The same organic outline as [`blob_mesh`], but sunk into a **basin**: a rim at local
 /// `z = 0` sloping down to a flat waterline at `-depth`.
