@@ -614,6 +614,10 @@ fn dev_town_portals() -> Option<i32> {
         .filter(|n| *n > 0)
 }
 
+/// The guided [T]-dive's own, more patient turn timeout (vs. `balance.toml`'s
+/// normal 15s auto-Defend) — see the comment at its one use site in `form_run`.
+const TUTORIAL_TURN_TIMEOUT_MS: u64 = 60_000;
+
 /// A server-generated world seed. Folds a fresh v7 UUID's 16 bytes into a u64 so
 /// each MazeInstance gets a distinct, unpredictable layout (CANON: seeds are
 /// server-side; the client never supplies one).
@@ -728,6 +732,26 @@ fn clamp_party_to_unlocks(
                 CharacterClass::Explorer
             }
         })
+        .collect()
+}
+
+/// The guided [T]-dive's own clamp: up to 4 heroes, each one of the 10 "live"
+/// classes (every `meld_proto::unlocks::UNLOCKS` entry with a `Class` kind) —
+/// never checked against what the account has actually earned. As ephemeral as
+/// any normal dive's own party choice; it never touches the account's real
+/// unlocks, `AccountHeroNames`, or saved loadouts.
+fn clamp_tutorial_party(party: Vec<CharacterClass>) -> Vec<CharacterClass> {
+    let live: Vec<CharacterClass> = meld_proto::unlocks::UNLOCKS
+        .iter()
+        .filter_map(|u| match u.kind {
+            meld_proto::unlocks::UnlockKind::Class(c) => Some(c),
+            _ => None,
+        })
+        .collect();
+    party
+        .into_iter()
+        .take(4)
+        .map(|c| if live.contains(&c) { c } else { CharacterClass::Explorer })
         .collect()
 }
 
@@ -4570,6 +4594,9 @@ impl GameState {
         // default mixed party around it.
         let req = serde_json::from_value::<wr::EnterMaze>(raw.payload).ok();
         let solo = req.as_ref().map(|e| e.solo).unwrap_or(false);
+        // Read up front (not just before `form_run` as before): the guided
+        // [T]-dive's party clamp right below needs to know it's tutorial-flagged too.
+        let wants_tutorial = req.as_ref().and_then(|e| e.tutorial).unwrap_or(false);
         let party_comp = req.as_ref().and_then(|e| e.party.clone()).filter(|p| !p.is_empty());
         let chosen = req
             .as_ref()
@@ -4584,13 +4611,26 @@ impl GameState {
         // dropped, unowned classes replaced by the Explorer. Clamped rather than
         // rejected, so a stale client (or a saved party from before a wipe) still
         // gets a dive instead of an error it can't act on.
+        //
+        // The guided [T]-dive is the one exception: its whole point is letting a
+        // brand-new account try up to 4 different classes for that single dive, so
+        // it clamps against the "live" class roster instead (`clamp_tutorial_party`)
+        // rather than the account's real unlocks. Never written back to the account
+        // — `s.party_comp` here is exactly as ephemeral as a normal dive's own choice
+        // (see `form_run`'s party-size computation for the other half of this).
         let owned = self.sessions.get(player_id).and_then(|s| s.unlocks.clone());
-        let party_comp = match (&owned, party_comp) {
-            (Some(owned), Some(p)) => Some(clamp_party_to_unlocks(p, owned)),
-            (_, p) => p,
+        let party_comp = if wants_tutorial {
+            party_comp.map(clamp_tutorial_party)
+        } else {
+            match (&owned, party_comp) {
+                (Some(owned), Some(p)) => Some(clamp_party_to_unlocks(p, owned)),
+                (_, p) => p,
+            }
         };
         let chosen = match &owned {
-            Some(owned) if !meld_proto::unlocks::owned_classes(owned).contains(&chosen) => {
+            Some(owned)
+                if !wants_tutorial && !meld_proto::unlocks::owned_classes(owned).contains(&chosen) =>
+            {
                 CharacterClass::Explorer
             }
             _ => chosen,
@@ -4651,7 +4691,6 @@ impl GameState {
                 Some(client_seq),
             )];
         }
-        let wants_tutorial = req.as_ref().and_then(|e| e.tutorial).unwrap_or(false);
         let wants_hub = req.as_ref().and_then(|e| e.hub.clone());
         self.form_run(party_ids, player_id, Some(client_seq), wants_tutorial, wants_hub)
     }
@@ -4764,6 +4803,22 @@ impl GameState {
                 }
                 _ => self.balance.clone(),
             };
+            // No real server-side pause exists for the guided walkthrough's paced
+            // battle-command explanation cards (client-only, cosmetic) — widen the
+            // auto-Defend safety net instead, so a slow reader doesn't get a hero
+            // surprise-Defended out from under them mid-explanation. Enemies still
+            // act on their own schedule regardless; that's accepted, not fixed,
+            // since the tutorial's one forced encounter is already deliberately
+            // weak. Every battle in this instance is built from this WorldActor's
+            // own `balance` (see `start_battle`), so overriding it here reaches
+            // every fight in the run automatically.
+            let balance = if tutorial {
+                let mut b = (*balance).clone();
+                b.battle.turn_timeout_ms = TUTORIAL_TURN_TIMEOUT_MS;
+                Arc::new(b)
+            } else {
+                balance
+            };
             // A world read back at boot is stood up here rather than in a second
             // construction site: restoring IS the normal build, reading its seed and its
             // delta off disk instead of off a fresh roll. A tutorial dive never claims
@@ -4859,7 +4914,15 @@ impl GameState {
         }
         // Each dive starts with a stock of Town Portal items — the primary way
         // home now that there's a single, deep fixed portal.
-        let starting_tp = dev_town_portals().unwrap_or(self.balance.runs.starting_town_portals);
+        // A tutorial dive guarantees one, unconditionally: the walkthrough's own
+        // "Go back to town"/"Exit Tutorial" buttons (`ClientCmd::TownPortal`) would
+        // otherwise fail server-side with "No Town Portal item" for any real
+        // player, since `starting_town_portals` is 0 by default (kit is bought, not
+        // free-started). `.max(...)` rather than replacing outright preserves the
+        // `MELD_TOWN_PORTALS` DEV override on a normal dive.
+        let starting_tp = dev_town_portals()
+            .unwrap_or(self.balance.runs.starting_town_portals)
+            .max(if inst.tutorial { 1 } else { 0 });
         // Seed the starting consumables: Town Portals (extraction) + finite battle heal
         // items (Salve/Elixir), so the battle Item command is now inventory-backed.
         let starting_stock = [
@@ -4987,11 +5050,23 @@ impl GameState {
             // Unlocks not loaded yet (a dive racing the account read) falls back to
             // ONE hero rather than the cap: too few heroes is a worse dive, too many
             // is a party the account did not earn.
-            let party_size = owned
-                .as_deref()
-                .map(|o| meld_proto::unlocks::party_slots(o) as usize)
-                .unwrap_or(1)
-                .clamp(1, party_cap);
+            //
+            // The guided [T]-dive is the exception: its whole point is a real,
+            // possibly-4-hero party regardless of what the account has earned.
+            // `explicit` is already legality-checked against the live-class roster
+            // by `clamp_tutorial_party` (in `handle_enter_maze`), not against `owned`
+            // — trust its own length here instead of deriving the size from unlocks,
+            // or a fresh account's correct 4-class pick would be silently truncated
+            // back down to 1 right here.
+            let party_size = if inst.tutorial {
+                explicit.as_ref().map(|p| p.len()).unwrap_or(1).clamp(1, party_cap)
+            } else {
+                owned
+                    .as_deref()
+                    .map(|o| meld_proto::unlocks::party_slots(o) as usize)
+                    .unwrap_or(1)
+                    .clamp(1, party_cap)
+            };
             // The builder's explicit composition wins (normalized to party size,
             // padded with Explorer); otherwise build a default mixed party around
             // the lead.

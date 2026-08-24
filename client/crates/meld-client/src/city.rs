@@ -749,12 +749,18 @@ pub(crate) fn city_input(
     // the system is at Bevy's 16-param ceiling.
     (tutorial, mut pick): (Res<Tutorial>, ResMut<CounterPick>),
     mut next: ResMut<NextState<Screen>>,
+    mut predive: ResMut<tutorial_predive::TutorialPreDive>,
 ) {
     let (hunts, bounties) = (&mut boards.0, &boards.1);
     // The welcome tour has its own keyboard handler (`tutorial::tour_keyboard`)
     // reading the same Enter/Space keys to advance its steps — without this
     // guard, pressing Enter to step the tour would ALSO fire a dive here.
     if tutorial.town_step.is_some() {
+        return;
+    }
+    // The [T]-dive's own welcome+picker is modal too (a Confirm/Skip button, not
+    // hotkeys) — same reasoning as the Drill Yard guard just below.
+    if predive.stage.is_some() {
         return;
     }
     // The Drill Yard is modal and full of text fields, so town hotkeys are off while
@@ -775,20 +781,22 @@ pub(crate) fn city_input(
     let dive = keys.just_pressed(KeyCode::Enter)
         || (keys.just_pressed(KeyCode::KeyE) && at_threshold)
         || (autoplay.0 && !city_idle.0);
-    // T = the guided TUTORIAL dive (offered, never forced). A normal dive (ENTER/E/
-    // autoplay) is a randomized run, so you don't reappear in the onboarding corridor.
-    let tutorial_dive = keys.just_pressed(KeyCode::KeyT);
-    if (dive || tutorial_dive) && !session.entered {
+    // T = the guided TUTORIAL dive (offered, never forced): opens the pre-dive
+    // welcome + 4-class picker rather than diving straight away — the actual
+    // `EnterMaze` is sent once a real 4-hero pick is confirmed there (see
+    // `tutorial_predive::tutorial_predive_buttons`). A normal dive (ENTER/E/
+    // autoplay) is unaffected: still a randomized run, sent immediately.
+    if keys.just_pressed(KeyCode::KeyT) && !session.entered {
+        predive.stage = Some(tutorial_predive::PreDiveStage::Welcome);
+        return;
+    }
+    if dive && !session.entered {
         session.entered = true;
         session.coop = false;
-        session.status = if tutorial_dive {
-            "beginning the guided run...".to_string()
-        } else {
-            "stepping through The Threshold...".to_string()
-        };
+        session.status = "stepping through The Threshold...".to_string();
         net.0.send(ClientCmd::EnterMaze {
             party: session.party.clone(),
-            tutorial: tutorial_dive,
+            tutorial: false,
             hub: session.hub.clone(),
         });
         return;

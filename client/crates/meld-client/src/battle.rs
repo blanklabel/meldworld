@@ -700,6 +700,11 @@ pub(crate) fn battle_click_target(
     if ui_hit.iter().any(|i| *i != Interaction::None) {
         return; // a UI button (the command window) — not the arena
     }
+    // The tutorial's paced command-menu explainer swallows this path too — it
+    // calls `queue_order` directly, bypassing `begin_order`'s own guard.
+    if tutorial_run.battle_intro.is_some() {
+        return;
+    }
     let Some((cam, cam_tf)) = cam_q.iter().next() else { return };
 
     // Nearest living enemy sprite under the click.
@@ -878,6 +883,14 @@ pub(crate) fn begin_order(
     kind: QueuedKind,
     tutorial_run: &mut TutorialRun,
 ) {
+    // The tutorial's paced command-menu explainer swallows every order-
+    // submission path: this is the funnel every root-menu action dispatches
+    // through (`select_entry`'s Attack/Defend/Skill/Item/Hold/Flee arms all
+    // call it), so guarding here alone also covers the Target/Revoke pages,
+    // which only ever open from inside this function.
+    if tutorial_run.battle_intro.is_some() {
+        return;
+    }
     match order_side(kind) {
         None => queue_order(battle, hero, kind, None, menu, tutorial_run),
         Some(side) => {
@@ -1506,10 +1519,11 @@ pub(crate) fn rebuild_command_menu(
     // Include the dynamic row count so re-opening a Target page (same level) rebuilds,
     // and the Tactics state so the tap toggle's label refreshes when it flips.
     let sig = format!(
-        "{show}|{active_id}|{level:?}|{}|{}|{:?}",
+        "{show}|{active_id}|{level:?}|{}|{}|{:?}|{:?}",
         menu.rows.len(),
         tactics.0,
-        tutorial_run.step
+        tutorial_run.step,
+        tutorial_run.battle_intro
     );
     if !menu.dirty && sig == menu.sig {
         return;
@@ -1541,11 +1555,16 @@ pub(crate) fn rebuild_command_menu(
     let neutral_text = Color::srgb(0.92, 0.94, 1.0);
     let gold = Color::srgb(1.0, 0.85, 0.45);
     let red = Color::srgb(1.0, 0.55, 0.5);
-    // The guided [T]-dive walkthrough's "what to click" step: brighten Attack's
-    // own border in place rather than an overlay box, same idiom as everywhere
-    // else in this feature.
-    let attack_highlight = tutorial_run.step == Some(TutorialStep::Fight);
-    let attack_edge = if attack_highlight { glass::ACTIVE_EDGE } else { gold };
+    // The guided [T]-dive walkthrough's paced command-menu explainer: brighten
+    // whichever tile is currently being explained, in place, rather than an
+    // overlay box — same idiom as everywhere else in this feature.
+    let intro_edge = |step: BattleIntroStep, base: Color| {
+        if tutorial_run.battle_intro == Some(step) { glass::ACTIVE_EDGE } else { base }
+    };
+    let attack_edge = intro_edge(BattleIntroStep::Attack, gold);
+    let defend_edge = intro_edge(BattleIntroStep::Defend, neutral_edge);
+    let skill_edge = intro_edge(BattleIntroStep::Skill, neutral_edge);
+    let flee_edge = intro_edge(BattleIntroStep::Flee, red);
 
     // Row label + enabled state + Adrenaline cost (if any) for the list renderer:
     // the dynamic Target/Revoke pages draw from `menu.rows` (+ a Back row, always
@@ -1712,7 +1731,7 @@ pub(crate) fn rebuild_command_menu(
                                     flex_direction: FlexDirection::Row,
                                     ..default()
                                 })
-                                .with_children(|r| cmd_tile(r, 3, "\u{f0068} Skill", 92.0, neutral_edge, neutral_text));
+                                .with_children(|r| cmd_tile(r, 3, "\u{f0068} Skill", 92.0, skill_edge, neutral_text));
                             cross
                                 .spawn(Node {
                                     flex_direction: FlexDirection::Row,
@@ -1724,14 +1743,14 @@ pub(crate) fn rebuild_command_menu(
                                     // shield=Defend, run-fast=Flee, auto-fix=Skill.
                                     cmd_tile(r, 2, "\u{f0093} Item", 92.0, neutral_edge, neutral_text);
                                     cmd_tile(r, 0, "\u{f04e5} Attack", 92.0, attack_edge, gold);
-                                    cmd_tile(r, 1, "\u{f132} Defend", 92.0, neutral_edge, neutral_text);
+                                    cmd_tile(r, 1, "\u{f132} Defend", 92.0, defend_edge, neutral_text);
                                 });
                             cross
                                 .spawn(Node {
                                     flex_direction: FlexDirection::Row,
                                     ..default()
                                 })
-                                .with_children(|r| cmd_tile(r, 4, "\u{f070e} Flee", 92.0, red, red));
+                                .with_children(|r| cmd_tile(r, 4, "\u{f070e} Flee", 92.0, flee_edge, red));
                         });
                 } else {
                     let header: &str = match level {
@@ -1865,6 +1884,130 @@ pub(crate) fn rebuild_command_menu(
                 }
             });
         });
+}
+
+/// Marks the tutorial's paced command-menu explainer card (Attack → Defend →
+/// Skill → Flee, one at a time, on the tutorial's first fight).
+#[derive(Component)]
+pub(crate) struct BattleIntroRoot;
+#[derive(Component)]
+pub(crate) struct BattleIntroNextBtn;
+#[derive(Component)]
+pub(crate) struct BattleIntroSkipBtn;
+
+const BATTLE_INTRO_SEQUENCE: [BattleIntroStep; 4] = [
+    BattleIntroStep::Attack,
+    BattleIntroStep::Defend,
+    BattleIntroStep::Skill,
+    BattleIntroStep::Flee,
+];
+
+fn battle_intro_text(step: BattleIntroStep) -> &'static str {
+    match step {
+        BattleIntroStep::Attack => "Attack — always available, no cost. Your basic hit.",
+        BattleIntroStep::Defend => "Defend — braces for the next hit, cutting the damage you take.",
+        BattleIntroStep::Skill => "Skill — spends your class's own resource for a stronger move.",
+        BattleIntroStep::Flee => "Flee — pulls your whole party out of the fight together.",
+    }
+}
+
+/// The first tutorial battle's paced, one-at-a-time walkthrough of the command
+/// menu. A small card only — no scrim, so the tile `rebuild_command_menu`
+/// highlights (per `TutorialRun.battle_intro`) stays visible underneath.
+pub(crate) fn battle_intro_card(
+    mut commands: Commands,
+    tutorial_run: Res<TutorialRun>,
+    root_q: Query<Entity, With<BattleIntroRoot>>,
+) {
+    let Some(step) = tutorial_run.battle_intro else {
+        for e in &root_q {
+            commands.entity(e).despawn();
+        }
+        return;
+    };
+    for e in &root_q {
+        commands.entity(e).despawn();
+    }
+    let is_last = step == BattleIntroStep::Flee;
+    commands
+        .spawn((
+            BattleIntroRoot,
+            GlobalZIndex(900),
+            Node {
+                position_type: PositionType::Absolute,
+                top: Val::Px(12.0),
+                left: Val::Px(0.0),
+                right: Val::Px(0.0),
+                align_items: AlignItems::Center,
+                justify_content: JustifyContent::Center,
+                ..default()
+            },
+        ))
+        .with_children(|root| {
+            root.spawn(glass::panel_capped(Val::Percent(70.0), Val::Px(420.0)))
+                .with_children(|p| {
+                    p.spawn(glass::text("Guided Dive", 12.0, glass::DIM));
+                    p.spawn(glass::text(battle_intro_text(step), 15.0, glass::TEXT));
+                    p.spawn(Node {
+                        flex_direction: FlexDirection::Row,
+                        column_gap: Val::Px(12.0),
+                        justify_content: JustifyContent::FlexEnd,
+                        margin: UiRect::top(Val::Px(6.0)),
+                        ..default()
+                    })
+                    .with_children(|row| {
+                        row.spawn((Button, BattleIntroSkipBtn, glass::chip(false)))
+                            .with_children(|b| {
+                                b.spawn(glass::text("Skip", 14.0, glass::TEXT));
+                            });
+                        row.spawn((Button, BattleIntroNextBtn, glass::chip(true)))
+                            .with_children(|b| {
+                                b.spawn(glass::text(
+                                    if is_last { "Got it" } else { "Next" },
+                                    14.0,
+                                    glass::TITLE,
+                                ));
+                            });
+                    });
+                });
+        });
+}
+
+fn battle_intro_advance(tutorial_run: &mut TutorialRun) {
+    let Some(step) = tutorial_run.battle_intro else { return };
+    let next = BATTLE_INTRO_SEQUENCE.iter().position(|s| *s == step).map(|i| i + 1);
+    tutorial_run.battle_intro = next.and_then(|i| BATTLE_INTRO_SEQUENCE.get(i).copied());
+}
+
+/// Next/Skip clicks.
+pub(crate) fn battle_intro_buttons(
+    mut tutorial_run: ResMut<TutorialRun>,
+    next_q: Query<&Interaction, (With<BattleIntroNextBtn>, Changed<Interaction>)>,
+    skip_q: Query<&Interaction, (With<BattleIntroSkipBtn>, Changed<Interaction>)>,
+) {
+    if skip_q.iter().any(|i| *i == Interaction::Pressed) {
+        tutorial_run.battle_intro = None;
+        return;
+    }
+    if next_q.iter().any(|i| *i == Interaction::Pressed) {
+        battle_intro_advance(&mut tutorial_run);
+    }
+}
+
+/// Keyboard twin: Enter/Space advances (or finishes, on the last step),
+/// Escape skips straight to normal battle input.
+pub(crate) fn battle_intro_keyboard(
+    keys: Res<ButtonInput<KeyCode>>,
+    mut tutorial_run: ResMut<TutorialRun>,
+) {
+    if tutorial_run.battle_intro.is_none() {
+        return;
+    }
+    if keys.just_pressed(KeyCode::Enter) || keys.just_pressed(KeyCode::Space) {
+        battle_intro_advance(&mut tutorial_run);
+    } else if keys.just_pressed(KeyCode::Escape) {
+        tutorial_run.battle_intro = None;
+    }
 }
 
 /// Toggle the Phoenix Guard Tactics stance from its tap button (the keyboard [T] path
