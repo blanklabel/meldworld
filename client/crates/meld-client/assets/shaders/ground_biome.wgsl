@@ -130,12 +130,27 @@ fn spit_half_width(d: f32) -> f32 {
 fn sea_depth_at(wxz: vec2<f32>) -> f32 {
     let arc_half = params.coast.x;
     if (arc_half <= 0.0) { return -1000.0; }          // corridor mode: no gap, no sea
-    let theta = abs(atan2(wxz.y, wxz.x));
-    if (theta <= arc_half) { return -1000.0; }        // inside the fan: land, always
     let d = length(wxz);
-    let inland = params.coast.y - d;                  // the neck's land bridge
-    if (inland >= 0.0) { return -max(inland, 0.001); }
-    return abs(wxz.y) - spit_half_width(d);
+    let theta = abs(atan2(wxz.y, wxz.x));
+    // ⚠️ A SHORELINE IS A DISTANCE, NOT A BOOLEAN, AND THIS USED TO BE THREE BOOLEANS
+    // WEARING A FLOAT. Land inside the fan returned a flat `-1000` — so the field jumped
+    // from -1000 to about +26 across the fan's edge with nothing in between, and every
+    // consumer that smoothsteps over it (the beach ramp, the depth tint, the swell) got a
+    // STEP where it asked for a gradient. That is the vertical wall of water on the fan
+    // boundary: no beach could form there because there was no band to form it in.
+    //
+    // Three land shapes, each as a signed distance in WORLD UNITS, and the sea is however
+    // far you are from the nearest of them:
+    //   * the FAN — its edge is a ray, so the distance past it is an ARC LENGTH (`* d`),
+    //     which is why a fixed angular margin would be metres at the hub and kilometres out;
+    //   * the SPIT that Last City stands on, across its width;
+    //   * the NECK, the land bridge that closes the gap near the hub.
+    // `min` of the three, so the sign still agrees with `meld_proto::coast::is_ocean`
+    // exactly (sea iff past ALL THREE) while the magnitude is now continuous everywhere.
+    let past_fan = (theta - arc_half) * d;
+    let past_spit = abs(wxz.y) - spit_half_width(d);
+    let past_neck = d - params.coast.y;
+    return min(min(past_fan, past_spit), past_neck);
 }
 
 // Authored CLIMBABLE peaks: smooth raised-cosine domes summed onto the ground — MUST
@@ -169,13 +184,21 @@ fn total_height(wxz: vec2<f32>) -> f32 {
     // instead of ending in a step the coarse ground grid would stair-step.
     let sea = sea_depth_at(wxz);
     let level = -params.coast_w.w;
-    let t = smoothstep(-6.0, 10.0, sea);
-    // …and then the SWELL rides on top of that level, as real displaced geometry rather
-    // than as a normal (see `sea_swell`). Faded in on the same 0..26 ramp the fragment
-    // shader calls `openness`, so the waterline itself stays flat and the beach does not
-    // develop a heaving edge; the sea only starts to breathe once it is properly open.
-    let open = smoothstep(0.0, 26.0, max(sea, 0.0));
-    let swell = sea_swell(wxz, params.sea_anim.x) * open;
+    // ⚠️ THE RAMP BELONGS ON THE LAND SIDE OF THE WATERLINE, ALL OF IT. This was
+    // `smoothstep(-6, 10)`, which put TEN UNITS OF IT PAST THE SHORE — so the first stretch
+    // of every body of water was still sloping downhill while already being painted as
+    // water, and what you saw was the BANK of the depression tinted blue, running down to a
+    // point. Water read as a pit because it was being drawn as one: we have a single
+    // surface here, so if it ramps, it is the bed, and there is no water surface left.
+    //
+    // Water finds its own level. Past the waterline the surface IS `level`, flat, from the
+    // very first fragment; the blend band is the BEACH, and a beach is land.
+    let t = smoothstep(-14.0, 0.0, sea);
+    // …and the SWELL rides on that flat level as real displaced geometry (see `sea_swell`).
+    // It fades in over the first few units rather than the twenty-six `openness` uses,
+    // because the waves have to reach the SHORE — a flat dead margin around every coast is
+    // the other half of what made this read as a basin instead of a sea.
+    let swell = sea_swell(wxz, params.sea_anim.x) * smoothstep(0.0, 9.0, max(sea, 0.0));
     return params.terrain_amp * (mix(land, level, t) + swell);
 }
 
@@ -328,7 +351,11 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         // How much of a sea this fragment is: shallows keep the tile and the bed, open
         // water becomes surface. Everything below fades in on this, so the shoreline is a
         // gradient rather than a rim where one material stops and another starts.
-        let openness = smoothstep(0.0, 26.0, max(sea, 0.0));
+        // Reaches its depth colour over 14 units rather than 26: with the ramp moved onto
+        // the land side, `sea == 0` is now the actual waterline instead of the top of a
+        // ten-unit underwater slope, so a margin this wide left every coast ringed in bare
+        // pale tile — the "edge and nothing inside it" look.
+        let openness = smoothstep(0.0, 14.0, max(sea, 0.0));
 
         // The tile still underlies it — this is OUR sea, not a generic blue — but it is the
         // BED seen through water now rather than the surface itself, so it darkens with

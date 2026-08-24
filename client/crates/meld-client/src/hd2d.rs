@@ -728,11 +728,50 @@ pub fn sprite_material(tint: Color, tex: Handle<Image>) -> StandardMaterial {
     }
 }
 
+/// How much of a sprite's shading normal points at the SKY. Dominant on purpose: this is
+/// the component a camera orbit cannot touch (billboards yaw only, so local +Y is world
+/// +Y), and it is what keeps a tree the same brightness from every side.
+pub const SPRITE_SKY_BIAS: f32 = 1.0;
+/// How far the impostor fan bows sideways off that sky normal — the surviving half of the
+/// left-to-dark-to-right rounding. Kept well under the sky bias so the bow MODULATES the
+/// shading instead of deciding it.
+pub const SPRITE_BOW: f32 = 0.45;
+
+/// The impostor fan's normal at `ang` across the sprite's width: a lateral bow around
+/// world-up. Shared by every billboard mesh so they cannot drift apart — a bust that
+/// shaded differently from the full sprite beside it would read as a lighting bug.
+fn fan_normal(ang: f32) -> [f32; 3] {
+    let (s_, c_) = (ang.sin() * SPRITE_BOW, ang.cos() * SPRITE_BOW);
+    let inv = 1.0 / (s_ * s_ + SPRITE_SKY_BIAS * SPRITE_SKY_BIAS + c_ * c_).sqrt();
+    [s_ * inv, SPRITE_SKY_BIAS * inv, c_ * inv]
+}
+
 /// A flat sprite quad whose **normals fan outward** across its width like a
 /// vertical half-cylinder (positions stay planar). Under directional light this
 /// shades the sprite left-to-dark-to-right, giving a flat billboard volumetric
 /// form — the cheap HD-2D "impostor" depth trick. `arc_deg` is the total bow
 /// (≈50-70° reads rounded without wrapping too hard).
+///
+/// ⚠️ THE FAN MUST BOW AROUND WORLD-UP, NOT AROUND THE VIEW. These normals used to be
+/// `[sin(ang), 0, cos(ang)]` — purely horizontal, so the fan's MEAN normal pointed
+/// straight at the camera. A billboard yaws to face you every frame, so that mean normal
+/// yaws too: orbit 180 degrees and `dot(N, sun)` runs from about +0.7 to -0.7, and every
+/// tree in the world goes black and comes back as you spin. Don caught it as "the trees
+/// suddenly get cast in shadow when you spin the camera, and they turn bright again when
+/// you spin it back", which is that dot product described exactly.
+///
+/// It was latent from the day the impostor trick landed and only became visible when the
+/// terrain started casting its own shadows and the sun became the dominant light — before
+/// that the scene was ambient-flat and the directional term was too small to notice. A
+/// lighting bug can sit in plain sight for as long as nothing is bright enough to show it.
+///
+/// [`billboard_yaw`] is YAW-ONLY and upright, which is what makes the fix a one-liner:
+/// local +Y is world +Y for every billboard in the game, always, so a normal component
+/// along +Y is the one direction the camera cannot rotate. The fan now leans on that —
+/// `SPRITE_SKY_BIAS` of sky against a `SPRITE_BOW` of lateral — so a sprite is lit chiefly
+/// from above like the ground it stands on, and the bow survives as the left-to-right
+/// gradient it was always for. The rounding is subtler than it was; a sprite that goes
+/// fully dark from one side is not a trade worth making for it.
 pub fn cyl_billboard_mesh(w: f32, h: f32, cols: usize, arc_deg: f32) -> Mesh {
     use bevy::mesh::{Indices, PrimitiveTopology};
     use bevy::asset::RenderAssetUsages;
@@ -747,7 +786,7 @@ pub fn cyl_billboard_mesh(w: f32, h: f32, cols: usize, arc_deg: f32) -> Mesh {
         let t = i as f32 / cols as f32; // 0..1 across the width
         let x = (t - 0.5) * w;
         let ang = (t - 0.5) * arc; // fan the normal from -arc/2 .. +arc/2
-        let n = [ang.sin(), 0.0, ang.cos()];
+        let n = fan_normal(ang);
         positions.push([x, h * 0.5, 0.0]);
         positions.push([x, -h * 0.5, 0.0]);
         normals.push(n);
@@ -795,7 +834,7 @@ pub fn bust_billboard_mesh(w: f32, h: f32, cols: usize, arc_deg: f32, crop: f32)
         let t = i as f32 / cols as f32;
         let x = (t - 0.5) * w;
         let ang = (t - 0.5) * arc;
-        let n = [ang.sin(), 0.0, ang.cos()];
+        let n = fan_normal(ang);
         positions.push([x, h * 0.5, 0.0]); // top (head)
         positions.push([x, h * 0.5 - crop * h, 0.0]); // cropped bottom
         normals.push(n);

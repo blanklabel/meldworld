@@ -179,6 +179,36 @@ pub fn is_ocean(x: f32, z: f32, arc_half_rad: f32) -> bool {
     w <= 0.0 || z.abs() > w
 }
 
+/// **How far past the shoreline `(x, z)` is, in world units** — negative on land, positive
+/// at sea, zero exactly on the waterline.
+///
+/// [`is_ocean`] answers a yes/no, which is all movement needs. The RENDERER needs the
+/// magnitude: the beach ramp, the depth colour and the swell all smoothstep over this, and
+/// a predicate that only knows "land" cannot tell them how much beach to make. The ground
+/// shader mirrors this function, and it used to mirror a version that returned a flat
+/// `-1000` for everything inside the fan — so the field jumped from `-1000` to about `+26`
+/// across the fan's edge, every smoothstep over it collapsed to a step, and the coast there
+/// rendered as a vertical wall of water with no beach possible in between.
+///
+/// Land is three shapes, so the sea is however far you are from the nearest of them:
+/// the FAN (its edge is a ray, so the distance past it is an ARC LENGTH — a fixed angular
+/// margin would be metres at the hub and kilometres at the frontier), the SPIT across its
+/// width, and the NECK that closes the gap near the hub.
+///
+/// Its SIGN is `is_ocean` exactly — held by `the_depth_field_agrees_with_the_predicate`,
+/// because the thing you can see and the thing you collide with must be one shoreline.
+pub fn sea_depth(x: f32, z: f32, arc_half_rad: f32) -> f32 {
+    if arc_half_rad <= 0.0 {
+        return -1000.0; // corridor mode: no gap, no sea
+    }
+    let d = x.hypot(z);
+    let theta = z.atan2(x).abs();
+    let past_fan = (theta - arc_half_rad) * d;
+    let past_spit = z.abs() - peninsula_half_width(d, arc_half_rad);
+    let past_neck = d - NECK_REACH;
+    past_fan.min(past_spit).min(past_neck)
+}
+
 /// Is `(x, z)` walkable ground as far as the *coast* is concerned? The inverse of
 /// [`is_ocean`], named for the call sites that read as "can I stand here".
 pub fn is_land(x: f32, z: f32, arc_half_rad: f32) -> bool {
@@ -192,6 +222,39 @@ mod tests {
     /// The arc the world actually ships with, for the geometry tests below. Balance owns
     /// the real value; this only has to be the same *kind* of world.
     const ARC_HALF: f32 = 150.0_f32 * std::f32::consts::PI / 180.0; // 300° fan
+
+    /// The signed depth field and the boolean predicate are ONE shoreline.
+    ///
+    /// They are consulted by different halves of the game — the server collides against
+    /// `is_ocean`, the ground shader ramps and colours over `sea_depth` — and this repo's
+    /// standing failure is one rule living in two places. A disagreement here is water you
+    /// can walk on, or a beach that renders over ground the server calls sea.
+    #[test]
+    fn the_depth_field_agrees_with_the_predicate() {
+        let mut checked = 0u32;
+        for xi in -60..=60 {
+            for zi in -60..=60 {
+                let (x, z) = (xi as f32 * 7.3, zi as f32 * 7.3);
+                if x.hypot(z) < 1.0 {
+                    continue; // the origin has no angle
+                }
+                let depth = sea_depth(x, z, ARC_HALF);
+                let ocean = is_ocean(x, z, ARC_HALF);
+                // Exactly on the waterline either answer is defensible; everywhere else the
+                // sign is the predicate.
+                if depth.abs() > 1e-3 {
+                    assert_eq!(
+                        depth > 0.0,
+                        ocean,
+                        "({x}, {z}): sea_depth says {depth} but is_ocean says {ocean} — the \
+                         shoreline the player SEES and the one they COLLIDE with have drifted"
+                    );
+                    checked += 1;
+                }
+            }
+        }
+        assert!(checked > 10_000, "the sweep covered almost nothing ({checked} points)");
+    }
 
     #[test]
     fn the_fan_is_all_land() {
