@@ -21,7 +21,7 @@
 }
 // The wave field lives in one place — see `water_wave.wgsl`. The sea, the maze's pools and
 // Last City's water all read the same crests.
-#import meld::water_wave::{wave_height, water_normal}
+#import meld::water_wave::{wave_height, water_normal, sea_swell}
 
 // Continuous overworld terrain height — MUST match `world_render::terrain_height` in
 // Rust exactly (that places entities/camera; this displaces the ground vertices).
@@ -170,7 +170,13 @@ fn total_height(wxz: vec2<f32>) -> f32 {
     let sea = sea_depth_at(wxz);
     let level = -params.coast_w.w;
     let t = smoothstep(-6.0, 10.0, sea);
-    return params.terrain_amp * mix(land, level, t);
+    // …and then the SWELL rides on top of that level, as real displaced geometry rather
+    // than as a normal (see `sea_swell`). Faded in on the same 0..26 ramp the fragment
+    // shader calls `openness`, so the waterline itself stays flat and the beach does not
+    // develop a heaving edge; the sea only starts to breathe once it is properly open.
+    let open = smoothstep(0.0, 26.0, max(sea, 0.0));
+    let swell = sea_swell(wxz, params.sea_anim.x) * open;
+    return params.terrain_amp * (mix(land, level, t) + swell);
 }
 
 // Surface normal by finite differences over `total_height`, so both the rolling base and
@@ -383,7 +389,14 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         // Hand the wave normal to the PBR pass so the SUN does the specular. A hand-rolled
         // glint would not track the day/night cycle; this one is lit by the same light
         // everything else is, and goes out at dusk because the sun does.
-        pbr_input.N = normalize(mix(pbr_input.N, n_water, openness));
+        // ⚠️ THE CHOP PERTURBS THE SWELL, IT DOES NOT REPLACE IT. This used to `mix` the
+        // geometric normal toward the ripple normal, which at full openness threw the
+        // surface normal away entirely — harmless while the sea was a flat plane (the
+        // normal it discarded was straight up), and destructive the moment the swell became
+        // real geometry: every wave the vertex stage had just displaced would have shaded
+        // as though it were still flat, which is the exact "texture on a sheet" look the
+        // displacement is there to end. Adding the ripple's lateral slope keeps both.
+        pbr_input.N = normalize(pbr_input.N + vec3<f32>(n_water.x, 0.0, n_water.z) * openness);
         pbr_input.world_normal = pbr_input.N;
         pbr_input.material.perceptual_roughness =
             mix(pbr_input.material.perceptual_roughness, 0.06, openness);
