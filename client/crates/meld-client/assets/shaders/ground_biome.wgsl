@@ -210,6 +210,11 @@ fn biome_color(bi: i32, uv: vec2<f32>) -> vec4<f32> {
     if (bi == 3) {
         return textureSample(t_tundra, samp, uv) * vec4<f32>(0.72, 0.86, 1.15, 1.0);
     }
+    // The mire's sour green, left as AUTHORED. This was briefly raised to (1.0, 1.35, 0.85)
+    // to compensate for the swamp reading as permanent dusk — but the dusk was the GROUND
+    // SHADOWING ITSELF (see `NotShadowCaster` on `WorldGround`), not the tint. Lifting a
+    // tint to pay for a lighting bug is how a biome ends up looking like a sunny meadow the
+    // moment the real bug is fixed.
     return textureSample(t_mire, samp, uv) * vec4<f32>(0.75, 0.95, 0.7, 1.0);
 }
 

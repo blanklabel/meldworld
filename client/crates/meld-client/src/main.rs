@@ -126,6 +126,9 @@ fn main() {
         // Standing water that is a mesh: the maze's pools and Last City's sea. The open
         // ocean is painted by the ground shader instead — out there the depth is analytic.
         .add_plugins(MaterialPlugin::<world_render::WaterMat>::default())
+        // The sky: a camera-anchored gradient dome with a sun in it, replacing a single
+        // flat `ClearColor` that nothing could meaningfully reflect.
+        .add_plugins(MaterialPlugin::<world_render::SkyDome>::default())
         // The corner map's ground. A map is a GRID, and it was being drawn as one
         // absolutely-positioned UI node per cell, respawned every frame.
         .add_plugins(bevy_ecs_tilemap::TilemapPlugin)
@@ -226,6 +229,7 @@ fn main() {
                 demo_driver,
                 hd2d_remote,
                 hd2d::no_billboard_shadows,
+                world_render::anchor_sky_dome,
                 drift_clouds,
                 tile_ground_detail,
                 follow_world_ground,

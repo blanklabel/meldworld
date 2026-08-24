@@ -50,11 +50,17 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     }
     let openness = smoothstep(0.04, 0.55, depth);
 
-    // The tile underneath is the BED seen through water, so it darkens as the water
-    // deepens and the surface terms sit on top of it.
-    var col = pbr_input.material.base_color.rgb;
-    col = col * mix(vec3<f32>(1.0), water.deep.rgb, openness);
-    col = mix(col, mix(water.shallow.rgb, water.deep.rgb, openness), openness * 0.55);
+    // ⚠️ THE WATER'S COLOUR IS A COLOUR, NOT A MULTIPLIER. The first version multiplied the
+    // bed tile BY `deep`, and since every channel of a deep colour is below 1 that drove
+    // deep water toward black — a bog tile at (85, 82, 51) times (0.10, 0.20, 0.09) lands on
+    // (9, 16, 5), which is what turned an entire swamp into a void.
+    //
+    // Water occludes its bed rather than tinting it: shallows show the ground through them,
+    // depth replaces it with the body's own colour. So this is a MIX between the two, and
+    // the deep colour is what you see when the bed is no longer visible at all.
+    let bed = pbr_input.material.base_color.rgb;
+    let body = mix(water.shallow.rgb, water.deep.rgb, openness);
+    var col = mix(bed, body, openness * 0.85);
 
     // The surface: the same crests the ocean has, steeper where the water is open.
     let n_water = water_normal(wxz * scale, t, mix(0.10, 1.0, openness) * steep);

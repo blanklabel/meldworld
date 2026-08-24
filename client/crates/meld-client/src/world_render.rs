@@ -5,6 +5,7 @@
 use std::collections::HashMap;
 
 use bevy::gltf::GltfAssetLabel;
+use bevy::light::NotShadowCaster;
 use bevy::pbr::{ExtendedMaterial, MaterialExtension};
 use bevy::render::render_resource::AsBindGroup;
 use bevy::shader::ShaderRef;
@@ -172,6 +173,65 @@ impl MaterialExtension for GroundBiome {
     /// Custom vertex shader displaces the ground into rolling hills (`terrain_height`).
     fn vertex_shader() -> ShaderRef {
         "shaders/ground_biome.wgsl".into()
+    }
+}
+
+/// The SKY: a camera-anchored gradient dome with a sun in it.
+///
+/// See `sky_dome.wgsl`. The sky used to be a single `ClearColor`, which is fine behind a
+/// diorama and wrong for anything that reflects it — water most of all.
+#[derive(Asset, AsBindGroup, Reflect, Debug, Clone)]
+pub(crate) struct SkyDome {
+    #[uniform(100)]
+    pub(crate) horizon: Vec4,
+    #[uniform(100)]
+    pub(crate) zenith: Vec4,
+    /// `xyz` direction TO the sun, `w` the daylight factor.
+    #[uniform(100)]
+    pub(crate) sun_dir: Vec4,
+    /// `rgb` the sun's colour, `a` how far its glow bleeds.
+    #[uniform(100)]
+    pub(crate) sun_col: Vec4,
+}
+
+impl Material for SkyDome {
+    fn fragment_shader() -> ShaderRef {
+        "shaders/sky_dome.wgsl".into()
+    }
+    /// A backdrop, not geometry: never occludes, never lit, never shadows.
+    fn alpha_mode(&self) -> AlphaMode {
+        AlphaMode::Opaque
+    }
+    /// ⚠️ CULLING OFF, or the dome does not draw AT ALL. We stand INSIDE this sphere, so
+    /// every face we look at is a back face — and a custom `Material` defaults to back-face
+    /// culling, unlike `StandardMaterial` where `cull_mode` is a field you can see. The
+    /// first version compiled, booted, threw no errors and rendered absolutely nothing;
+    /// only a garish diagnostic colour proved the geometry was being thrown away rather
+    /// than the gradient being too subtle.
+    fn specialize(
+        _pipeline: &bevy::pbr::MaterialPipeline,
+        descriptor: &mut bevy::render::render_resource::RenderPipelineDescriptor,
+        _layout: &bevy::mesh::MeshVertexBufferLayoutRef,
+        _key: bevy::pbr::MaterialPipelineKey<Self>,
+    ) -> Result<(), bevy::render::render_resource::SpecializedMeshPipelineError> {
+        descriptor.primitive.cull_mode = None;
+        Ok(())
+    }
+}
+
+/// Marks the sky dome so [`anchor_sky_dome`] can keep it centred on the camera.
+#[derive(Component)]
+pub(crate) struct SkyDomeMesh;
+
+/// Keep the dome centred on the camera. A sky that moves relative to the viewer reads as a
+/// ball you could walk to; one that never moves reads as infinitely far away.
+pub(crate) fn anchor_sky_dome(
+    cam_q: Query<&Transform, With<Camera3d>>,
+    mut q: Query<&mut Transform, (With<SkyDomeMesh>, Without<Camera3d>)>,
+) {
+    let Ok(cam) = cam_q.single() else { return };
+    for mut tf in &mut q {
+        tf.translation = cam.translation;
     }
 }
 
@@ -343,6 +403,7 @@ pub(crate) fn setup(
     mut mats: ResMut<Assets<StandardMaterial>>,
     mut ground_mats: ResMut<Assets<GroundMat>>,
     mut water_mats: ResMut<Assets<WaterMat>>,
+    mut sky_mats: ResMut<Assets<SkyDome>>,
     mut images: ResMut<Assets<Image>>,
     assets: Res<AssetServer>,
     look: Res<hd2d::Look>,
@@ -408,6 +469,19 @@ pub(crate) fn setup(
     });
     commands.spawn((
         WorldGround,
+        // ⚠️ THE GROUND MUST NOT CAST. It has a CUSTOM VERTEX SHADER that displaces the
+        // plane into rolling hills — and `MaterialExtension` takes its shadow/prepass vertex
+        // stage from a SEPARATE hook we do not override, so the shadow map rasterizes this
+        // plane FLAT while the visible ground is displaced. The flat caster then shadows the
+        // real hills wherever they sit below it, which put most of the world in shade all
+        // day: raising the sun 9,200 -> 21,000 lux moved the ground 33.3 -> 34.4 because the
+        // light was never the problem, the shadow mask was.
+        //
+        // A ground plane has nothing to cast onto but itself, so not casting costs nothing —
+        // props, characters and terrain props still cast onto it. Fixing it the other way
+        // (a displacing shadow vertex stage) is the same work `ground_biome.wgsl` needs
+        // before any depth prepass can be enabled out here.
+        NotShadowCaster,
         // Square (was 2000×600, a corridor) so the WG-4 radial fan has ground in
         // every direction the player roams. SUBDIVIDED into a fine grid so the ground
         // shader's vertex displacement (`terrain_height`) reads as smooth rolling hills
@@ -727,8 +801,13 @@ pub(crate) fn setup(
                 "ground/water_bog.png",
                 // A bog barely transmits light, and its shallows are only a little less
                 // sour than its depths — so there is no beach-blue gradient in a swamp.
-                Vec4::new(0.10, 0.20, 0.09, 1.0),
-                Vec4::new(0.26, 0.38, 0.17, 1.0),
+                // ⚠️ BOG WATER IS MOST OF THE MIRE'S SURFACE, so these two are what that
+                // biome's brightness actually IS — not the ground tile under them. The
+                // mire's fill kind is `bog_pool` at a 7.5x multiplier ("MOSTLY water: the
+                // swamp is a flooded maze, land is the trail"), so lifting the terrain tint
+                // barely moved it and lifting these moved it a lot.
+                Vec4::new(0.23, 0.37, 0.19, 1.0),
+                Vec4::new(0.40, 0.54, 0.27, 1.0),
                 Vec4::new(0.44, 0.52, 0.28, 0.30),
             ),
             (
@@ -749,7 +828,18 @@ pub(crate) fn setup(
                         base_color_texture: Some(load_tiled(&assets, tex)),
                         perceptual_roughness: 0.12,
                         metallic: 0.1,
-                        alpha_mode: AlphaMode::Blend,
+                        // ⚠️ OPAQUE, NOT BLEND, AND IT IS WORTH 3.5x THE MIRE'S BRIGHTNESS.
+                        // The mire is "MOSTLY water: the swamp is a flooded maze" — 740
+                        // pools inside the interest radius — and blended water multiplies
+                        // whatever is behind it, so hundreds of overlapping surfaces
+                        // compounded into a void. Measured at pinned noon in fair weather:
+                        // mean luminance 18.5 blended against 64.7 opaque, in a biome where
+                        // the desert reads 95.
+                        //
+                        // It is also the correct model, not just the bright one: this shader
+                        // composites the bed into the water itself, so alpha-blending the
+                        // result over the bed AGAIN counts it twice.
+                        alpha_mode: AlphaMode::Opaque,
                         ..default()
                     },
                     extension: WaterSurface {
@@ -847,12 +937,42 @@ pub(crate) fn setup(
         let size = 14.0 + rnd() * 12.0;
         commands.spawn((
             Backdrop { off },
+            // ⚠️ NEVER A SHADOW CASTER. These are horizon SILHOUETTES — rock models scaled
+            // 14-26x sitting 320-460 units out — and they are anchored to the CAMERA, so
+            // they follow the player. Left casting, eight objects that size threw shade
+            // across the whole play area and the shade travelled with you: the world read
+            // as permanent overcast in every biome, worst in the mire whose ground is
+            // already the second-darkest in the set. Several bugs got misdiagnosed off
+            // captures that were really just standing in this.
+            //
+            // `no_billboard_shadows` does not catch them: that only marks `Billboard`
+            // entities, and these are glTF meshes. Anything spawned huge and far out needs
+            // this by hand.
+            NotShadowCaster,
             WorldAssetRoot(backdrop[i % backdrop.len()].clone()),
             Transform::from_translation(Vec3::new(off.x, -0.5, off.y))
                 .with_scale(Vec3::splat(size))
                 .with_rotation(Quat::from_rotation_y(rnd() * std::f32::consts::TAU)),
         ));
     }
+
+    // THE SKY DOME: a big inside-out sphere centred on the camera, carrying the gradient +
+    // sun. Radius sits inside the far plane but outside everything else the world draws, and
+    // `cull_mode: Front` so we see its inside. `NotShadowCaster` because a sky that shadows
+    // the world is the same class of bug as the ground shadowing itself.
+    let sky_dome_mat = sky_mats.add(SkyDome {
+        horizon: Vec4::new(0.62, 0.76, 0.92, 1.0),
+        zenith: Vec4::new(0.24, 0.46, 0.82, 1.0),
+        sun_dir: Vec4::new(0.0, 1.0, 0.0, 1.0),
+        sun_col: Vec4::new(1.0, 0.96, 0.86, 0.6),
+    });
+    commands.spawn((
+        SkyDomeMesh,
+        NotShadowCaster,
+        Mesh3d(meshes.add(Sphere::new(900.0).mesh().ico(4).unwrap())),
+        MeshMaterial3d(sky_dome_mat),
+        Transform::default(),
+    ));
 
     // Stars — tiny emissive points on a camera-anchored dome, shown only at night.
     let star_mesh = meshes.add(Sphere::new(0.12));
@@ -2062,6 +2182,7 @@ pub(crate) fn apply_sky(
     mut sun_q: Query<(&mut Transform, &mut DirectionalLight)>,
     mut fog_q: Query<&mut bevy::pbr::DistanceFog, With<Camera3d>>,
     mut stars: Query<&mut Visibility, With<Star>>,
+    mut sky_doms: ResMut<Assets<SkyDome>>,
 ) {
     use std::f32::consts::TAU;
     let Ok(mut ambient) = ambient_q.single_mut() else { return };
@@ -2118,7 +2239,7 @@ pub(crate) fn apply_sky(
         let moon = Color::srgb(0.55, 0.65, 0.95);
         light.color = mix_col(moon, mix_col(warm, noon, day), day);
         // Full sun by day; a dim cool moon fill at night.
-        light.illuminance = (day * 9200.0 + (1.0 - day) * 550.0) * (1.0 - rain * 0.55);
+        light.illuminance = (day * 21000.0 + (1.0 - day) * 550.0) * (1.0 - rain * 0.55);
     }
 
     // Moonlit-blue at night (not black), warm-white by day.
@@ -2128,6 +2249,46 @@ pub(crate) fn apply_sky(
     if ash > 0.0 {
         ambient.color = mix_col(ambient.color, Color::srgb(0.9, 0.45, 0.32), ash * 0.6);
         ambient.brightness *= 1.0 - ash * 0.4;
+    }
+
+    // THE SKY DOME, from the same numbers the clear colour comes from — one source for
+    // "what colour is the sky", so the dome, the fog and the water's reflection cannot
+    // drift apart the way three hand-tuned palettes would.
+    for (_, m) in sky_doms.iter_mut() {
+        // Horizon keeps the sky colour we already compute; the zenith goes deeper. Real
+        // skies are darkest overhead, and it is the CONTRAST between the two that makes a
+        // gradient read as air rather than as a wash.
+        m.horizon = Vec4::new(
+            sky_col.to_linear().red,
+            sky_col.to_linear().green,
+            sky_col.to_linear().blue,
+            1.0,
+        );
+        let deep = mix_col(sky_col, Color::srgb(0.10, 0.22, 0.52), 0.55 * day);
+        m.zenith = Vec4::new(
+            deep.to_linear().red,
+            deep.to_linear().green,
+            deep.to_linear().blue,
+            1.0,
+        );
+        // The sun's direction, from the same pitch/yaw the light uses — so the glow in the
+        // sky sits where the shadows say it should.
+        let pitch = (sun_h.abs() * 66.0).max(12.0).to_radians();
+        let yaw = (40.0 + (sky.t - 0.5) * 55.0).to_radians();
+        let dir = Vec3::new(
+            yaw.sin() * pitch.cos(),
+            pitch.sin() * sun_h.signum().max(0.0).max(0.08),
+            yaw.cos() * pitch.cos(),
+        )
+        .normalize();
+        m.sun_dir = Vec4::new(dir.x, dir.y, dir.z, day);
+        let sc = mix_col(Color::srgb(1.0, 0.62, 0.40), Color::srgb(1.0, 0.97, 0.90), day);
+        m.sun_col = Vec4::new(
+            sc.to_linear().red,
+            sc.to_linear().green,
+            sc.to_linear().blue,
+            0.35 + dusk * 0.45,
+        );
     }
 
     let star_vis = if day < 0.22 && rain < 0.45 {
