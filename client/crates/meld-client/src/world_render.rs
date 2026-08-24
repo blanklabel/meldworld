@@ -175,6 +175,33 @@ impl MaterialExtension for GroundBiome {
     }
 }
 
+/// Standing water that is a MESH: the maze's pools and Last City's sea.
+///
+/// See `water_surface.wgsl`. Depth comes from the SHAPE (a basin is deepest in the middle)
+/// rather than from a depth buffer, because our water is centimetres deep and every
+/// measured approach resolves it to nothing.
+#[derive(Asset, AsBindGroup, Reflect, Debug, Clone)]
+pub(crate) struct WaterSurface {
+    /// `(seconds, wave_scale, steepness, mode)`; mode 0 = basin, 1 = open plane.
+    #[uniform(100)]
+    pub(crate) params: Vec4,
+    #[uniform(100)]
+    pub(crate) deep: Vec4,
+    #[uniform(100)]
+    pub(crate) shallow: Vec4,
+    #[uniform(100)]
+    pub(crate) edge: Vec4,
+}
+
+impl MaterialExtension for WaterSurface {
+    fn fragment_shader() -> ShaderRef {
+        "shaders/water_surface.wgsl".into()
+    }
+}
+
+/// Water-surface material type (StandardMaterial lighting + the wave extension).
+pub(crate) type WaterMat = ExtendedMaterial<StandardMaterial, WaterSurface>;
+
 /// The blended-biome ground material type (StandardMaterial lighting + our extension).
 pub(crate) type GroundMat = ExtendedMaterial<StandardMaterial, GroundBiome>;
 
@@ -249,7 +276,7 @@ pub(crate) struct WorldAssets {
     /// Per-water-kind materials (`pond`/`bog_pool`/`frozen_pond`), each wearing a
     /// bespoke pixel-art water tile and drifting via [`animate_water`]. Keyed by the
     /// `SnapshotEntity` obstacle name; fall back to `pond` via [`Self::water_mat`].
-    pub(crate) water_mats: HashMap<String, Handle<StandardMaterial>>,
+    pub(crate) water_mats: HashMap<String, Handle<WaterMat>>,
     pub(crate) ground_tex: Vec<Handle<Image>>, // per-biome textures; also dress terrace tops/cliffs
 }
 
@@ -259,7 +286,7 @@ impl WorldAssets {
     /// its art does).
     /// The water material for an obstacle kind (`pond`/`bog_pool`/`frozen_pond`),
     /// falling back to the clear `pond` water for any unmapped kind.
-    pub(crate) fn water_mat(&self, kind: &str) -> Handle<StandardMaterial> {
+    pub(crate) fn water_mat(&self, kind: &str) -> Handle<WaterMat> {
         self.water_mats
             .get(kind)
             .or_else(|| self.water_mats.get("pond"))
@@ -301,16 +328,28 @@ pub(crate) fn load_tiled(assets: &AssetServer, path: &str) -> Handle<Image> {
 
 /// Build the HD-2D world: camera + post stack, sun, the lit ground, and the shared
 /// asset handles. Replaces the old flat Camera2d overworld (CANON D16 all-Bevy).
+/// Keeps `water_wave.wgsl` alive.
+///
+/// A shader library only registers its `#define_import_path` once the asset is LOADED, and
+/// nothing else references this file — no material names it as a `ShaderRef`, because it is
+/// imported rather than run. Without a handle held somewhere it is never loaded, and every
+/// pipeline that imports it fails to build at run time while compiling perfectly.
+#[derive(Resource)]
+pub(crate) struct WaveLib(#[allow(dead_code)] Handle<Shader>);
+
 pub(crate) fn setup(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut mats: ResMut<Assets<StandardMaterial>>,
     mut ground_mats: ResMut<Assets<GroundMat>>,
+    mut water_mats: ResMut<Assets<WaterMat>>,
     mut images: ResMut<Assets<Image>>,
     assets: Res<AssetServer>,
     look: Res<hd2d::Look>,
 ) {
     hd2d::seed_look_file(&look);
+    // Load the shared wave library and hold it (see `WaveLib`).
+    commands.insert_resource(WaveLib(assets.load("shaders/water_wave.wgsl")));
 
     // Camera parked at a nice diorama angle for the menu screens; `hd2d_follow`
     // re-aims it at the player once in the overworld.
@@ -671,36 +710,55 @@ pub(crate) fn setup(
             })
         })
         .collect(),
-        // Bespoke pixel-art water tiles (PixelLab), one per water kind, tiled + drifted
-        // by `animate_water`.
-        //
-        // ⚠️ These are POOLS, and they are deliberately still plain `StandardMaterial`s.
-        // The open sea is shaded in `ground_biome.wgsl` instead, because that path has real
-        // DEPTH to work with (`sea_depth_at`, analytic, tens of world units) where a pool
-        // basin has half a unit and the city's sea plane has five centimetres. Anything
-        // that shades water by measuring surface-to-bed distance — Beer's law over a depth
-        // buffer, which is what every water crate does — has nothing to measure here and
-        // resolves to "no water". That was tried, at length; the shader is what worked.
-        //
-        // Giving the pools the same treatment means giving them an analytic depth too, and
-        // that is its own change.
+        // Bespoke pixel-art water tiles (PixelLab), one per water kind — the BED, seen
+        // through the wave surface `water_surface.wgsl` puts on top of them. Each kind
+        // carries its own water: a bog is opaque and sour, a frozen pond is bright and
+        // hard-rimmed, a clear pond is somewhere between.
         water_mats: [
-            ("pond", "ground/water_clear.png", LinearRgba::rgb(0.02, 0.06, 0.1)),
-            ("bog_pool", "ground/water_bog.png", LinearRgba::rgb(0.03, 0.06, 0.03)),
-            ("frozen_pond", "ground/water_ice.png", LinearRgba::rgb(0.05, 0.08, 0.12)),
+            (
+                "pond",
+                "ground/water_clear.png",
+                Vec4::new(0.10, 0.34, 0.48, 1.0),  // deep
+                Vec4::new(0.42, 0.72, 0.76, 1.0),  // shallow
+                Vec4::new(0.82, 0.92, 0.98, 0.45), // rim (a = how strongly it reads)
+            ),
+            (
+                "bog_pool",
+                "ground/water_bog.png",
+                // A bog barely transmits light, and its shallows are only a little less
+                // sour than its depths — so there is no beach-blue gradient in a swamp.
+                Vec4::new(0.10, 0.20, 0.09, 1.0),
+                Vec4::new(0.26, 0.38, 0.17, 1.0),
+                Vec4::new(0.44, 0.52, 0.28, 0.30),
+            ),
+            (
+                "frozen_pond",
+                "ground/water_ice.png",
+                Vec4::new(0.28, 0.48, 0.60, 1.0),
+                Vec4::new(0.74, 0.89, 0.95, 1.0),
+                Vec4::new(0.97, 0.99, 1.0, 0.60),
+            ),
         ]
         .iter()
-        .map(|(kind, tex, emissive)| {
+        .map(|(kind, tex, deep, shallow, edge)| {
             (
                 kind.to_string(),
-                mats.add(StandardMaterial {
-                    base_color: Color::srgb(0.9, 0.94, 1.0),
-                    base_color_texture: Some(load_tiled(&assets, tex)),
-                    emissive: *emissive, // faint sky sheen
-                    perceptual_roughness: 0.12, // reflective
-                    metallic: 0.1,
-                    alpha_mode: AlphaMode::Blend,
-                    ..default()
+                water_mats.add(WaterMat {
+                    base: StandardMaterial {
+                        base_color: Color::srgb(0.9, 0.94, 1.0),
+                        base_color_texture: Some(load_tiled(&assets, tex)),
+                        perceptual_roughness: 0.12,
+                        metallic: 0.1,
+                        alpha_mode: AlphaMode::Blend,
+                        ..default()
+                    },
+                    extension: WaterSurface {
+                        // (time, wave_scale, steepness, mode 0 = basin)
+                        params: Vec4::new(0.0, 0.55, 0.7, 0.0),
+                        deep: *deep,
+                        shallow: *shallow,
+                        edge: *edge,
+                    },
                 }),
             )
         })
@@ -1239,10 +1297,54 @@ pub(crate) fn drift_clouds(
 /// spot always looks identical and props never appear to slide or flicker — they only
 /// re-derive (at the grid's edge, off-screen) as new cells scroll in.
 #[allow(clippy::type_complexity)]
+/// Is this world point OPEN SEA, and therefore no place for scenery?
+///
+/// **Both scatter systems place by world position and neither asked.** So mushrooms, grass
+/// tufts and bushes were strewn across the ocean — a whole meadow floating on open water,
+/// which is the first thing anyone notices about the coast.
+///
+/// One predicate, both call sites ([`tile_ground_detail`] and
+/// [`crate::ambient::update_ambient_scatter`]), because two copies of "where is the water"
+/// is the exact drift that has bitten this repo repeatedly — the wall-collision line that
+/// went into one mover and not the other, the maze density written twice, and `is_water_kind`
+/// living in three places at once.
+///
+/// It asks [`meld_proto::coast`], the same shoreline the ground shader paints and the server
+/// collides against, so scenery stops exactly where the water starts rather than at some
+/// second hand-placed line.
+///
+/// Only meaningful on the Overworld: Last City is a separate scene in its own coordinates
+/// (its `coast` uniform is zeroed for exactly that reason), and a zero arc means corridor
+/// mode, which has no sea at all.
+pub(crate) fn on_open_water(frame: &crate::WorldFrame, screen: &Screen, wx: f32, wz: f32) -> bool {
+    match screen {
+        // The maze: ask the shoreline itself.
+        Screen::Overworld => {
+            frame.have
+                && meld_proto::coast::is_ocean(
+                    wx,
+                    wz,
+                    frame.radial_arc_degrees.to_radians() * 0.5,
+                )
+        }
+        // Last City is a SEPARATE SCENE in its own coordinates — its `coast` uniform is
+        // deliberately zeroed, so `is_ocean` cannot answer here. Its sea is authored from
+        // the same constants instead (`city_scene`): water on both flanks past the shore,
+        // and ahead past the tip. Reading the constants rather than repeating the numbers
+        // is what keeps this from becoming a third hand-placed shoreline.
+        Screen::City => {
+            use meld_proto::coast::{CITY_SHORE_HALF_WIDTH as SHORE, CITY_TIP_REACH as TIP};
+            wx.abs() > SHORE || wz > TIP
+        }
+        _ => false,
+    }
+}
+
 pub(crate) fn tile_ground_detail(
     cam_q: Query<&Transform, With<Camera3d>>,
     kit: Option<Res<DetailKit>>,
     state: Res<State<Screen>>,
+    frame: Res<crate::WorldFrame>,
     mut q: Query<
         (&mut GroundDetail, &mut Transform, &mut Visibility, &mut WorldAssetRoot),
         Without<Camera3d>,
@@ -1278,6 +1380,11 @@ pub(crate) fn tile_ground_detail(
         let yaw = ((h >> 24) & 0xff) as f32 / 255.0 * std::f32::consts::TAU;
         let sc = base * (0.7 + ((h >> 48) & 0xff) as f32 / 255.0 * 0.7);
         let (wx, wz) = ((cell.x as f32 + jx) * DETAIL_CELL, (cell.y as f32 + jz) * DETAIL_CELL);
+        // Nothing grows on the sea.
+        if on_open_water(&frame, state.get(), wx, wz) {
+            *vis = Visibility::Hidden;
+            continue;
+        }
         tf.translation = Vec3::new(wx, amp * terrain_height(wx, wz), wz);
         tf.rotation = Quat::from_rotation_y(yaw);
         tf.scale = Vec3::splat(sc);
@@ -2136,23 +2243,27 @@ pub(crate) fn drive_rain(
     }
 }
 
-/// Scroll the shared water ripple so pools shimmer + drift (all water at once).
+/// Drive EVERY water surface's clock: the maze's pools and Last City's sea alike.
+///
+/// The bed tile still drifts (it is what made a still pond read as water before there were
+/// waves at all) and the wave field now advances with it. Wrapped rather than raw elapsed
+/// seconds, for the same reason the ocean's clock is: f32 loses sub-frame precision in the
+/// thousands, so a session left running overnight would see the swell quantise and stop.
 pub(crate) fn animate_water(
     time: Res<Time>,
-    wa: Option<Res<WorldAssets>>,
-    mut mats: ResMut<Assets<StandardMaterial>>,
+    mut mats: ResMut<Assets<WaterMat>>,
 ) {
-    let Some(wa) = wa else { return };
-    let t = time.elapsed_secs();
+    let t = time.elapsed_secs() % 3600.0;
     let xf = bevy::math::Affine2::from_scale_angle_translation(
         Vec2::splat(2.2),
         0.0,
         Vec2::new(t * 0.035, t * 0.055),
     );
-    for handle in wa.water_mats.values() {
-        if let Some(mut m) = mats.get_mut(handle) {
-            m.uv_transform = xf;
-        }
+    // Every water material, not just the ones `WorldAssets` knows about — Last City builds
+    // its own sea, and a per-kind list is a list the city gets left off.
+    for (_, m) in mats.iter_mut() {
+        m.base.uv_transform = xf;
+        m.extension.params.x = t;
     }
 }
 

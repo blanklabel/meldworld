@@ -100,6 +100,8 @@ pub(crate) fn update_ambient_scatter(
     session: Res<Session>,
     terrain: Res<Terrain>,
     grass: Res<AmbientGrass>,
+    frame: Res<crate::WorldFrame>,
+    state: Res<State<crate::Screen>>,
     mut mats: ResMut<Assets<StandardMaterial>>,
     players: Query<(&WorldEntity, &Transform), Without<GrassBlade>>,
     mut blades: Query<(&mut GrassBlade, &mut Transform, &mut Visibility)>,
@@ -125,7 +127,12 @@ pub(crate) fn update_ambient_scatter(
         let h = cell_hash(cell.0, cell.1, 1);
         let wx = cell.0 as f32 * SPACING + ((h & 0xFF) as f32 / 255.0 - 0.5) * SPACING * 0.9;
         let wz = cell.1 as f32 * SPACING + (((h >> 8) & 0xFF) as f32 / 255.0 - 0.5) * SPACING * 0.9;
-        if (h % 100) < 55 || !grassy(&biome_at(&terrain, wx, wz)) {
+        // Grass does not grow on the sea — same predicate the ground detail uses, so the
+        // two kinds of scatter cannot disagree about where the shoreline is.
+        if crate::world_render::on_open_water(&frame, state.get(), wx, wz)
+            || (h % 100) < 55
+            || !grassy(&biome_at(&terrain, wx, wz))
+        {
             *vis = Visibility::Hidden;
             continue;
         }

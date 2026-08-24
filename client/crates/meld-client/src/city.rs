@@ -502,6 +502,7 @@ pub(crate) fn city_scene(
     look: Res<hd2d::Look>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut mats: ResMut<Assets<StandardMaterial>>,
+    mut water_mats: ResMut<Assets<crate::world_render::WaterMat>>,
 ) {
     let Some(wa) = wa else { return };
 
@@ -530,7 +531,30 @@ pub(crate) fn city_scene(
         // how this shipped the first time. Sat just over the grass and under nothing else
         // (the streets stop well inside the shore), it reads as sea meeting a flat bank.
         const SEA_Y: f32 = 0.05;
-        let water = wa.water_mat("pond");
+        // THE SEA GETS ITS OWN MATERIAL, in `mode 1` (open water — deep everywhere), not
+        // the pond's basin. A pool is deepest in its middle and shallows to a rim; an ocean
+        // does neither, and reusing the basin material would put a bright shallow ring
+        // around the middle of the bay.
+        let water = water_mats.add(crate::world_render::WaterMat {
+            base: StandardMaterial {
+                base_color: Color::srgb(0.9, 0.94, 1.0),
+                base_color_texture: Some(crate::world_render::load_tiled(
+                    &assets,
+                    "ground/water_clear.png",
+                )),
+                perceptual_roughness: 0.10,
+                metallic: 0.15,
+                alpha_mode: AlphaMode::Blend,
+                ..default()
+            },
+            extension: crate::world_render::WaterSurface {
+                // (time — driven by `animate_water`, wave_scale, steepness, mode 1 = open)
+                params: Vec4::new(0.0, 0.30, 1.0, 1.0),
+                deep: Vec4::new(0.08, 0.28, 0.44, 1.0),
+                shallow: Vec4::new(0.36, 0.66, 0.74, 1.0),
+                edge: Vec4::new(0.86, 0.94, 1.0, 0.0),
+            },
+        });
         for side in [-1.0_f32, 1.0] {
             commands.spawn((
                 CityScene,

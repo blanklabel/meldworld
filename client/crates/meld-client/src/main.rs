@@ -123,6 +123,9 @@ fn main() {
         .init_state::<Screen>()
         // The biome-blending ground material (see `GroundBiome`).
         .add_plugins(MaterialPlugin::<GroundMat>::default())
+        // Standing water that is a mesh: the maze's pools and Last City's sea. The open
+        // ocean is painted by the ground shader instead — out there the depth is analytic.
+        .add_plugins(MaterialPlugin::<world_render::WaterMat>::default())
         // The corner map's ground. A map is a GRID, and it was being drawn as one
         // absolutely-positioned UI node per cell, respawned every frame.
         .add_plugins(bevy_ecs_tilemap::TilemapPlugin)
