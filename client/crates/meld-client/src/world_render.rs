@@ -2046,7 +2046,18 @@ pub(crate) fn advance_sky(
         1 => (0.7, 0.0),
         2 => (if sky.super_storm { 1.0 } else { 0.65 }, 1.0),
         3 => (0.3, 0.0),
-        _ => (0.0, 0.0), // Fair: calm + dry
+        // ⚠️ FAIR IS A BREEZE, NOT DEAD CALM — AND THIS IS WHY NOTHING EVER SWAYED.
+        //
+        // `Sway` and the grass lean both scale off `sky.wind`, and Fair used to target 0.0.
+        // Fair also runs for 600 seconds against a 16-second gust, 22 of storm and 14 of
+        // clearing — so the world spent 92% OF ITS WALL-CLOCK perfectly motionless, and the
+        // one window where anything moved was under a minute in every eleven. Both the trees
+        // and the grass were working correctly and essentially nobody would ever see it.
+        //
+        // A calm day still moves leaves. 0.15 is a breeze: the canopy stirs, the grass
+        // ripples, and the gust before a storm is still four times stronger, so the weather
+        // keeps its shape.
+        _ => (0.15, 0.0),
     };
     let wr = 0.35 * dt;
     sky.wind += (wind_target - sky.wind).clamp(-wr, wr);

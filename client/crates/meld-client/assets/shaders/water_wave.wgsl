@@ -14,23 +14,63 @@
 // triangles; anything that put the ripples in the VERTICES would give the ocean waves and
 // the pond none.
 
-// Summed directional waves. Each octave is rotated off the last so the crests never line up
-// into a visible grid, which is the tell that gives away cheap procedural water.
+// ⚠️ WATER IS NOT A SUM OF SINES. This was four rotated `sin*cos` octaves, and it read as
+// exactly that: smooth, regular, evenly rounded — a rippled bedsheet rather than a sea. Real
+// water has SHARP crests and BROAD flat troughs, and the waves pile up against each other
+// instead of sliding through one another.
+//
+// Two changes get both, and neither is expensive:
+//
+// 1. `exp(sin(x) - 1.0)` instead of `sin(x)`. Same period, but the exponential squashes the
+//    trough toward zero and keeps the peak, which is the crest shape open water actually has.
+//    It also lands in 0..1 rather than -1..1, so the sum is re-centred at the end.
+//
+// 2. POSITION DRAGGING. Each octave nudges the sample point along its own direction by its
+//    own derivative before the next octave reads it (`DRAG`). That is what makes waves
+//    interfere and heap instead of passing through each other, and it is the single thing
+//    that separates procedural water that looks like water from procedural water that looks
+//    like noise. Getting the derivative for free is why `wave_dx` returns both.
+//
+// The technique is standard (it is how most procedural oceans are built); the implementation
+// is ours, which also keeps us clear of the non-commercial licences the reference shaders
+// carry.
+
+/// One directional wave: `x` is its height in 0..1, `y` its derivative along `dir`.
+fn wave_dx(pos: vec2<f32>, dir: vec2<f32>, freq: f32, timeshift: f32) -> vec2<f32> {
+    let x = dot(dir, pos) * freq + timeshift;
+    let wave = exp(sin(x) - 1.0);
+    return vec2<f32>(wave, -wave * cos(x));
+}
+
+/// Summed directional waves, dragged. Directions come off `sin`/`cos` of a marching angle so
+/// no two octaves share a heading and the crests never line up into a visible grid.
 fn wave_height(p_in: vec2<f32>, t: f32) -> f32 {
-    var q = p_in;
-    var h = 0.0;
-    var amp = 1.0;
-    var freq = 0.075;
-    for (var i = 0; i < 4; i = i + 1) {
-        let a = sin(q.x * freq + t * 1.05) * cos(q.y * freq * 0.87 - t * 0.71);
-        let b = sin((q.x + q.y) * freq * 1.31 - t * 0.93);
-        h = h + (a + b * 0.6) * amp;
-        amp = amp * 0.5;
-        freq = freq * 1.93;
-        // ~16 degrees per octave.
-        q = vec2<f32>(q.x * 0.961 - q.y * 0.276, q.x * 0.276 + q.y * 0.961);
+    // How hard each octave shoves the next one's sample point. Small: this is a nudge, and
+    // past about 0.1 the field folds over itself into froth.
+    let drag = 0.048;
+    var pos = p_in;
+    var iter = 0.0;
+    var freq = 0.085;
+    var speed = 1.35;
+    var weight = 1.0;
+    var sum = 0.0;
+    var total = 0.0;
+    for (var i = 0; i < 5; i = i + 1) {
+        let dir = vec2<f32>(sin(iter), cos(iter));
+        let res = wave_dx(pos, dir, freq, t * speed);
+        pos = pos + dir * res.y * weight * drag;
+        sum = sum + res.x * weight;
+        total = total + weight;
+        // Later octaves are finer, faster and count for less — the usual spectrum, except
+        // the weight falls off by a MIX rather than a halving, so the small chop keeps
+        // contributing instead of vanishing after two steps.
+        weight = mix(weight, 0.0, 0.2);
+        freq = freq * 1.18;
+        speed = speed * 1.07;
+        iter = iter + 12.0;
     }
-    return h;
+    // Back to roughly -1..1, so callers' amplitude and steepness keep their meaning.
+    return (sum / max(total, 0.0001)) * 2.0 - 1.0;
 }
 
 // The surface normal, by finite-differencing the same field. `steep` scales how much the
