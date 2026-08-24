@@ -1400,10 +1400,22 @@ pub(crate) struct Sway {
 
 /// Per-obstacle-kind wind-sway amplitude (radians of lean); `None` = rigid (rock/etc).
 pub(crate) fn sway_amp(kind: &str) -> Option<f32> {
+    // ⚠️ THESE WERE A THIRD OF WHAT YOU CAN SEE. `animate_sway` multiplies them by
+    // `0.06 + wind * 2.4`, which is 0.42 in fair weather — so a tree at 0.05 leaned ONE
+    // POINT TWO DEGREES, and 4.6 even in a full storm. Giving Fair a real breeze fixed the
+    // wind and changed nothing on screen, because the amplitude it drives was never large
+    // enough to read. Two bugs stacked: a wind that never blew, and a lean nobody could see
+    // if it had.
+    //
+    // Sized so fair weather is a visible stir (~4 degrees on a tree) and a storm is a real
+    // toss (~15). Stylised rather than physical — this is a diorama seen from a distance,
+    // and a botanically-correct two-degree sway is indistinguishable from a still frame.
     match kind {
-        "tree" => Some(0.05),
-        "fungal_wall" => Some(0.045),
-        "cactus" => Some(0.02),
+        "tree" => Some(0.17),
+        "fungal_wall" => Some(0.15),
+        // A cactus is a water tank on a stalk. It moves, barely, and that contrast is worth
+        // keeping — a desert where nothing stirs reads as a painting.
+        "cactus" => Some(0.05),
         _ => None,
     }
 }
