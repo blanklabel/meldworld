@@ -127,3 +127,71 @@ pub fn peak_height(x: f32, z: f32, peaks: &[[f32; 4]]) -> f32 {
     }
     h
 }
+
+/// Land-side width of the shore blend — the BEACH. Ground ramps from the land's own height
+/// down to sea level over this many units INSIDE the shoreline, so a coast has a beach
+/// rather than a cliff.
+///
+/// ⚠️ The ground shader's `total_height` mirrors this as a literal (`smoothstep(-14.0,
+/// 0.0, sea)`); `the_beach_blend_matches_the_shader` reads the .wgsl and holds the two
+/// together, because this is the number that decides where the ground SURFACE is and a
+/// disagreement puts everything the game places at a different height than it draws.
+pub const BEACH_BLEND: f32 = 14.0;
+
+/// **Where the ground surface actually is** — the one rule, folding the sea into a land
+/// height. `sea_depth` is signed (negative inland, positive at sea, from
+/// `coast::sea_depth` or `coast::city_sea_depth`), `amp` flattens the LAND for
+/// hand-placed scenes, and `sea_level` is the water's own y.
+///
+/// ⚠️ THIS EXISTS BECAUSE EVERYTHING FLOATED. The ground shader has dipped its vertices
+/// toward sea level at every coast for a while, and [`height`] — the function that places
+/// every tree, prop, building, creature and the PLAYER — knew nothing about the sea at
+/// all. So at any shoreline the ground fell away and the whole world stayed up at the
+/// land's height, standing on nothing. Don caught it the moment Last City got a coast:
+/// "trees, the castle, and yes… even the player now floats."
+///
+/// It is deliberately given the same shape as the shader's `mix(amp * land, level, t)`,
+/// and it takes NO swell term: the swell only ramps in past the waterline, where nothing
+/// stands, and a prop that bobbed with the waves would be worse than one that did not.
+pub fn with_sea(land: f32, sea_depth: f32, amp: f32, sea_level: f32) -> f32 {
+    let t = smoothstep(-BEACH_BLEND, 0.0, sea_depth);
+    (amp * land) * (1.0 - t) + sea_level * t
+}
+
+#[cfg(test)]
+mod sea_fold_tests {
+    use super::*;
+
+    #[test]
+    fn the_fold_is_land_inland_and_sea_level_offshore() {
+        // Well inland the sea is not consulted at all…
+        assert_eq!(with_sea(9.0, -500.0, 1.0, -7.0), 9.0);
+        // …past the waterline the surface IS the water's level, flat, from the very first
+        // fragment. (The beach is the band INSIDE the shore, never past it — that inversion
+        // is what made every coast render as the bank of a pit.)
+        assert_eq!(with_sea(9.0, 0.0, 1.0, -7.0), -7.0);
+        assert_eq!(with_sea(9.0, 40.0, 1.0, -7.0), -7.0);
+    }
+
+    #[test]
+    fn a_flat_scene_still_has_a_sea_to_dip_into() {
+        // `amp` 0 is the City and the menus: hand-placed level ground. It must flatten the
+        // LAND without flattening the water, or the city's plaza cannot dip into its bay —
+        // which is exactly the bug that kept Last City's sea sitting on top of its lawn.
+        assert_eq!(with_sea(9.0, -500.0, 0.0, -7.0), 0.0);
+        assert_eq!(with_sea(9.0, 10.0, 0.0, -7.0), -7.0);
+    }
+
+    #[test]
+    fn the_beach_is_monotonic_downhill_to_the_water() {
+        // A beach has to fall the whole way in. A non-monotonic ramp reads as a lip or a
+        // dune at the waterline and, worse, would place props above or below their ground.
+        let mut prev = f32::INFINITY;
+        for i in 0..=140 {
+            let sea = -BEACH_BLEND + (i as f32 / 140.0) * BEACH_BLEND;
+            let h = with_sea(9.0, sea, 1.0, -7.0);
+            assert!(h <= prev + 1e-4, "the beach rises at sea depth {sea}");
+            prev = h;
+        }
+    }
+}

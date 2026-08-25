@@ -1577,10 +1577,10 @@ pub(crate) fn tile_ground_detail(
 ) {
     let (Ok(cam), Some(kit)) = (cam_q.single(), kit) else { return };
     let focus = ground_focus(cam);
-    // Ride the heightmap ONLY in the Overworld (where the ground is displaced); the City
-    // + menus keep flat ground (terrain_amp 0), so detail sits at y=0 there. Matches the
-    // ground shader's `terrain_amp` gate — otherwise the props float over a flat plaza.
-    let amp = if *state.get() == Screen::Overworld { 1.0 } else { 0.0 };
+    // Height comes from `terrain_height`, which applies the `terrain_amp` flatten AND the
+    // sea dip itself — a prop on a beach has to ride the ramp down, and a prop on the
+    // City's flat plaza has to stay level. Multiplying by an amp out here (which this used
+    // to do) cannot express both.
     let cc = IVec2::new(
         (focus.x / DETAIL_CELL).floor() as i32,
         (focus.z / DETAIL_CELL).floor() as i32,
@@ -1610,7 +1610,7 @@ pub(crate) fn tile_ground_detail(
             *vis = Visibility::Hidden;
             continue;
         }
-        tf.translation = Vec3::new(wx, amp * terrain_height(wx, wz), wz);
+        tf.translation = Vec3::new(wx, terrain_height(wx, wz), wz);
         tf.rotation = Quat::from_rotation_y(yaw);
         tf.scale = Vec3::splat(sc);
         *vis = Visibility::Inherited;
@@ -1715,6 +1715,45 @@ pub(crate) fn peaks_snapshot() -> Vec<[f32; 4]> {
     PEAKS.read().map(|p| p.clone()).unwrap_or_default()
 }
 
+/// The coast + flatten state the ground shader is currently drawing with, so
+/// [`terrain_height`] can answer for the SAME surface. Three atomics beside
+/// `TERRAIN_OFF_*`, written by the one system that fills the shader uniform — because the
+/// bug this fixes was precisely the placement side and the drawing side disagreeing about
+/// where the ground is, and a second source of truth would reintroduce it.
+static COAST_ARC: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+static COAST_CITY: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+static GROUND_AMP: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+/// Publish what the ground shader is about to draw. Called from the uniform update, so the
+/// two cannot drift.
+pub(crate) fn set_ground_coast(arc_half: f32, city: bool, amp: f32) {
+    use std::sync::atomic::Ordering::Relaxed;
+    COAST_ARC.store(arc_half.to_bits(), Relaxed);
+    COAST_CITY.store(u32::from(city), Relaxed);
+    GROUND_AMP.store(amp.to_bits(), Relaxed);
+}
+
+fn ground_coast() -> (f32, bool, f32) {
+    use std::sync::atomic::Ordering::Relaxed;
+    (
+        f32::from_bits(COAST_ARC.load(Relaxed)),
+        COAST_CITY.load(Relaxed) == 1,
+        f32::from_bits(GROUND_AMP.load(Relaxed)),
+    )
+}
+
+/// **The ground surface at `(x, z)`** — what everything in the world stands on.
+///
+/// ⚠️ IT USED TO RETURN THE LAND HEIGHT AND IGNORE THE SEA, SO EVERYTHING FLOATED. The
+/// shader has dipped the ground toward sea level at every coast for a while; this function
+/// — which places every prop, tree, building, creature and the player's own feet — knew
+/// nothing about water. At a shoreline the ground fell away and the world stayed up where
+/// the land used to be. It showed up the instant Last City got a coast, but it was true of
+/// every pond, lake and ocean edge in the maze the whole time.
+///
+/// It also applies `terrain_amp` ITSELF now. Callers used to multiply, which is fine for a
+/// pure land height and wrong the moment a sea is involved (a flat scene must still dip
+/// into its bay) — so the scaling belongs on the inside, with the rule.
 pub(crate) fn terrain_height(x: f32, z: f32) -> f32 {
     let (ox, oz) = terrain_offset();
     let base = meld_proto::terrain::height(x, z, ox, oz);
@@ -1723,7 +1762,17 @@ pub(crate) fn terrain_height(x: f32, z: f32) -> f32 {
         .as_ref()
         .map(|p| meld_proto::terrain::peak_height(x, z, p))
         .unwrap_or(0.0);
-    base + peak
+    let land = base + peak;
+    let (arc_half, city, amp) = ground_coast();
+    let sea = if city {
+        meld_proto::coast::city_sea_depth(x, z)
+    } else if arc_half > 0.0 {
+        meld_proto::coast::sea_depth(x, z, arc_half)
+    } else {
+        // Corridor mode (tests, the tutorial): no fan, so no sea anywhere.
+        return amp * land;
+    };
+    meld_proto::terrain::with_sea(land, sea, amp, -SEA_DEPTH)
 }
 
 /// Capitalize the first letter for display ("ashfall" → "Ashfall").
@@ -1831,6 +1880,14 @@ pub(crate) fn update_ground_biome_rings(
     // prop and shades the troughs into blue "corridor" ribbons — flatten it (amp 0).
     mat.extension.params.terrain_amp =
         if *state.get() == Screen::Overworld { 1.0 } else { 0.0 };
+    // Publish the SAME coast + flatten state to the placement side, right here, so
+    // `terrain_height` answers for the surface this uniform is about to draw. Everything
+    // in the world floated over every shoreline for as long as these were two answers.
+    set_ground_coast(
+        mat.extension.params.coast.x,
+        *state.get() == Screen::City,
+        mat.extension.params.terrain_amp,
+    );
     let (ox, oz) = terrain_offset();
     mat.extension.params.terrain_off = Vec2::new(ox, oz);
     // Feed the authored peaks to the shader (windowed to the slot count) so each mountain
@@ -2264,11 +2321,13 @@ fn spawn_enclosure_prop(
     if bi == 0 {
         // Near the rim, prefer the bushier sprites (reads as undergrowth); farther out,
         // the full tree pool (a tall canopy).
-        const TREES: [&str; 6] = [
-            "obstacle_tree", "obstacle_tree_pine", "obstacle_tree_birch",
+        const TREES: [&str; 5] = [
+            // No `obstacle_tree` — the rune tree is reserved as a deliberate landmark
+            // rather than one-in-six of a backdrop wood. See the overworld pool.
+            "obstacle_tree_pine", "obstacle_tree_birch",
             "obstacle_tree_dead", "obstacle_tree_willow", "obstacle_tree_bushy",
         ];
-        const SHRUBS: [&str; 3] = ["obstacle_tree_bushy", "obstacle_tree_willow", "obstacle_tree"];
+        const SHRUBS: [&str; 2] = ["obstacle_tree_bushy", "obstacle_tree_willow"];
         let keys: &[&str] = if t < 0.18 { &SHRUBS } else { &TREES };
         let pool: Vec<Handle<Image>> = keys
             .iter()
