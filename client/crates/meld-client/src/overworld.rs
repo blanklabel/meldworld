@@ -3361,8 +3361,15 @@ pub(crate) fn spawn_obstacle(
         // id-hash, with an extra per-id size factor on top of the radius so a forest
         // reads as a mix of shapes and heights rather than one stamped tree.
         if name == "tree" {
-            const TREE_VARIANTS: [&str; 6] = [
-                "obstacle_tree", "obstacle_tree_pine", "obstacle_tree_birch",
+            // ⚠️ `obstacle_tree` IS DELIBERATELY NOT IN THIS POOL. It is the RUNE tree —
+            // carved, glowing — and while it sat in the ordinary rotation one in six trees
+            // in every wood and meadow was a piece of standing magic that meant nothing.
+            // A landmark that appears at random is scenery; the art is far too specific to
+            // spend that way. It stays loaded (see `PROP_KEYS`) and reserved, to be placed
+            // deliberately and much larger as the mouth of a tree dungeon — which is
+            // `WG-?` and not built yet, so today it simply does not spawn.
+            const TREE_VARIANTS: [&str; 5] = [
+                "obstacle_tree_pine", "obstacle_tree_birch",
                 "obstacle_tree_dead", "obstacle_tree_willow", "obstacle_tree_bushy",
             ];
             let pool: Vec<Handle<Image>> = TREE_VARIANTS

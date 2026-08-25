@@ -89,10 +89,10 @@ const _: () = assert!(NECK_REACH * 2.0 < RETURN_BORDER_REACH);
 pub const NECK_HALF_WIDTH: f32 = 12.0;
 
 /// Half-width of the spit at its widest — the shelf Last City is built on.
-pub const CITY_HALF_WIDTH: f32 = 34.0;
+pub const CITY_HALF_WIDTH: f32 = 66.0;
 
 /// How far west of the hub the spit runs before it ends in open sea.
-pub const PENINSULA_LENGTH: f32 = 150.0;
+pub const PENINSULA_LENGTH: f32 = 260.0;
 
 /// How far west of the hub Last City itself stands, on the widest part of the spit.
 ///
@@ -102,7 +102,7 @@ pub const PENINSULA_LENGTH: f32 = 150.0;
 /// `the_city_actually_fits_on_its_own_spit` holds them against the real geometry. That
 /// assertion is what keeps the two scenes agreeing; without it the city's coast is just a
 /// second hand-placed shoreline, which is the exact drift this module exists to prevent.
-pub const CITY_CENTER_REACH: f32 = 110.0;
+pub const CITY_CENTER_REACH: f32 = 190.0;
 
 /// The city has to stand ON the spit — not back on the neck, and not out past the tip.
 /// Compile-time, like the neck/border relationship: it is a fact about constants.
@@ -111,11 +111,21 @@ const _: () = assert!(CITY_CENTER_REACH < PENINSULA_LENGTH);
 
 /// Half-width of the dry ground Last City is built on, in its own scene. Water starts
 /// beyond this on both flanks.
-pub const CITY_SHORE_HALF_WIDTH: f32 = 26.0;
+pub const CITY_SHORE_HALF_WIDTH: f32 = 52.0;
 
 /// How far past the city's centre the spit's tip lies, in the city's own scene — beyond
 /// this, open sea ahead as well as to the sides.
-pub const CITY_TIP_REACH: f32 = 34.0;
+pub const CITY_TIP_REACH: f32 = 68.0;
+
+/// How far BEHIND the plaza the spit meets the mainland, in the city's own scene. Past
+/// this the flanks are dry land again, because a spit joins a coast somewhere.
+///
+/// ⚠️ WITHOUT THIS TERM THE CITY HAD A RIBBON OF GRASS RUNNING TO INFINITY. The first
+/// version of [`city_sea_depth`] was `max(|x| - shore, z - tip)`, which makes land the
+/// strip `|x| <= shore` for EVERY z — including z going to minus infinity behind the
+/// city. Don saw it immediately: "there is a weird stretch of land behind it… it goes off
+/// forever as a small straight grass line." A spit needs a back edge as much as a tip.
+pub const CITY_MAINLAND_BACK: f32 = 68.0;
 
 /// Fraction of the spit's run over which it tapers to its tip, so the peninsula ends in a
 /// point rather than a cliff-edged rectangle.
@@ -223,7 +233,15 @@ pub fn sea_depth(x: f32, z: f32, arc_half_rad: f32) -> f32 {
 /// city cannot grow a second hand-placed shoreline — which is exactly what it had, three
 /// water planes laid a hair above the lawn, quietly missing every fix the world's sea got.
 pub fn city_sea_depth(x: f32, z: f32) -> f32 {
-    (x.abs() - CITY_SHORE_HALF_WIDTH).max(z - CITY_TIP_REACH)
+    // Land is the spit OR the mainland behind it, so the sea is however far you are from
+    // the nearer of the two — `min`, exactly as the world's [`sea_depth`] takes the min of
+    // its fan, spit and neck. A `min` of signed distances is also what keeps this
+    // CONTINUOUS: an `if z < back { return land }` would jump across that line, and every
+    // smoothstep over the field would collapse into a step there — the same cliff-instead-
+    // of-beach bug this module already shipped once.
+    let past_spit = (x.abs() - CITY_SHORE_HALF_WIDTH).max(z - CITY_TIP_REACH);
+    let past_mainland = z + CITY_MAINLAND_BACK;
+    past_spit.min(past_mainland)
 }
 
 /// Is `(x, z)` walkable ground as far as the *coast* is concerned? The inverse of
@@ -283,7 +301,10 @@ mod tests {
             for zi in -40..=40 {
                 let (x, z) = (xi as f32 * 2.7, zi as f32 * 2.7);
                 let depth = city_sea_depth(x, z);
-                let sea = x.abs() > CITY_SHORE_HALF_WIDTH || z > CITY_TIP_REACH;
+                // The rule stated independently of the depth field: off the spit AND
+                // not yet onto the mainland behind it.
+                let off_spit = x.abs() > CITY_SHORE_HALF_WIDTH || z > CITY_TIP_REACH;
+                let sea = off_spit && z > -CITY_MAINLAND_BACK;
                 if depth.abs() > 1e-3 {
                     assert_eq!(depth > 0.0, sea, "({x}, {z}) disagrees about the city's coast");
                 }
@@ -295,6 +316,16 @@ mod tests {
         assert!(city_sea_depth(0.0, 0.0) < 0.0, "the plaza must be dry ground");
         assert!(city_sea_depth(CITY_SHORE_HALF_WIDTH + 5.0, 0.0) > 0.0, "left flank is sea");
         assert!(city_sea_depth(0.0, CITY_TIP_REACH + 5.0) > 0.0, "past the tip is sea");
+        // …and the spit has a BACK. Land far behind the city is the mainland it joins, not
+        // a ribbon of grass running to the horizon.
+        assert!(
+            city_sea_depth(CITY_SHORE_HALF_WIDTH + 200.0, -CITY_MAINLAND_BACK - 200.0) < 0.0,
+            "well behind the city is mainland, on the flanks as much as the centre"
+        );
+        assert!(
+            city_sea_depth(CITY_SHORE_HALF_WIDTH + 10.0, 0.0) > 0.0,
+            "beside the plaza is still sea"
+        );
     }
 
     #[test]
@@ -428,3 +459,4 @@ mod water_kind_tests {
         }
     }
 }
+

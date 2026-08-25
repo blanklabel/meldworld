@@ -263,6 +263,31 @@ fn frozen_of(bi: i32) -> f32 {
 // The tinted ground colour for biome index `bi` at `uv`. Tints make each biome read
 // distinctly under the cool ambient: forest/desert as-authored, Ashfall a charred
 // burnt-red with ember-glow crevices, Tundra a cold frost-blue, Mire a sickly green.
+// THE STRAND: what a coast is made of on the LAND side. Grass does not run into the sea —
+// every real shoreline is sand, shingle or bare rock, and a lawn meeting water at a line
+// is the single loudest tell that a coast was painted rather than built.
+//
+// Keyed off the bordering biome so the strand belongs to its place: pale sand where the
+// ground is grass or dune, wet dark shingle in the mire, and cold bare ROCK on the ashfall
+// and tundra coasts, where a soft sandy beach would look imported. The tile's own
+// luminance is kept as texture (`uv` is still sampled) so the strand has grain and is not
+// a flat wash.
+fn shore_color(bi: i32, uv: vec2<f32>) -> vec4<f32> {
+    let g = biome_color(bi, uv);
+    // Luminance only — the strand takes the ground's TEXTURE and its own hue.
+    let lum = clamp(dot(g.rgb, vec3<f32>(0.299, 0.587, 0.114)) * 1.15, 0.25, 1.0);
+    if (bi == 2 || bi == 3) {
+        // Ashfall + tundra: bare rock, faintly cool, no yellow at all.
+        return vec4<f32>(vec3<f32>(0.52, 0.54, 0.58) * lum, g.a);
+    }
+    if (bi == 4) {
+        // The mire: silt, not a beach — darker and greener than sand.
+        return vec4<f32>(vec3<f32>(0.44, 0.42, 0.30) * lum, g.a);
+    }
+    // Grass and dune coasts: pale sand.
+    return vec4<f32>(vec3<f32>(0.84, 0.76, 0.56) * lum, g.a);
+}
+
 fn biome_color(bi: i32, uv: vec2<f32>) -> vec4<f32> {
     if (bi <= 0) {
         return textureSample(t_forest, samp, uv);
@@ -355,6 +380,11 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     // outline; open water deepens and hides it. Mirrors `meld_proto::coast`, which is what
     // movement and path routing collide against.
     let sea = sea_depth_at(in.world_position.xz);
+    // THE STRAND, first — the land side of the shoreline, under the water blend below. It
+    // rides the SAME band the ground's beach ramp uses (`smoothstep(-14, 0)` in
+    // `total_height`), so the sand appears exactly where the ground starts falling toward
+    // the water: the strand IS the beach, not a decal near it.
+    blended = mix(blended, shore_color(here_biome, uv), smoothstep(-14.0, -1.0, sea));
     if (sea > -0.5) {
         // The real water TILE, not a flat colour — the same art the city's sea and every
         // pond in the game uses. It was two hardcoded RGB constants at first, which meant
