@@ -43,6 +43,11 @@ rm -rf "$DEST"; mkdir -p "$DEST"
 cp -R "$STATE"/. "$DEST"/
 [ -f "$TMP/x/metadata.json" ] && cp "$TMP/x/metadata.json" "$DEST"/
 
+# The clip folder is named after the animation's DISPLAY NAME in PixelLab, which is
+# free-form - the stock template calls its walk `Walking` and the loader looks for
+# `walk`. Settle that here, before anything else touches the folders.
+python3 "$ROOT/client/scripts/normalize_clips.py" "$DEST"
+
 # Fill the western facings from their eastern mirrors BEFORE padding, so the flip
 # operates on the raw art. A no-op on a set that was generated with all eight.
 python3 "$ROOT/client/scripts/mirror_sprites.py" "$DEST"

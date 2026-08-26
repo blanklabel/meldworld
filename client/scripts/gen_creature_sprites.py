@@ -26,24 +26,19 @@ ENDPOINT = "https://api.pixellab.ai/mcp"
 ALL_DIRS = ["south", "south-east", "east", "north-east", "north", "north-west", "west",
             "south-west"]
 
-# WALK TURNS, ATTACK DOES NOT, and the split is about where each clip is SEEN.
+# THE WALK USES THE STOCK `walking` TEMPLATE, which is what the hand-made half of this
+# bestiary already uses (`type=v3:walking`) — so generated creatures move like curated
+# ones instead of each having its own invented gait. It is also the cheapest thing here:
+# a template is ONE generation per direction, so all eight real facings cost eight, where
+# five custom facings cost ten and still needed three mirrored.
 #
-# Walking is the overworld: a creature crosses the view in every direction, all the time,
-# and a body that slides sideways while facing you is the thing that reads as broken. So
-# the walk is drawn eight times, which costs eight jobs against a ten-job concurrency cap
-# and is most of this script's runtime.
-#
-# An attack is only ever seen in a BATTLE, where the arena faces the party — so seven of
-# its eight directions would be art for a camera angle that never happens.
-# `hd2d::load_creature_clips` reuses the south attack for every facing.
-# THE WESTERN HALF IS THE EASTERN HALF FLIPPED, so it is not drawn. The eight facings
-# are symmetric about the north-south axis: `south` and `north` sit ON that axis, and the
-# rest are three mirrored pairs. Five generated directions give all eight once
-# `mirror_sprites.py` fills the other three, which cuts a walk by 37% AND — because a
-# clip's directions are one job each against a fixed cap — lets two characters' walks run
-# at once instead of one.
-MIRRORED_DIRS = ["south", "north", "south-east", "east", "north-east"]
-CLIP_DIRS = {"walk": MIRRORED_DIRS, "attack": ["south"]}
+# The usual objection to templates does not apply to creatures. Template animations
+# retarget onto a skeleton and DROP hand-held weapons mid-swing, which is why the hero
+# classes use custom v3 — but a boar has nothing in its hands. The ATTACK stays custom,
+# because "rearing up and slamming down" is the thing that makes a creature read as
+# itself and no template knows it.
+WALK_TEMPLATE = "walking"
+CLIP_DIRS = {"walk": ALL_DIRS, "attack": ["south"]}
 TOKEN = os.environ.get("PIXELLAB_TOKEN", "")
 
 
@@ -253,11 +248,18 @@ def animate(cid, clip, action):
         # Say so rather than generating into a group that is still there: a second group
         # of the same name collides with the first on export and silently drops facings.
         raise RuntimeError(f"{clip} still has groups after delete: {left}")
-    out = call("animate_character", {
-        "character_id": cid, "mode": "v3", "animation_name": clip,
-        "action_description": action, "frame_count": 8,
-        "keep_first_frame": False, "directions": CLIP_DIRS[clip],
-    })
+    args = {
+        "character_id": cid, "animation_name": clip,
+        "directions": CLIP_DIRS[clip],
+    }
+    if clip == "walk":
+        # Template mode: the frame count is the template's, and `mode` is auto-detected
+        # from the presence of a template id.
+        args["template_animation_id"] = WALK_TEMPLATE
+    else:
+        args |= {"mode": "v3", "action_description": action, "frame_count": 8,
+                 "keep_first_frame": False}
+    out = call("animate_character", args)
     if out.startswith("ERROR"):
         raise RuntimeError(f"{clip} failed: {out[:300]}")
     return out
@@ -322,8 +324,8 @@ def main():
             plan.append({"asset": asset, "desc": c[rank], "walk": c["walk"],
                          "attack": c["attack"], "gate": c["gate"]})
 
-    log(f"{len(plan)} characters, ~{len(plan) * 15} generations "
-        f"(8-dir rotations + 5-dir walk mirrored to 8 + south-only attack)")
+    log(f"{len(plan)} characters, ~{len(plan) * 12} generations "
+        f"(8-dir rotations + templated 8-dir walk + south-only attack)")
     if a.dry_run:
         for p in plan:
             print(f"  d{p['gate']:<4} {p['asset']}")
