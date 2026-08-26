@@ -3666,6 +3666,22 @@ impl Arena {
                 // Nudge the centre off the path so the climb is a side-trip landmark, kept
                 // inside the lateral bounds.
                 let side = if prng.unit() < 0.5 { 1.0 } else { -1.0 };
+                // …and if that side is under water (WG-7: this section may hold a strait),
+                // take the OTHER side. A mountain in the sea is nonsense, and its summit
+                // reward — a gate boss or a guaranteed chest — is what makes the climb worth
+                // taking, so a wet summit is an unreachable payoff rather than a cosmetic
+                // slip. `authored_peaks_are_climbable_and_crowned` caught exactly that.
+                //
+                // Flipping rather than skipping keeps the peak: the path's midpoint is dry
+                // by construction (A* routed it), so at least one flank of it is dry too,
+                // and the peak is the whole reason `path_climb_chance` fired.
+                let wet_side = |off: f64| -> bool {
+                    let p = Position::new(base_wp.x, (base_wp.y + off)
+                        .clamp(-(self.lateral - 2.0), self.lateral - 2.0));
+                    let w = radial_tf(p, self.radial_half, self.corridor_lateral.max(1.0));
+                    !self.on_land(w.x, w.y)
+                };
+                let side = if wet_side(side * radius * 0.55) { -side } else { side };
                 let cy = (base_wp.y + side * radius * 0.55)
                     .clamp(-(self.lateral - 2.0), self.lateral - 2.0);
                 let summit = Position::new(base_wp.x, cy);

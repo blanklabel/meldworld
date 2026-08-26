@@ -1754,6 +1754,56 @@ design for this epic: [`proposals/worldgen-wg.md`](proposals/worldgen-wg.md).
     the fan and the clear path runs radially, so nothing draws a player sideways. Behind the
     city it pays immediately; along the arc edges it only pays once this item's angular
     structure gives a reason to travel laterally. Ocean and wedges are complements.
+  - [x] *SHIPPED — **CONTINENTS**: the fan is no longer one landmass.* The coastline below
+    gave the world an edge; this gives it INTERIOR structure, which is the half that
+    changes how you walk. One early return in `coast::is_ocean` — *inside the arc, land,
+    always* — was what made the whole fan a single continent: every bearing solid ground
+    from the hub to the frontier, and the only reachable water the framing gap behind Last
+    City. A [`Strait`](../shared/meld-proto/src/coast.rs) is an inland sea filling an
+    annular sector (a radius band × a span of bearing) pierced by **isthmuses**; the
+    continent is the land between two of them.
+    - *It is a TERM IN `sea_depth`, not a second answer beside `is_ocean`* —
+      `sea_depth_with` is `max(ocean, strait)`, a signed-distance union, and
+      `strait_depth` is a `min` of three **world-unit** margins with the angular span
+      multiplied by `r` into an arc. That keeps the field continuous, so the ground
+      shader's beach ramp still has a gradient to ramp over; a BOOLEAN strait would render
+      as the vertical wall of water this file already shipped once (#307).
+      `a_straits_shoreline_has_a_beach_rather_than_a_cliff` holds it to 0.5-unit steps.
+    - *Which is also why it was cheap:* four systems already read `coast` rather than
+      keeping their own shoreline, so carving here bought all of them — `astar_route`
+      land-checks every bent edge and bends to an isthmus **by itself**, `apply_move`
+      collides against the same predicate, and both ground shaders already tint and ramp
+      the signed field. Still **analytic**, so `BlockField`'s cell is untouched.
+    - *Feasibility is by CONSTRUCTION, and it is what makes this not the retired `Seam`.*
+      A seam was a full-width wall with ONE door and was removed for funnelling the world
+      into a corridor. A strait's span always stops `STRAIT_FAN_MARGIN` of arc inside the
+      fan (so you can round either end) and always carries isthmuses at least
+      `MIN_BRIDGE_HALF_WIDTH` wide — **four ways past every barrier**. So meeting a coast
+      is a decision: cross where you can see, or follow the shore to a crossing you
+      cannot. That lateral choice is the thing a purely radial world has never had, and it
+      is the first time two players walking out on different bearings see different
+      worlds — this item's opening complaint. A strait that would fail
+      `strait_is_crossable` is not cut at all: no barrier beats a sealed one.
+    - *A strait fits inside ONE section's radius band*, with dry shores either side, which
+      is what gives A* two land endpoints to route a crossing between. Straits start at
+      `STRAIT_MIN_REACH` so CANON §B keeps the on-ramp.
+    - ⚠️ *Three latent bugs it made visible rather than caused.* **Creatures did not
+      respect the shoreline** — `apply_move` ran candidates through `t_walkable` (terrain
+      AND coast) while `step_creatures` checked obstacles and elevation only, the same
+      one-rule-two-call-sites split as the wall-collision line that stopped creatures and
+      let players walk through. **The obstacle retain was two byte-identical copies**
+      (`radialize` / `ensure_frontier`), so the sea test would have gone into one of them;
+      it is `retain_placeable_obstacles` now. And **`nudge_to_walkable` did not mean dry**,
+      so a chest nudged off a cliff could land in the sea.
+    - ⚠️ *A fix for the sea must not quietly become a fix for terrain.* The first attempt
+      nudged creatures with `nudge_to_walkable`, which also pulls them off CLIFFS — which
+      they have always been allowed to stand on — and that moved every creature in every
+      seeded world; three unrelated pack/formation tests went red proving it. Creatures get
+      `nudge_ashore` (water only), and placement rejects a wet spot where it already
+      rejects a crowded one, so the spot grid stays consistent and no post-hoc nudge
+      disturbs the spacing that check exists to protect.
+    - *Still to come here:* **gulfs and bays** biting inward from the fan's edges, and
+      **offshore islands** — both agreed, both after this.
   - [x] *SHIPPED — the coastline and the peninsula, as one shared constant.*
     [`meld_proto::coast`](../shared/meld-proto/src/coast.rs) owns the shoreline **and the
     neck**, because the geometry is authored in two scenes that cannot see each other (the

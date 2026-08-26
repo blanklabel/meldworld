@@ -49,13 +49,19 @@ pub(crate) const GROUND_CELL: f32 = GROUND_SIZE / (GROUND_SUBDIVISIONS as f32 + 
 /// Shader uniform peak slots (must equal `meld_proto::terrain::MAX_PEAKS`).
 const PEAK_SLOTS: usize = 24;
 
+/// `vec4` slots the ground shader reserves for STRAITS (WG-7 continents) — **two per
+/// strait**, so this is `2 * coast::MAX_STRAITS`. Windowed around the player's radius the
+/// way the biome rings are, because the world streams outward without bound and the only
+/// straits that can be on screen are the ones near you.
+const STRAIT_SLOTS: usize = meld_proto::coast::MAX_STRAITS * 2;
+
 /// `dead_code` is allowed for exactly this one item: the `ShaderType` derive generates a
 /// per-field `check` fn that nothing ever calls, and there is no way to annotate code a
 /// macro emits. Scoped to a submodule so the rest of this file still reports its own dead
 /// code honestly — every field here IS read, by the WGSL side of the uniform.
 mod biome_params {
     #![allow(dead_code)]
-    use super::{MAX_BIOME_RINGS, PEAK_SLOTS};
+    use super::{MAX_BIOME_RINGS, PEAK_SLOTS, STRAIT_SLOTS};
     use bevy::prelude::*;
     use bevy::render::render_resource::ShaderType;
 
@@ -95,6 +101,23 @@ mod biome_params {
         /// Peninsula widths, also from `coast`:
         /// `(neck_half_width, city_half_width, tip_taper, sea_depth)`.
         pub(crate) coast_w: Vec4,
+        /// **CONTINENTS (WG-7): this world's STRAITS**, the inland seas that separate one
+        /// landmass from the next. Two `vec4`s each, carrying the same eight numbers as
+        /// [`meld_proto::coast::Strait`]: slot `2k` is
+        /// `(r_center, r_half, theta_center, theta_half)` and `2k+1` is
+        /// `(bridge0_theta, bridge0_half, bridge1_theta, bridge1_half)`.
+        ///
+        /// In the uniform for the same reason `coast` is: the server collides against
+        /// `coast::is_ocean_with` and this shader ramps its beach over
+        /// `coast::sea_depth_with`, and a shoreline the shader has not been told about is
+        /// walkable ground drawn over open water.
+        pub(crate) straits: [Vec4; STRAIT_SLOTS],
+        pub(crate) strait_count: u32,
+        // Three SCALAR pads, as with `peak_count` — a `[u32; 3]` needs a 16-byte stride in a
+        // uniform and fails validation.
+        pub(crate) _pad_sc0: u32,
+        pub(crate) _pad_sc1: u32,
+        pub(crate) _pad_sc2: u32,
         /// The Shift's tell: `(inner_radius, outer_radius, intensity, 0)`. A region is a
         /// radius ring in the WG-4 fan and this ground is already painted in rings, so
         /// the doomed annulus needs no second coordinate system. `intensity == 0` is the
@@ -126,6 +149,11 @@ mod biome_params {
                     meld_proto::coast::TIP_TAPER,
                     super::SEA_DEPTH,
                 ),
+                straits: [Vec4::ZERO; STRAIT_SLOTS],
+                strait_count: 0,
+                _pad_sc0: 0,
+                _pad_sc1: 0,
+                _pad_sc2: 0,
                 shift: Vec4::ZERO,
                 sea_anim: Vec4::ZERO,
                 peaks: [Vec4::ZERO; PEAK_SLOTS],
@@ -1541,10 +1569,15 @@ pub(crate) fn on_open_water(frame: &crate::WorldFrame, screen: &Screen, wx: f32,
         // The maze: ask the shoreline itself.
         Screen::Overworld => {
             frame.have
-                && meld_proto::coast::is_ocean(
+                && meld_proto::coast::is_ocean_with(
                     wx,
                     wz,
                     frame.radial_arc_degrees.to_radians() * 0.5,
+                    // …the STRAITS too (WG-7 continents). Scenery is scattered client-side
+                    // without asking the shoreline, and the ocean sits outside the fan where
+                    // nothing is scattered — so this cull only started mattering once a
+                    // section could hold open water in the MIDDLE of it.
+                    &straits_snapshot(),
                 )
         }
         // Last City is a SEPARATE SCENE in its own coordinates — its `coast` uniform is
@@ -1715,6 +1748,57 @@ pub(crate) fn peaks_snapshot() -> Vec<[f32; 4]> {
     PEAKS.read().map(|p| p.clone()).unwrap_or_default()
 }
 
+/// **CONTINENTS (WG-7): this world's STRAITS** — the inland seas that separate one landmass
+/// from the next ([`meld_proto::coast::Strait`]). Kept exactly as `PEAKS` is, including the
+/// base/per-section split, and for the same reason: a section is re-sent when a Shift
+/// retiles the ground, so a section's contribution has to be REPLACEABLE rather than
+/// appended.
+///
+/// ⚠️ The coastline is the one thing a Shift does not re-cut — a continent does not wander —
+/// so the server re-sends each retiled section's straits UNCHANGED. If it ever stops, this
+/// store drops a sea the server is still colliding against, and the ring redraws as walkable
+/// ground over open water.
+static STRAITS: std::sync::RwLock<Vec<meld_proto::coast::Strait>> =
+    std::sync::RwLock::new(Vec::new());
+static BASE_STRAITS: std::sync::RwLock<Vec<meld_proto::coast::Strait>> =
+    std::sync::RwLock::new(Vec::new());
+static SECTION_STRAITS: std::sync::RwLock<
+    std::collections::BTreeMap<u32, Vec<meld_proto::coast::Strait>>,
+> = std::sync::RwLock::new(std::collections::BTreeMap::new());
+
+/// Replace this run's straits (call on `run.started`).
+pub(crate) fn set_straits(straits: Vec<meld_proto::coast::Strait>) {
+    if let Ok(mut by_section) = SECTION_STRAITS.write() {
+        by_section.clear();
+    }
+    if let Ok(mut b) = BASE_STRAITS.write() {
+        *b = straits.clone();
+    }
+    if let Ok(mut s) = STRAITS.write() {
+        *s = straits;
+    }
+}
+
+/// Set one SECTION's straits (call on `world.terrain_section`), replacing whatever that
+/// section contributed before.
+pub(crate) fn set_section_straits(index: u32, straits: &[meld_proto::coast::Strait]) {
+    let Ok(mut by_section) = SECTION_STRAITS.write() else { return };
+    if straits.is_empty() && !by_section.contains_key(&index) {
+        return;
+    }
+    by_section.insert(index, straits.to_vec());
+    let streamed: Vec<meld_proto::coast::Strait> = by_section.values().flatten().copied().collect();
+    if let (Ok(mut s), Ok(base)) = (STRAITS.write(), BASE_STRAITS.read()) {
+        *s = base.iter().copied().chain(streamed).collect();
+    }
+}
+
+/// A snapshot of the current straits — for the ground shader uniform, for
+/// [`terrain_height`], and for the prop cull that keeps scenery out of the water.
+pub(crate) fn straits_snapshot() -> Vec<meld_proto::coast::Strait> {
+    STRAITS.read().map(|s| s.clone()).unwrap_or_default()
+}
+
 /// The coast + flatten state the ground shader is currently drawing with, so
 /// [`terrain_height`] can answer for the SAME surface. Three atomics beside
 /// `TERRAIN_OFF_*`, written by the one system that fills the shader uniform — because the
@@ -1767,7 +1851,11 @@ pub(crate) fn terrain_height(x: f32, z: f32) -> f32 {
     let sea = if city {
         meld_proto::coast::city_sea_depth(x, z)
     } else if arc_half > 0.0 {
-        meld_proto::coast::sea_depth(x, z, arc_half)
+        // …including the STRAITS (WG-7). This function places every prop, tree, building,
+        // creature and the player's own feet; a strait it did not know about would put the
+        // whole world back up where the land used to be, over open water — the same bug this
+        // function already shipped once for the ocean.
+        meld_proto::coast::sea_depth_with(x, z, arc_half, &straits_snapshot())
     } else {
         // Corridor mode (tests, the tutorial): no fan, so no sea anywhere.
         return amp * land;
@@ -1902,6 +1990,28 @@ pub(crate) fn update_ground_biome_rings(
         };
     }
     mat.extension.params.peak_count = n as u32;
+    // The player's own ring — the centre of both windows below (straits and biome rings).
+    let pr = world
+        .entities
+        .get(&session.player_id)
+        .map(|e| e.x.hypot(e.y))
+        .unwrap_or(0.0);
+    // …and the STRAITS (WG-7 continents), two vec4s each. WINDOWED by radius, unlike the
+    // peaks above: the world streams outward without bound, so the only straits that can be
+    // on screen are the ones near the player's own ring, and a flat truncation would drop
+    // the coast you are standing on in favour of one back at the hub.
+    let mut near: Vec<meld_proto::coast::Strait> = straits_snapshot();
+    near.sort_by(|a, b| (a[0] - pr).abs().total_cmp(&(b[0] - pr).abs()));
+    near.truncate(meld_proto::coast::MAX_STRAITS);
+    for (i, slot) in mat.extension.params.straits.iter_mut().enumerate() {
+        let (k, half) = (i / 2, i % 2);
+        *slot = match near.get(k) {
+            Some(s) if half == 0 => Vec4::new(s[0], s[1], s[2], s[3]),
+            Some(s) => Vec4::new(s[4], s[5], s[6], s[7]),
+            None => Vec4::ZERO,
+        };
+    }
+    mat.extension.params.strait_count = near.len() as u32;
     // (outer_radius, biome_index) per section, sorted by radius (= corridor end_x).
     let mut rings: Vec<(f32, f32)> = terrain
         .sections
@@ -1910,12 +2020,7 @@ pub(crate) fn update_ground_biome_rings(
         .collect();
     rings.sort_by(|a, b| a.0.total_cmp(&b.0));
 
-    // Window the rings around the player's radius when there are more than fit.
-    let pr = world
-        .entities
-        .get(&session.player_id)
-        .map(|e| e.x.hypot(e.y))
-        .unwrap_or(0.0);
+    // Window the rings around the player's radius (`pr`, above) when there are more than fit.
     let start = if rings.len() <= MAX_BIOME_RINGS {
         0
     } else {
@@ -2786,7 +2891,8 @@ mod ground_uniform_tests {
             .0;
         for field in [
             "rings", "count", "uv_scale", "blend_half", "terrain_amp", "terrain_off",
-            "_pad_peaks", "peaks", "peak_count", "shift", "sea_anim",
+            "_pad_peaks", "peaks", "peak_count", "straits", "strait_count", "shift",
+            "sea_anim",
         ] {
             assert!(body.contains(&format!("{field}:")), "the shader is missing `{field}`");
         }

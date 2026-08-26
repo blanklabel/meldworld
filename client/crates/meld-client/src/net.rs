@@ -283,6 +283,10 @@ pub struct TerrainSectionView {
     pub corridor_lateral: f64,
     /// Authored CLIMBABLE peaks this streamed section adds (`[cx, cz, radius, height]`).
     pub peaks: Vec<[f32; 4]>,
+    /// **CONTINENTS (WG-7):** the STRAITS this section holds — the inland seas that separate
+    /// one landmass from the next ([`meld_proto::coast::Strait`]). A re-sent section replaces
+    /// its own, exactly as it replaces its own peaks.
+    pub straits: Vec<meld_proto::coast::Strait>,
 }
 
 /// One resolved effect for hit feedback (a damage or heal on a combatant).
@@ -645,7 +649,13 @@ pub enum ServerMsg {
     Error { message: String },
     /// `run.started` — carries this run's terrain offset so the bin can seed the ground
     /// shader + entity Y (the lib netcode can't reach the render module directly).
-    RunStarted { terrain_off: (f32, f32), peaks: Vec<[f32; 4]>, tutorial: bool },
+    RunStarted {
+        terrain_off: (f32, f32),
+        peaks: Vec<[f32; 4]>,
+        /// **CONTINENTS (WG-7):** this world's straits ([`meld_proto::coast::Strait`]).
+        straits: Vec<meld_proto::coast::Strait>,
+        tutorial: bool,
+    },
     /// The caller's hero roster (name/class/level/stats) for the party panel.
     Party {
         heroes: Vec<HeroLine>,
@@ -2335,7 +2345,27 @@ impl Inner {
                 // keypress. An older server omits it and it reads false, which is the safe
                 // way round: no walkthrough over a run that may not be guided.
                 let tutorial = raw.payload["tutorial"].as_bool().unwrap_or(false);
-                self.out.push_back(ServerMsg::RunStarted { terrain_off, peaks, tutorial });
+                // CONTINENTS (WG-7): this world's straits, each the eight numbers of
+                // `coast::Strait`. An older server omits them and the list reads empty,
+                // which is the safe way round — a world with no inland seas, i.e. exactly
+                // what the fan was before this shipped.
+                let straits: Vec<meld_proto::coast::Strait> = raw.payload["straits"]
+                    .as_array()
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|s| {
+                                let a = s.as_array()?;
+                                let mut out = [0.0f32; 8];
+                                for (i, slot) in out.iter_mut().enumerate() {
+                                    *slot = a.get(i)?.as_f64()? as f32;
+                                }
+                                Some(out)
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                self.out
+                    .push_back(ServerMsg::RunStarted { terrain_off, peaks, straits, tutorial });
                 self.emit_backpack();
                 if let Some(pts) = raw.payload["path"].as_array() {
                     let points: Vec<(f64, f64)> = pts
@@ -2907,6 +2937,7 @@ impl Inner {
                         radial_half: t.radial_half,
                         corridor_lateral: t.corridor_lateral,
                         peaks: t.peaks,
+                        straits: t.straits,
                     };
                     self.out.push_back(ServerMsg::TerrainSection { section });
                 }
