@@ -355,19 +355,25 @@ def main():
         log("--force: redoing art that already exists")
     log(f"{len(plan) - len(todo)} already installed, {len(todo)} to go")
 
+    skipped = []
     for base in range(0, len(todo), CHUNK):
         chunk = todo[base : base + CHUNK]
         log(f"--- chunk {base // CHUNK + 1}: {', '.join(c['asset'] for c in chunk)}")
 
         for p in chunk:
             s_ = st.setdefault(p["asset"], {})
-            # A REMEMBERED ID CAN GO STALE. Characters get deleted and tidied in the
-            # PixelLab UI between runs, and every later step for that species then fails
-            # on "not found" — which used to take the whole run down with it. Check the
-            # id is still real, and if it is not, forget it and its clips so the species
-            # is simply made again.
+            # A DELETED CHARACTER IS A DECISION, NOT AN ACCIDENT. Ids go stale because
+            # someone tidied the PixelLab UI, and this script used to respond by
+            # regenerating — which immediately undid the deletion and spent generations
+            # doing it. Skipping is the only behaviour that does not fight whoever is
+            # curating the account. `--force` is the way to say "yes, make it again".
             if s_.get("id") and not character_exists(s_["id"]):
-                log(f"    {p['asset']}: character {s_['id'][:8]} is gone; remaking it")
+                if not a.force:
+                    log(f"    ⏭ {p['asset']}: character {s_['id'][:8]} was deleted - "
+                        f"skipping (pass --force to remake it)")
+                    skipped.append(p["asset"])
+                    continue
+                log(f"    {p['asset']}: character is gone; --force, so remaking it")
                 s_.clear()
                 save_state(st)
             if not s_.get("id"):
@@ -385,7 +391,7 @@ def main():
             wait_for_idle(f"chunk/{clip}")
             for p in chunk:
                 s_ = st[p["asset"]]
-                if s_.get(clip) or not s_.get("id"):
+                if s_.get(clip) or not s_.get("id") or p["asset"] in skipped:
                     continue
                 # An 8-direction clip needs the whole cap to itself; a 1-direction one
                 # shares happily. Asking for the clip's own width is what lets the attack
@@ -402,7 +408,7 @@ def main():
         wait_for_idle("chunk/install")
         for p in chunk:
             s_ = st[p["asset"]]
-            if s_.get("installed"):
+            if s_.get("installed") or p["asset"] in skipped or not s_.get("id"):
                 continue
             if not install(s_["id"], p["asset"]):
                 # Its clips are re-queued next run: `load_state` clears any flag the
@@ -412,6 +418,8 @@ def main():
             save_state(st)
             log(f"    ✔ {p['asset']} installed")
 
+    if skipped:
+        log(f"skipped {len(skipped)} whose characters were deleted: {', '.join(skipped)}")
     log("done")
 
 
