@@ -1,0 +1,36 @@
+{
+  "group_id": "4824372e-bee9-4be8-90a9-cebadaf220b1",
+  "states": [
+    {
+      "character": {
+        "id": "03cb845f-ba6d-4a55-b0bc-48ce4aeb7875",
+        "name": "Idle",
+        "prompt": "a small hovering ember mote, a dim flickering core of orange fire with a short trail of sparks, no solid body in a weird HD-2D fantasy style. Full body, head to toe, whole creature inside the frame, standing on the ground.",
+        "size": {
+          "width": 96,
+          "height": 96
+        },
+        "template_id": "mannequin",
+        "directions": 8,
+        "view": "low top-down",
+        "created_at": "2026-08-26T19:41:20.938476+00:00"
+      },
+      "folder": "Idle",
+      "frames": {
+        "rotations": {
+          "south": "Idle/rotations/south.png",
+          "south-east": "Idle/rotations/south-east.png",
+          "east": "Idle/rotations/east.png",
+          "north-east": "Idle/rotations/north-east.png",
+          "north": "Idle/rotations/north.png",
+          "north-west": "Idle/rotations/north-west.png",
+          "west": "Idle/rotations/west.png",
+          "south-west": "Idle/rotations/south-west.png"
+        },
+        "animations": {}
+      }
+    }
+  ],
+  "export_version": "3.1",
+  "export_date": "2026-08-26T19:59:03.557141"
+}

@@ -1,0 +1,36 @@
+{
+  "group_id": "e34e83b5-ff6b-4de2-9f2e-a66a596b9469",
+  "states": [
+    {
+      "character": {
+        "id": "4229434f-f647-433e-85bf-d35c136107d1",
+        "name": "Idle",
+        "prompt": "a small stooped fungus thrall, a wiry humanoid body of pale grey fibre with a small drooping purple cap for a head and thin arms in a weird HD-2D fantasy style. Full body, head to toe, whole creature inside the frame, standing on the ground.",
+        "size": {
+          "width": 96,
+          "height": 96
+        },
+        "template_id": "mannequin",
+        "directions": 8,
+        "view": "low top-down",
+        "created_at": "2026-08-26T19:09:57.326013+00:00"
+      },
+      "folder": "Idle",
+      "frames": {
+        "rotations": {
+          "south": "Idle/rotations/south.png",
+          "south-east": "Idle/rotations/south-east.png",
+          "east": "Idle/rotations/east.png",
+          "north-east": "Idle/rotations/north-east.png",
+          "north": "Idle/rotations/north.png",
+          "north-west": "Idle/rotations/north-west.png",
+          "west": "Idle/rotations/west.png",
+          "south-west": "Idle/rotations/south-west.png"
+        },
+        "animations": {}
+      }
+    }
+  ],
+  "export_version": "3.1",
+  "export_date": "2026-08-26T19:59:22.743880"
+}

@@ -1,0 +1,103 @@
+{
+  "group_id": "c9c332e9-13e5-4c3b-8560-2d393da7741b",
+  "states": [
+    {
+      "character": {
+        "id": "56420d8f-bff6-4cec-b897-bad38e90f0a5",
+        "name": "Idle",
+        "prompt": "a small squat basalt golem, rough dark stone plates with thin molten seams, short blocky fists and no face in a weird HD-2D fantasy style. Full body, head to toe, whole creature inside the frame, standing on the ground.",
+        "size": {
+          "width": 96,
+          "height": 96
+        },
+        "template_id": "mannequin",
+        "directions": 8,
+        "view": "low top-down",
+        "created_at": "2026-08-26T19:41:17.614077+00:00"
+      },
+      "folder": "Idle",
+      "frames": {
+        "rotations": {
+          "south": "Idle/rotations/south.png",
+          "south-east": "Idle/rotations/south-east.png",
+          "east": "Idle/rotations/east.png",
+          "north-east": "Idle/rotations/north-east.png",
+          "north": "Idle/rotations/north.png",
+          "north-west": "Idle/rotations/north-west.png",
+          "west": "Idle/rotations/west.png",
+          "south-west": "Idle/rotations/south-west.png"
+        },
+        "animations": {
+          "walk": {
+            "east": [
+              "Idle/animations/walk/east/frame_000.png",
+              "Idle/animations/walk/east/frame_001.png",
+              "Idle/animations/walk/east/frame_002.png",
+              "Idle/animations/walk/east/frame_003.png",
+              "Idle/animations/walk/east/frame_004.png",
+              "Idle/animations/walk/east/frame_005.png"
+            ],
+            "south-east": [
+              "Idle/animations/walk/south-east/frame_000.png",
+              "Idle/animations/walk/south-east/frame_001.png",
+              "Idle/animations/walk/south-east/frame_002.png",
+              "Idle/animations/walk/south-east/frame_003.png",
+              "Idle/animations/walk/south-east/frame_004.png",
+              "Idle/animations/walk/south-east/frame_005.png"
+            ],
+            "south-west": [
+              "Idle/animations/walk/south-west/frame_000.png",
+              "Idle/animations/walk/south-west/frame_001.png",
+              "Idle/animations/walk/south-west/frame_002.png",
+              "Idle/animations/walk/south-west/frame_003.png",
+              "Idle/animations/walk/south-west/frame_004.png",
+              "Idle/animations/walk/south-west/frame_005.png"
+            ],
+            "west": [
+              "Idle/animations/walk/west/frame_000.png",
+              "Idle/animations/walk/west/frame_001.png",
+              "Idle/animations/walk/west/frame_002.png",
+              "Idle/animations/walk/west/frame_003.png",
+              "Idle/animations/walk/west/frame_004.png",
+              "Idle/animations/walk/west/frame_005.png"
+            ],
+            "north-west": [
+              "Idle/animations/walk/north-west/frame_000.png",
+              "Idle/animations/walk/north-west/frame_001.png",
+              "Idle/animations/walk/north-west/frame_002.png",
+              "Idle/animations/walk/north-west/frame_003.png",
+              "Idle/animations/walk/north-west/frame_004.png",
+              "Idle/animations/walk/north-west/frame_005.png"
+            ],
+            "north": [
+              "Idle/animations/walk/north/frame_000.png",
+              "Idle/animations/walk/north/frame_001.png",
+              "Idle/animations/walk/north/frame_002.png",
+              "Idle/animations/walk/north/frame_003.png",
+              "Idle/animations/walk/north/frame_004.png",
+              "Idle/animations/walk/north/frame_005.png"
+            ],
+            "north-east": [
+              "Idle/animations/walk/north-east/frame_000.png",
+              "Idle/animations/walk/north-east/frame_001.png",
+              "Idle/animations/walk/north-east/frame_002.png",
+              "Idle/animations/walk/north-east/frame_003.png",
+              "Idle/animations/walk/north-east/frame_004.png",
+              "Idle/animations/walk/north-east/frame_005.png"
+            ],
+            "south": [
+              "Idle/animations/walk/south/frame_000.png",
+              "Idle/animations/walk/south/frame_001.png",
+              "Idle/animations/walk/south/frame_002.png",
+              "Idle/animations/walk/south/frame_003.png",
+              "Idle/animations/walk/south/frame_004.png",
+              "Idle/animations/walk/south/frame_005.png"
+            ]
+          }
+        }
+      }
+    }
+  ],
+  "export_version": "3.1",
+  "export_date": "2026-08-26T19:59:13.881632"
+}

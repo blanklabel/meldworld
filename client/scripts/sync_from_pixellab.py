@@ -32,8 +32,15 @@ DIRS = ["south", "south-east", "east", "north-east", "north", "north-west", "wes
 # renderer groups a pool by, so a variant whose name does not start with one is
 # invisible to it however good the art is.
 SPECIES_FIX = {
+    # ⚠️ THE SPECIES KEY IS `myconid_brute`, WHICH DESCRIBES A VARIANT, NOT A SPECIES.
+    # The bestiary has grown a mage, a warrior, a minion and a boss around it, so the
+    # brute is plainly one of several myconids — and every one of them needs mapping here
+    # because the renderer pools a species by NAME PREFIX. Renaming the key to `myconid`
+    # in balance.toml and `creatures_for_biome` would delete this whole class of friction
+    # and let the account name things naturally; until then, each rename costs a line.
     "myconid_mage": "myconid_brute_mage",
     "myconid_minion": "myconid_brute_minion",
+    "myconid_warrior": "myconid_brute_warrior",
     "bog_singer_licker": "bog_stinger_licker",
 }
 

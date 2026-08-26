@@ -1,0 +1,36 @@
+{
+  "group_id": "2e5e1918-db52-4f80-a2a0-2130977ddc0f",
+  "states": [
+    {
+      "character": {
+        "id": "fdc23f01-a001-4188-ba82-84ea8f810983",
+        "name": "Idle",
+        "prompt": "a wide hovering ember spirit trailing a long veil of drifting sparks and grey ash, a dull red core in a weird HD-2D fantasy style. Full body, head to toe, whole creature inside the frame, standing on the ground.",
+        "size": {
+          "width": 96,
+          "height": 96
+        },
+        "template_id": "mannequin",
+        "directions": 8,
+        "view": "low top-down",
+        "created_at": "2026-08-26T19:41:21.971237+00:00"
+      },
+      "folder": "Idle",
+      "frames": {
+        "rotations": {
+          "south": "Idle/rotations/south.png",
+          "south-east": "Idle/rotations/south-east.png",
+          "east": "Idle/rotations/east.png",
+          "north-east": "Idle/rotations/north-east.png",
+          "north": "Idle/rotations/north.png",
+          "north-west": "Idle/rotations/north-west.png",
+          "west": "Idle/rotations/west.png",
+          "south-west": "Idle/rotations/south-west.png"
+        },
+        "animations": {}
+      }
+    }
+  ],
+  "export_version": "3.1",
+  "export_date": "2026-08-26T19:59:01.937254"
+}

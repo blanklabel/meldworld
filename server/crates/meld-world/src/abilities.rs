@@ -530,7 +530,7 @@ pub fn creature_body(kind: &str) -> Body {
         "sand_shade" | "ember_wisp" | "gloamhound" | "verdant_ooze" | "bog_ooze" => {
             Body::Amorphous
         }
-        "sporeling" | "myconid_brute" | "forest_bloom_stalker" | "bog_stinger"
+        "sporeling" | "myconid_brute" | "forest_bloom_stalker" | "bog_stinger" | "frog_tribesman"
         | "choirmother" | "hollowbishop" | "miredrowned" | "sepulcher" | "briarlord" => {
             Body::Soft
         }
@@ -563,6 +563,9 @@ fn creature_elemental_modifiers(kind: &str) -> Vec<(DamageType, f64)> {
         // punishes a party carrying only swords, and folds to the one that packed a
         // brand. Its own acid is nothing to it.
         "verdant_ooze" => vec![(Fire, 2.0), (Ice, 1.75), (Poison, 0.0), (Earth, 0.5)],
+        // Wet skin conducts: lightning is what a frog tribe fears, and the swamp's own
+        // water and venom are what it grew up in.
+        "frog_tribesman" => vec![(Lightning, 2.0), (Water, 0.25), (Poison, 0.5), (Fire, 1.25)],
         "bog_ooze" => vec![(Fire, 2.0), (Ice, 1.75), (Poison, 0.0), (Water, 0.25)],
         // -------------------------------------------------- bosses (FS-4) --
         "gloamhound" => vec![(Celestial, 1.5), (Shadow, -0.25), (Fire, 0.75)],
@@ -681,6 +684,8 @@ pub fn creature_basic_attack_type(kind: &str) -> DamageType {
         }
         "forest_bloom_stalker" | "sand_shade" | "cinder_imp" | "ice_revenant" => Slash,
         "ember_wisp" => Fire,
+        // A tribe carries tools: a hafted stone club, not teeth.
+        "frog_tribesman" => Blunt,
         // It engulfs rather than bites: acid, not a point.
         "verdant_ooze" | "bog_ooze" => Poison,
         // Bosses (FS-4): a fang/claw/maw basic, flavored per identity.
