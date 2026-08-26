@@ -74,6 +74,13 @@ def complete(name):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--all", action="store_true",
+                    help="re-pull every character even if its art looks complete here. "
+                         "A clip REGENERATED on the account keeps its name, so nothing "
+                         "about the folder on disk changes and no name-based check can "
+                         "see it - the repo just quietly keeps serving the old motion. "
+                         "This is downloads only and cannot spend a generation, so when "
+                         "in doubt it is the cheap answer.")
     a = ap.parse_args()
     if not TOKEN:
         sys.exit("set PIXELLAB_TOKEN")
@@ -118,7 +125,7 @@ def main():
         if want in CLASSES:
             not_ours.append(want)
             continue
-        (skip if complete(want) else todo).append((cid, want))
+        (todo if a.all else (skip if complete(want) else todo)).append((cid, want))
 
     print(f"{len(chars)} 96px characters on the account; {len(not_ours)} are hero "
           f"classes, {len(skip)} creatures already complete here, {len(todo)} to pull")
