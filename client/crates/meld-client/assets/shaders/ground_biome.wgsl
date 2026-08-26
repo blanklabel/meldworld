@@ -496,7 +496,20 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     // the ground beneath show through, so the beach is a gradient rather than a hard
     // outline; open water deepens and hides it. Mirrors `meld_proto::coast`, which is what
     // movement and path routing collide against.
-    let sea = sea_depth_at(in.world_position.xz);
+    // ⚠️ **THE TINT ASKS FOR ALL WATER; THE DISPLACEMENT ASKS ONLY FOR THE SEA.**
+    // `total_height` dips the ground toward the sea floor over `sea_depth_at` ALONE, because
+    // sea level is globally zero — an inland basin sits at its own elevation and its hollow
+    // is already in the heightmap, so dipping there would excavate every lake below its own
+    // bed. But a lake, a bog and a river still have to be PAINTED, and this is the stage
+    // that paints. Mirrors `coast::Shore::water` — `max(sea, inland)`.
+    //
+    // ⚠️ THIS `max` IS THE LINE THAT WAS MISSING, and its absence is instructive:
+    // `inland_depth_at` was defined in both shaders, carried through the uniform, filled by
+    // the client and fed by the server — and never CALLED. So every lake and river in the
+    // game existed in the world model, blocked movement, and drew absolutely nothing. The
+    // mirror test could not catch it either, because it compares the two shaders to EACH
+    // OTHER and both were equally unwired. `every_coast_helper_is_actually_called` does now.
+    let sea = max(sea_depth_at(in.world_position.xz), inland_depth_at(in.world_position.xz));
     // THE STRAND, first — the land side of the shoreline, under the water blend below. It
     // rides the SAME band the ground's beach ramp uses (`smoothstep(-14, 0)` in
     // `total_height`), so the sand appears exactly where the ground starts falling toward
