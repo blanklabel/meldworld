@@ -1,5 +1,5 @@
 {
-  "group_id": null,
+  "group_id": "e980638f-8d7b-4dbf-9891-fb649f3c3c89",
   "states": [
     {
       "character": {
@@ -28,86 +28,86 @@
           "south-west": "Ironmaw/rotations/south-west.png"
         },
         "animations": {
-          "walk": {
-            "east": [
-              "Ironmaw/animations/walk/east/frame_000.png",
-              "Ironmaw/animations/walk/east/frame_001.png",
-              "Ironmaw/animations/walk/east/frame_002.png",
-              "Ironmaw/animations/walk/east/frame_003.png",
-              "Ironmaw/animations/walk/east/frame_004.png",
-              "Ironmaw/animations/walk/east/frame_005.png",
-              "Ironmaw/animations/walk/east/frame_006.png",
-              "Ironmaw/animations/walk/east/frame_007.png"
-            ],
-            "west": [
-              "Ironmaw/animations/walk/west/frame_000.png",
-              "Ironmaw/animations/walk/west/frame_001.png",
-              "Ironmaw/animations/walk/west/frame_002.png",
-              "Ironmaw/animations/walk/west/frame_003.png",
-              "Ironmaw/animations/walk/west/frame_004.png",
-              "Ironmaw/animations/walk/west/frame_005.png",
-              "Ironmaw/animations/walk/west/frame_006.png",
-              "Ironmaw/animations/walk/west/frame_007.png"
-            ],
-            "south": [
-              "Ironmaw/animations/walk/south/frame_000.png",
-              "Ironmaw/animations/walk/south/frame_001.png",
-              "Ironmaw/animations/walk/south/frame_002.png",
-              "Ironmaw/animations/walk/south/frame_003.png",
-              "Ironmaw/animations/walk/south/frame_004.png",
-              "Ironmaw/animations/walk/south/frame_005.png",
-              "Ironmaw/animations/walk/south/frame_006.png",
-              "Ironmaw/animations/walk/south/frame_007.png"
-            ],
-            "north-west": [
-              "Ironmaw/animations/walk/north-west/frame_000.png",
-              "Ironmaw/animations/walk/north-west/frame_001.png",
-              "Ironmaw/animations/walk/north-west/frame_002.png",
-              "Ironmaw/animations/walk/north-west/frame_003.png",
-              "Ironmaw/animations/walk/north-west/frame_004.png",
-              "Ironmaw/animations/walk/north-west/frame_005.png",
-              "Ironmaw/animations/walk/north-west/frame_006.png",
-              "Ironmaw/animations/walk/north-west/frame_007.png"
-            ],
-            "south-west": [
-              "Ironmaw/animations/walk/south-west/frame_000.png",
-              "Ironmaw/animations/walk/south-west/frame_001.png",
-              "Ironmaw/animations/walk/south-west/frame_002.png",
-              "Ironmaw/animations/walk/south-west/frame_003.png",
-              "Ironmaw/animations/walk/south-west/frame_004.png",
-              "Ironmaw/animations/walk/south-west/frame_005.png",
-              "Ironmaw/animations/walk/south-west/frame_006.png",
-              "Ironmaw/animations/walk/south-west/frame_007.png"
-            ],
-            "south-east": [
-              "Ironmaw/animations/walk/south-east/frame_000.png",
-              "Ironmaw/animations/walk/south-east/frame_001.png",
-              "Ironmaw/animations/walk/south-east/frame_002.png",
-              "Ironmaw/animations/walk/south-east/frame_003.png",
-              "Ironmaw/animations/walk/south-east/frame_004.png",
-              "Ironmaw/animations/walk/south-east/frame_005.png",
-              "Ironmaw/animations/walk/south-east/frame_006.png",
-              "Ironmaw/animations/walk/south-east/frame_007.png"
-            ],
+          "walking": {
             "north": [
-              "Ironmaw/animations/walk/north/frame_000.png",
-              "Ironmaw/animations/walk/north/frame_001.png",
-              "Ironmaw/animations/walk/north/frame_002.png",
-              "Ironmaw/animations/walk/north/frame_003.png",
-              "Ironmaw/animations/walk/north/frame_004.png",
-              "Ironmaw/animations/walk/north/frame_005.png",
-              "Ironmaw/animations/walk/north/frame_006.png",
-              "Ironmaw/animations/walk/north/frame_007.png"
+              "Ironmaw/animations/walking/north/frame_000.png",
+              "Ironmaw/animations/walking/north/frame_001.png",
+              "Ironmaw/animations/walking/north/frame_002.png",
+              "Ironmaw/animations/walking/north/frame_003.png",
+              "Ironmaw/animations/walking/north/frame_004.png",
+              "Ironmaw/animations/walking/north/frame_005.png",
+              "Ironmaw/animations/walking/north/frame_006.png",
+              "Ironmaw/animations/walking/north/frame_007.png"
             ],
             "north-east": [
-              "Ironmaw/animations/walk/north-east/frame_000.png",
-              "Ironmaw/animations/walk/north-east/frame_001.png",
-              "Ironmaw/animations/walk/north-east/frame_002.png",
-              "Ironmaw/animations/walk/north-east/frame_003.png",
-              "Ironmaw/animations/walk/north-east/frame_004.png",
-              "Ironmaw/animations/walk/north-east/frame_005.png",
-              "Ironmaw/animations/walk/north-east/frame_006.png",
-              "Ironmaw/animations/walk/north-east/frame_007.png"
+              "Ironmaw/animations/walking/north-east/frame_000.png",
+              "Ironmaw/animations/walking/north-east/frame_001.png",
+              "Ironmaw/animations/walking/north-east/frame_002.png",
+              "Ironmaw/animations/walking/north-east/frame_003.png",
+              "Ironmaw/animations/walking/north-east/frame_004.png",
+              "Ironmaw/animations/walking/north-east/frame_005.png",
+              "Ironmaw/animations/walking/north-east/frame_006.png",
+              "Ironmaw/animations/walking/north-east/frame_007.png"
+            ],
+            "south-west": [
+              "Ironmaw/animations/walking/south-west/frame_000.png",
+              "Ironmaw/animations/walking/south-west/frame_001.png",
+              "Ironmaw/animations/walking/south-west/frame_002.png",
+              "Ironmaw/animations/walking/south-west/frame_003.png",
+              "Ironmaw/animations/walking/south-west/frame_004.png",
+              "Ironmaw/animations/walking/south-west/frame_005.png",
+              "Ironmaw/animations/walking/south-west/frame_006.png",
+              "Ironmaw/animations/walking/south-west/frame_007.png"
+            ],
+            "south-east": [
+              "Ironmaw/animations/walking/south-east/frame_000.png",
+              "Ironmaw/animations/walking/south-east/frame_001.png",
+              "Ironmaw/animations/walking/south-east/frame_002.png",
+              "Ironmaw/animations/walking/south-east/frame_003.png",
+              "Ironmaw/animations/walking/south-east/frame_004.png",
+              "Ironmaw/animations/walking/south-east/frame_005.png",
+              "Ironmaw/animations/walking/south-east/frame_006.png",
+              "Ironmaw/animations/walking/south-east/frame_007.png"
+            ],
+            "south": [
+              "Ironmaw/animations/walking/south/frame_000.png",
+              "Ironmaw/animations/walking/south/frame_001.png",
+              "Ironmaw/animations/walking/south/frame_002.png",
+              "Ironmaw/animations/walking/south/frame_003.png",
+              "Ironmaw/animations/walking/south/frame_004.png",
+              "Ironmaw/animations/walking/south/frame_005.png",
+              "Ironmaw/animations/walking/south/frame_006.png",
+              "Ironmaw/animations/walking/south/frame_007.png"
+            ],
+            "west": [
+              "Ironmaw/animations/walking/west/frame_000.png",
+              "Ironmaw/animations/walking/west/frame_001.png",
+              "Ironmaw/animations/walking/west/frame_002.png",
+              "Ironmaw/animations/walking/west/frame_003.png",
+              "Ironmaw/animations/walking/west/frame_004.png",
+              "Ironmaw/animations/walking/west/frame_005.png",
+              "Ironmaw/animations/walking/west/frame_006.png",
+              "Ironmaw/animations/walking/west/frame_007.png"
+            ],
+            "east": [
+              "Ironmaw/animations/walking/east/frame_000.png",
+              "Ironmaw/animations/walking/east/frame_001.png",
+              "Ironmaw/animations/walking/east/frame_002.png",
+              "Ironmaw/animations/walking/east/frame_003.png",
+              "Ironmaw/animations/walking/east/frame_004.png",
+              "Ironmaw/animations/walking/east/frame_005.png",
+              "Ironmaw/animations/walking/east/frame_006.png",
+              "Ironmaw/animations/walking/east/frame_007.png"
+            ],
+            "north-west": [
+              "Ironmaw/animations/walking/north-west/frame_000.png",
+              "Ironmaw/animations/walking/north-west/frame_001.png",
+              "Ironmaw/animations/walking/north-west/frame_002.png",
+              "Ironmaw/animations/walking/north-west/frame_003.png",
+              "Ironmaw/animations/walking/north-west/frame_004.png",
+              "Ironmaw/animations/walking/north-west/frame_005.png",
+              "Ironmaw/animations/walking/north-west/frame_006.png",
+              "Ironmaw/animations/walking/north-west/frame_007.png"
             ]
           },
           "reactor_roar": {
@@ -361,5 +361,5 @@
     }
   ],
   "export_version": "3.1",
-  "export_date": "2026-07-26T23:15:33.995854"
+  "export_date": "2026-08-26T19:45:36.366215"
 }

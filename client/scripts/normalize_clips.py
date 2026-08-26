@@ -41,7 +41,15 @@ UNNAMED_PREFIX = "custom-"
 
 
 def canonical(name):
-    key = name.strip().lower().replace("-", " ")
+    key = name.strip().lower()
+    # An animation made from a template and never given a name comes back as
+    # `v3:walking` — the mode and the template, not a clip name. Ironmaw, Rustfang and
+    # the Briar Lord all had their walks re-cut that way and every one of them installed
+    # under a `v3:walking/` folder the loader does not open, leaving the OLD walk in
+    # place. Strip the mode prefix and let the alias table do the rest.
+    if ":" in key:
+        key = key.split(":", 1)[1]
+    key = key.replace("-", " ")
     return ALIASES.get(key, key.replace(" ", "_"))
 
 
