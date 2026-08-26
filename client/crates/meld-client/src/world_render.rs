@@ -3584,7 +3584,9 @@ mod creature_sprite_tests {
             Some("glacier_maw_pack_leader")
         );
     }
+}
 
+#[cfg(test)]
 mod node_art_tests {
     /// **Every gatherable material must have something to draw.** The node spawn tries a
     /// bespoke `resource_<kind>.png` billboard, falls back to a 3D scene, and if BOTH miss
