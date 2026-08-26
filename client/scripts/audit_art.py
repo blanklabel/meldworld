@@ -86,6 +86,27 @@ def on_disk():
     return out
 
 
+def declared_lengths():
+    """kind -> key -> clip -> frame count, straight out of the same match arms."""
+    src = SRC.read_text()
+    out = {"characters": {}, "bosses": {}, "creatures": {}, "npcs": {}}
+    for fn, kind in (("class_clips", "characters"), ("boss_clips", "bosses")):
+        blk = src[src.index(f"fn {fn}("):]
+        blk = blk[:blk.index("\n    }\n")]
+        for m in re.finditer(r'((?:"[a-z_]+"\s*\|\s*)*"[a-z_]+")\s*=>\s*\{?\s*&\[(.*?)\]',
+                             blk, re.S):
+            pairs = dict((c, int(n)) for c, n in re.findall(r'\("(\w+)",\s*(\d+)', m.group(2)))
+            for k in re.findall(r'"([a-z_]+)"', m.group(1)):
+                out[kind][k] = pairs
+    # Creatures and NPCs share one shape: an 8-frame walk, an 8-frame attack.
+    for kind, const in (("creatures", "CREATURE_CHARS"), ("npcs", "NPC_CHARS")):
+        m = re.search(rf'{const}: &\[&str\] = &\[(.*?)\];', src, re.S)
+        if m:
+            for k in re.findall(r'"([a-z_0-9]+)"', m.group(1)):
+                out[kind][k] = {"walk": 8, "attack": 8}
+    return out
+
+
 def declared():
     """What the renderer opens: key -> {clip names}, per kind.
 
@@ -210,6 +231,23 @@ def main():
             for c in sorted(clips - set(have)):
                 print(f"   {kind}/{key}/{c}  declared, no frames")
                 problems += 1
+
+    print("\n== WRONG FRAME COUNT ==")
+    # `boss_clips`/`class_clips` declare a length per clip — the humanoid boss walk really
+    # is 6 frames — so the check is against what was DECLARED, not a global 8. A creature
+    # at 6 beside its pack at 8 walks with a different gait; a boss at 6 is correct.
+    lengths = declared_lengths()
+    for kind in KINDS:
+        for key, clips in disk.get(kind, {}).items():
+            for c, facings in clips.items():
+                want = lengths.get(kind, {}).get(key, {}).get(c)
+                if not want or not facings:
+                    continue
+                d = ASSETS / kind / key / "animations" / c / sorted(facings)[0]
+                got = len(list(d.glob("*.png")))
+                if got != want:
+                    print(f"   {kind}/{key}/{c}  {got} frames, declared {want}")
+                    problems += 1
 
     print("\n== INCOMPLETE FACINGS ==")
     DIRS = {"south", "south-east", "east", "north-east", "north", "north-west", "west",

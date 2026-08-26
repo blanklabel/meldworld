@@ -57,6 +57,13 @@ ALL_DIRS = ["south", "south-east", "east", "north-east", "north", "north-west", 
 # because "rearing up and slamming down" is the thing that makes a creature read as
 # itself and no template knows it.
 WALK_TEMPLATE = "walking"
+# ⚠️ MODE MUST BE SET EXPLICITLY. `animate_character` auto-detects the mode from the
+# presence of a template id, and what it picks is PLAIN TEMPLATE — whose frame count is
+# the template's own, which for `walking` is SIX. The same template under v3 gives EIGHT,
+# which is what the rest of the bestiary runs at. Leaving the mode to be inferred put a
+# 6-frame walk on five creatures standing beside 8-frame ones: a different gait, in the
+# same pack, from one omitted argument.
+WALK_FRAMES = 8
 
 # AND ONLY THE EASTERN HALF IS DRAWN. The eight facings are symmetric about the
 # north-south axis: `south` and `north` sit ON it, and the other six are three mirrored
@@ -179,9 +186,20 @@ def installed_on_disk(asset, clips=("walk", "attack")):
     d = ASSETS / asset
     if not (d / "rotations" / "south.png").is_file():
         return False
-    if "walk" in clips and not set(ALL_DIRS) <= clip_dirs_on_disk(asset, "walk"):
-        return False
+    if "walk" in clips:
+        if not set(ALL_DIRS) <= clip_dirs_on_disk(asset, "walk"):
+            return False
+        # FRAME COUNT COUNTS. A 6-frame walk has every facing and every file, so a
+        # facings-only check calls it finished and it never gets fixed — which is exactly
+        # how five creatures ended up walking at a different cadence to the rest.
+        if clip_frames_on_disk(asset, "walk") != WALK_FRAMES:
+            return False
     return "attack" not in clips or "south" in clip_dirs_on_disk(asset, "attack")
+
+
+def clip_frames_on_disk(asset, clip, facing="south"):
+    d = ASSETS / asset / "animations" / clip / facing
+    return len(list(d.glob("*.png"))) if d.is_dir() else 0
 
 
 def clip_dirs_on_disk(asset, clip):
@@ -328,9 +346,7 @@ def animate(cid, clip, action):
         "directions": CLIP_DIRS[clip],
     }
     if clip == "walk":
-        # Template mode: the frame count is the template's, and `mode` is auto-detected
-        # from the presence of a template id.
-        args["template_animation_id"] = WALK_TEMPLATE
+        args |= {"template_animation_id": WALK_TEMPLATE, "mode": "v3"}
     else:
         args |= {"mode": "v3", "action_description": action, "frame_count": 8,
                  "keep_first_frame": False}
