@@ -4187,7 +4187,7 @@ impl Arena {
         {
             return;
         }
-        let mut rng = Rng(section_seed(self.seed_base, i) ^ 0xC0A5_7_C0A5_7_C0A5);
+        let mut rng = Rng(section_seed(self.seed_base, i) ^ 0x00C0_A57C_0A57_C0A5);
         if rng.unit() >= wg.strait_chance {
             return;
         }
@@ -4234,12 +4234,13 @@ impl Arena {
         if inner <= 0.0 {
             return; // the span cannot hold an isthmus this wide — no strait rather than a wall
         }
-        for k in 0..want {
-            // Cell centre in [-inner, inner], jittered inside its own cell.
-            let cells = want as f64;
+        let cells = want as f64;
+        for (k, slot) in bridges.iter_mut().enumerate().take(want) {
+            // Cell centre in [-inner, inner], jittered inside its own cell — so two
+            // isthmuses never merge into one door, which is the `Seam` again.
             let c = -inner + (2.0 * inner) * ((k as f64) + 0.5) / cells;
             let jit = (2.0 * inner / cells) * 0.3 * rng.signed();
-            bridges[k] = ((c + jit).clamp(-inner, inner), bw);
+            *slot = ((c + jit).clamp(-inner, inner), bw);
         }
 
         let s: meld_proto::coast::Strait = [
@@ -4449,6 +4450,11 @@ impl Arena {
     /// alongside four integers instead of storing a map. Exposed so the world can TELL a
     /// player which world they are in, rather than the client guessing — the same lesson
     /// `run.started.tutorial` already paid for.
+    /// (`seed_base` is the field's internal name — it is the RUN seed that
+    /// `section_seed` derives each section's own from, so the distinction matters inside
+    /// this module and not at all outside it. `seed()` is the name the rest of the game
+    /// knows a world by, so the getter keeps it.)
+    #[allow(clippy::misnamed_getters)]
     pub fn seed(&self) -> u64 {
         self.seed_base
     }
