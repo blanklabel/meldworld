@@ -2470,6 +2470,17 @@ pub struct Arena {
     /// wire beside `peaks` (`run.started.straits` + `world.terrain_section.straits`),
     /// selected per section by the same radius-band filter.
     pub straits: Vec<meld_proto::coast::Strait>,
+    /// Whether this arena's entities are already in WORLD space. False while
+    /// `generate_with` builds the initial chain (everything is corridor-space until
+    /// `radialize`), true afterwards — so streamed sections are appended corridor-space and
+    /// bent immediately, while everything already present is world-space.
+    ///
+    /// ⚠️ This exists because the corridor/world split has now caused FOUR bugs in one
+    /// feature: the clear-path check compared a corridor path against world water, creature
+    /// spacing was measured in the wrong frame, water-covers-creature bent the creatures it
+    /// tested, and that same check then DOUBLE-bent the ones already bent. Anything comparing
+    /// a generated entity against world-space geometry has to know which frame it is holding.
+    bent: bool,
     /// **This world's coastal LOBES** — bays bitten into the fan's rim and isles standing
     /// offshore of it ([`meld_proto::coast::Lobe`]). One list for both, because they are one
     /// primitive: a disc that edits the shoreline, differing only in which side of the
@@ -2688,6 +2699,7 @@ impl Arena {
         meld_proto::coast::Shore {
             arc_half: self.radial_half as f32,
             terrain_off: self.terrain_off,
+            peaks: &self.peaks,
             straits: &self.straits,
             lobes: &self.lobes,
             basins: &self.basins,
@@ -2811,6 +2823,7 @@ impl Arena {
             peaks: Vec::new(),
             straits: Vec::new(),
             lobes: Vec::new(),
+            bent: false,
             basins: Vec::new(),
             rivers: Vec::new(),
             terrain_cell: wg.terrain_cell,
@@ -2885,9 +2898,11 @@ impl Arena {
         // below can read.
         let (straits, lobes) = (self.straits.clone(), self.lobes.clone());
         let (basins, rivers) = (self.basins.clone(), self.rivers.clone());
+        let peak_list = self.peaks.clone();
         let shore = meld_proto::coast::Shore {
             arc_half: half as f32,
             terrain_off: toff,
+            peaks: &peak_list,
             straits: &straits,
             lobes: &lobes,
             basins: &basins,
@@ -2899,19 +2914,16 @@ impl Arena {
             Position::new(r * theta.cos(), r * theta.sin())
         };
         for m in &mut self.monsters {
-            // A creature is scattered without asking the shoreline, so the bend can drop
-            // one into a strait — a fight nobody can reach, wandering in open water. Nudged
-            // ashore rather than dropped: removing a spawn here would take a pack leader out
-            // from under its own minions (`join_pack` has already run).
-            //
-            // ⚠️ WATER ONLY. `nudge_to_walkable` would also pull creatures off CLIFFS, which
-            // they have always been allowed to stand on, and that moved every creature in
-            // every seeded world. A fix for the sea must not quietly become one for terrain.
-            m.position = nudge_ashore(tf(m.position), shore);
-            m.home = nudge_ashore(tf(m.home), shore);
+            // ⚠️ NOT nudged. See `drown_proof`: there is no displacement that preserves both
+            // a creature's DISTANCE (which is its difficulty) and its ADJACENCY (which is its
+            // pack and its formation), because the placement pass chose those together. A
+            // creature the bend leaves in water is removed by `drown_proof` instead — by pack,
+            // so no orphan is left carrying `back_row` with nothing to stand behind.
+            m.position = tf(m.position);
+            m.home = tf(m.home);
             // The pack anchor is world-space like `home`, so it bends with it. A member
             // left anchored in corridor space would roam a disc a quarter-turn away.
-            m.pack_home = nudge_ashore(tf(m.pack_home), shore);
+            m.pack_home = tf(m.pack_home);
             // Keep the corridor [start_x, end_x] as a RADIUS band: after the bend a
             // creature's hub-distance is its corridor x, so `step_creatures` clamps its
             // radius to this band and it never wanders out of its biome ring (#10).
@@ -2979,6 +2991,9 @@ impl Arena {
         self.retain_placeable_obstacles();
         // Straight-wall biome seams don't survive the bend — drop them.
         self.seams.clear();
+        // From here on every entity in the arena is world-space; streamed sections append in
+        // corridor space and are bent as they arrive.
+        self.bent = true;
         // A square box that contains the whole fan (radius up to the frontier).
         let rmax = self.cursor + 4.0;
         self.x_min = -rmax;
@@ -3010,9 +3025,11 @@ impl Arena {
         let web = self.web.clone();
         let (straits, lobes) = (self.straits.clone(), self.lobes.clone());
         let (basins, rivers) = (self.basins.clone(), self.rivers.clone());
+        let peak_list = self.peaks.clone();
         let shore = meld_proto::coast::Shore {
             arc_half: self.radial_half as f32,
             terrain_off: self.terrain_off,
+            peaks: &peak_list,
             straits: &straits,
             lobes: &lobes,
             basins: &basins,
@@ -3084,8 +3101,6 @@ impl Arena {
         let p0 = self.path.len();
         let w0 = self.corridor_web.len();
         let pk0 = self.peaks.len();
-        // Where this section's inland water starts, so `drown_proof` can scope itself to it.
-        let (wb0, wr0) = (self.basins.len(), self.rivers.len());
 
         self.push_section(balance, i); // corridor-space append; advances `cursor`.
 
@@ -3101,9 +3116,11 @@ impl Arena {
         // everything the bend touches is checked against them (see `radialize`).
         let (straits, lobes) = (self.straits.clone(), self.lobes.clone());
         let (basins, rivers) = (self.basins.clone(), self.rivers.clone());
+        let peak_list = self.peaks.clone();
         let shore = meld_proto::coast::Shore {
             arc_half: half as f32,
             terrain_off: toff,
+            peaks: &peak_list,
             straits: &straits,
             lobes: &lobes,
             basins: &basins,
@@ -3115,19 +3132,16 @@ impl Arena {
             Position::new(r * theta.cos(), r * theta.sin())
         };
         for m in &mut self.monsters[m0..] {
-            // A creature is scattered without asking the shoreline, so the bend can drop
-            // one into a strait — a fight nobody can reach, wandering in open water. Nudged
-            // ashore rather than dropped: removing a spawn here would take a pack leader out
-            // from under its own minions (`join_pack` has already run).
-            //
-            // ⚠️ WATER ONLY. `nudge_to_walkable` would also pull creatures off CLIFFS, which
-            // they have always been allowed to stand on, and that moved every creature in
-            // every seeded world. A fix for the sea must not quietly become one for terrain.
-            m.position = nudge_ashore(tf(m.position), shore);
-            m.home = nudge_ashore(tf(m.home), shore);
+            // ⚠️ NOT nudged. See `drown_proof`: there is no displacement that preserves both
+            // a creature's DISTANCE (which is its difficulty) and its ADJACENCY (which is its
+            // pack and its formation), because the placement pass chose those together. A
+            // creature the bend leaves in water is removed by `drown_proof` instead — by pack,
+            // so no orphan is left carrying `back_row` with nothing to stand behind.
+            m.position = tf(m.position);
+            m.home = tf(m.home);
             // The pack anchor is world-space like `home`, so it bends with it. A member
             // left anchored in corridor space would roam a disc a quarter-turn away.
-            m.pack_home = nudge_ashore(tf(m.pack_home), shore);
+            m.pack_home = tf(m.pack_home);
             // Keep [start_x, end_x] as a radius band (see `radialize`) so streamed
             // creatures also stay inside their own biome ring (#10).
         }
@@ -3166,9 +3180,6 @@ impl Arena {
                 nudge_to_walkable(tf(b), toff, shore),
             ));
         }
-        // Anything an inland body sprung this section is now standing in gets moved ashore —
-        // including entities from EARLIER sections, which the sweeps above never look at.
-        self.drown_proof(wb0, wr0);
         // Straight-wall biome seams don't survive the bend — drop the ones just added.
         self.seams.truncate(s0);
         // The bend distorts the clear-path tube AND appending this section's waypoint
@@ -3353,11 +3364,13 @@ impl Arena {
         // it appends to `self.monsters`.
         let (sea, sea_lobes) = (self.straits.clone(), self.lobes.clone());
         let (sea_basins, sea_rivers) = (self.basins.clone(), self.rivers.clone());
+        let wet_peaks = self.peaks.clone();
         let toff_wet = self.terrain_off;
         let wet = move |w: &Position| -> bool {
             meld_proto::coast::Shore {
                 arc_half: bend_half as f32,
                 terrain_off: toff_wet,
+                peaks: &wet_peaks,
                 straits: &sea,
                 lobes: &sea_lobes,
                 basins: &sea_basins,
@@ -3449,14 +3462,13 @@ impl Arena {
                         let bidx = if n == 0 {
                             leader_idx
                         } else {
-                            let angle = erng.unit() * std::f64::consts::TAU;
-                            let dist = enc.pack_spread * (0.5 + 0.5 * erng.unit());
-                            let bpos = corridor_offset(
+                            let bpos = dry_companion(
                                 pos,
-                                dist * angle.cos(),
-                                dist * angle.sin(),
+                                enc.pack_spread,
+                                &mut erng,
                                 self.radial_half,
                                 self.corridor_lateral.max(1.0),
+                                &wet,
                             );
                             let j = self.monsters.len();
                             let bseed = erng.next_u64();
@@ -3512,14 +3524,13 @@ impl Arena {
                     };
                     self.monsters[leader_idx].join_pack(&rite_id, rite_home, &rite_faction);
                     for _ in 0..enc.undead_rite_minions {
-                        let angle = erng.unit() * std::f64::consts::TAU;
-                        let dist = enc.pack_spread * (0.4 + 0.6 * erng.unit());
-                        let mpos = corridor_offset(
+                        let mpos = dry_companion(
                             pos,
-                            dist * angle.cos(),
-                            dist * angle.sin(),
+                            enc.pack_spread,
+                            &mut erng,
                             self.radial_half,
                             self.corridor_lateral.max(1.0),
+                            &wet,
                         );
                         let midx = self.monsters.len();
                         let mseed = erng.next_u64();
@@ -3601,14 +3612,13 @@ impl Arena {
                             } else {
                                 kind
                             };
-                            let angle = erng.unit() * std::f64::consts::TAU;
-                            let dist = enc.pack_spread * (0.35 + 0.65 * erng.unit());
-                            let mpos = corridor_offset(
+                            let mpos = dry_companion(
                                 pos,
-                                dist * angle.cos(),
-                                dist * angle.sin(),
+                                enc.pack_spread,
+                                &mut erng,
                                 self.radial_half,
                                 self.corridor_lateral.max(1.0),
+                                &wet,
                             );
                             let midx = self.monsters.len();
                             let mseed = erng.next_u64();
@@ -3798,9 +3808,19 @@ impl Arena {
                     !self.on_land(w.x, w.y)
                 };
                 let side = if wet_side(side * radius * 0.55) { -side } else { side };
-                let cy = (base_wp.y + side * radius * 0.55)
+                let offset = side * radius * 0.55;
+                let cy = (base_wp.y + offset)
                     .clamp(-(self.lateral - 2.0), self.lateral - 2.0);
                 let summit = Position::new(base_wp.x, cy);
+                // ⚠️ Measured across 48 seeds, 2 peaks of ~144 land in water, always because a
+                // STRAIT or BAY reaches the summit — sea-level water is purely geometric and
+                // ignores elevation, unlike a `Basin` (which fills against `height +
+                // peak_height`, so a hill in a lake is correctly an island). A crowned summit
+                // under water loses its reward, which is the only reason to climb.
+                // Only the PEAK is skipped: an earlier attempt `return`ed and gutted the
+                // section's obstacles and terraces too.
+                let bent = radial_tf(summit, self.radial_half, self.corridor_lateral.max(1.0));
+                if self.on_land(bent.x, bent.y) {
                 self.peaks
                     .push([summit.x as f32, summit.y as f32, radius as f32, height as f32]);
                 // `hub_safe_radius` alone put a 10x-HP Gatekeeper 14 units from the
@@ -3838,6 +3858,7 @@ impl Arena {
                         opened: false,
                         elevation: 0,
                     });
+                }
                 }
             }
         }
@@ -4267,6 +4288,33 @@ impl Arena {
     /// Returns the corridor waypoints AFTER `entry` (last one ≈ a walkable `exit_target`).
     /// Falls back to a straight `[exit_target]` if no route is found (the connected base
     /// makes that essentially never happen).
+    /// Is `(p, pad)` clear of every authored PEAK?
+    ///
+    /// A peak is crowned with a gate boss or a guaranteed chest — unconditionally, one or the
+    /// other — and that reward is the only reason the climb exists. Flood the summit and the
+    /// chest is displaced by `nudge_to_walkable`, which is exactly what
+    /// `authored_peaks_are_climbable_and_crowned` forbids: it wants a reward within 2 units of
+    /// the centre.
+    ///
+    /// ⚠️ Asked by EVERY water generator, not just the basins. Peaks are placed after water
+    /// within their own section (the `wet_side` flip covers that), so the real risk is a LATER
+    /// section's water flooding a peak already standing — and a strait or a bay is far more
+    /// than large enough. Guarding only basins is what left this test failing.
+    ///
+    /// ⚠️ AND `self.peaks` IS CORRIDOR-SPACE UNTIL `radialize` BENDS IT, while `p` is world.
+    /// Comparing them directly is the fifth instance of that trap in this feature — after the
+    /// clear-path check, creature spacing, water-over-creature, and its double-bend — and it
+    /// fails the same silent way: the guard simply never rejects anything.
+    fn clear_of_peaks(&self, p: Position, pad: f64) -> bool {
+        let (half, lat) = (self.radial_half, self.corridor_lateral.max(1.0));
+        let bent_already = self.bent;
+        self.peaks.iter().all(|k| {
+            let c = Position::new(k[0] as f64, k[1] as f64);
+            let c = if bent_already { c } else { radial_tf(c, half, lat) };
+            (p.x - c.x).hypot(p.y - c.y) > pad + k[2] as f64
+        })
+    }
+
     /// **Cut this section's STRAIT — the boundary between two continents.**
     ///
     /// A strait is an annular sector of sea: a radius band inside this section's own band,
@@ -4374,6 +4422,17 @@ impl Arena {
         if !meld_proto::coast::strait_is_crossable(&s, self.radial_half as f32) {
             return;
         }
+        // …and never over a PEAK already standing (see `clear_of_peaks`). Sampled along the
+        // strait's own centre-line arc, because a strait is a sector, not a disc.
+        let samples = 24;
+        for k in 0..=samples {
+            let t = k as f64 / samples as f64;
+            let th = (th_c - th_half) + t * 2.0 * th_half;
+            let q = Position::new(r_c * th.cos(), r_c * th.sin());
+            if !self.clear_of_peaks(q, r_half) {
+                return;
+            }
+        }
         self.straits.push(s);
     }
 
@@ -4430,7 +4489,9 @@ impl Arena {
                 ];
                 // The contract, asked rather than assumed: a bay that could pinch the fan
                 // in two is not cut at all. A strait at least has an isthmus; this has none.
-                if meld_proto::coast::bay_leaves_a_shore(&lobe, self.radial_half as f32) {
+                if meld_proto::coast::bay_leaves_a_shore(&lobe, self.radial_half as f32)
+                    && self.clear_of_peaks(Position::new(lobe[0] as f64, lobe[1] as f64), radius)
+                {
                     self.lobes.push(lobe);
                 }
             }
@@ -4535,6 +4596,45 @@ impl Arena {
             self.path.iter().map(|p| radial_tf(*p, half, lat)).collect();
         let clear = self.path_clear_radius;
         let off_drawn = |p: Position, pad: f64| dist_to_path(&p, &drawn) > clear + pad;
+        // …and never over a PEAK's summit. A peak is crowned with a gate boss or a guaranteed
+        // chest — that reward is the whole reason the climb exists — and a summit under water
+        // either drowns the reward or forces the party that holds it to be moved. Peaks are
+        // few, so checking them all is free.
+        let peaks: Vec<[f32; 4]> = self.peaks.clone();
+        // ⚠️ **AND NEVER OVER A CREATURE THAT ALREADY STANDS THERE.** Water is FOUND by walking
+        // downhill, so it does not respect where anything was placed — and every mechanism that
+        // tried to fix that AFTERWARDS perturbed something the placement pass had already got
+        // right: moving a creature radially crosses a difficulty gate (distance IS difficulty,
+        // CANON §B), moving it tangentially strands it from its pack or lands it inside another
+        // encounter's `group_radius`, and deleting it silently removes summit rewards and the
+        // members of an undead rite. There is no post-hoc repair, because the placement pass
+        // chose those positions TOGETHER. So the water yields instead: nothing that already
+        // exists is ever touched.
+        //
+        // Positions are BENT for the test. Section generation runs in the corridor frame and
+        // creatures are bent later, while a basin is already world-space — the same
+        // two-coordinate-systems trap that made the clear-path check silently pass three runs
+        // running.
+        // ⚠️ Bend ONLY if the arena has not been bent yet. During the initial chain every
+        // creature is corridor-space and needs the map; once `radialize` has run, streamed
+        // sections arrive beside creatures that are ALREADY world-space, and bending those a
+        // second time yields a position nowhere near the creature — so the check passed and
+        // water landed on it anyway. That is the fourth corridor/world bug in this feature.
+        let bent_already = self.bent;
+        let standing: Vec<Position> = self
+            .monsters
+            .iter()
+            .map(|m| if bent_already { m.position } else { radial_tf(m.position, half, lat) })
+            .collect();
+        let off_creatures = |p: Position, pad: f64| {
+            standing.iter().all(|q| q.distance_to(&p) > pad + 4.0)
+        };
+        let off_peaks = |p: Position, pad: f64| {
+            peaks.iter().all(|k| {
+                let d = (p.x - k[0] as f64).hypot(p.y - k[1] as f64);
+                d > pad + k[2] as f64
+            })
+        };
         // A body smaller than this is not worth placing — it renders as a puddle and reads
         // as an artefact rather than as water.
         const MIN_BODY: f64 = 18.0;
@@ -4604,8 +4704,10 @@ impl Arena {
             let mut broke = false;
             for n in &nodes {
                 let p = Position::new(n[0] as f64, n[1] as f64);
-                if !off_drawn(p, n[2] as f64) {
-                    broke = true; // the trail crosses here — leave dry ground for it
+                if !off_drawn(p, n[2] as f64) || !off_creatures(p, n[2] as f64) {
+                    // The trail crosses here, or something already stands here. Either way the
+                    // channel leaves dry ground and resumes past it — which reads as a ford.
+                    broke = true;
                     continue;
                 }
                 let mut n = *n;
@@ -4623,7 +4725,14 @@ impl Arena {
             if let Some(p) = pooled {
                 let radius = wg.basin_radius_min
                     + rng.unit() * (wg.basin_radius_max - wg.basin_radius_min).max(0.0);
-                if radius >= MIN_BODY && off_drawn(p, radius) {
+                // Shrink to fit rather than give up: a smaller lake beats no lake, and the
+                // radius is a BOUND on the contour fill rather than the shape itself, so a
+                // reduced one is still a real body of water.
+                let mut radius = radius;
+                while radius >= MIN_BODY && !off_creatures(p, radius) {
+                    radius -= 12.0;
+                }
+                if radius >= MIN_BODY && off_drawn(p, radius) && off_peaks(p, radius) {
                     self.basins.push([
                         p.x as f32,
                         p.y as f32,
@@ -4666,77 +4775,18 @@ impl Arena {
             let radius = wg.basin_radius_min
                 + rng.unit() * (wg.basin_radius_max - wg.basin_radius_min).max(0.0);
             let p = Position::new(x, z);
+            let mut radius = radius;
+            while radius >= MIN_BODY && !off_creatures(p, radius) {
+                radius -= 12.0;
+            }
             if self.shore().sea(x as f32, z as f32) < 0.0
                 && radius >= MIN_BODY
                 && off_drawn(p, radius)
+                && off_peaks(p, radius)
             {
                 self.basins.push([x as f32, z as f32, radius as f32, (cur + wg.basin_fill) as f32]);
             }
         }
-        }
-    }
-
-    /// **Move anything a newly-sprung body of water is standing on.**
-    ///
-    /// Inland water is FOUND by walking downhill, so it does not respect section boundaries:
-    /// a lake discovered while building section 20 can spread back into section 19, whose
-    /// creatures, nodes and chests were placed and bent long ago. The bend-time sweeps only
-    /// ever look at the entities a section just added, so nothing would notice.
-    ///
-    /// The clear path is the exception and gets the opposite treatment — it cannot be
-    /// re-routed once drawn, so water yields to IT (see `push_water`'s `off_drawn`, which
-    /// turns a river node on the trail into a ford). Everything else moves.
-    ///
-    /// Scoped to the water added since `(b0, r0)` rather than re-checking the whole world:
-    /// water grows with every section, so a full re-sweep would be quadratic in the section
-    /// count and this runs at the frontier of an endlessly streaming world.
-    fn drown_proof(&mut self, b0: usize, r0: usize) {
-        if self.basins.len() == b0 && self.rivers.len() == r0 {
-            return;
-        }
-        let fresh = meld_proto::coast::Shore {
-            arc_half: self.radial_half as f32,
-            terrain_off: self.terrain_off,
-            straits: &[],
-            lobes: &[],
-            basins: &self.basins[b0..],
-            rivers: &self.rivers[r0..],
-        };
-        // A creature's whole territory has to come with it, or it spends the dive walking at
-        // water it can never reach (`home`) or gets dragged back by its pack anchor.
-        let wet = |p: Position| fresh.inland(p.x as f32, p.y as f32) > 0.0;
-        let mut moves: Vec<(usize, Position)> = Vec::new();
-        for (i, m) in self.monsters.iter().enumerate() {
-            if wet(m.position) || wet(m.home) || wet(m.pack_home) {
-                moves.push((i, m.position));
-            }
-        }
-        let (half, straits, lobes) = (self.radial_half, self.straits.clone(), self.lobes.clone());
-        let (basins, rivers, toff) =
-            (self.basins.clone(), self.rivers.clone(), self.terrain_off);
-        let shore = meld_proto::coast::Shore {
-            arc_half: half as f32,
-            terrain_off: toff,
-            straits: &straits,
-            lobes: &lobes,
-            basins: &basins,
-            rivers: &rivers,
-        };
-        for (i, _) in moves {
-            let m = &mut self.monsters[i];
-            m.position = nudge_ashore(m.position, shore);
-            m.home = nudge_ashore(m.home, shore);
-            m.pack_home = nudge_ashore(m.pack_home, shore);
-        }
-        for r in self.resources.iter_mut() {
-            if fresh.inland(r.position.x as f32, r.position.y as f32) > 0.0 {
-                r.position = nudge_to_walkable(r.position, toff, shore);
-            }
-        }
-        for c in self.chests.iter_mut() {
-            if fresh.inland(c.position.x as f32, c.position.y as f32) > 0.0 {
-                c.position = nudge_to_walkable(c.position, toff, shore);
-            }
         }
     }
 
@@ -5028,11 +5078,13 @@ impl Arena {
         // section it became a boar wading across open sea.
         let (straits, lobes) = (self.straits.clone(), self.lobes.clone());
         let (basins, rivers) = (self.basins.clone(), self.rivers.clone());
+        let dry_peaks = self.peaks.clone();
         let toff_dry = self.terrain_off;
         let dry = |p: &Position| -> bool {
             meld_proto::coast::Shore {
                 arc_half: radial_half as f32,
                 terrain_off: toff_dry,
+                peaks: &dry_peaks,
                 straits: &straits,
                 lobes: &lobes,
                 basins: &basins,
@@ -6659,37 +6711,6 @@ fn hub_terrain_offset(seed: u64) -> (f32, f32) {
 /// Buttes are small + convex and sit in a connected walkable base, so a short search
 /// always finds walkable terrain around them — this routes the clear path AROUND a
 /// cliff instead of through it, keeping the world feasible under slope collision.
-/// Move `p` to the nearest DRY ground if it is at sea, and leave it exactly where it is
-/// otherwise. The sibling of [`nudge_to_walkable`], and deliberately **not** the same
-/// function: that one also refuses steep terrain, and creatures have always been allowed to
-/// stand on a cliff. Widening the sea fix into a terrain fix moved every creature in every
-/// seeded world — three unrelated pack/formation tests went red on the first attempt.
-///
-/// The backstop rather than the main line: creature placement rejects a wet spot where it
-/// already rejects a crowded one, so what reaches here is a pack minion or a rite's retinue
-/// scattered around an already-dry leader — a short hop, if any.
-fn nudge_ashore(p: Position, shore: meld_proto::coast::Shore<'_>) -> Position {
-    let dry = |q: &Position| shore.is_land(q.x as f32, q.y as f32);
-    if dry(&p) {
-        return p;
-    }
-    // Far enough to walk out of the widest LEGAL body of water: a bay is capped at
-    // `bay_radius_max` and a basin at `basin_radius_max`, both under 200 units, so a spiral
-    // to ~360 clears the centre of either. The old 96-unit reach silently failed inside a
-    // large bay and left the creature standing in the sea.
-    for step in 1..90 {
-        let r = step as f64 * 4.0;
-        for k in 0..12 {
-            let a = k as f64 * std::f64::consts::TAU / 12.0;
-            let q = Position::new(p.x + r * a.cos(), p.y + r * a.sin());
-            if dry(&q) {
-                return q;
-            }
-        }
-    }
-    p
-}
-
 fn nudge_to_walkable(
     p: Position,
     off: (f32, f32),
@@ -6735,6 +6756,46 @@ fn tier_at_distance(balance: &Balance, x: f64) -> i32 {
 /// ~50 world units out at r=500, far outside `[ai] group_radius`. Inverting that is
 /// what keeps a pack a pack at any depth. `radial_half == 0` is corridor mode,
 /// where world and corridor space agree.
+/// Place a companion `spread` from `anchor` on **dry ground**, trying a few bearings before
+/// giving up and standing it on the anchor itself.
+///
+/// ⚠️ **The main placement loop rejects a wet spot; the offset-from-a-leader paths did not**,
+/// and that is the whole of `nothing_the_world_places_ever_lands_in_the_sea`. A pack's minions,
+/// an undead rite's retinue and the end fight's extra bosses are all positioned RELATIVE to a
+/// leader — so a dry leader beside a lake could scatter half its pack into the water, and the
+/// fight became one nobody could reach.
+///
+/// Falling back to the anchor is deliberate: it is known dry (the leader passed the check), it
+/// keeps the companion inside its own pack, and a stacked pair is a cosmetic flaw where a
+/// drowned one is an unreachable encounter. It does NOT move anything already placed — that
+/// road was tried five times and every version broke something the placement pass had already
+/// got right (difficulty gates, pack adjacency, summit rewards, rite retinues).
+#[allow(clippy::too_many_arguments)]
+fn dry_companion(
+    anchor: Position,
+    spread: f64,
+    rng: &mut Rng,
+    half: f64,
+    lat: f64,
+    wet: &dyn Fn(&Position) -> bool,
+) -> Position {
+    for _ in 0..8 {
+        let angle = rng.unit() * std::f64::consts::TAU;
+        let dist = spread * (0.4 + 0.6 * rng.unit());
+        let p = corridor_offset(anchor, dist * angle.cos(), dist * angle.sin(), half, lat);
+        let w = if half > 0.0 {
+            let theta = (p.y / lat.max(1.0)).clamp(-1.0, 1.0) * half;
+            Position::new(p.x.max(0.0) * theta.cos(), p.x.max(0.0) * theta.sin())
+        } else {
+            p
+        };
+        if !wet(&w) {
+            return p;
+        }
+    }
+    anchor
+}
+
 fn corridor_offset(anchor: Position, radial: f64, tangential: f64, half: f64, lat: f64) -> Position {
     let dy = if half > 0.0 {
         let r = anchor.x.max(1.0);
@@ -9485,9 +9546,25 @@ mod tests {
 
     #[test]
     fn the_mire_floods_with_water() {
-        // #9: the Mire's dense fill is impassable water (`bog_pool`) — a flooded maze,
-        // not a field of solid props.
-        assert_eq!(fill_kind_for_biome("mire"), "bog_pool");
+        // The Mire's fill used to be impassable `bog_pool` water — water AS the maze. Its
+        // water is `coast::Basin` now (analytic, filling to the terrain's contour), so the
+        // fill is solid and the FLOODING is what has to be asserted instead: the mire must
+        // still be the wettest biome in the game, or retiring its fill quietly drained it.
+        //
+        // The old assertion was `fill_kind_for_biome("mire") == "bog_pool"`, and it was right
+        // to fail — it was defending a design that was deliberately changed. What it was
+        // really protecting is this, so this is what it protects now.
+        assert!(
+            !is_water_kind(fill_kind_for_biome("mire")),
+            "the mire's fill is solid now; its water comes from basins"
+        );
+        let dry_biomes = ["desert", "ashfall", "forest", "field", "tundra"];
+        for b in dry_biomes {
+            assert!(
+                biome_water_mult("mire") > biome_water_mult(b),
+                "the mire must be wetter than {b} — it is the swamp"
+            );
+        }
     }
 
     #[test]

@@ -584,13 +584,24 @@ pub const BASIN_SHORE_SLOPE: f32 = 0.12;
 ///
 /// Two terms, both brought into world units so the field stays continuous and the beach has
 /// a gradient: inside the radius bound, and below the water level.
-pub fn basin_depth(x: f32, z: f32, b: &Basin, ox: f32, oz: f32) -> f32 {
+pub fn basin_depth(x: f32, z: f32, b: &Basin, ox: f32, oz: f32, peaks: &[[f32; 4]]) -> f32 {
     let (cx, cz, r, level) = (b[0], b[1], b[2], b[3]);
     if r <= 0.0 {
         return -1000.0; // an empty slot
     }
     let within = r - (x - cx).hypot(z - cz);
-    let below = (level - crate::terrain::height(x, z, ox, oz)) / BASIN_SHORE_SLOPE;
+    // ⚠️ **THE GROUND HERE IS THE BASE FIELD *PLUS* THE PEAKS**, and leaving the domes out is
+    // water flooding straight through a mountain. It did: an authored peak raises the ground
+    // by `radius * PEAK_MAX_ASPECT * 0.9` ≈ 9.8 units while `basin_fill` is 3.5, so a summit
+    // inside a lake's radius stands SIX UNITS ABOVE its surface — and was nonetheless reported
+    // submerged, which displaced the summit chest and cost the peak the reward that is the only
+    // reason to climb it (`authored_peaks_are_climbable_and_crowned`).
+    //
+    // With the domes counted, a hill standing in a lake is an ISLAND in the lake, which is what
+    // it physically is. `terrain::peak_height` is the same sum the ground shader adds through
+    // `peak_dome`, so both sides agree.
+    let ground = crate::terrain::height(x, z, ox, oz) + crate::terrain::peak_height(x, z, peaks);
+    let below = (level - ground) / BASIN_SHORE_SLOPE;
     within.min(below)
 }
 
@@ -633,6 +644,10 @@ pub struct Shore<'a> {
     /// This run's terrain offset, because a [`Basin`] is defined against the heightmap
     /// rather than against a shape of its own.
     pub terrain_off: (f32, f32),
+    /// The authored PEAKS, because they are part of the ground a basin fills against — a hill
+    /// standing in a lake is an island, and leaving the domes out floods straight through a
+    /// mountain (see [`basin_depth`]).
+    pub peaks: &'a [[f32; 4]],
     /// The inland seas that separate the continents ([`Strait`]).
     pub straits: &'a [Strait],
     /// Bays cut into the rim and isles standing offshore ([`Lobe`]).
@@ -696,7 +711,7 @@ impl<'a> Shore<'a> {
         let (ox, oz) = self.terrain_off;
         let mut d = river_depth(x, z, self.rivers);
         for b in self.basins {
-            d = d.max(basin_depth(x, z, b, ox, oz));
+            d = d.max(basin_depth(x, z, b, ox, oz, self.peaks));
         }
         d
     }
