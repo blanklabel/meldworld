@@ -1,523 +1,195 @@
 {
-  "group_id": null,
+  "group_id": "feecf3ba-a1cb-4d00-8483-84f91a59dcf6",
   "states": [
     {
       "character": {
-        "id": "3ce5c858-0d8b-46c9-b669-a66d6b262def",
-        "name": "hunter",
-        "prompt": "Muscular scarred monster-hunter in a weird HD-2D fantasy style, bare-chested with one leather pauldron, leather pants, copper plate greaves to the knee, asymmetric multi-color hair, wielding a large broadsword. Rugged front-line bruiser.",
+        "id": "1ccc41ab-32de-414e-8685-34d235f5dc15",
+        "name": "Idle",
+        "prompt": "Weathered wilderness cartographer-guide of the Explorers in a weird HD-2D fantasy style, long teal-and-tan travelling coat over medium brown leather armor, a rolled map case and brass compass at the hip, a brass storm lantern hanging from the belt, sturdy laced boots. Both hands empty, holding no weapon at all. Practical pathfinder, not a soldier.",
         "size": {
-          "width": 188,
-          "height": 188
+          "width": 96,
+          "height": 96
         },
         "template_id": "mannequin",
         "directions": 8,
         "view": "low top-down",
-        "created_at": "2026-07-25T13:41:46.864758+00:00"
+        "created_at": "2026-08-25T21:26:29.564368+00:00"
       },
-      "folder": "hunter",
+      "folder": "Idle",
       "frames": {
         "rotations": {
-          "south": "hunter/rotations/south.png",
-          "south-east": "hunter/rotations/south-east.png",
-          "east": "hunter/rotations/east.png",
-          "north-east": "hunter/rotations/north-east.png",
-          "north": "hunter/rotations/north.png",
-          "north-west": "hunter/rotations/north-west.png",
-          "west": "hunter/rotations/west.png",
-          "south-west": "hunter/rotations/south-west.png"
+          "south": "Idle/rotations/south.png",
+          "south-east": "Idle/rotations/south-east.png",
+          "east": "Idle/rotations/east.png",
+          "north-east": "Idle/rotations/north-east.png",
+          "north": "Idle/rotations/north.png",
+          "north-west": "Idle/rotations/north-west.png",
+          "west": "Idle/rotations/west.png",
+          "south-west": "Idle/rotations/south-west.png"
         },
         "animations": {
-          "snare": {
-            "south-west": [
-              "hunter/animations/snare/south-west/frame_000.png",
-              "hunter/animations/snare/south-west/frame_001.png",
-              "hunter/animations/snare/south-west/frame_002.png",
-              "hunter/animations/snare/south-west/frame_003.png",
-              "hunter/animations/snare/south-west/frame_004.png",
-              "hunter/animations/snare/south-west/frame_005.png",
-              "hunter/animations/snare/south-west/frame_006.png",
-              "hunter/animations/snare/south-west/frame_007.png"
-            ],
-            "south-east": [
-              "hunter/animations/snare/south-east/frame_000.png",
-              "hunter/animations/snare/south-east/frame_001.png",
-              "hunter/animations/snare/south-east/frame_002.png",
-              "hunter/animations/snare/south-east/frame_003.png",
-              "hunter/animations/snare/south-east/frame_004.png",
-              "hunter/animations/snare/south-east/frame_005.png",
-              "hunter/animations/snare/south-east/frame_006.png",
-              "hunter/animations/snare/south-east/frame_007.png"
-            ],
-            "east": [
-              "hunter/animations/snare/east/frame_000.png",
-              "hunter/animations/snare/east/frame_001.png",
-              "hunter/animations/snare/east/frame_002.png",
-              "hunter/animations/snare/east/frame_003.png",
-              "hunter/animations/snare/east/frame_004.png",
-              "hunter/animations/snare/east/frame_005.png",
-              "hunter/animations/snare/east/frame_006.png",
-              "hunter/animations/snare/east/frame_007.png"
-            ],
-            "south": [
-              "hunter/animations/snare/south/frame_000.png",
-              "hunter/animations/snare/south/frame_001.png",
-              "hunter/animations/snare/south/frame_002.png",
-              "hunter/animations/snare/south/frame_003.png",
-              "hunter/animations/snare/south/frame_004.png",
-              "hunter/animations/snare/south/frame_005.png",
-              "hunter/animations/snare/south/frame_006.png",
-              "hunter/animations/snare/south/frame_007.png"
-            ],
-            "west": [
-              "hunter/animations/snare/west/frame_000.png",
-              "hunter/animations/snare/west/frame_001.png",
-              "hunter/animations/snare/west/frame_002.png",
-              "hunter/animations/snare/west/frame_003.png",
-              "hunter/animations/snare/west/frame_004.png",
-              "hunter/animations/snare/west/frame_005.png",
-              "hunter/animations/snare/west/frame_006.png",
-              "hunter/animations/snare/west/frame_007.png"
-            ],
-            "north": [
-              "hunter/animations/snare/north/frame_000.png",
-              "hunter/animations/snare/north/frame_001.png",
-              "hunter/animations/snare/north/frame_002.png",
-              "hunter/animations/snare/north/frame_003.png",
-              "hunter/animations/snare/north/frame_004.png",
-              "hunter/animations/snare/north/frame_005.png",
-              "hunter/animations/snare/north/frame_006.png",
-              "hunter/animations/snare/north/frame_007.png"
-            ],
-            "north-west": [
-              "hunter/animations/snare/north-west/frame_000.png",
-              "hunter/animations/snare/north-west/frame_001.png",
-              "hunter/animations/snare/north-west/frame_002.png",
-              "hunter/animations/snare/north-west/frame_003.png",
-              "hunter/animations/snare/north-west/frame_004.png",
-              "hunter/animations/snare/north-west/frame_005.png",
-              "hunter/animations/snare/north-west/frame_006.png",
-              "hunter/animations/snare/north-west/frame_007.png"
-            ],
-            "north-east": [
-              "hunter/animations/snare/north-east/frame_000.png",
-              "hunter/animations/snare/north-east/frame_001.png",
-              "hunter/animations/snare/north-east/frame_002.png",
-              "hunter/animations/snare/north-east/frame_003.png",
-              "hunter/animations/snare/north-east/frame_004.png",
-              "hunter/animations/snare/north-east/frame_005.png",
-              "hunter/animations/snare/north-east/frame_006.png",
-              "hunter/animations/snare/north-east/frame_007.png"
-            ]
-          },
           "walk": {
-            "south-west": [
-              "hunter/animations/walk/south-west/frame_000.png",
-              "hunter/animations/walk/south-west/frame_001.png",
-              "hunter/animations/walk/south-west/frame_002.png",
-              "hunter/animations/walk/south-west/frame_003.png",
-              "hunter/animations/walk/south-west/frame_004.png",
-              "hunter/animations/walk/south-west/frame_005.png",
-              "hunter/animations/walk/south-west/frame_006.png",
-              "hunter/animations/walk/south-west/frame_007.png"
-            ],
-            "east": [
-              "hunter/animations/walk/east/frame_000.png",
-              "hunter/animations/walk/east/frame_001.png",
-              "hunter/animations/walk/east/frame_002.png",
-              "hunter/animations/walk/east/frame_003.png",
-              "hunter/animations/walk/east/frame_004.png",
-              "hunter/animations/walk/east/frame_005.png",
-              "hunter/animations/walk/east/frame_006.png",
-              "hunter/animations/walk/east/frame_007.png"
-            ],
             "south": [
-              "hunter/animations/walk/south/frame_000.png",
-              "hunter/animations/walk/south/frame_001.png",
-              "hunter/animations/walk/south/frame_002.png",
-              "hunter/animations/walk/south/frame_003.png",
-              "hunter/animations/walk/south/frame_004.png",
-              "hunter/animations/walk/south/frame_005.png",
-              "hunter/animations/walk/south/frame_006.png",
-              "hunter/animations/walk/south/frame_007.png"
-            ],
-            "north": [
-              "hunter/animations/walk/north/frame_000.png",
-              "hunter/animations/walk/north/frame_001.png",
-              "hunter/animations/walk/north/frame_002.png",
-              "hunter/animations/walk/north/frame_003.png",
-              "hunter/animations/walk/north/frame_004.png",
-              "hunter/animations/walk/north/frame_005.png",
-              "hunter/animations/walk/north/frame_006.png",
-              "hunter/animations/walk/north/frame_007.png"
-            ],
-            "north-west": [
-              "hunter/animations/walk/north-west/frame_000.png",
-              "hunter/animations/walk/north-west/frame_001.png",
-              "hunter/animations/walk/north-west/frame_002.png",
-              "hunter/animations/walk/north-west/frame_003.png",
-              "hunter/animations/walk/north-west/frame_004.png",
-              "hunter/animations/walk/north-west/frame_005.png",
-              "hunter/animations/walk/north-west/frame_006.png",
-              "hunter/animations/walk/north-west/frame_007.png"
+              "Idle/animations/walk/south/frame_000.png",
+              "Idle/animations/walk/south/frame_001.png",
+              "Idle/animations/walk/south/frame_002.png",
+              "Idle/animations/walk/south/frame_003.png",
+              "Idle/animations/walk/south/frame_004.png",
+              "Idle/animations/walk/south/frame_005.png",
+              "Idle/animations/walk/south/frame_006.png",
+              "Idle/animations/walk/south/frame_007.png"
             ],
             "south-east": [
-              "hunter/animations/walk/south-east/frame_000.png",
-              "hunter/animations/walk/south-east/frame_001.png",
-              "hunter/animations/walk/south-east/frame_002.png",
-              "hunter/animations/walk/south-east/frame_003.png",
-              "hunter/animations/walk/south-east/frame_004.png",
-              "hunter/animations/walk/south-east/frame_005.png",
-              "hunter/animations/walk/south-east/frame_006.png",
-              "hunter/animations/walk/south-east/frame_007.png"
+              "Idle/animations/walk/south-east/frame_000.png",
+              "Idle/animations/walk/south-east/frame_001.png",
+              "Idle/animations/walk/south-east/frame_002.png",
+              "Idle/animations/walk/south-east/frame_003.png",
+              "Idle/animations/walk/south-east/frame_004.png",
+              "Idle/animations/walk/south-east/frame_005.png",
+              "Idle/animations/walk/south-east/frame_006.png",
+              "Idle/animations/walk/south-east/frame_007.png"
             ],
             "north-east": [
-              "hunter/animations/walk/north-east/frame_000.png",
-              "hunter/animations/walk/north-east/frame_001.png",
-              "hunter/animations/walk/north-east/frame_002.png",
-              "hunter/animations/walk/north-east/frame_003.png",
-              "hunter/animations/walk/north-east/frame_004.png",
-              "hunter/animations/walk/north-east/frame_005.png",
-              "hunter/animations/walk/north-east/frame_006.png",
-              "hunter/animations/walk/north-east/frame_007.png"
-            ],
-            "west": [
-              "hunter/animations/walk/west/frame_000.png",
-              "hunter/animations/walk/west/frame_001.png",
-              "hunter/animations/walk/west/frame_002.png",
-              "hunter/animations/walk/west/frame_003.png",
-              "hunter/animations/walk/west/frame_004.png",
-              "hunter/animations/walk/west/frame_005.png",
-              "hunter/animations/walk/west/frame_006.png",
-              "hunter/animations/walk/west/frame_007.png"
-            ]
-          },
-          "second_wind": {
-            "east": [
-              "hunter/animations/second_wind/east/frame_000.png",
-              "hunter/animations/second_wind/east/frame_001.png",
-              "hunter/animations/second_wind/east/frame_002.png",
-              "hunter/animations/second_wind/east/frame_003.png",
-              "hunter/animations/second_wind/east/frame_004.png",
-              "hunter/animations/second_wind/east/frame_005.png",
-              "hunter/animations/second_wind/east/frame_006.png",
-              "hunter/animations/second_wind/east/frame_007.png"
-            ],
-            "north": [
-              "hunter/animations/second_wind/north/frame_000.png",
-              "hunter/animations/second_wind/north/frame_001.png",
-              "hunter/animations/second_wind/north/frame_002.png",
-              "hunter/animations/second_wind/north/frame_003.png",
-              "hunter/animations/second_wind/north/frame_004.png",
-              "hunter/animations/second_wind/north/frame_005.png",
-              "hunter/animations/second_wind/north/frame_006.png",
-              "hunter/animations/second_wind/north/frame_007.png"
-            ],
-            "north-west": [
-              "hunter/animations/second_wind/north-west/frame_000.png",
-              "hunter/animations/second_wind/north-west/frame_001.png",
-              "hunter/animations/second_wind/north-west/frame_002.png",
-              "hunter/animations/second_wind/north-west/frame_003.png",
-              "hunter/animations/second_wind/north-west/frame_004.png",
-              "hunter/animations/second_wind/north-west/frame_005.png",
-              "hunter/animations/second_wind/north-west/frame_006.png",
-              "hunter/animations/second_wind/north-west/frame_007.png"
-            ],
-            "south-east": [
-              "hunter/animations/second_wind/south-east/frame_000.png",
-              "hunter/animations/second_wind/south-east/frame_001.png",
-              "hunter/animations/second_wind/south-east/frame_002.png",
-              "hunter/animations/second_wind/south-east/frame_003.png",
-              "hunter/animations/second_wind/south-east/frame_004.png",
-              "hunter/animations/second_wind/south-east/frame_005.png",
-              "hunter/animations/second_wind/south-east/frame_006.png",
-              "hunter/animations/second_wind/south-east/frame_007.png"
+              "Idle/animations/walk/north-east/frame_000.png",
+              "Idle/animations/walk/north-east/frame_001.png",
+              "Idle/animations/walk/north-east/frame_002.png",
+              "Idle/animations/walk/north-east/frame_003.png",
+              "Idle/animations/walk/north-east/frame_004.png",
+              "Idle/animations/walk/north-east/frame_005.png",
+              "Idle/animations/walk/north-east/frame_006.png",
+              "Idle/animations/walk/north-east/frame_007.png"
             ],
             "south-west": [
-              "hunter/animations/second_wind/south-west/frame_000.png",
-              "hunter/animations/second_wind/south-west/frame_001.png",
-              "hunter/animations/second_wind/south-west/frame_002.png",
-              "hunter/animations/second_wind/south-west/frame_003.png",
-              "hunter/animations/second_wind/south-west/frame_004.png",
-              "hunter/animations/second_wind/south-west/frame_005.png",
-              "hunter/animations/second_wind/south-west/frame_006.png",
-              "hunter/animations/second_wind/south-west/frame_007.png"
-            ],
-            "west": [
-              "hunter/animations/second_wind/west/frame_000.png",
-              "hunter/animations/second_wind/west/frame_001.png",
-              "hunter/animations/second_wind/west/frame_002.png",
-              "hunter/animations/second_wind/west/frame_003.png",
-              "hunter/animations/second_wind/west/frame_004.png",
-              "hunter/animations/second_wind/west/frame_005.png",
-              "hunter/animations/second_wind/west/frame_006.png",
-              "hunter/animations/second_wind/west/frame_007.png"
-            ],
-            "south": [
-              "hunter/animations/second_wind/south/frame_000.png",
-              "hunter/animations/second_wind/south/frame_001.png",
-              "hunter/animations/second_wind/south/frame_002.png",
-              "hunter/animations/second_wind/south/frame_003.png",
-              "hunter/animations/second_wind/south/frame_004.png",
-              "hunter/animations/second_wind/south/frame_005.png",
-              "hunter/animations/second_wind/south/frame_006.png",
-              "hunter/animations/second_wind/south/frame_007.png"
-            ],
-            "north-east": [
-              "hunter/animations/second_wind/north-east/frame_000.png",
-              "hunter/animations/second_wind/north-east/frame_001.png",
-              "hunter/animations/second_wind/north-east/frame_002.png",
-              "hunter/animations/second_wind/north-east/frame_003.png",
-              "hunter/animations/second_wind/north-east/frame_004.png",
-              "hunter/animations/second_wind/north-east/frame_005.png",
-              "hunter/animations/second_wind/north-east/frame_006.png",
-              "hunter/animations/second_wind/north-east/frame_007.png"
-            ]
-          },
-          "frenzy": {
-            "south": [
-              "hunter/animations/frenzy/south/frame_000.png",
-              "hunter/animations/frenzy/south/frame_001.png",
-              "hunter/animations/frenzy/south/frame_002.png",
-              "hunter/animations/frenzy/south/frame_003.png",
-              "hunter/animations/frenzy/south/frame_004.png",
-              "hunter/animations/frenzy/south/frame_005.png",
-              "hunter/animations/frenzy/south/frame_006.png",
-              "hunter/animations/frenzy/south/frame_007.png"
-            ],
-            "west": [
-              "hunter/animations/frenzy/west/frame_000.png",
-              "hunter/animations/frenzy/west/frame_001.png",
-              "hunter/animations/frenzy/west/frame_002.png",
-              "hunter/animations/frenzy/west/frame_003.png",
-              "hunter/animations/frenzy/west/frame_004.png",
-              "hunter/animations/frenzy/west/frame_005.png",
-              "hunter/animations/frenzy/west/frame_006.png",
-              "hunter/animations/frenzy/west/frame_007.png"
-            ],
-            "east": [
-              "hunter/animations/frenzy/east/frame_000.png",
-              "hunter/animations/frenzy/east/frame_001.png",
-              "hunter/animations/frenzy/east/frame_002.png",
-              "hunter/animations/frenzy/east/frame_003.png",
-              "hunter/animations/frenzy/east/frame_004.png",
-              "hunter/animations/frenzy/east/frame_005.png",
-              "hunter/animations/frenzy/east/frame_006.png",
-              "hunter/animations/frenzy/east/frame_007.png"
+              "Idle/animations/walk/south-west/frame_000.png",
+              "Idle/animations/walk/south-west/frame_001.png",
+              "Idle/animations/walk/south-west/frame_002.png",
+              "Idle/animations/walk/south-west/frame_003.png",
+              "Idle/animations/walk/south-west/frame_004.png",
+              "Idle/animations/walk/south-west/frame_005.png",
+              "Idle/animations/walk/south-west/frame_006.png",
+              "Idle/animations/walk/south-west/frame_007.png"
             ],
             "north": [
-              "hunter/animations/frenzy/north/frame_000.png",
-              "hunter/animations/frenzy/north/frame_001.png",
-              "hunter/animations/frenzy/north/frame_002.png",
-              "hunter/animations/frenzy/north/frame_003.png",
-              "hunter/animations/frenzy/north/frame_004.png",
-              "hunter/animations/frenzy/north/frame_005.png",
-              "hunter/animations/frenzy/north/frame_006.png",
-              "hunter/animations/frenzy/north/frame_007.png"
-            ],
-            "south-east": [
-              "hunter/animations/frenzy/south-east/frame_000.png",
-              "hunter/animations/frenzy/south-east/frame_001.png",
-              "hunter/animations/frenzy/south-east/frame_002.png",
-              "hunter/animations/frenzy/south-east/frame_003.png",
-              "hunter/animations/frenzy/south-east/frame_004.png",
-              "hunter/animations/frenzy/south-east/frame_005.png",
-              "hunter/animations/frenzy/south-east/frame_006.png",
-              "hunter/animations/frenzy/south-east/frame_007.png"
-            ],
-            "north-east": [
-              "hunter/animations/frenzy/north-east/frame_000.png",
-              "hunter/animations/frenzy/north-east/frame_001.png",
-              "hunter/animations/frenzy/north-east/frame_002.png",
-              "hunter/animations/frenzy/north-east/frame_003.png",
-              "hunter/animations/frenzy/north-east/frame_004.png",
-              "hunter/animations/frenzy/north-east/frame_005.png",
-              "hunter/animations/frenzy/north-east/frame_006.png",
-              "hunter/animations/frenzy/north-east/frame_007.png"
+              "Idle/animations/walk/north/frame_000.png",
+              "Idle/animations/walk/north/frame_001.png",
+              "Idle/animations/walk/north/frame_002.png",
+              "Idle/animations/walk/north/frame_003.png",
+              "Idle/animations/walk/north/frame_004.png",
+              "Idle/animations/walk/north/frame_005.png",
+              "Idle/animations/walk/north/frame_006.png",
+              "Idle/animations/walk/north/frame_007.png"
             ],
             "north-west": [
-              "hunter/animations/frenzy/north-west/frame_000.png",
-              "hunter/animations/frenzy/north-west/frame_001.png",
-              "hunter/animations/frenzy/north-west/frame_002.png",
-              "hunter/animations/frenzy/north-west/frame_003.png",
-              "hunter/animations/frenzy/north-west/frame_004.png",
-              "hunter/animations/frenzy/north-west/frame_005.png",
-              "hunter/animations/frenzy/north-west/frame_006.png",
-              "hunter/animations/frenzy/north-west/frame_007.png"
+              "Idle/animations/walk/north-west/frame_000.png",
+              "Idle/animations/walk/north-west/frame_001.png",
+              "Idle/animations/walk/north-west/frame_002.png",
+              "Idle/animations/walk/north-west/frame_003.png",
+              "Idle/animations/walk/north-west/frame_004.png",
+              "Idle/animations/walk/north-west/frame_005.png",
+              "Idle/animations/walk/north-west/frame_006.png",
+              "Idle/animations/walk/north-west/frame_007.png"
             ],
-            "south-west": [
-              "hunter/animations/frenzy/south-west/frame_000.png",
-              "hunter/animations/frenzy/south-west/frame_001.png",
-              "hunter/animations/frenzy/south-west/frame_002.png",
-              "hunter/animations/frenzy/south-west/frame_003.png",
-              "hunter/animations/frenzy/south-west/frame_004.png",
-              "hunter/animations/frenzy/south-west/frame_005.png",
-              "hunter/animations/frenzy/south-west/frame_006.png",
-              "hunter/animations/frenzy/south-west/frame_007.png"
-            ]
-          },
-          "power_strike": {
             "west": [
-              "hunter/animations/power_strike/west/frame_000.png",
-              "hunter/animations/power_strike/west/frame_001.png",
-              "hunter/animations/power_strike/west/frame_002.png",
-              "hunter/animations/power_strike/west/frame_003.png",
-              "hunter/animations/power_strike/west/frame_004.png",
-              "hunter/animations/power_strike/west/frame_005.png",
-              "hunter/animations/power_strike/west/frame_006.png",
-              "hunter/animations/power_strike/west/frame_007.png"
-            ],
-            "south": [
-              "hunter/animations/power_strike/south/frame_000.png",
-              "hunter/animations/power_strike/south/frame_001.png",
-              "hunter/animations/power_strike/south/frame_002.png",
-              "hunter/animations/power_strike/south/frame_003.png",
-              "hunter/animations/power_strike/south/frame_004.png",
-              "hunter/animations/power_strike/south/frame_005.png",
-              "hunter/animations/power_strike/south/frame_006.png",
-              "hunter/animations/power_strike/south/frame_007.png"
-            ],
-            "north-west": [
-              "hunter/animations/power_strike/north-west/frame_000.png",
-              "hunter/animations/power_strike/north-west/frame_001.png",
-              "hunter/animations/power_strike/north-west/frame_002.png",
-              "hunter/animations/power_strike/north-west/frame_003.png",
-              "hunter/animations/power_strike/north-west/frame_004.png",
-              "hunter/animations/power_strike/north-west/frame_005.png",
-              "hunter/animations/power_strike/north-west/frame_006.png",
-              "hunter/animations/power_strike/north-west/frame_007.png"
+              "Idle/animations/walk/west/frame_000.png",
+              "Idle/animations/walk/west/frame_001.png",
+              "Idle/animations/walk/west/frame_002.png",
+              "Idle/animations/walk/west/frame_003.png",
+              "Idle/animations/walk/west/frame_004.png",
+              "Idle/animations/walk/west/frame_005.png",
+              "Idle/animations/walk/west/frame_006.png",
+              "Idle/animations/walk/west/frame_007.png"
             ],
             "east": [
-              "hunter/animations/power_strike/east/frame_000.png",
-              "hunter/animations/power_strike/east/frame_001.png",
-              "hunter/animations/power_strike/east/frame_002.png",
-              "hunter/animations/power_strike/east/frame_003.png",
-              "hunter/animations/power_strike/east/frame_004.png",
-              "hunter/animations/power_strike/east/frame_005.png",
-              "hunter/animations/power_strike/east/frame_006.png",
-              "hunter/animations/power_strike/east/frame_007.png"
-            ],
-            "south-west": [
-              "hunter/animations/power_strike/south-west/frame_000.png",
-              "hunter/animations/power_strike/south-west/frame_001.png",
-              "hunter/animations/power_strike/south-west/frame_002.png",
-              "hunter/animations/power_strike/south-west/frame_003.png",
-              "hunter/animations/power_strike/south-west/frame_004.png",
-              "hunter/animations/power_strike/south-west/frame_005.png",
-              "hunter/animations/power_strike/south-west/frame_006.png",
-              "hunter/animations/power_strike/south-west/frame_007.png"
-            ],
-            "south-east": [
-              "hunter/animations/power_strike/south-east/frame_000.png",
-              "hunter/animations/power_strike/south-east/frame_001.png",
-              "hunter/animations/power_strike/south-east/frame_002.png",
-              "hunter/animations/power_strike/south-east/frame_003.png",
-              "hunter/animations/power_strike/south-east/frame_004.png",
-              "hunter/animations/power_strike/south-east/frame_005.png",
-              "hunter/animations/power_strike/south-east/frame_006.png",
-              "hunter/animations/power_strike/south-east/frame_007.png"
-            ],
-            "north": [
-              "hunter/animations/power_strike/north/frame_000.png",
-              "hunter/animations/power_strike/north/frame_001.png",
-              "hunter/animations/power_strike/north/frame_002.png",
-              "hunter/animations/power_strike/north/frame_003.png",
-              "hunter/animations/power_strike/north/frame_004.png",
-              "hunter/animations/power_strike/north/frame_005.png",
-              "hunter/animations/power_strike/north/frame_006.png",
-              "hunter/animations/power_strike/north/frame_007.png"
-            ],
-            "north-east": [
-              "hunter/animations/power_strike/north-east/frame_000.png",
-              "hunter/animations/power_strike/north-east/frame_001.png",
-              "hunter/animations/power_strike/north-east/frame_002.png",
-              "hunter/animations/power_strike/north-east/frame_003.png",
-              "hunter/animations/power_strike/north-east/frame_004.png",
-              "hunter/animations/power_strike/north-east/frame_005.png",
-              "hunter/animations/power_strike/north-east/frame_006.png",
-              "hunter/animations/power_strike/north-east/frame_007.png"
+              "Idle/animations/walk/east/frame_000.png",
+              "Idle/animations/walk/east/frame_001.png",
+              "Idle/animations/walk/east/frame_002.png",
+              "Idle/animations/walk/east/frame_003.png",
+              "Idle/animations/walk/east/frame_004.png",
+              "Idle/animations/walk/east/frame_005.png",
+              "Idle/animations/walk/east/frame_006.png",
+              "Idle/animations/walk/east/frame_007.png"
             ]
           },
           "attack": {
-            "south": [
-              "hunter/animations/attack/south/frame_000.png",
-              "hunter/animations/attack/south/frame_001.png",
-              "hunter/animations/attack/south/frame_002.png",
-              "hunter/animations/attack/south/frame_003.png",
-              "hunter/animations/attack/south/frame_004.png",
-              "hunter/animations/attack/south/frame_005.png",
-              "hunter/animations/attack/south/frame_006.png",
-              "hunter/animations/attack/south/frame_007.png"
-            ],
-            "north": [
-              "hunter/animations/attack/north/frame_000.png",
-              "hunter/animations/attack/north/frame_001.png",
-              "hunter/animations/attack/north/frame_002.png",
-              "hunter/animations/attack/north/frame_003.png",
-              "hunter/animations/attack/north/frame_004.png",
-              "hunter/animations/attack/north/frame_005.png",
-              "hunter/animations/attack/north/frame_006.png",
-              "hunter/animations/attack/north/frame_007.png"
-            ],
-            "south-west": [
-              "hunter/animations/attack/south-west/frame_000.png",
-              "hunter/animations/attack/south-west/frame_001.png",
-              "hunter/animations/attack/south-west/frame_002.png",
-              "hunter/animations/attack/south-west/frame_003.png",
-              "hunter/animations/attack/south-west/frame_004.png",
-              "hunter/animations/attack/south-west/frame_005.png",
-              "hunter/animations/attack/south-west/frame_006.png",
-              "hunter/animations/attack/south-west/frame_007.png"
-            ],
-            "south-east": [
-              "hunter/animations/attack/south-east/frame_000.png",
-              "hunter/animations/attack/south-east/frame_001.png",
-              "hunter/animations/attack/south-east/frame_002.png",
-              "hunter/animations/attack/south-east/frame_003.png",
-              "hunter/animations/attack/south-east/frame_004.png",
-              "hunter/animations/attack/south-east/frame_005.png",
-              "hunter/animations/attack/south-east/frame_006.png",
-              "hunter/animations/attack/south-east/frame_007.png"
-            ],
-            "north-east": [
-              "hunter/animations/attack/north-east/frame_000.png",
-              "hunter/animations/attack/north-east/frame_001.png",
-              "hunter/animations/attack/north-east/frame_002.png",
-              "hunter/animations/attack/north-east/frame_003.png",
-              "hunter/animations/attack/north-east/frame_004.png",
-              "hunter/animations/attack/north-east/frame_005.png",
-              "hunter/animations/attack/north-east/frame_006.png",
-              "hunter/animations/attack/north-east/frame_007.png"
-            ],
             "north-west": [
-              "hunter/animations/attack/north-west/frame_000.png",
-              "hunter/animations/attack/north-west/frame_001.png",
-              "hunter/animations/attack/north-west/frame_002.png",
-              "hunter/animations/attack/north-west/frame_003.png",
-              "hunter/animations/attack/north-west/frame_004.png",
-              "hunter/animations/attack/north-west/frame_005.png",
-              "hunter/animations/attack/north-west/frame_006.png",
-              "hunter/animations/attack/north-west/frame_007.png"
+              "Idle/animations/attack/north-west/frame_000.png",
+              "Idle/animations/attack/north-west/frame_001.png",
+              "Idle/animations/attack/north-west/frame_002.png",
+              "Idle/animations/attack/north-west/frame_003.png",
+              "Idle/animations/attack/north-west/frame_004.png",
+              "Idle/animations/attack/north-west/frame_005.png",
+              "Idle/animations/attack/north-west/frame_006.png",
+              "Idle/animations/attack/north-west/frame_007.png"
             ],
             "east": [
-              "hunter/animations/attack/east/frame_000.png",
-              "hunter/animations/attack/east/frame_001.png",
-              "hunter/animations/attack/east/frame_002.png",
-              "hunter/animations/attack/east/frame_003.png",
-              "hunter/animations/attack/east/frame_004.png",
-              "hunter/animations/attack/east/frame_005.png",
-              "hunter/animations/attack/east/frame_006.png",
-              "hunter/animations/attack/east/frame_007.png"
+              "Idle/animations/attack/east/frame_000.png",
+              "Idle/animations/attack/east/frame_001.png",
+              "Idle/animations/attack/east/frame_002.png",
+              "Idle/animations/attack/east/frame_003.png",
+              "Idle/animations/attack/east/frame_004.png",
+              "Idle/animations/attack/east/frame_005.png",
+              "Idle/animations/attack/east/frame_006.png",
+              "Idle/animations/attack/east/frame_007.png"
+            ],
+            "north": [
+              "Idle/animations/attack/north/frame_000.png",
+              "Idle/animations/attack/north/frame_001.png",
+              "Idle/animations/attack/north/frame_002.png",
+              "Idle/animations/attack/north/frame_003.png",
+              "Idle/animations/attack/north/frame_004.png",
+              "Idle/animations/attack/north/frame_005.png",
+              "Idle/animations/attack/north/frame_006.png",
+              "Idle/animations/attack/north/frame_007.png"
+            ],
+            "south": [
+              "Idle/animations/attack/south/frame_000.png",
+              "Idle/animations/attack/south/frame_001.png",
+              "Idle/animations/attack/south/frame_002.png",
+              "Idle/animations/attack/south/frame_003.png",
+              "Idle/animations/attack/south/frame_004.png",
+              "Idle/animations/attack/south/frame_005.png",
+              "Idle/animations/attack/south/frame_006.png",
+              "Idle/animations/attack/south/frame_007.png"
+            ],
+            "south-east": [
+              "Idle/animations/attack/south-east/frame_000.png",
+              "Idle/animations/attack/south-east/frame_001.png",
+              "Idle/animations/attack/south-east/frame_002.png",
+              "Idle/animations/attack/south-east/frame_003.png",
+              "Idle/animations/attack/south-east/frame_004.png",
+              "Idle/animations/attack/south-east/frame_005.png",
+              "Idle/animations/attack/south-east/frame_006.png",
+              "Idle/animations/attack/south-east/frame_007.png"
             ],
             "west": [
-              "hunter/animations/attack/west/frame_000.png",
-              "hunter/animations/attack/west/frame_001.png",
-              "hunter/animations/attack/west/frame_002.png",
-              "hunter/animations/attack/west/frame_003.png",
-              "hunter/animations/attack/west/frame_004.png",
-              "hunter/animations/attack/west/frame_005.png",
-              "hunter/animations/attack/west/frame_006.png",
-              "hunter/animations/attack/west/frame_007.png"
+              "Idle/animations/attack/west/frame_000.png",
+              "Idle/animations/attack/west/frame_001.png",
+              "Idle/animations/attack/west/frame_002.png",
+              "Idle/animations/attack/west/frame_003.png",
+              "Idle/animations/attack/west/frame_004.png",
+              "Idle/animations/attack/west/frame_005.png",
+              "Idle/animations/attack/west/frame_006.png",
+              "Idle/animations/attack/west/frame_007.png"
+            ],
+            "north-east": [
+              "Idle/animations/attack/north-east/frame_000.png",
+              "Idle/animations/attack/north-east/frame_001.png",
+              "Idle/animations/attack/north-east/frame_002.png",
+              "Idle/animations/attack/north-east/frame_003.png",
+              "Idle/animations/attack/north-east/frame_004.png",
+              "Idle/animations/attack/north-east/frame_005.png",
+              "Idle/animations/attack/north-east/frame_006.png",
+              "Idle/animations/attack/north-east/frame_007.png"
+            ],
+            "south-west": [
+              "Idle/animations/attack/south-west/frame_000.png",
+              "Idle/animations/attack/south-west/frame_001.png",
+              "Idle/animations/attack/south-west/frame_002.png",
+              "Idle/animations/attack/south-west/frame_003.png",
+              "Idle/animations/attack/south-west/frame_004.png",
+              "Idle/animations/attack/south-west/frame_005.png",
+              "Idle/animations/attack/south-west/frame_006.png",
+              "Idle/animations/attack/south-west/frame_007.png"
             ]
           }
         }
@@ -525,5 +197,5 @@
     }
   ],
   "export_version": "3.1",
-  "export_date": "2026-07-25T19:18:24.279781"
+  "export_date": "2026-08-26T14:27:45.605160"
 }
