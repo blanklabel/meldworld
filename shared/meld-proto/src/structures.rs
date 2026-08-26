@@ -43,6 +43,17 @@ pub struct StructureDef {
     pub pins: bool,
     /// Does it stop things walking through it?
     pub blocks: bool,
+    /// **What it is made of** — BD-1's structural-material table, in the registry both
+    /// sides read rather than in the handler.
+    ///
+    /// ⚠️ EXACTLY ONE CLASS PER STRUCTURE, and that is a constraint rather than a
+    /// simplification. A `Structure` records the material KIND it was built from so that
+    /// packing it down hands back the same stock (D21); a two-material recipe would have
+    /// to record a mix, and then a refund is a judgement call about proportions instead of
+    /// a fact. The decision a player makes lives one level up: a palisade is timber and an
+    /// anchor is masonry, so holding ground needs BOTH, and they come out of different
+    /// biomes.
+    pub material: crate::materials::MaterialClass,
 }
 
 pub const STRUCTURES: &[StructureDef] = &[
@@ -53,6 +64,8 @@ pub const STRUCTURES: &[StructureDef] = &[
         function: StructureFunction::Anchor,
         pins: true,
         blocks: false,
+        // Masonry. An anchor is the thing that says someone means to stay.
+        material: crate::materials::MaterialClass::Stone,
     },
     StructureDef {
         key: "wall",
@@ -61,6 +74,8 @@ pub const STRUCTURES: &[StructureDef] = &[
         function: StructureFunction::Wall,
         pins: false,
         blocks: true,
+        // Timber. A palisade goes up fast out of what the wood around you drops.
+        material: crate::materials::MaterialClass::Wood,
     },
 ];
 
@@ -110,5 +125,50 @@ mod tests {
                 s.description
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod bd1_material_tests {
+    use super::*;
+    use crate::materials::{MaterialClass, MATERIALS};
+
+    /// Every structure must be made of a STRUCTURAL material that actually exists as
+    /// gatherable loot. A cost denominated in something no node yields is a structure
+    /// nobody can ever build — and it fails silently, because the refusal reads as "you do
+    /// not have enough" rather than "this is unobtainable".
+    #[test]
+    fn every_structure_is_built_of_something_you_can_gather() {
+        for def in STRUCTURES {
+            assert!(
+                def.material.is_structural(),
+                "{} is built from {:?}, which is not a structural material",
+                def.key,
+                def.material
+            );
+            assert!(
+                MATERIALS.iter().any(|m| m.class == def.material),
+                "{} is built from {:?}, but no material in the registry has that class",
+                def.key,
+                def.material
+            );
+        }
+    }
+
+    /// A town needs BOTH structural materials, so it cannot be raised out of one biome's
+    /// ground. This is the decision the one-material-per-structure rule exists to create;
+    /// if every structure drifted to the same class, building would stop being a reason to
+    /// travel.
+    #[test]
+    fn raising_a_town_takes_more_than_one_kind_of_ground() {
+        let used: Vec<MaterialClass> = STRUCTURES.iter().map(|d| d.material).collect();
+        assert!(
+            used.contains(&MaterialClass::Wood),
+            "nothing is built of wood: {used:?}"
+        );
+        assert!(
+            used.contains(&MaterialClass::Stone),
+            "nothing is built of stone: {used:?} — a town should not come out of one biome"
+        );
     }
 }

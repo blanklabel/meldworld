@@ -62,6 +62,12 @@ mod nf {
     pub const GOLD_BARS: (&str, &str) = ("\u{f124f}", "md-gold");
     pub const BONE: (&str, &str) = ("\u{f00b9}", "md-bone");
     pub const PICKAXE: (&str, &str) = ("\u{f08b7}", "md-pickaxe");
+    // BD-1 structural stock. Both codepoints were read out of the shipped font's own `post`
+    // table rather than copied from the upstream Material Design list — this face's MD block
+    // is shifted, so a hand-copied codepoint lands on a neighbour (`md-tshirt_crew` drew a
+    // keyboard, and a test that only asked "is this glyph present?" passed on it).
+    pub const PINE_TREE: (&str, &str) = ("\u{f0405}", "md-pine_tree");
+    pub const WALL: (&str, &str) = ("\u{f07fe}", "md-wall");
     pub const SWORD: (&str, &str) = ("\u{f04e5}", "md-sword");
     pub const HARD_HAT: (&str, &str) = ("\u{f05b5}", "md-account_hard_hat");
     pub const TSHIRT: (&str, &str) = ("\u{f0a7b}", "md-tshirt_crew");
@@ -76,9 +82,9 @@ mod nf {
 
     /// Everything the icon table can draw, for the identity test.
     #[cfg(test)]
-    pub const ALL: [(&str, &str); 20] = [
+    pub const ALL: [(&str, &str); 22] = [
         CASH, SCRIPT, FLASK, SHIELD, LEAF, RUN_FAST, LIGHTNING, HEART_PLUS, BOOK, GOLD_BARS,
-        BONE, PICKAXE, SWORD, HARD_HAT, TSHIRT, BOOT, RING, SACK, KIT, BOMB,
+        BONE, PICKAXE, SWORD, HARD_HAT, TSHIRT, BOOT, RING, SACK, KIT, BOMB, PINE_TREE, WALL,
     ];
 }
 
@@ -121,6 +127,14 @@ pub(crate) fn glyph(kind: &str) -> (&'static str, Color) {
             M::Trophy => (nf::BONE.0, bone),
             M::Ore => (nf::PICKAXE.0, Color::srgb(0.72, 0.66, 0.58)),
             M::Reagent => (nf::LEAF.0, green),
+            // BD-1 structural stock: a tree for timber, a course of masonry for stone. The
+            // glyph carries WHAT IT IS and the colour carries a second fact, which is why
+            // neither reuses the reagent's leaf or the ore's pickaxe — a builder scanning a
+            // backpack for enough wood should not have to read the words. Still superseded
+            // by art the moment a `resource_<kind>.png` exists, since the one icon rule is
+            // "if we drew it, show it".
+            M::Wood => (nf::PINE_TREE.0, Color::srgb(0.55, 0.40, 0.24)),
+            M::Stone => (nf::WALL.0, Color::srgb(0.62, 0.63, 0.66)),
         };
     }
     // A gear SLOT rather than an item kind, which is how the party and Vault screens ask.

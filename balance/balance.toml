@@ -2042,6 +2042,13 @@ reagent_stock = 3               # units a reagent node holds
 reagent_tick_ms = 900           # …one every this long
 ore_stock = 6                   # an ore vein holds more…
 ore_tick_ms = 1600              # …and gives it up more slowly
+# BD-1 structural stock. Wood comes in quick armfuls; stone is the slowest thing you can
+# gather and the most plentiful, because a wall is mostly a haulage problem. These are what
+# make "go and get enough to build a town" a real expedition rather than a detour.
+wood_stock = 5
+wood_tick_ms = 1300
+stone_stock = 8
+stone_tick_ms = 2100
 default_stock = 3               # any material class without its own row
 default_tick_ms = 1200
 
@@ -2443,12 +2450,47 @@ chest_regrow_ticks = 18000       # 30 min: treasure is the one thing farming mus
 # out to it. Tune `shift_hold_damage_fraction` against `anchor_max_hp` and you are
 # deciding how many Shifts an unattended anchor survives.
 # =============================================================================
+# --- BD-1 structural nodes. `forging` credits the mason and the woodcutter alike: there is
+# no separate Carpentry/Masonry Meld skill yet, and inventing two that nothing else reads
+# would be a ladder with one rung. ---
+[resource.heartoak_log]
+material = "heartoak_log"
+skill = "forging"
+xp = 12
+[resource.river_granite]
+material = "river_granite"
+skill = "forging"
+xp = 10
+[resource.sun_sandstone]
+material = "sun_sandstone"
+skill = "forging"
+xp = 14
+[resource.basalt_slab]
+material = "basalt_slab"
+skill = "forging"
+xp = 18
+[resource.rime_stone]
+material = "rime_stone"
+skill = "forging"
+xp = 22
+[resource.peat_shale]
+material = "peat_shale"
+skill = "forging"
+xp = 26
+[resource.bog_root_timber]
+material = "bog_root_timber"
+skill = "forging"
+xp = 26
+
 [building]
-# Everything is built from ORE you are carrying. Wood and stone are BD-1's job; using the
-# material that already exists keeps this playable now rather than gated on a harvest
-# rework, and it makes deep ore a structural sink as well as a crafting one.
-anchor_ore_cost = 6
-wall_ore_cost = 2
+# BD-1: a structure is built from the material its registry row names — a palisade out of
+# WOOD, an anchor out of STONE (`meld_proto::structures::StructureDef::material`). Holding
+# ground therefore takes both, and they come out of different biomes.
+#
+# The wall is deliberately the cheap one: you want to be able to throw a line of them up
+# in front of something, and `wall_build_ms` is already short enough to be a gamble.
+anchor_stone_cost = 6
+wall_wood_cost = 2
 anchor_max_hp = 900
 wall_max_hp = 400
 # Time from placement to full HP. A structure goes up at `build_start_fraction` of its
@@ -2461,9 +2503,11 @@ build_start_fraction = 0.15
 # the Shift is section-granular, so a pin narrower than a section could never hold a
 # whole one and the loop would never fire.
 anchor_pin_radius = 90.0
-# Repair: one unit of ore buys this much HP back. The counter to attrition, and the
-# reason a held region needs supply rather than just a builder.
-repair_hp_per_ore = 120
+# Repair: one unit of the structure's OWN material buys this much HP back. The counter to
+# attrition, and the reason a held region needs supply rather than just a builder. Paying in
+# the same stock it was built from is what makes an anchor deep in the ash a logistics
+# problem — there is no stone out there to patch it with.
+repair_hp_per_material = 120
 # Packing one up hands back a share of what it cost — anti-grief and anti-clutter, never
 # a full refund, or moving one is free.
 demolish_refund_fraction = 0.5

@@ -7929,31 +7929,35 @@ impl WorldActor {
         let Some(run) = self.run.runs.iter().find(|r| r.player_id == player_id) else {
             return reject(ErrorCode::InvalidState, "Not in a run.");
         };
+        // BD-1: what this structure is made of comes from the REGISTRY, not from here. A
+        // palisade is timber and an anchor is masonry, so the handler must not name a class
+        // of its own — that is how "everything is built from ore" survived as a hardcode in
+        // two functions while the balance file's own comment called it a placeholder.
+        let need_class = def.material;
         let mut have: HashMap<String, (i32, i32)> = HashMap::new();
         for item in run.backpack.iter().filter(|i| {
-            i.quantity > 0
-                && meld_proto::materials::is_class(
-                    &i.item_kind,
-                    meld_proto::materials::MaterialClass::Ore,
-                )
+            i.quantity > 0 && meld_proto::materials::is_class(&i.item_kind, need_class)
         }) {
             let tier =
                 meld_proto::materials::material(&item.item_kind).map(|m| m.tier).unwrap_or(0);
             have.entry(item.item_kind.clone()).or_insert((0, tier)).0 += item.quantity;
         }
-        let Some(ore_kind) = have
+        let Some(stock_kind) = have
             .into_iter()
             .filter(|(_, (n, _))| *n >= cost)
             .max_by_key(|(_, (_, tier))| *tier)
             .map(|(k, _)| k)
         else {
-            return reject(ErrorCode::InvalidState, &format!("{} takes {cost} ore.", def.name));
+            return reject(
+                ErrorCode::InvalidState,
+                &format!("{} takes {cost} {}.", def.name, need_class.wire()),
+            );
         };
         // Validated BEFORE the stock is spent: a refusal that also charged you is the
         // worst kind, and the arena is the only thing that knows the ground.
         let tick = self.tick_count;
         if let Err(why) =
-            self.arena.place_structure(&balance, player_id, &req.function, &ore_kind, tick)
+            self.arena.place_structure(&balance, player_id, &req.function, &stock_kind, tick)
         {
             return reject(ErrorCode::InvalidState, why.message());
         }
@@ -7963,14 +7967,14 @@ impl WorldActor {
             .iter_mut()
             .find(|r| r.player_id == player_id)
             .expect("checked above");
-        spend_material(run, meld_proto::materials::MaterialClass::Ore, cost);
+        spend_material(run, need_class, cost);
         vec![out_msg(
             player_id,
             &wr::BackpackUpdate {
                 changes: vec![wr::BackpackChange {
                     item: ItemStack {
                         item_id: Uuid::now_v7().to_string(),
-                        item_kind: ore_kind,
+                        item_kind: stock_kind,
                         quantity: cost,
                         insurance: None,
                     },
@@ -8008,12 +8012,21 @@ impl WorldActor {
             let name = target.def().map(|d| d.name).unwrap_or("It");
             return reject(ErrorCode::InvalidState, &format!("The {name} is sound."));
         }
+        // Mended with the SAME stock it was built from, which is what makes an anchor deep
+        // in the ash a logistics problem: there is no stone out there to patch it with.
+        // Read before the mutable borrow of the run, not after.
+        let need_class = target
+            .def()
+            .map(|d| d.material)
+            .unwrap_or(meld_proto::materials::MaterialClass::Stone);
         let Some(run) = self.run.runs.iter_mut().find(|r| r.player_id == player_id) else {
             return reject(ErrorCode::InvalidState, "Not in a run.");
         };
-        let Some(ore_kind) = spend_material(run, meld_proto::materials::MaterialClass::Ore, 1)
-        else {
-            return reject(ErrorCode::InvalidState, "No ore to mend it with.");
+        let Some(stock_kind) = spend_material(run, need_class, 1) else {
+            return reject(
+                ErrorCode::InvalidState,
+                &format!("No {} to mend it with.", need_class.wire()),
+            );
         };
         self.arena.repair_structure(&balance, &req.entity_id);
         vec![out_msg(
@@ -8022,7 +8035,7 @@ impl WorldActor {
                 changes: vec![wr::BackpackChange {
                     item: ItemStack {
                         item_id: Uuid::now_v7().to_string(),
-                        item_kind: ore_kind,
+                        item_kind: stock_kind,
                         quantity: 1,
                         insurance: None,
                     },
@@ -8054,7 +8067,9 @@ impl WorldActor {
         if target.owner_player_id != player_id {
             return reject(ErrorCode::InvalidState, "That is not yours to take down.");
         }
-        let Some((ore_kind, back)) = self.arena.demolish_structure(&balance, &req.entity_id) else {
+        // The kind it RECORDED at placement — wood for a palisade, stone for an anchor.
+        let Some((stock_kind, back)) = self.arena.demolish_structure(&balance, &req.entity_id)
+        else {
             return reject(ErrorCode::InvalidState, "Nothing in reach.");
         };
         if back <= 0 {
@@ -8062,7 +8077,7 @@ impl WorldActor {
         }
         let item = ItemStack {
             item_id: Uuid::now_v7().to_string(),
-            item_kind: ore_kind,
+            item_kind: stock_kind,
             quantity: back,
             insurance: None,
         };

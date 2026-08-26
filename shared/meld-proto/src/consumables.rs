@@ -599,6 +599,20 @@ mod tests {
             if matches!(m.class, MaterialClass::Ore | MaterialClass::Refined) {
                 continue;
             }
+            // Structural stock (BD-1) is spent by BUILDING, which — like the Forge —
+            // gates by CLASS rather than by name, so a recipe is not the bar. But it
+            // gets a STRONGER check than a skip: something must actually be made of it.
+            // A `Stone` with no stone structure is dead loot in exactly the way this
+            // test exists to catch, and the class carve-out would have hidden it.
+            if m.class.is_structural() {
+                assert!(
+                    crate::structures::STRUCTURES.iter().any(|st| st.material == m.class),
+                    "{} is dead loot: nothing is built out of {:?}",
+                    m.key,
+                    m.class
+                );
+                continue;
+            }
             assert!(
                 !recipes_consuming(m.key).is_empty(),
                 "{} is dead loot: no recipe consumes it",

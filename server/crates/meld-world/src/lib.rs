@@ -272,12 +272,17 @@ pub fn biomes_of_creature(kind: &str) -> Vec<&'static str> {
 /// Harvestable resource node ids that spawn in a biome (one alchemy reagent + one
 /// forging ore/wood per biome). Structural; stats live under `[resource.<key>]`.
 fn resources_for_biome(biome: &str) -> &'static [&'static str] {
+    // Reagent, ore, then BD-1's STRUCTURAL stock: stone everywhere, wood only where
+    // trees grow. The desert, the ashfall and the tundra have no timber at all — their
+    // obstacle tables grow `cactus`, `cinder_rock` and `ice_spire`, so a wood node out
+    // there would be deadfall from trees that do not exist. That absence is the content:
+    // it is what makes a builder care which band they are standing in.
     match biome {
-        "field" | "forest" => &["bloom_herb", "heartoak_bark"],
-        "desert" => &["sun_salts", "dune_iron"],
-        "ashfall" => &["ember_ash", "cinder_ore"],
-        "tundra" => &["frost_lichen", "rime_ore"],
-        _ => &["bog_myrrh", "peat_iron"],
+        "field" | "forest" => &["bloom_herb", "heartoak_bark", "river_granite", "heartoak_log"],
+        "desert" => &["sun_salts", "dune_iron", "sun_sandstone"],
+        "ashfall" => &["ember_ash", "cinder_ore", "basalt_slab"],
+        "tundra" => &["frost_lichen", "rime_ore", "rime_stone"],
+        _ => &["bog_myrrh", "peat_iron", "peat_shale", "bog_root_timber"],
     }
 }
 
@@ -6026,6 +6031,73 @@ fn raise_terrace(t: &mut Terrain, x0: f64, y0: f64, x1: f64, y1: f64, level: u8)
 }
 
 #[cfg(test)]
+mod bd1_structural_stock {
+    use super::*;
+
+    /// **Every structural material must be gatherable somewhere.** A material class the
+    /// build handler spends but no biome yields is a structure nobody can raise, and it
+    /// fails as "you do not have enough" rather than "this is unobtainable" — the same
+    /// silent-unreachability bug `every_fieldable_class_can_find_gear` exists to catch on
+    /// the loot side.
+    #[test]
+    fn every_structural_material_is_gatherable() {
+        use meld_proto::materials::{material, MaterialClass, MATERIALS};
+        let biomes = ["field", "forest", "desert", "ashfall", "tundra", "mire"];
+        for class in [MaterialClass::Wood, MaterialClass::Stone] {
+            let found = biomes.iter().any(|b| {
+                resources_for_biome(b)
+                    .iter()
+                    .filter_map(|k| material(k))
+                    .any(|m| m.class == class)
+            });
+            assert!(found, "no biome yields {class:?}, so nothing made of it can be built");
+        }
+        // And every node a biome names has to BE a real material, or placement spawns a
+        // node whose harvest banks an item the registry cannot price.
+        for b in biomes {
+            for kind in resources_for_biome(b) {
+                assert!(material(kind).is_some(), "{b} yields `{kind}`, which is not a material");
+            }
+        }
+        // Sanity: the structural rows exist at more than one tier, so hauling deep stock
+        // home is worth more than local stock.
+        let tiers: Vec<i32> = MATERIALS
+            .iter()
+            .filter(|m| m.class.is_structural())
+            .map(|m| m.tier)
+            .collect();
+        assert!(tiers.iter().max() > tiers.iter().min(), "structural stock is all one tier");
+    }
+
+    /// **Stone is everywhere; wood is not** — and the wood-less bands are exactly the ones
+    /// whose obstacle tables have no trees. This is BD-1's content claim, so it is held as
+    /// a rule rather than left to the tables happening to agree: if someone adds timber to
+    /// the desert, either the trees come with it or this fails.
+    #[test]
+    fn timber_only_grows_where_trees_do() {
+        use meld_proto::materials::{material, MaterialClass};
+        for b in ["field", "forest", "desert", "ashfall", "tundra", "mire"] {
+            let has_wood = resources_for_biome(b)
+                .iter()
+                .filter_map(|k| material(k))
+                .any(|m| m.class == MaterialClass::Wood);
+            let has_stone = resources_for_biome(b)
+                .iter()
+                .filter_map(|k| material(k))
+                .any(|m| m.class == MaterialClass::Stone);
+            let has_trees = obstacles_for_biome(b).contains(&"tree")
+                || obstacles_for_biome(b).contains(&"mire_root");
+            assert!(has_stone, "{b} yields no stone, but every biome has ground");
+            assert_eq!(
+                has_wood, has_trees,
+                "{b}: yields wood = {has_wood} but grows trees = {has_trees} — the material \
+                 table and the obstacle table disagree about whether this place has timber"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -6329,7 +6401,7 @@ mod tests {
                 .unwrap();
             let (ore, back) = a.demolish_structure(&b, &id).expect("it was standing");
             assert_eq!(ore, "dune_iron", "it handed back something it was not built from");
-            assert!(back > 0 && back < b.building.anchor_ore_cost, "a full refund makes moving free");
+            assert!(back > 0 && back < b.building.anchor_stone_cost, "a full refund makes moving free");
             assert!(a.structures.is_empty());
         }
 
@@ -11379,7 +11451,7 @@ impl Arena {
     /// Spend one unit of ore on a structure. Returns the HP actually restored, so a
     /// nearly-full structure charges for what it took rather than for the whole unit.
     pub fn repair_structure(&mut self, balance: &Balance, entity_id: &str) -> Option<i32> {
-        let per = balance.building.repair_hp_per_ore.max(1);
+        let per = balance.building.repair_hp_per_material.max(1);
         let s = self.structures.iter_mut().find(|s| s.entity_id == entity_id)?;
         if s.hp >= s.max_hp {
             return None;

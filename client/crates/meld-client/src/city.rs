@@ -2358,6 +2358,16 @@ pub(crate) fn material_blurb(kind: &str) -> String {
             "A trophy off something you felled. Catalyses a forge, or brews a stronger dose."
                 .into()
         }
+        // BD-1 structural stock. The blurb names the STRUCTURE it raises, not the class —
+        // "a structural material" tells a player nothing they can act on, while "a palisade"
+        // is a decision about what to carry home.
+        Some(MaterialClass::Wood) => {
+            "Timber. Raises a palisade in the field — and only the wooded bands have any."
+                .into()
+        }
+        Some(MaterialClass::Stone) => {
+            "Masonry. What an anchor is built from, and what mends one.".into()
+        }
         None => "The Broker will take it.".into(),
     }
 }
