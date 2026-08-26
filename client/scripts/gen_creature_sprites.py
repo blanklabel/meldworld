@@ -26,6 +26,19 @@ STATE = ROOT / "client/scripts/.creature_sprites_state.json"
 ASSETS = ROOT / "client/crates/meld-client/assets/creatures"
 ENDPOINT = "https://api.pixellab.ai/mcp"
 ASSET_DIR = "creatures"
+
+# Mirrors `normalize_clips.py`, because the account and the repo have to agree about what
+# a clip is CALLED before they can agree about whether it exists.
+ALIASES = {"walking": "walk", "walk cycle": "walk", "running": "walk", "run": "walk",
+           "attacking": "attack"}
+
+
+def canonical(name):
+    key = name.strip().lower()
+    if ":" in key:
+        key = key.split(":", 1)[1]
+    key = key.replace("-", " ")
+    return ALIASES.get(key, key.replace(" ", "_"))
 # asset -> which clips it needs, filled from the manifest in main().
 NEEDS = {}
 
@@ -240,7 +253,7 @@ def character_exists(cid):
         raise
 
 
-def existing_clip_groups(cid, clip):
+def existing_clip_groups(cid, clip, with_dirs=False):
     """Animation-group ids already on this character under `clip`.
 
     ⚠️ TWO GROUPS OF THE SAME NAME COLLIDE ON EXPORT. The download zip lays a group out as
@@ -253,19 +266,45 @@ def existing_clip_groups(cid, clip):
     ids = []
     for line in out.splitlines():
         stripped = line.strip()
-        if not stripped.startswith(clip):
+        if "[group:" not in stripped or "—" not in stripped:
+            continue
+        # Compare CANONICAL names: the same clip arrives as `walk`, `Walking` or
+        # `v3:walking` depending on how it was made, and matching the raw string means
+        # a hand-made walk reads as "no walk" and gets generated on top of itself.
+        if canonical(stripped.split("—", 1)[0].strip()) != clip:
             continue
         # `  <name> — <N> dir (...), 8f <date> [type=...] [group: <uuid>]`
-        if "[group:" not in stripped:
-            continue
-        name = stripped.split("—", 1)[0].strip() if "—" in stripped else ""
-        if name != clip:
-            continue
-        ids.append(stripped.split("[group:", 1)[1].split("]", 1)[0].strip())
+        gid = stripped.split("[group:", 1)[1].split("]", 1)[0].strip()
+        if with_dirs:
+            inside = stripped[stripped.index("(") + 1:stripped.index(")")] if "(" in stripped else ""
+            ids.append((gid, {d.strip() for d in inside.split(",") if d.strip()}))
+        else:
+            ids.append(gid)
     return ids
 
 
+def clip_is_usable(cid, clip):
+    """Does this character already have a good `clip` on the account?
+
+    ⚠️ NEVER REGENERATE WORK SOMEONE ELSE DID. Clips get made and named by hand in the
+    PixelLab UI, and this script's delete-then-generate step would happily destroy one —
+    `cinder_imp_dog`'s attack was named by hand and was minutes from being deleted and
+    replaced by a generated approximation of itself.
+
+    Usable means ONE group (two of a name collide on export and drop facings) covering at
+    least the directions this clip is supposed to have. Anything else — none, several, or
+    one that is short — is genuinely worth remaking.
+    """
+    groups = existing_clip_groups(cid, clip, with_dirs=True)
+    if len(groups) != 1:
+        return False
+    return set(CLIP_DIRS[clip]) <= groups[0][1]
+
+
 def animate(cid, clip, action):
+    if clip_is_usable(cid, clip):
+        log(f"    kept the existing {clip} (already on the account)")
+        return "kept"
     for gid in existing_clip_groups(cid, clip):
         call("delete_animation", {"character_id": cid, "animation_group_id": gid})
         log(f"    dropped a stale {clip} group ({gid[:8]})")

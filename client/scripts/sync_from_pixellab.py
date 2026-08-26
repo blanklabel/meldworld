@@ -71,13 +71,33 @@ def main():
     if not TOKEN:
         sys.exit("set PIXELLAB_TOKEN")
 
-    import re
+    import re, collections
     chars = []
-    for off in (0, 50):
-        for line in call("list_characters", {"limit": 50, "offset": off}).splitlines():
+    for off in (0, 50, 100):
+        txt = call("list_characters", {"limit": 50, "offset": off})
+        for line in txt.splitlines():
             m = re.match(r'\s+([0-9a-f-]{36}) \| (.+?) \| \ddir (\d+)x', line)
             if m and int(m.group(3)) == 96:
                 chars.append((m.group(1), m.group(2).strip()))
+        if "next:" not in txt:
+            break
+
+    # ⚠️ A NAME IS THE KEY HERE, SO TWO CHARACTERS SHARING ONE IS AMBIGUOUS.
+    # Whichever the listing happened to return last would win, silently — and the loser
+    # could be the finished one, so a run would animate an empty duplicate and install it
+    # over real art. That is a coin flip, not a bug you would ever catch by reading a log,
+    # so it stops the sync instead. Rename or delete one over there and run again.
+    by_name = collections.defaultdict(list)
+    for cid, name in chars:
+        by_name[name].append(cid)
+    dupes = {n: ids for n, ids in by_name.items() if len(ids) > 1}
+    if dupes:
+        print("DUPLICATE NAMES ON THE ACCOUNT - refusing to guess which one you meant:\n")
+        for n, ids in sorted(dupes.items()):
+            print(f"  {n}")
+            for cid in ids:
+                print(f"      {cid}")
+        sys.exit("\nrename or delete one of each, then run again")
 
     # The hero classes are 96px characters too, and they belong in `characters/`, not
     # here — pulling `explorer` into the bestiary would file a playable class as
