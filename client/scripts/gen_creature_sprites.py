@@ -241,10 +241,33 @@ def animate(cid, clip, action):
 
 
 def install(cid, key):
-    subprocess.run(
-        [str(ROOT / "client/scripts/install_class_sprite.sh"), cid, key, "creatures"],
-        check=True, env={**os.environ, "PIXELLAB_TOKEN": TOKEN},
-    )
+    """Download, mirror, pad — then CHECK, and report whether it actually landed.
+
+    An install that says "done" without looking is how half-finished sets get marked
+    finished and skipped forever. The caller only records `installed` when this returns
+    True, so an incomplete set is simply picked up again by the next run.
+    """
+    # The download is a large zip over a flaky link and a whole batch should not die on
+    # one dropped connection — this run lost twenty minutes of queued work to a single
+    # curl exit 56. Retry, then give up on THIS species rather than on the run.
+    for attempt in range(4):
+        r = subprocess.run(
+            [str(ROOT / "client/scripts/install_class_sprite.sh"), cid, key, "creatures"],
+            env={**os.environ, "PIXELLAB_TOKEN": TOKEN},
+        )
+        if r.returncode == 0:
+            break
+        if attempt == 3:
+            log(f"    ⚠ {key}: install failed {r.returncode} four times; next pass will retry")
+            return False
+        log(f"    {key}: install failed ({r.returncode}), retrying in 20s")
+        time.sleep(20)
+    if installed_on_disk(key):
+        return True
+    missing = sorted(set(ALL_DIRS) - clip_dirs_on_disk(key, "walk"))
+    log(f"    ⚠ {key} came back incomplete (walk missing {', '.join(missing) or 'nothing'}"
+        f"); leaving it for the next pass")
+    return False
 
 
 def main():
@@ -282,6 +305,13 @@ def main():
         for p in plan:
             print(f"  d{p['gate']:<4} {p['asset']}")
         return
+
+    # START FROM AN IDLE ACCOUNT. Killing this script does not cancel the jobs it has
+    # already queued — they keep running server-side and land minutes later, INTO the
+    # very animation groups a restarted run has just deleted. That produced sets with
+    # `south` missing and sets with only `south`, and it looked like a bug in the
+    # generator rather than in the handover between two runs of it.
+    wait_for_idle("startup")
 
     st = load_state()
     # Work in CHUNKS rather than one character at a time, and phase-wise inside a chunk:
@@ -336,7 +366,10 @@ def main():
             s_ = st[p["asset"]]
             if s_.get("installed"):
                 continue
-            install(s_["id"], p["asset"])
+            if not install(s_["id"], p["asset"]):
+                # Its clips are re-queued next run: `load_state` clears any flag the
+                # files do not back up, so this heals itself rather than needing a human.
+                continue
             s_["installed"] = True
             save_state(st)
             log(f"    ✔ {p['asset']} installed")
