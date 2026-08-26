@@ -250,6 +250,196 @@ pub fn is_land(x: f32, z: f32, arc_half_rad: f32) -> bool {
     !is_ocean(x, z, arc_half_rad)
 }
 
+// ---------------------------------------------------------------------------------------
+// CONTINENTS
+// ---------------------------------------------------------------------------------------
+//
+// **The fan was ONE landmass, and the line that made it one was `is_ocean`'s first
+// branch: inside the arc, land, always.** So the world had a coastline and no
+// continents — every bearing was solid ground from the hub to the frontier, and the only
+// water a diver could ever reach was the gap behind Last City (a *frame*: it tells you
+// which way is out, and there is nothing on the far side of it to walk toward).
+//
+// A continent here is the land BETWEEN straits. A [`Strait`] is an inland sea filling an
+// annular sector — a radius band across a span of bearing — pierced by **isthmuses**. The
+// landmass on either side of one is hundreds to thousands of units across, which is what
+// you actually experience of a continent: not the ocean's width, but its coast and the
+// crossing.
+//
+// ```text
+//                        . . . . . . . . . .
+//                  .                         .        ← continent (outer)
+//              .  ~~~~~~~~~~~~~~~~~~~~~~~       .
+//            .  ~~~~~~~~~[ISTHMUS]~~~~~~~~~~      .   ← a STRAIT: radius band × bearing span
+//           .   ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~     .
+//          .                                       .  ← continent (inner)
+//         .              (hub)                      .
+// ```
+//
+// # Why this is nearly free
+//
+// It is a term in [`sea_depth`], and four systems already read this module rather than
+// keeping their own copy of the shoreline: `astar_route` land-checks **every bent edge**
+// (so the guaranteed backbone routes around a strait honestly, and to an isthmus, with no
+// new pathfinding), `apply_move` collides against the same predicate, and both ground
+// shaders already ramp a beach and tint a depth over the signed field. Carve the strait
+// here and routing, collision and rendering come along. It also stays **analytic** — no
+// colliders, so `BlockField`'s cell (sized from the largest radius in the world) is
+// untouched, where one r=150 water disc measured **+63%** on the creature tick.
+//
+// # Two things are guaranteed by CONSTRUCTION, and both are load-bearing
+//
+// 1. **A strait never spans the whole fan.** Both angular ends stay
+//    [`STRAIT_FAN_MARGIN`] inside the arc, so you can always walk *around* either end.
+// 2. **Every strait carries isthmuses**, each at least [`MIN_BRIDGE_HALF_WIDTH`] of arc
+//    to a side — comfortably wider than the clear path's tube plus a player.
+//
+// Together those are why this is not the retired `Seam`. A seam was a full-width wall
+// with **one** door, and it was removed for good reason: it "funnelled you through a
+// single pass" and the world read as a corridor. Three or more ways across every barrier
+// — two isthmuses and either end — is the difference between a funnel and a *decision*:
+// you meet a coast, and you choose whether the crossing you can see is worth less walking
+// than the one you cannot. That lateral choice is the thing the radial world has never
+// had; two players on different bearings finally see different worlds.
+
+/// One STRAIT, flat so it rides the wire and a shader uniform as two `vec4`s (the
+/// [`crate::terrain::peak_height`] precedent — an explicit table, not noise, because a
+/// barrier has to be *structured*: an isotropic threshold over a sum of sines cannot make
+/// a long connected channel with a pass in it at any amplitude).
+///
+/// `[r_center, r_half, theta_center, theta_half, b0_theta, b0_half, b1_theta, b1_half]`
+///
+/// Radii and the two bridge half-widths are **world units**; the two `theta`s and
+/// `theta_half` are **radians**. That split is deliberate and it is the same lesson
+/// [`sea_depth`] already carries: a bridge measured as an ANGLE would be a few units wide
+/// near the hub and hundreds at the frontier, so the one number that has to stay walkable
+/// is stored as an arc length. A bridge with `half <= 0` is absent.
+pub type Strait = [f32; 8];
+
+/// Max straits a ground shader blends at once — windowed around the player's radius, the
+/// way the biome rings are. The run holds as many as it has streamed.
+pub const MAX_STRAITS: usize = 8;
+
+/// The narrowest an isthmus may ever be, as half its arc width. It has to clear the
+/// guaranteed route's tube (`[worldgen] path_clear_radius`, 1.9) plus a player, with room
+/// to walk rather than thread — a "crossing" you can only find by pixel-hunting is a
+/// funnel with extra steps.
+pub const MIN_BRIDGE_HALF_WIDTH: f32 = 11.0;
+
+/// How far inside the fan's edge a strait's angular span must stop, as an ARC LENGTH.
+/// This is what keeps "walk around its end" available at every depth: measured as an angle
+/// it would vanish near the hub and be kilometres out at the frontier.
+pub const STRAIT_FAN_MARGIN: f32 = 40.0;
+
+/// A strait is generated no shallower than this, so the on-ramp is untouched water-free
+/// ground. CANON §B is not negotiable — distance is difficulty — and a diver's first
+/// minutes should not be a coastline.
+pub const STRAIT_MIN_REACH: f32 = 180.0;
+
+/// Signed difference between two bearings, wrapped to `[-π, π]`, so a strait centred near
+/// due west is not silently a strait spanning the entire world the other way round.
+fn ang_diff(a: f32, b: f32) -> f32 {
+    let mut d = a - b;
+    while d > std::f32::consts::PI {
+        d -= std::f32::consts::TAU;
+    }
+    while d < -std::f32::consts::PI {
+        d += std::f32::consts::TAU;
+    }
+    d
+}
+
+/// **How far INSIDE this strait `(x, z)` is, in world units** — positive in the water,
+/// negative on the land around it, zero on its waterline. The twin of [`sea_depth`] for
+/// one inland sea.
+///
+/// Every term is a world-unit margin, and that is what makes it composable: the angular
+/// span is multiplied by `r` into an ARC so it can be `min`'d against the radial one, and
+/// the result is a continuous field the ground shader can ramp a beach over. Returning an
+/// angle for one term and a length for another would give the coast a beach on its curved
+/// edges and a cliff on its flat ones.
+///
+/// Land is the union of everything, so water is the INTERSECTION of "in the band", "in the
+/// span" and "not on an isthmus" — a `min` of the three. An isthmus subtracts: off the
+/// bridge its term is positive (still water), on it negative (land bridge).
+pub fn strait_depth(x: f32, z: f32, s: &Strait) -> f32 {
+    let (r_c, r_half, th_c, th_half) = (s[0], s[1], s[2], s[3]);
+    if r_half <= 0.0 || th_half <= 0.0 {
+        return -1000.0; // an empty slot is not a sea
+    }
+    let r = x.hypot(z);
+    let theta = z.atan2(x);
+    // Inside the radius band…
+    let in_band = r_half - (r - r_c).abs();
+    // …inside the bearing span, as an arc length so it composes with the rest…
+    let in_span = (th_half - ang_diff(theta, th_c).abs()) * r;
+    // …and not standing on one of its isthmuses.
+    let mut off_bridge = f32::MAX;
+    for b in [(s[4], s[5]), (s[6], s[7])] {
+        if b.1 > 0.0 {
+            off_bridge = off_bridge.min(ang_diff(theta, b.0).abs() * r - b.1);
+        }
+    }
+    in_band.min(in_span).min(off_bridge)
+}
+
+/// [`sea_depth`] plus this world's inland seas — the full shoreline of a world that has
+/// **continents** rather than one unbroken fan.
+///
+/// The sea is the union of the ocean and every strait, and a signed depth's union is a
+/// `max`: past the ocean's land OR inside a strait. On open ground far from either the
+/// ocean's own (negative) distance survives, so the beach at the fan's rim is unchanged.
+pub fn sea_depth_with(x: f32, z: f32, arc_half_rad: f32, straits: &[Strait]) -> f32 {
+    let mut d = sea_depth(x, z, arc_half_rad);
+    if arc_half_rad <= 0.0 {
+        return d; // corridor mode: no fan, no sea, and so no continents either
+    }
+    for s in straits {
+        d = d.max(strait_depth(x, z, s));
+    }
+    d
+}
+
+/// [`is_ocean`], including the inland seas that separate the continents. Its sign is
+/// [`sea_depth_with`] exactly — the water you SEE and the water you COLLIDE with are one
+/// shoreline, which is the entire reason this module exists.
+pub fn is_ocean_with(x: f32, z: f32, arc_half_rad: f32, straits: &[Strait]) -> bool {
+    if is_ocean(x, z, arc_half_rad) {
+        return true;
+    }
+    if arc_half_rad <= 0.0 {
+        return false;
+    }
+    straits.iter().any(|s| strait_depth(x, z, s) > 0.0)
+}
+
+/// Is `(x, z)` walkable ground, continents included? The inverse of [`is_ocean_with`].
+pub fn is_land_with(x: f32, z: f32, arc_half_rad: f32, straits: &[Strait]) -> bool {
+    !is_ocean_with(x, z, arc_half_rad, straits)
+}
+
+/// Does `s` honour the two construction guarantees — an isthmus wide enough to walk, and
+/// both angular ends stopping inside the fan so you can round either one?
+///
+/// Exposed (rather than left to the generator) because it is the *contract*, and this repo
+/// has learned twice that a guarantee enforced only where a thing is built is a guarantee
+/// the next builder does not know about. The generator asserts it; so do the tests.
+pub fn strait_is_crossable(s: &Strait, arc_half_rad: f32) -> bool {
+    let (r_c, r_half, th_c, th_half) = (s[0], s[1], s[2], s[3]);
+    if r_half <= 0.0 || th_half <= 0.0 || r_c <= r_half {
+        return false;
+    }
+    // At least one isthmus, wide enough to walk, and inside the span it pierces.
+    let bridged = [(s[4], s[5]), (s[6], s[7])].iter().any(|&(bt, bh)| {
+        bh >= MIN_BRIDGE_HALF_WIDTH && ang_diff(bt, th_c).abs() <= th_half
+    });
+    // Both ends stop inside the fan, so rounding either one is always an option.
+    let r_out = r_c + r_half;
+    let margin = STRAIT_FAN_MARGIN / r_out.max(1.0);
+    let ends_inside = th_c.abs() + th_half + margin <= arc_half_rad;
+    bridged && ends_inside
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -330,8 +520,10 @@ mod tests {
 
     #[test]
     fn the_fan_is_all_land() {
-        // Every angle inside the fan, at every depth, is walkable ground — the sea only
-        // ever occupies the western gap.
+        // Every angle inside the fan, at every depth, is walkable ground — the OCEAN only
+        // ever occupies the western gap. This is a statement about the ocean's shape, not
+        // about the world having one landmass: the inland seas that separate the continents
+        // are a separate term, and they come in through `is_ocean_with`.
         for i in 0..=100 {
             let th = -ARC_HALF + (i as f32 / 100.0) * 2.0 * ARC_HALF;
             for r in [5.0_f32, 40.0, 200.0, 1200.0] {
@@ -423,6 +615,173 @@ mod tests {
     fn corridor_mode_has_no_sea() {
         // A zero arc is the flat-corridor world the tests and the tutorial still use.
         assert!(!is_ocean(-500.0, 400.0, 0.0));
+    }
+
+    // -----------------------------------------------------------------------------------
+    // CONTINENTS
+    // -----------------------------------------------------------------------------------
+
+    /// A strait for the tests below: a band 40 units thick at r=600, spanning 50° of
+    /// bearing centred on the axis, with two isthmuses in it.
+    fn test_strait() -> Strait {
+        let th_half = 50.0_f32.to_radians() * 0.5;
+        [600.0, 20.0, 0.0, th_half, -th_half * 0.55, 14.0, th_half * 0.5, 14.0]
+    }
+
+    /// The whole point of the feature: a strait is water, and there are **three or more**
+    /// ways past it — each isthmus, and around either end. That is what separates this from
+    /// the retired `Seam`, a full-width wall with one door that made the world read as a
+    /// corridor.
+    #[test]
+    fn a_strait_is_water_you_can_cross_and_water_you_can_round() {
+        let s = test_strait();
+        let at = |theta: f32, r: f32| {
+            let (x, z) = (r * theta.cos(), r * theta.sin());
+            is_ocean_with(x, z, ARC_HALF, &[s])
+        };
+        let th_half = s[3];
+
+        // Open water: mid-band, mid-span, clear of both isthmuses.
+        assert!(at(th_half * 0.9, 600.0), "the middle of the strait is open water");
+
+        // Both isthmuses are dry land bridges, right through the middle of the band.
+        assert!(!at(s[4], 600.0), "the first isthmus is a land bridge");
+        assert!(!at(s[6], 600.0), "the second isthmus is a land bridge");
+
+        // Either end of the span is land, so you can always walk around it…
+        assert!(!at(th_half * 1.3, 600.0), "past the span's far end is land");
+        assert!(!at(-th_half * 1.3, 600.0), "past the span's near end is land");
+        // …and so is the ground on both shores.
+        assert!(!at(th_half * 0.9, 540.0), "the near shore is land");
+        assert!(!at(th_half * 0.9, 660.0), "the far shore is land");
+    }
+
+    /// Sweep the strait's own band and count how many separate stretches of land cross it.
+    /// Three is the floor (two isthmuses + one end); the far end is outside the swept span
+    /// on purpose, so this asserts the crossings that are *inside* the barrier.
+    #[test]
+    fn a_strait_never_severs_the_continent_it_borders() {
+        let s = test_strait();
+        let th_half = s[3];
+        let mut crossings = 0;
+        let mut was_land = false;
+        for i in 0..=4000 {
+            let th = -th_half * 1.2 + (i as f32 / 4000.0) * th_half * 2.4;
+            let (x, z) = (600.0 * th.cos(), 600.0 * th.sin());
+            let land = !is_ocean_with(x, z, ARC_HALF, &[s]);
+            if land && !was_land {
+                crossings += 1;
+            }
+            was_land = land;
+        }
+        assert!(
+            crossings >= 3,
+            "a strait must offer at least three ways past it — two isthmuses and its ends \
+             — or it is the retired `Seam`: one door, and a world that reads as a corridor. \
+             Found {crossings}"
+        );
+    }
+
+    /// The contract, checked as a contract: an isthmus wide enough to walk, and both ends
+    /// stopping inside the fan. A strait that fails this can sever the world.
+    #[test]
+    fn the_crossable_contract_catches_a_severing_strait() {
+        let arc = ARC_HALF;
+        assert!(strait_is_crossable(&test_strait(), arc));
+
+        let mut narrow = test_strait();
+        narrow[5] = MIN_BRIDGE_HALF_WIDTH - 0.5;
+        narrow[7] = MIN_BRIDGE_HALF_WIDTH - 0.5;
+        assert!(!strait_is_crossable(&narrow, arc), "a thread is not an isthmus");
+
+        let mut unbridged = test_strait();
+        unbridged[5] = 0.0;
+        unbridged[7] = 0.0;
+        assert!(!strait_is_crossable(&unbridged, arc), "a strait with no isthmus is a wall");
+
+        // A span that reaches the fan's rim closes the "walk around its end" option.
+        let mut rim = test_strait();
+        rim[3] = arc;
+        assert!(!strait_is_crossable(&rim, arc), "a span that reaches the rim has no end to round");
+
+        // An isthmus outside the span it is meant to pierce pierces nothing.
+        let mut adrift = test_strait();
+        adrift[4] = arc * 0.9;
+        adrift[6] = arc * 0.9;
+        assert!(!strait_is_crossable(&adrift, arc), "an isthmus must sit inside its own strait");
+    }
+
+    /// The continental shoreline is ONE shoreline, exactly as the ocean's is
+    /// (`the_depth_field_agrees_with_the_predicate`). The server collides against
+    /// `is_ocean_with` and the ground shader ramps its beach over `sea_depth_with`; a
+    /// disagreement is water you can walk on, or a beach drawn over sea.
+    #[test]
+    fn the_continental_depth_field_agrees_with_the_predicate() {
+        let straits = [
+            test_strait(),
+            [300.0, 18.0, 0.6, 0.35, 0.45, 13.0, 0.72, 13.0],
+            [900.0, 30.0, -0.9, 0.5, -1.1, 16.0, -0.7, 16.0],
+        ];
+        let mut checked = 0u32;
+        for xi in -70..=70 {
+            for zi in -70..=70 {
+                let (x, z) = (xi as f32 * 13.7, zi as f32 * 13.7);
+                if x.hypot(z) < 1.0 {
+                    continue; // the origin has no angle
+                }
+                let depth = sea_depth_with(x, z, ARC_HALF, &straits);
+                let ocean = is_ocean_with(x, z, ARC_HALF, &straits);
+                if depth.abs() > 1e-3 {
+                    assert_eq!(
+                        depth > 0.0,
+                        ocean,
+                        "({x}, {z}): sea_depth_with says {depth} but is_ocean_with says \
+                         {ocean} — the shoreline the player SEES and the one they COLLIDE \
+                         with have drifted"
+                    );
+                    checked += 1;
+                }
+            }
+        }
+        assert!(checked > 10_000, "the sweep covered almost nothing ({checked} points)");
+    }
+
+    /// A strait's field has to be CONTINUOUS, because the ground shader smoothsteps a beach
+    /// over it — the same lesson this module already shipped twice (the flat `-1000` inside
+    /// the fan, and the city's `if z < back` early return). A jump means a wall of water
+    /// with no beach possible in between.
+    #[test]
+    fn a_straits_shoreline_has_a_beach_rather_than_a_cliff() {
+        let s = test_strait();
+        // March across the strait's near shore in 0.5-unit steps; the field may never jump
+        // by more than the step it took to get there (times slack for the arc's curvature).
+        let th = s[3] * 0.9;
+        let mut prev: Option<f32> = None;
+        let mut r = 540.0_f32;
+        while r <= 660.0 {
+            let (x, z) = (r * th.cos(), r * th.sin());
+            let d = sea_depth_with(x, z, ARC_HALF, &[s]);
+            if let Some(p) = prev {
+                assert!(
+                    (d - p).abs() < 2.0,
+                    "the sea depth jumped {:.1} units over a 0.5-unit step at r={r} — that \
+                     is a cliff of water, and every smoothstep over it collapses to a step",
+                    (d - p).abs()
+                );
+            }
+            prev = Some(d);
+            r += 0.5;
+        }
+    }
+
+    /// Corridor mode (the tutorial, and every unit test that runs flat) has no fan, so it
+    /// has no sea — and therefore no continents either, however many straits are handed in.
+    #[test]
+    fn corridor_mode_has_no_continents() {
+        let s = test_strait();
+        assert!(!is_ocean_with(600.0, 0.0, 0.0, &[s]));
+        assert!(!is_ocean_with(600.0, 30.0, 0.0, &[s]));
+        assert!(sea_depth_with(600.0, 0.0, 0.0, &[s]) < 0.0);
     }
 }
 
