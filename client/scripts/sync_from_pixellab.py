@@ -22,6 +22,7 @@ import argparse, json, os, pathlib, subprocess, sys, urllib.request
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 ASSETS = ROOT / "client/crates/meld-client/assets/creatures"
+STATE = ROOT / "client/scripts/.creature_sprites_state.json"
 ENDPOINT = "https://api.pixellab.ai/mcp"
 TOKEN = os.environ.get("PIXELLAB_TOKEN", "")
 DIRS = ["south", "south-east", "east", "north-east", "north", "north-west", "west",
@@ -96,8 +97,27 @@ def main():
           f"classes, {len(skip)} creatures already complete here, {len(todo)} to pull")
     for cid, want in todo:
         print(f"  {want}")
-    if a.dry_run or not todo:
+    if a.dry_run:
         return
+
+    # ⚠️ RECORD EVERY ID, INCLUDING THE ONES WE DID NOT DOWNLOAD.
+    #
+    # This is the whole reason a sync has to touch the ledger at all. The generator keys
+    # off `<asset> -> character id`; a variant whose art is on disk but whose id is NOT in
+    # the ledger looks to it like a creature that has never been made, so it CREATES A
+    # SECOND CHARACTER with the same name. That happened: four creatures that needed
+    # nothing but an attack clip got brand-new duplicates instead, which is exactly the
+    # "a shit ton of first area creatures" failure this pipeline is supposed to prevent.
+    #
+    # The account is the roster, so the account is where ids come from — and they are
+    # written down here even for a variant this run skipped, because skipping means "you
+    # already have it", never "it does not exist".
+    state = json.loads(STATE.read_text()) if STATE.exists() else {}
+    for cid, want in skip + todo:
+        state.setdefault(want, {})["id"] = cid
+    STATE.write_text(json.dumps(state, indent=1, sort_keys=True))
+    print(f"recorded {len(skip) + len(todo)} character ids in the ledger")
+
     for cid, want in todo:
         subprocess.run([str(ROOT / "client/scripts/install_class_sprite.sh"), cid, want,
                         "creatures"], env={**os.environ, "PIXELLAB_TOKEN": TOKEN})

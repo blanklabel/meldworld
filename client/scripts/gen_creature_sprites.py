@@ -182,7 +182,15 @@ def load_state():
         if s.get("installed"):
             continue
         for clip, dirs in CLIP_DIRS.items():
-            if s.get(clip) and not set(dirs) <= clip_dirs_on_disk(asset, clip):
+            on_disk = clip_dirs_on_disk(asset, clip)
+            if set(dirs) <= on_disk:
+                # Drawn and complete: record it, even if this ledger never saw it made.
+                # Only CLEARING flags was half a rule — art pulled straight from the
+                # account arrives with no flags at all, so a finished walk read as
+                # missing and would have been generated a second time over the top of
+                # itself.
+                s[clip] = True
+            elif s.get(clip):
                 s.pop(clip, None)
     return st
 
