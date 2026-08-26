@@ -384,3 +384,74 @@ fn a_generated_lake_is_not_in_the_sea_field() {
         }
     }
 }
+
+// ---------------------------------------------------------------------------------------
+// ONE WATER SYSTEM
+// ---------------------------------------------------------------------------------------
+
+/// **No biome scatters water as a PROP any more**, and the payoff is measurable rather than
+/// aesthetic: `BlockField::new` sizes its spatial-hash cell from the largest radius in the
+/// world, water props ran to radius 10 while every other obstacle caps at 2.8, so water
+/// alone forced `cell` to 20 instead of 8 — 2.5x wider cells holding ~6x the props, on the
+/// creature tick, for the ENTIRE world and not only the biomes that had water.
+///
+/// Two mechanisms for one substance is the duplication this repo keeps paying for
+/// (`is_water_kind`'s own doc lists three copies of that rule). Water is `coast::Basin` now.
+#[test]
+fn no_biome_scatters_water_as_a_prop() {
+    for seed in [1u64, 7, 42, 424242] {
+        let a = deep_world(seed);
+        let wet: Vec<&str> = a
+            .obstacles
+            .iter()
+            .map(|o| o.kind.as_str())
+            .filter(|k| meld_proto::coast::is_water_kind(k))
+            .collect();
+        assert!(
+            wet.is_empty(),
+            "seed {seed}: {} water PROPS still scattered (e.g. `{}`). Water is analytic now — \
+             a prop version puts colliders back in `BlockField` and coarsens its cell for \
+             every prop in the game.",
+            wet.len(),
+            wet[0]
+        );
+        // …and nothing else is big enough to coarsen the grid.
+        let widest = a.obstacles.iter().map(|o| o.radius).fold(0.0f64, f64::max);
+        assert!(
+            widest <= 4.0,
+            "seed {seed}: an obstacle of radius {widest:.1} is back — anything past ~4 sets \
+             `BlockField`'s cell from `(max_radius * 2).max(8)` and undoes the win"
+        );
+    }
+}
+
+/// **The Mire is still the wettest biome in the game**, which is the thing that had to
+/// survive retiring its fill. Its water used to BE its maze (`fill_kind_for_biome` returned
+/// `bog_pool`); now the fill is roots and the flooding comes from `biome_water_mult`, so this
+/// asserts the swamp is a swamp rather than a drained one.
+#[test]
+fn the_mire_is_wetter_than_the_desert() {
+    let b = balance();
+    let area = |a: &Arena| -> f32 {
+        a.basins.iter().map(|x| x[2] * x[2] * std::f32::consts::PI).sum()
+    };
+    let mut mire_total = 0.0f32;
+    let mut desert_total = 0.0f32;
+    for seed in [1u64, 42, 424242] {
+        for (biome, acc) in [("mire", &mut mire_total), ("desert", &mut desert_total)] {
+            let mut a = Arena::generate_with(&b, seed, false, Some(biome));
+            let mut reach = 0.0;
+            while reach < 1200.0 {
+                reach += 120.0;
+                a.ensure_frontier(&b, reach);
+            }
+            *acc += area(&a);
+        }
+    }
+    assert!(
+        mire_total > desert_total * 2.0,
+        "the mire holds {mire_total:.0} sq units of standing water and the desert \
+         {desert_total:.0} — a swamp has to be visibly wetter than a desert, and retiring \
+         `bog_pool` as the mire's fill is exactly what could have quietly drained it"
+    );
+}
