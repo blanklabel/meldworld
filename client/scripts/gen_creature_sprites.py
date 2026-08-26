@@ -209,6 +209,16 @@ def create(name, description, style):
     raise RuntimeError(f"create failed for {name}: {out[:300]}")
 
 
+def character_exists(cid):
+    try:
+        call("get_character", {"character_id": cid, "include_preview": False})
+        return True
+    except RuntimeError as e:
+        if "not found" in str(e):
+            return False
+        raise
+
+
 def existing_clip_groups(cid, clip):
     """Animation-group ids already on this character under `clip`.
 
@@ -351,11 +361,23 @@ def main():
 
         for p in chunk:
             s_ = st.setdefault(p["asset"], {})
-            if not s_.get("id"):
-                wait_for_slot(p["asset"])
-                s_["id"] = create(p["asset"], p["desc"], style)
+            # A REMEMBERED ID CAN GO STALE. Characters get deleted and tidied in the
+            # PixelLab UI between runs, and every later step for that species then fails
+            # on "not found" — which used to take the whole run down with it. Check the
+            # id is still real, and if it is not, forget it and its clips so the species
+            # is simply made again.
+            if s_.get("id") and not character_exists(s_["id"]):
+                log(f"    {p['asset']}: character {s_['id'][:8]} is gone; remaking it")
+                s_.clear()
                 save_state(st)
-                log(f"    created {p['asset']} {s_['id']}")
+            if not s_.get("id"):
+                try:
+                    wait_for_slot(p["asset"])
+                    s_["id"] = create(p["asset"], p["desc"], style)
+                    save_state(st)
+                    log(f"    created {p['asset']} {s_['id']}")
+                except RuntimeError as e:
+                    log(f"    ⚠ {p['asset']}: create failed ({e}); next pass will retry")
 
         for clip in ("walk", "attack"):
             # A clip is generated FROM the finished character, so the whole chunk has to
@@ -363,16 +385,19 @@ def main():
             wait_for_idle(f"chunk/{clip}")
             for p in chunk:
                 s_ = st[p["asset"]]
-                if s_.get(clip):
+                if s_.get(clip) or not s_.get("id"):
                     continue
                 # An 8-direction clip needs the whole cap to itself; a 1-direction one
                 # shares happily. Asking for the clip's own width is what lets the attack
                 # wave run eight-up while the walk wave takes its turn.
-                wait_for_slot(f"{p['asset']}/{clip}", free=len(CLIP_DIRS[clip]))
-                animate(s_["id"], clip, p[clip])
-                s_[clip] = True
-                save_state(st)
-                log(f"    queued {p['asset']}/{clip}")
+                try:
+                    wait_for_slot(f"{p['asset']}/{clip}", free=len(CLIP_DIRS[clip]))
+                    animate(s_["id"], clip, p[clip])
+                    s_[clip] = True
+                    save_state(st)
+                    log(f"    queued {p['asset']}/{clip}")
+                except RuntimeError as e:
+                    log(f"    ⚠ {p['asset']}/{clip}: {e}; next pass will retry")
 
         wait_for_idle("chunk/install")
         for p in chunk:
