@@ -1,9 +1,9 @@
 {
-  "group_id": "b352c835-f8ce-4fff-b4a9-ac649bb5534c",
+  "group_id": "e5848353-632f-48c9-b7b9-dbbf13fb433f",
   "states": [
     {
       "character": {
-        "id": "9383a977-4c29-4a3e-adba-ba460a973716",
+        "id": "405ef491-8bba-4af6-9317-c40ab23a7122",
         "name": "Idle",
         "prompt": "a small young fungal stalker, a squat pale-chitin crawler with a single half-open violet spore-bloom on its back and stubby barbed legs, no eyes in a weird HD-2D fantasy style. Full body, head to toe, whole creature inside the frame, standing on the ground.",
         "size": {
@@ -13,7 +13,7 @@
         "template_id": "mannequin",
         "directions": 8,
         "view": "low top-down",
-        "created_at": "2026-08-26T13:53:51.134103+00:00"
+        "created_at": "2026-08-26T14:58:05.815803+00:00"
       },
       "folder": "Idle",
       "frames": {
@@ -57,5 +57,5 @@
     }
   ],
   "export_version": "3.1",
-  "export_date": "2026-08-26T14:03:44.950609"
+  "export_date": "2026-08-26T15:09:01.463232"
 }

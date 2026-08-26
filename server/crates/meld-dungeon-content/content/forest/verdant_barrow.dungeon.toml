@@ -47,8 +47,12 @@ when = "has_key(K1)"
 [gate.G1]
 when = "all[P1,P2,P3]"   # co-op: needs a body on each plate at once
 
+# A barrow IS a fairy mound, so the thing sleeping at the bottom of this one is a fae
+# court rather than another risen bishop — which also ends the duplication with
+# guardia_forest, where the two forest dungeons had been sharing one boss. The Briar
+# Lord is `DUNGEON_ONLY` (meld_proto::bosses): this door is the only way to meet it.
 [boss.B1]
-sprite = "hollowbishop"
+sprite = "briarlord"
 on_enter_spawn = true
 
 [chest.vault]

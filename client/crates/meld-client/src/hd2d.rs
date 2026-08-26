@@ -538,6 +538,50 @@ pub fn load_character_clips(
     }
 }
 
+/// Load a CREATURE's sprites, where each clip declares whether it was drawn for all
+/// eight facings or for **south only**.
+///
+/// The asymmetry is about where a clip is SEEN, not about saving money for its own sake.
+/// Walking happens on the overworld, where a creature crosses the view in every
+/// direction — a body that slides sideways while facing you is exactly what reads as
+/// broken — so the walk is drawn eight times. An attack is only ever seen inside a
+/// BATTLE, where the arena faces the party, so its other seven directions would be art
+/// for a camera angle that never occurs; the south clip is reused for every facing.
+///
+/// A clip marked non-directional costs one clip's worth of textures rather than eight,
+/// because the same handles are shared across all eight slots.
+pub fn load_creature_clips(
+    assets: &AssetServer,
+    base: &str,
+    clips: &[(&str, usize, bool)],
+) -> CharacterFrames {
+    let idle = std::array::from_fn(|i| assets.load(format!("{base}/rotations/{}.png", DIRS[i])));
+    let mut map = std::collections::HashMap::new();
+    let mut walk: [Vec<Handle<Image>>; 8] = std::array::from_fn(|_| Vec::new());
+    for (name, frames, directional) in clips {
+        let load_dir = |dir: &str| -> Vec<Handle<Image>> {
+            (0..*frames)
+                .map(|f| assets.load(format!("{base}/animations/{name}/{dir}/frame_{f:03}.png")))
+                .collect()
+        };
+        let c: [Vec<Handle<Image>>; 8] = if *directional {
+            std::array::from_fn(|i| load_dir(DIRS[i]))
+        } else {
+            let south = load_dir("south");
+            std::array::from_fn(|_| south.clone())
+        };
+        if *name == "walk" {
+            walk = c.clone();
+        }
+        map.insert(name.to_string(), c);
+    }
+    CharacterFrames {
+        idle,
+        walk,
+        clips: map,
+    }
+}
+
 /// A movement-driven character billboard: it walks (cycles the clip) while its
 /// entity moves and faces its heading; idles otherwise. Put it on the entity root
 /// (which moves); it drives its billboard child's material `mat`.

@@ -2915,7 +2915,7 @@ pub(crate) fn fieldable_classes(unlocks: &UnlocksRes) -> Vec<&'static str> {
     let owned: Vec<&str> =
         unlocks.owned.iter().filter_map(|k| k.strip_prefix("class_")).collect();
     let mut out: Vec<&'static str> =
-        PARTY_CLASSES.iter().copied().filter(|c| owned.contains(c)).collect();
+        party_classes().filter(|c| owned.contains(c)).collect();
     if out.is_empty() {
         out.push("explorer"); // every account owns the Explorer from its first login
     }

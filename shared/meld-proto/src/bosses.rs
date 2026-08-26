@@ -14,9 +14,10 @@
 
 /// Every named boss as `(key, title)`, in tier order: elite (gloamhound, rustfang),
 /// miniboss (choirmother, pyrewarden), dungeon (sepulcher, hollowbishop), region
-/// (ironmaw, weepingcolossus), biome (miredrowned, ashenleviathan). Each key has a
-/// PixelLab sprite set under the client's `assets/bosses/<key>/`.
-pub const BOSSES: [(&str, &str); 10] = [
+/// (ironmaw, weepingcolossus), biome (miredrowned, ashenleviathan), then the
+/// dungeon-only courts ([`DUNGEON_ONLY`]). Each key has a PixelLab sprite set under the
+/// client's `assets/bosses/<key>/`.
+pub const BOSSES: [(&str, &str); 11] = [
     ("gloamhound", "Gloamhound"),
     ("rustfang", "Rustfang"),
     ("choirmother", "Choirmother"),
@@ -27,7 +28,23 @@ pub const BOSSES: [(&str, &str); 10] = [
     ("weepingcolossus", "Weeping Colossus"),
     ("miredrowned", "Miredrowned"),
     ("ashenleviathan", "Ashen Leviathan"),
+    ("briarlord", "The Briar Lord"),
 ];
+
+/// Bosses that are **sealed behind a dungeon door** and never placed in the open world.
+///
+/// The distinction is load-bearing rather than flavour: the end fight draws its three
+/// peers from "every named boss", so a boss whose whole identity is that you have to go
+/// down into its barrow to find it would otherwise turn up standing in a field at d3200.
+/// The open-world pools ask [`wanders_the_overworld`]; a dungeon claims its own by name
+/// in its `[boss.B1] sprite`.
+pub const DUNGEON_ONLY: &[&str] = &["briarlord"];
+
+/// Can this boss be placed in the OPEN WORLD — an elite champion, a Gatekeeper in a
+/// pass, an undead rite, a peer at the end fight? False for a dungeon's own boss.
+pub fn wanders_the_overworld(key: &str) -> bool {
+    !DUNGEON_ONLY.contains(&key)
+}
 
 /// The title a named boss is shown under, or `None` for anything that is not one of
 /// the ten — a dungeon's authored `sprite`, say, which may be bespoke art with no boss
@@ -64,5 +81,20 @@ mod tests {
         }
         assert_eq!(display_name("twingolem"), None, "a bespoke dungeon sprite is not a named boss");
         assert_eq!(display_name(""), None);
+    }
+
+    /// A dungeon-only boss has to BE a boss — the flag narrows where it is placed, it
+    /// does not make it a second kind of thing with its own half of the registry.
+    #[test]
+    fn a_dungeon_only_boss_is_still_a_named_boss() {
+        for key in DUNGEON_ONLY {
+            assert!(is_boss(key), "{key} is dungeon-only but is not in the roster");
+            assert!(!wanders_the_overworld(key));
+        }
+        assert!(wanders_the_overworld("ashenleviathan"));
+        assert!(
+            keys().any(wanders_the_overworld),
+            "every boss is dungeon-only - the overworld pools would be empty"
+        );
     }
 }

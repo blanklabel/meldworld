@@ -2,3 +2,8 @@
 # Shippable single-file QA binaries from `make dist` (large build artifacts).
 /dist
 .DS_Store
+
+# Resume state for `client/scripts/gen_creature_sprites.py`. Machine-local: it maps
+# creature keys to PixelLab character ids from one account's run, so committing it would
+# hand the next person ids they cannot fetch and make their run skip work they never did.
+/client/scripts/.creature_sprites_state.json

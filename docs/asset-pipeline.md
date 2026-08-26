@@ -86,6 +86,74 @@ source.)
     clearly built for; likely a future feature). It's a `sprite` question only —
     orthogonal to surfaces.
 
+## ⚠️ Character sprites: the canvas FILL is what sets on-screen size
+
+A character billboard maps the **whole PNG** onto a fixed-size quad
+(`hd2d::cyl_billboard_mesh`), so what decides how big a hero draws in the world is
+**not** the art's pixel height — it is **the fraction of the canvas the art fills**.
+
+The shipped class sets are **~90px of art centred on a 184px canvas — a 48% fill**
+(measured: psyker content 85x89, 47px of transparent margin above and 48px below).
+They read that way because PixelLab used to inflate its canvas ~40% past the
+requested `size` "to make room for animations". **It no longer does**: a `size: 96`
+request now returns a 96px canvas with the character running edge to edge, ~91%
+fill. Generate a class that way and it walks into the party at **roughly twice the
+size of every hero beside it** — and it does not show up in any preview thumbnail,
+because a thumbnail is normalised.
+
+So the recipe for a new class is:
+
+1. `create_character` at **`size: 96`, `mode: "v3"`** — that is the pixel density the
+   existing set is drawn at, so the new class's pixels are the same size as its
+   party's. (Do **not** ask for 184 to "match": you get 184px of art filling a 184px
+   canvas, i.e. the same too-big result at double the detail, which then clashes with
+   the chunkier pixels next to it.)
+2. Animate in **v3 custom**, never template — see below.
+3. `client/scripts/install_class_sprite.sh <character-id> <key> [asset-dir]` —
+   downloads the zip, lifts it out of its state folder into `characters/<key>/` (or
+   `creatures/<key>/`), and runs `client/scripts/pad_sprites.py`, which pads every
+   frame out to **184x184 centred**. Padding, never scaling: pixel art must not be
+   resampled, so the art is copied through untouched and only transparent margin is
+   added.
+
+Verify with the content-height check the script prints — a new class should land at
+**~90px content, ~47px top pad, ~48% fill**, the same as psyker/shifter/hunter.
+Bosses run bigger on purpose (95-121px of content) and answer the same rule.
+
+### The bestiary: `client/scripts/gen_creature_sprites.py`
+
+Creatures get the same treatment (a species was one static 32px png), driven from
+`client/scripts/creature_sprites.json` — ordered by **how close to the hub a creature
+lives**, so an interrupted run leaves the shallow end, which is what almost every
+player actually sees, finished first. The driver records every step and is safe to
+kill and re-run.
+
+**Each species is TWO characters**, `<kind>` and `<kind>_minion`. A pack's leader and
+its minions are the same species at 1.7x and 0.45x HP, and scaling one sprite only
+ever made a bigger or smaller copy of the same animal. A runt is a different animal.
+
+**Walk is drawn for all eight facings; attack is south-only.** Walking happens on the
+overworld, where a creature crosses the view in every direction and a body that slides
+sideways while facing you is what reads as broken. An attack is only ever seen in the
+arena, which faces the party, so its other seven directions would be art for a camera
+angle that never occurs. `hd2d::load_creature_clips` takes that per-clip and reuses the
+south attack for every facing.
+
+### Prompting notes (each of these cost a re-roll)
+
+- **Say "full body, head to toe, boots visible."** A character described mostly from
+  the waist up gets framed from the waist up, and the legs run off the canvas.
+- **Keep held gear DOWN at the sides.** "Hammer resting on the shoulder" put the hammer
+  head above the skull and clipped it off the top of the frame.
+- **A weapon in the description can duplicate.** An explorer asked for a spear came back
+  with extra spear tips branching off the shaft.
+- **Template animations DROP hand-held weapons** mid-swing (skeleton retarget), so clips
+  are **v3 custom** (`mode: "v3"`, `action_description`, `frame_count: 8`,
+  `keep_first_frame: false`). v3 also defaults to **south only** — always pass
+  `directions` explicitly.
+- 10 concurrent job slots. A 1-direction clip is one job, so a batch of characters runs
+  at once; an 8-direction clip takes the whole cap and serializes everything behind it.
+
 ## The per-dungeon-theme shopping list (small!)
 1. **Floor tile** — top-down seamless. ✅ have (`tile_<biome>`).
 2. **Wall texture** — *side-view* seamless stone/brick. ⚠️ generate (one per

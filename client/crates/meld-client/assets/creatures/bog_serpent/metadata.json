@@ -1,9 +1,9 @@
 {
-  "group_id": "ab7c6268-9a0a-41ce-a1a1-bead4b49c44c",
+  "group_id": "bef1f3d7-d683-4ee3-b745-fa18f0758f63",
   "states": [
     {
       "character": {
-        "id": "da8d2e40-643f-4664-ae34-d076dde4409a",
+        "id": "cfd4195e-f3d7-4882-a829-46f032fa0de6",
         "name": "Idle",
         "prompt": "a huge coiled swamp serpent, thick moss-green scales slick with algae, a broad flat viper head with amber eyes and dripping fangs, a ragged fin along its back in a weird HD-2D fantasy style. Full body, head to toe, whole creature inside the frame, standing on the ground.",
         "size": {
@@ -13,7 +13,7 @@
         "template_id": "mannequin",
         "directions": 8,
         "view": "low top-down",
-        "created_at": "2026-08-26T14:10:03.342397+00:00"
+        "created_at": "2026-08-26T14:58:14.666201+00:00"
       },
       "folder": "Idle",
       "frames": {
@@ -28,18 +28,6 @@
           "south-west": "Idle/rotations/south-west.png"
         },
         "animations": {
-          "attack": {
-            "south": [
-              "Idle/animations/attack/south/frame_000.png",
-              "Idle/animations/attack/south/frame_001.png",
-              "Idle/animations/attack/south/frame_002.png",
-              "Idle/animations/attack/south/frame_003.png",
-              "Idle/animations/attack/south/frame_004.png",
-              "Idle/animations/attack/south/frame_005.png",
-              "Idle/animations/attack/south/frame_006.png",
-              "Idle/animations/attack/south/frame_007.png"
-            ]
-          },
           "walk": {
             "south": [
               "Idle/animations/walk/south/frame_000.png",
@@ -51,11 +39,23 @@
               "Idle/animations/walk/south/frame_006.png",
               "Idle/animations/walk/south/frame_007.png"
             ]
+          },
+          "attack": {
+            "south": [
+              "Idle/animations/attack/south/frame_000.png",
+              "Idle/animations/attack/south/frame_001.png",
+              "Idle/animations/attack/south/frame_002.png",
+              "Idle/animations/attack/south/frame_003.png",
+              "Idle/animations/attack/south/frame_004.png",
+              "Idle/animations/attack/south/frame_005.png",
+              "Idle/animations/attack/south/frame_006.png",
+              "Idle/animations/attack/south/frame_007.png"
+            ]
           }
         }
       }
     }
   ],
   "export_version": "3.1",
-  "export_date": "2026-08-26T14:20:22.319235"
+  "export_date": "2026-08-26T15:09:41.585043"
 }

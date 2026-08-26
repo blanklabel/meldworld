@@ -290,6 +290,40 @@ pub(crate) fn boss_keys() -> impl Iterator<Item = &'static str> {
     meld_proto::bosses::keys()
 }
 
+/// Creature species whose animated sprite set is INSTALLED under `assets/creatures/`.
+/// A species listed here stops being a single frozen 32px billboard and starts turning,
+/// walking and swinging like everything else in the world.
+///
+/// **`<key>_minion` is its own entry, and that is the point.** A pack's leader and its
+/// minions are the same species at 1.7x and 0.45x HP; drawing them from one sprite made
+/// a 3.8x health gap read as a rendering bug, and scaling one sprite only ever made it a
+/// bigger or smaller copy of the same animal. A runt is a different animal.
+///
+/// Held against what is actually on disk by `every_installed_creature_set_is_loaded`, so
+/// art that lands unlisted — art nobody would ever see — fails rather than sitting unused.
+pub(crate) const CREATURE_CHARS: &[&str] = &["forest_bloom_stalker"];
+
+/// Which installed set a creature draws from: the runt's own art when it has some, the
+/// species' otherwise, and nothing at all if the species has no art yet.
+///
+/// The FALLBACK is the point — art lands in batches, so a species can have its leader
+/// drawn and its runt not, and half a pack rendering as nothing is far worse than half a
+/// pack sharing one sprite. Split out from [`WorldAssets::creature_frames`] so the rule
+/// can be tested without standing up the whole asset resource.
+pub(crate) fn creature_art_key(
+    kind: &str,
+    minion: bool,
+    installed: impl Fn(&str) -> bool,
+) -> Option<String> {
+    if minion {
+        let runt = format!("{kind}_minion");
+        if installed(&runt) {
+            return Some(runt);
+        }
+    }
+    installed(kind).then(|| kind.to_string())
+}
+
 /// Shared meshes/materials + the psyker sprite set, built once at startup so the
 /// overworld sync can spawn 3D entities without rebuilding assets each frame.
 #[derive(Resource)]
@@ -319,6 +353,11 @@ pub(crate) struct WorldAssets {
     /// `meld-world::creatures_for_biome`); unknown kinds fall back to [`Self::monster_pool`].
     /// Creatures stay 2D sprites — the HD-2D convention (2D actors, 3D world).
     pub(crate) monster_sprites: HashMap<String, Handle<Image>>,
+    /// Per-species animated creature sets (`assets/creatures/<key>/`), keyed by the
+    /// [`CREATURE_CHARS`] entry — `<kind>` for a leader or a lone spawn, `<kind>_minion`
+    /// for a pack's runts. Absent for a species whose art has not landed, which keeps it
+    /// on the old single-png billboard rather than on missing-asset errors.
+    pub(crate) creature_chars: HashMap<String, CharacterFrames>,
     pub(crate) monster_pool: Vec<Handle<Image>>,
     /// Real 3D prop models (Kenney Nature Kit, CC0) keyed by terrain-obstacle kind →
     /// several `(scene, baked_scale)` variants (picked per-entity by id hash), so the
@@ -375,6 +414,15 @@ impl WorldAssets {
     /// Applied as a material tint rather than new art — one boss, four moods.
     pub(crate) fn boss_frames(&self, key: &str) -> Option<&CharacterFrames> {
         self.boss_chars.get(key)
+    }
+
+    /// The animated set for a creature, or `None` if this species is still on the old
+    /// static billboard. `minion` picks the runt's own art and FALLS BACK to the
+    /// species' — a species may get its leader art before its minion art, and half a pack
+    /// rendering as nothing at all is worse than half a pack sharing one sprite.
+    pub(crate) fn creature_frames(&self, kind: &str, minion: bool) -> Option<&CharacterFrames> {
+        let key = creature_art_key(kind, minion, |k| self.creature_chars.contains_key(k))?;
+        self.creature_chars.get(&key)
     }
 
     pub(crate) fn class_frames(&self, class: &str) -> &CharacterFrames {
@@ -682,8 +730,8 @@ pub(crate) fn setup(
             "shifter" => &[
                 ("walk", 8), ("attack", 8), ("backstab", 8), ("flicker", 8), ("ransack", 8),
             ],
-            // The Explorer's own kit has no bespoke art yet, so its abilities fall
-            // back to the attack clip; the martial animations moved with the kit to
+            // The Explorer's own kit has no bespoke ABILITY art yet, so its abilities
+            // fall back to the attack clip; the martial animations moved with the kit to
             // the Hunter.
             "explorer" => &[("walk", 8), ("attack", 8)],
             "hunter" => &[
@@ -701,13 +749,25 @@ pub(crate) fn setup(
                 ("walk", 8), ("attack", 8), ("silvered_strike", 8), ("rite_of_rest", 8),
                 ("holy_censure", 8), ("purging_light", 8),
             ],
+            // The four newest orders have idle rotations, a walk cycle and a battle
+            // attack, and nothing else yet — their abilities fall through to the attack.
+            // Declare only what is ON DISK: a clip named here with no frames beside it is
+            // 64 asset-loader errors a launch, which is exactly what the Explorer shipped
+            // the moment it stopped being a copy of the Hunter's folder and lost the five
+            // martial clips it had been borrowing.
+            "smithwright" | "keeper" | "iron_hull" | "rift_knight" => {
+                &[("walk", 8), ("attack", 8)]
+            }
             _ => &[("walk", 8)],
         }
     }
-    let class_chars: HashMap<String, CharacterFrames> =
-        ["explorer", "hunter", "psyker", "resonant", "shifter", "phoenix_guard"]
+    // Every class the client can muster, off the client's own roster — a hand-written
+    // list here is a class whose art silently never loads, and the Smithwright and the
+    // Keeper spent a release wearing the Explorer's coat because of exactly that.
+    let class_chars: HashMap<String, CharacterFrames> = crate::screens::CLASS_INFO
         .iter()
-        .map(|&class| {
+        .map(|c| c.key)
+        .map(|class| {
             (
                 class.to_string(),
                 hd2d::load_character_clips(&assets, &format!("characters/{class}"), class_clips(class)),
@@ -731,6 +791,9 @@ pub(crate) fn setup(
             "weepingcolossus" => &[("walk", 6), ("attack", 8), ("chain_sweep", 8), ("sorrow_quake", 8)],
             "miredrowned" => &[("walk", 6), ("attack", 8)],
             "ashenleviathan" => &[("walk", 8), ("attack", 8), ("cinder_charge", 8)],
+            // The barrow's fae court: walk + attack, no ability art yet, so its kit
+            // falls through to the attack clip.
+            "briarlord" => &[("walk", 8), ("attack", 8)],
             _ => &[("walk", 8), ("attack", 8)],
         }
     }
@@ -743,6 +806,25 @@ pub(crate) fn setup(
         })
         .collect();
 
+    // Creature sets. Walk + attack only — a creature has no ability art, so its clips
+    // fall through to the attack the way a newly-drawn class's do. The WALK is drawn for
+    // all eight facings because the overworld shows a creature from every angle; the
+    // ATTACK is south-only because it is only ever seen in the arena, which faces the
+    // party. See `hd2d::load_creature_clips`.
+    let creature_chars: HashMap<String, CharacterFrames> = CREATURE_CHARS
+        .iter()
+        .map(|&key| {
+            (
+                key.to_string(),
+                hd2d::load_creature_clips(
+                    &assets,
+                    &format!("creatures/{key}"),
+                    &[("walk", 8, true), ("attack", 8, false)],
+                ),
+            )
+        })
+        .collect();
+
     let prop_sprites: HashMap<String, Handle<Image>> = PROP_KEYS
         .iter()
         .map(|&k| (k.to_string(), assets.load(format!("props/{k}.png"))))
@@ -750,6 +832,7 @@ pub(crate) fn setup(
 
     commands.insert_resource(WorldAssets {
         class_chars,
+        creature_chars,
         boss_chars,
         prop_sprites,
         // Cylindrical normals so the sun models the flat sprite (HD-2D depth).
@@ -2821,5 +2904,71 @@ mod sky_tests {
         let feel = crate::feel::WorldFeel::default();
         assert_eq!(Sky::default().t, feel.sky_t);
         assert_eq!(Sky::opening(&feel).t, feel.sky_t);
+    }
+}
+
+#[cfg(test)]
+mod creature_sprite_tests {
+    use super::*;
+
+    /// ART THAT LANDS UNLISTED IS ART NOBODY SEES. `CREATURE_CHARS` is what the loader
+    /// walks, so a species whose folder is installed but whose key is missing here stays
+    /// a frozen 32px billboard with a full animated set sitting unused beside it — the
+    /// same silent gap the `pack:` token had, where the data existed and nothing drew it.
+    /// Reading the directory rather than a second list is the only way this cannot drift.
+    #[test]
+    fn every_installed_creature_set_is_loaded() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/creatures");
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            assert!(CREATURE_CHARS.is_empty(), "no assets/creatures dir, but keys are listed");
+            return;
+        };
+        let on_disk: Vec<String> = entries
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().is_dir())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        for key in &on_disk {
+            assert!(
+                CREATURE_CHARS.contains(&key.as_str()),
+                "assets/creatures/{key} is installed but not in CREATURE_CHARS, so it is \
+                 never loaded and the species still draws as a static billboard"
+            );
+        }
+        for key in CREATURE_CHARS {
+            assert!(
+                on_disk.iter().any(|d| d == key),
+                "CREATURE_CHARS lists {key} but assets/creatures/{key} does not exist - \
+                 that is a wall of missing-asset errors every launch"
+            );
+        }
+    }
+
+    /// A runt falls back to its species' art, never to nothing — art lands in batches,
+    /// so a species can have its leader drawn and its runt not.
+    #[test]
+    fn a_runt_without_its_own_art_borrows_the_species() {
+        let installed = |k: &str| matches!(k, "thornback_boar" | "bog_serpent" | "bog_serpent_minion");
+        // Its own art wins when it exists.
+        assert_eq!(
+            creature_art_key("bog_serpent", true, installed).as_deref(),
+            Some("bog_serpent_minion")
+        );
+        // …and falls back to the species when it does not.
+        assert_eq!(
+            creature_art_key("thornback_boar", true, installed).as_deref(),
+            Some("thornback_boar"),
+            "a runt fell back to no art at all"
+        );
+        assert_eq!(
+            creature_art_key("thornback_boar", false, installed).as_deref(),
+            Some("thornback_boar")
+        );
+        // A species with no art stays a static billboard rather than drawing nothing.
+        assert_eq!(creature_art_key("sporeling", true, installed), None);
+        assert_eq!(creature_art_key("sporeling", false, installed), None);
+        // A leader never borrows its own runt's art, whichever way round they land.
+        let only_runt = |k: &str| k == "glacier_maw_minion";
+        assert_eq!(creature_art_key("glacier_maw", false, only_runt), None);
     }
 }

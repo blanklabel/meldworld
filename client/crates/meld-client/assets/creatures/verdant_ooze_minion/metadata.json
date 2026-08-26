@@ -1,9 +1,9 @@
 {
-  "group_id": "a3d099c9-84e5-4480-8a04-aab66a1d5a3c",
+  "group_id": "b03f1ff3-912d-4300-b337-1c1468011f04",
   "states": [
     {
       "character": {
-        "id": "b403ea19-1218-49a3-b20b-3928c35a807d",
+        "id": "315ac0b4-5dcf-4f23-bf66-6bfbb78793c3",
         "name": "Idle",
         "prompt": "a small translucent green slime droplet, a little rounded blob of jelly with a faint core and one glowing eye-spot in a weird HD-2D fantasy style. Full body, head to toe, whole creature inside the frame, standing on the ground.",
         "size": {
@@ -13,7 +13,7 @@
         "template_id": "mannequin",
         "directions": 8,
         "view": "low top-down",
-        "created_at": "2026-08-26T14:10:02.336135+00:00"
+        "created_at": "2026-08-26T14:58:13.388158+00:00"
       },
       "folder": "Idle",
       "frames": {
@@ -57,5 +57,5 @@
     }
   ],
   "export_version": "3.1",
-  "export_date": "2026-08-26T14:20:20.382618"
+  "export_date": "2026-08-26T15:09:37.297661"
 }

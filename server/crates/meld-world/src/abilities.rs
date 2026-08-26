@@ -368,6 +368,33 @@ pub fn creature_abilities(kind: &str) -> Vec<MonsterAbility> {
             ability("ashfall_apocalypse", "ASHFALL APOCALYPSE!", 1, 360, 34, 26, Some(0.35),
                 vec![dmg(Level, 0.35, Infernal, AllEnemies), status("burn", 100, AllEnemies)]),
         ],
+        // THE BRIAR LORD — a fae court sealed in a barrow (dungeon-only, see
+        // `meld_proto::bosses::DUNGEON_ONLY`). Its shape is CONTROL rather than tonnage:
+        // it binds, it charms, and it takes back what you spend, which is what a fight in
+        // someone else's hall should feel like. `Bindings` and `Mind` afflictions do not
+        // wear off (`meld_proto::statuses`), so this kit is the reason to carry a
+        // Keeper's Poultice or a Resonant's Sanctuary down there.
+        "briarlord" => vec![
+            ability("thorn_hand", "Thorn Hand!", 3, 40, 0, 1, None,
+                vec![dmg(Attack, 1.1, Slash, SingleEnemy)]),
+            // Takes the turn AND the tempo: the court does not hurry, so it makes sure
+            // you do not either.
+            ability("bramble_bind", "Bramble Bind!", 2, 150, 0, 8, None,
+                vec![status("web", 90, SingleEnemy), atb(-0.25, SingleEnemy)]),
+            ability("courtly_glamour", "Courtly Glamour!", 2, 190, 12, 14, None,
+                vec![dmg(Magic, 1.2, Mind, SingleEnemy), status("confused", 70, SingleEnemy)]),
+            // Its mid-tier WIDE row, reachable at the level the first gate stands and NOT
+            // hp-gated — `every_boss_can_go_wide_at_the_level_a_gatekeeper_is_first_met`.
+            ability("briar_court", "THE BRIAR COURT!", 2, 250, 22, 12, None,
+                vec![dmg(Magic, 1.0, Earth, AllEnemies), status("web", 60, AllEnemies)]),
+            // The RAREST row, so `signature_ability` picks it as the rebuke (CN-7) — and
+            // it is deliberately not a bigger hit: interrupt a fae lord and it takes the
+            // wound back out of the ground rather than answering in kind.
+            ability("barrow_tithe", "THE BARROW'S TITHE!", 1, 300, 26, 30, None,
+                vec![heal(MaxHp, 0.2, SelfCast), status("dread", 80, AllEnemies)]),
+            ability("thorns_of_the_deep_wood", "THORNS OF THE DEEP WOOD!", 2, 330, 34, 45, Some(0.5),
+                vec![dmg(Attack, 1.5, Slash, AllEnemies), status("poison", 90, AllEnemies)]),
+        ],
         // Unknown kinds fight with basic attacks only (still a full combatant).
         _ => vec![],
     }
@@ -383,8 +410,10 @@ pub fn boss_faction(boss_kind: &str) -> Option<&'static str> {
         "choirmother" | "hollowbishop" | "miredrowned" | "sepulcher" => "undead",
         // The made: jaws, teeth, hounds, colossi and wardens of metal and fire.
         "ironmaw" | "rustfang" | "gloamhound" | "weepingcolossus" | "pyrewarden" => "construct",
-        // The leviathan is neither built nor buried.
-        "ashenleviathan" => "wyrm",
+        // The leviathan is neither built nor buried — it is dragon-blooded.
+        "ashenleviathan" => meld_proto::factions::DRACONIC,
+        // The briar court: older than the city, hostile to rot, appetite and the risen.
+        "briarlord" => meld_proto::factions::FAE,
         _ => return None,
     })
 }
@@ -403,28 +432,33 @@ pub const ALL_BOSSES: &[&str] = &[
     "weepingcolossus",
     "pyrewarden",
     "ashenleviathan",
+    "briarlord",
 ];
 
 pub fn all_bosses() -> &'static [&'static str] {
     ALL_BOSSES
 }
 
+/// Every boss of one lineage that can be placed in the OPEN WORLD — what the undead
+/// rite draws its risen champion from.
+///
+/// It reads [`ALL_BOSSES`] rather than repeating it. This was a second hand-written copy
+/// of the same ten keys sitting four lines below the first, which is the bug this repo
+/// keeps re-learning: a boss added to one list and not the other is a boss with a lineage
+/// that nothing ever rolls. Dungeon-only bosses are filtered here rather than at each
+/// call site, because every caller of this is placing something outdoors.
 pub fn bosses_of_faction(faction: &str) -> Vec<&'static str> {
-    [
-        "choirmother",
-        "hollowbishop",
-        "miredrowned",
-        "sepulcher",
-        "ironmaw",
-        "rustfang",
-        "gloamhound",
-        "weepingcolossus",
-        "pyrewarden",
-        "ashenleviathan",
-    ]
-    .into_iter()
-    .filter(|k| boss_faction(k) == Some(faction))
-    .collect()
+    overworld_bosses().into_iter().filter(|k| boss_faction(k) == Some(faction)).collect()
+}
+
+/// Every named boss that can stand in the OPEN WORLD — the end fight's pool of peers.
+/// A dungeon's own boss is sealed behind its door and must not turn up in a field.
+pub fn overworld_bosses() -> Vec<&'static str> {
+    ALL_BOSSES
+        .iter()
+        .copied()
+        .filter(|k| meld_proto::bosses::wanders_the_overworld(k))
+        .collect()
 }
 
 /// A boss's PALETTE band, from the monster level it is met at. A boss encountered
@@ -494,7 +528,9 @@ pub fn creature_body(kind: &str) -> Body {
         "magma_golem" | "ironmaw" | "rustfang" => Body::Plated,
         "sand_shade" | "ember_wisp" | "gloamhound" => Body::Amorphous,
         "sporeling" | "myconid_brute" | "forest_bloom_stalker" | "bog_stinger"
-        | "choirmother" | "hollowbishop" | "miredrowned" | "sepulcher" => Body::Soft,
+        | "choirmother" | "hollowbishop" | "miredrowned" | "sepulcher" | "briarlord" => {
+            Body::Soft
+        }
         _ => Body::Hide,
     }
 }
@@ -530,6 +566,10 @@ fn creature_elemental_modifiers(kind: &str) -> Vec<(DamageType, f64)> {
         "weepingcolossus" => vec![(Celestial, 1.25), (Ethereal, 0.5)],
         "miredrowned" => vec![(Fire, 1.5), (Ice, 1.25), (Poison, 0.0), (Water, -0.25)],
         "ashenleviathan" => vec![(Water, 2.0), (Ice, 1.5), (Fire, 0.0), (Infernal, 0.0)],
+        // COLD IRON AND FIRE burn a briar court; the wood's own elements do not. Earth
+        // HEALS it outright, which is the fae half of the trade: fight it on its own
+        // ground with the wrong damage and you are feeding it.
+        "briarlord" => vec![(Fire, 2.0), (Ice, 1.25), (Earth, -0.25), (Poison, 0.5), (Mind, 0.5)],
         _ => vec![],
     }
 }
@@ -584,7 +624,7 @@ pub fn creature_target_profile(
         // Pack animals converge on one mark.
         "thornback_boar" | "rustfang" | "ironmaw" => TargetProfile::GangUp,
         // Things that read minds go for the mind that matters.
-        "choirmother" | "hollowbishop" | "sepulcher" => TargetProfile::Role,
+        "choirmother" | "hollowbishop" | "sepulcher" | "briarlord" => TargetProfile::Role,
         // Big mindless bodies swing at whatever is in front of them.
         "dune_colossus" | "magma_golem" | "weepingcolossus" | "myconid_brute" => {
             TargetProfile::Random
@@ -638,6 +678,8 @@ pub fn creature_basic_attack_type(kind: &str) -> DamageType {
         "pyrewarden" | "ashenleviathan" => Fire,
         "choirmother" => Mind,
         "miredrowned" => Poison,
+        // A courtier's hands: thorn and claw, not a club.
+        "briarlord" => Slash,
         // Wyrms, lurkers, stingers, serpents, sporelings: piercing fangs/stings.
         _ => Pierce,
     }
