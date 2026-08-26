@@ -1,0 +1,86 @@
+{
+ "bog_ooze": {
+  "id": "bf8295b5-9698-47ae-9724-40f04508ec0a"
+ },
+ "bog_ooze_minion": {
+  "id": "5f4c353f-db49-40d6-a983-37aaf44a5ed0"
+ },
+ "bog_serpent": {
+  "attack": true,
+  "id": "da8d2e40-643f-4664-ae34-d076dde4409a",
+  "installed": true,
+  "walk": true
+ },
+ "bog_serpent_minion": {
+  "attack": true,
+  "id": "9570e5d7-3cf7-44ee-ba3b-e3876241877c",
+  "installed": true,
+  "walk": true
+ },
+ "bog_stinger": {
+  "id": "19e83d0b-e456-48ca-a621-945168941abe"
+ },
+ "bog_stinger_minion": {
+  "id": "6dbe34e4-a786-4c82-ab4e-2d2b5bfe4c5e"
+ },
+ "cinder_imp": {
+  "id": "c71ab5a7-f995-42b4-8154-7c92dc54440c"
+ },
+ "cinder_imp_minion": {
+  "id": "305d78e5-fe91-43bf-a0fa-ffa8e27d7b6c"
+ },
+ "forest_bloom_stalker": {
+  "attack": true,
+  "id": "11d4041d-69aa-43f0-95a0-f0aab23ec303",
+  "installed": true,
+  "walk": true
+ },
+ "forest_bloom_stalker_minion": {
+  "attack": true,
+  "id": "9383a977-4c29-4a3e-adba-ba460a973716",
+  "installed": true,
+  "walk": true
+ },
+ "myconid_brute": {
+  "id": "891df217-e775-4759-9578-c5d95f672aeb"
+ },
+ "myconid_brute_minion": {
+  "id": "e5eeb543-e9b7-41ea-9e6c-974522e9f7ee"
+ },
+ "sporeling": {
+  "attack": true,
+  "id": "be0cdf39-ccb5-442a-ac8d-f4032bb33afd",
+  "installed": true,
+  "walk": true
+ },
+ "sporeling_minion": {
+  "attack": true,
+  "id": "a8fe2aa7-6422-48f5-bb2c-ba512e88e98c",
+  "installed": true,
+  "walk": true
+ },
+ "thornback_boar": {
+  "attack": true,
+  "id": "54e653cf-9e9f-47f0-b169-dcca420bab21",
+  "installed": true,
+  "walk": true
+ },
+ "thornback_boar_minion": {
+  "attack": true,
+  "id": "1fa33188-e6d4-4c60-b4c8-864139991842",
+  "installed": true,
+  "walk": true
+ },
+ "verdant_ooze": {
+  "attack": true,
+  "id": "21387fcd-67cd-489f-8bf1-587f5da976bf",
+  "installed": true,
+  "walk": true
+ },
+ "verdant_ooze_minion": {
+  "attack": true,
+  "id": "b403ea19-1218-49a3-b20b-3928c35a807d",
+  "installed": true,
+  "walk": true
+ }
+}
