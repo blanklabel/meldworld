@@ -1286,6 +1286,12 @@ pub struct WorldGen {
     /// `coast::bay_leaves_a_shore` enforces; these are the range drawn inside it.
     pub bay_radius_share_min: f64,
     pub bay_radius_share_max: f64,
+    /// ⚠️ **Absolute** cap on a bay's radius, world units. The share above is a share of the
+    /// LOCAL HALF-ARC, which grows linearly with depth — so at r=2000 a 0.30 share is a
+    /// 1,500-unit "bay", which is a sea, and no `nudge_ashore` can walk a creature out of
+    /// one. The share keeps a bay from severing the fan; this keeps it a coastal *feature*.
+    /// Both apply, whichever is smaller.
+    pub bay_radius_max: f64,
     /// **ISLES (WG-7).** Chance a section stands an isle offshore of its rim. Freer than a
     /// bay because an isle is outside the fan and cannot block anything.
     pub isle_chance: f64,
@@ -1297,6 +1303,33 @@ pub struct WorldGen {
     /// the horizon at the frontier.
     pub isle_offshore_min: f64,
     pub isle_offshore_max: f64,
+    /// **INLAND WATER (WG-7).** Earliest section index, and nearest hub distance, that may
+    /// hold a basin or a river. The on-ramp stays dry: a river across a player's first
+    /// minutes is a barrier before they know what a ford is.
+    pub water_min_section: usize,
+    pub water_min_reach: f64,
+    /// Chance a deep-enough section springs a river.
+    pub river_chance: f64,
+    /// World units between river nodes, and the node budget before a river gives up and
+    /// pools into a lake instead. The budget caps the wire payload and the descent cost.
+    pub river_step: f64,
+    pub river_max_nodes: usize,
+    /// A channel's half-width: the low end reads as a creek, the high end as a river.
+    pub river_half_width_min: f64,
+    pub river_half_width_max: f64,
+    /// A FORD every this many nodes. ⚠️ A **guarantee**, not a decoration — connectedness is
+    /// what a river is, and a connected impassable line is exactly what disconnects a
+    /// world. Same contract as a strait's isthmus.
+    pub river_ford_every: usize,
+    /// Chance a section also holds standing water with no river feeding it.
+    pub basin_chance: f64,
+    /// Bounds on how far a basin may spread. The SHAPE is the terrain's own contour; these
+    /// only stop a flat hollow flooding the whole ring.
+    pub basin_radius_min: f64,
+    pub basin_radius_max: f64,
+    /// How far above a hollow's floor the water surface sits, in HEIGHT units (the field
+    /// runs about ±16). A deeper fill floods wider, because a contour is wider higher up.
+    pub basin_fill: f64,
 }
 
 /// Creature AI tunables (overworld movement + encounter grouping).

@@ -1802,8 +1802,36 @@ design for this epic: [`proposals/worldgen-wg.md`](proposals/worldgen-wg.md).
       `nudge_ashore` (water only), and placement rejects a wet spot where it already
       rejects a crowded one, so the spot grid stays consistent and no post-hoc nudge
       disturbs the spacing that check exists to protect.
-    - *Still to come here:* **gulfs and bays** biting inward from the fan's edges, and
-      **offshore islands** — both agreed, both after this.
+  - [x] *SHIPPED — **the coast has a shape**, and **inland water**.* Three more terms in the
+    same signed field, which is why each was nearly free.
+    - **Bays and isles are one primitive** (`coast::Lobe`, a disc that edits the shoreline;
+      `LOBE_BAY` adds water, `LOBE_ISLE` adds land). A bay is the best-behaved barrier
+      available — convex, so routing around costs a bounded π/2 ≈ 1.57x — but it carries no
+      isthmus, so it is bounded to `BAY_LAND_SHARE` of the local half-arc and always leaves
+      dry ground to the fan's centre line. ⚠️ It needed an ABSOLUTE cap too: the share is a
+      share of the half-arc, which grows linearly with depth, so at r=2000 a 0.30 share is a
+      1,500-unit "bay" that no `nudge_ashore` can walk a creature out of — and a creature was
+      found standing in exactly that. An isle is honestly scenery; it stands outside the fan.
+    - **Inland water is nine names and two mechanisms** (`coast::Basin` standing,
+      `coast::RiverNode` flowing). Neither has a `kind`, because the names are emergent: size
+      makes a pond a lake, **slope makes a lake a bog** (a basin fills to the terrain's own
+      CONTOUR, so the same level floods wide over flat ground — nothing authored a marsh),
+      biome names an oasis and an ice tarn, and a lagoon is a basin whose contour reaches the
+      sea. Same discipline CANON D21 sets for `Structure`.
+    - **The laws hold by construction.** A river is gradient descent on `terrain::height`, so
+      it runs downhill because that is the generator's only move; it ends at the sea or in a
+      hollow it cannot climb out of, and such a hollow IS a lake. Fords are a cadence, not a
+      roll — connectedness is what a river is, and a connected impassable line is what
+      disconnects a world.
+    - ⚠️ *`Shore::sea` vs `Shore::water` is load-bearing.* `sea` drives the ground's dip
+      toward a globally-zero sea level; a basin sits at its own elevation with its hollow
+      already in the heightmap, so folding it in excavates every lake below its own bed.
+    - ⚠️ *Two bugs worth remembering.* The route-avoidance check compared the CORRIDOR-space
+      path against WORLD-space water, silently always passed, and put the clear path in a
+      lake at the same waypoint three runs running. And the first fix for it — bounding every
+      body to its section's band — passed the entire suite while cutting a world from 13-15
+      lakes of mean radius ~115 to **3-5 of radius 44**, because every assertion only asked
+      whether water existed. The floors are measured now.
   - [x] *SHIPPED — the coastline and the peninsula, as one shared constant.*
     [`meld_proto::coast`](../shared/meld-proto/src/coast.rs) owns the shoreline **and the
     neck**, because the geometry is authored in two scenes that cannot see each other (the

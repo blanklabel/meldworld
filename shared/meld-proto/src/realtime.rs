@@ -248,6 +248,13 @@ pub mod world {
         /// forward unchanged — an empty list deletes a bay the server still collides with.
         #[serde(default)]
         pub lobes: Vec<crate::coast::Lobe>,
+        /// **Inland water** this section holds: standing bodies ([`crate::coast::Basin`]) and
+        /// the chains of flowing ones ([`crate::coast::RiverNode`]). Replaced per section
+        /// like everything else here, so a retile must carry them forward.
+        #[serde(default)]
+        pub basins: Vec<crate::coast::Basin>,
+        #[serde(default)]
+        pub rivers: Vec<crate::coast::RiverNode>,
     }
     impl Message for TerrainSection {
         const TYPE: &'static str = "world.terrain_section";
@@ -729,6 +736,13 @@ pub mod run {
         /// The initial chain's ride here; streamed sections append theirs.
         #[serde(default)]
         pub lobes: Vec<crate::coast::Lobe>,
+        /// **Inland water:** this world's standing bodies and river chains. Lakes, ponds,
+        /// bogs, marshes, lagoons, oases, creeks, springs and rivers are all one of these
+        /// two — the name is emergent from size, slope, biome and adjacency.
+        #[serde(default)]
+        pub basins: Vec<crate::coast::Basin>,
+        #[serde(default)]
+        pub rivers: Vec<crate::coast::RiverNode>,
     }
     /// Walkable extent of the instance (world-generation.md corridor bounds).
     #[derive(Debug, Clone, Serialize, Deserialize)]

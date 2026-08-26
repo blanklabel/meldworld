@@ -264,10 +264,10 @@ fn sample(
     // follow the shore to one you cannot — and a coastline you cannot see on the map makes
     // the second option undiscoverable, which collapses the decision back to the wall the
     // retired `Seam` was.
-    let (straits, lobes) = crate::world_render::shore_snapshot();
-    if (meld_proto::coast::Shore { arc_half, straits: &straits, lobes: &lobes })
-        .is_ocean(wx, wz)
-    {
+    // ⚠️ Every kind of water, and the MAP is where inland water matters most: a lake or a
+    // river you cannot see on the map is a detour you only discover by walking into it.
+    let w = crate::world_render::shore_data();
+    if w.shore(arc_half).is_ocean(wx, wz) {
         return Some((water_tile(&sec.biome), 1.0));
     }
 
@@ -519,6 +519,8 @@ mod tests {
             // The straits' own map behaviour is covered by `coast`'s geometry tests.
             straits: vec![],
             lobes: vec![],
+            basins: vec![],
+            rivers: vec![],
         }
     }
 

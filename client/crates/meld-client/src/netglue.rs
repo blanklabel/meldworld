@@ -181,6 +181,11 @@ pub(crate) fn pump_net(
                 // if it ever stops, this drops a sea it is still colliding against.
                 crate::world_render::set_section_straits(section.index, &section.straits);
                 crate::world_render::set_section_lobes(section.index, &section.lobes);
+                crate::world_render::set_section_water(
+                    section.index,
+                    &section.basins,
+                    &section.rivers,
+                );
                 terrain.sections.insert(section.index, section);
             }
             ServerMsg::DungeonScene { active, theme, floor, width, height } => {
@@ -224,6 +229,8 @@ pub(crate) fn pump_net(
                 straits,
                 world_seed,
                 lobes,
+                basins,
+                rivers,
                 tutorial,
             } => {
                 // Seed this run's terrain BEFORE the ground/entities render, so the shader
@@ -242,6 +249,7 @@ pub(crate) fn pump_net(
                 // asked for — see `RunStarted::world_seed`.
                 crate::world_render::set_world_seed(world_seed);
                 crate::world_render::set_lobes(lobes);
+                crate::world_render::set_water(basins, rivers);
                 // Fresh dive: drop any terrain from the previous run before the new
                 // section stream arrives (server sends them right after this).
                 terrain.sections.clear();

@@ -1693,12 +1693,44 @@ bay_chance = 0.30                # chance a deep-enough section's rim holds a ba
 bay_min_section = 4              # earliest section index that may hold a bay or an isle. Shallower than a strait's gate, because a bay does not block the way out — it only bends it — so it is safe nearer the on-ramp.
 bay_min_reach = 120.0            # nearest hub distance a bay may be cut. The gap near the hub is a narrow wedge and the neck closes it, so a bay there would eat the walk home to Last City. [TUNABLE]
 bay_radius_share_min = 0.10      # a bay's radius as a share of the local half-arc, smallest. [TUNABLE]
+bay_radius_max = 150.0           # ⚠️ ABSOLUTE cap on a bay's radius, world units. The share below is a share of the LOCAL HALF-ARC, which grows linearly with depth — so at r=2000 a 0.30 share is a 1,500-unit 'bay', which is not a bay, it is a sea, and no nudge-ashore can walk a creature out of one. The share guarantees a bay cannot sever the fan; this guarantees it stays a coastal FEATURE. Both apply, whichever is smaller. [TUNABLE]
 bay_radius_share_max = 0.30      # …and largest. Both MUST stay under `coast::BAY_LAND_SHARE` (0.42), which is the hard guarantee the contract enforces; these are the range actually drawn inside it. [TUNABLE]
 isle_chance = 0.45               # chance a section puts an isle offshore of its rim (0..1). Freer than a bay because an isle cannot block anything. [TUNABLE]
 isle_radius_min = 14.0           # smallest isle, world units. [TUNABLE]
 isle_radius_max = 46.0           # largest. [TUNABLE]
 isle_offshore_min = 25.0         # nearest an isle's shore may sit to the fan's rim, as an ARC length — not an angle, or an isle would beach itself on the rim near the hub and sit over the horizon at the frontier. [TUNABLE]
 isle_offshore_max = 130.0        # furthest. Past the interest radius it is never drawn, so there is no point scattering them into the void. [TUNABLE]
+
+# INLAND WATER (WG-7). Lakes, ponds, bogs, marshes, lagoons, creeks, springs, oases and
+# rivers — NINE NAMES, TWO MECHANISMS, and collapsing them is the design (the same rule
+# CANON D21 sets for `Structure`: do not build them as separate systems).
+#
+#   `coast::Basin`     standing water filling a hollow to a LEVEL  -> pond/lake/bog/marsh/lagoon/oasis
+#   `coast::RiverNode` flowing water descending the terrain        -> spring/creek/river
+#
+# The names are EMERGENT, which is why neither primitive has a `kind`. Size separates a pond
+# from a lake. SLOPE separates a bog from a lake for free, because a basin fills to the
+# terrain's own CONTOUR rather than being drawn as a circle — the same level over flat ground
+# floods a wide ragged sheet and over rolling ground makes a small round pool. Biome names it
+# (the client already picks its water tile from the section's biome, so a mire's basin is bog
+# green and a tundra's is ice). And a lagoon is a basin whose contour reaches the sea.
+#
+# A river runs downhill because downhill is the only direction it is GENERATED in: gradient
+# descent on `terrain::height`. It ends at the sea, or in a hollow it cannot climb out of —
+# and a hollow a river cannot leave IS a lake, so the endorheic case builds its own terminus.
+# "Rivers flow to the ocean" is therefore not a check that can fail.
+water_min_section = 5            # earliest section index that may hold inland water.
+water_min_reach = 150.0          # nearest hub distance. The on-ramp stays dry: a river across the first minutes is a barrier before a player knows what a ford is. [TUNABLE]
+river_chance = 0.35              # chance a deep-enough section springs a river (0..1). [TUNABLE]
+river_step = 26.0                # world units between river nodes. Small enough to follow a valley, large enough that a river reaches the sea inside `river_max_nodes`. [TUNABLE]
+river_max_nodes = 14             # nodes before a river gives up and pools into a lake. Caps both the wire payload and the descent cost. [TUNABLE]
+river_half_width_min = 5.0       # half-width of a CREEK, world units. [TUNABLE]
+river_half_width_max = 13.0      # …and of a river. Kept well under `[ai] group_radius` scale so a channel reads as something you cross, not a region. [TUNABLE]
+river_ford_every = 4             # a FORD every this many nodes. ⚠️ A GUARANTEE, not a decoration: connectedness is what a river IS, and a connected impassable line is exactly what disconnects a world — same contract as a strait's isthmus. [TUNABLE]
+basin_chance = 0.40              # chance a section also holds a standing body with no river feeding it (0..1). [TUNABLE]
+basin_radius_min = 45.0          # bound on how far a basin may spread, smallest. The SHAPE is the terrain's contour; this only stops a flat hollow flooding the whole ring. [TUNABLE]
+basin_radius_max = 190.0         # …and largest. [TUNABLE]
+basin_fill = 3.5                 # how far above a hollow's floor the water surface sits, in HEIGHT units (the field runs about +/-16). Deeper fills flood wider, because the contour is wider higher up. [TUNABLE]
 
 # Content-ish stats per creature, keyed by content id. Bases are pre-scale; the
 # world multiplies each by stat_mult(distance) at spawn, so the SAME base grows

@@ -237,3 +237,150 @@ fn the_tutorial_has_no_continents() {
     let a = Arena::generate(&b, 424242, true);
     assert!(a.straits.is_empty(), "the tutorial dive must not be cut by a strait");
 }
+
+// ---------------------------------------------------------------------------------------
+// INLAND WATER — the laws
+// ---------------------------------------------------------------------------------------
+
+/// **A river runs downhill, and ends at the sea or in a lake.** Both halves hold by
+/// CONSTRUCTION (gradient descent on `terrain::height`, terminating at the sea or pooling in
+/// a hollow it cannot climb out of), so this is really a check that the construction is what
+/// actually ran — a descent that silently stopped stepping would still produce a chain.
+#[test]
+fn a_river_runs_downhill_and_ends_at_the_sea_or_in_a_lake() {
+    let mut rivers_seen = 0;
+    for seed in [1u64, 7, 42, 424242] {
+        let a = deep_world(seed);
+        let (ox, oz) = a.terrain_offset();
+        let h = |n: &[f32; 4]| meld_proto::terrain::height(n[0], n[1], ox, oz);
+        // Split the flat node list back into chains.
+        let mut chains: Vec<Vec<[f32; 4]>> = Vec::new();
+        for n in &a.rivers {
+            if n[3] >= 0.5 || chains.is_empty() {
+                chains.push(Vec::new());
+            }
+            chains.last_mut().unwrap().push(*n);
+        }
+        for chain in &chains {
+            rivers_seen += 1;
+            // Downhill, node to node, within a tolerance for the finite-difference step.
+            for w in chain.windows(2) {
+                assert!(
+                    h(&w[1]) <= h(&w[0]) + 0.5,
+                    "seed {seed}: a river climbs — {:.2} to {:.2}. Water does not do that, \
+                     and it cannot happen unless something other than gradient descent \
+                     placed these nodes",
+                    h(&w[0]),
+                    h(&w[1])
+                );
+            }
+        }
+        // Every river ends somewhere real: at the sea, or in one of this world's basins.
+        for chain in &chains {
+            let Some(last) = chain.last() else { continue };
+            let at_sea = a.shore().sea(last[0], last[1]) > -30.0;
+            let in_basin = a.basins.iter().any(|b| {
+                (last[0] - b[0]).hypot(last[1] - b[1]) <= b[2] + 40.0
+            });
+            // A chain that ends because a FORD follows it is mid-river, not a terminus.
+            let mid_river = chain.len() < a.rivers.len();
+            assert!(
+                at_sea || in_basin || mid_river,
+                "seed {seed}: a river ends at ({:.0}, {:.0}) — not at the sea, not in a \
+                 lake, and not at a ford. Water has to go somewhere.",
+                last[0],
+                last[1]
+            );
+        }
+    }
+    assert!(rivers_seen > 0, "no rivers in four deep worlds — inland water never generated");
+}
+
+/// **Every river is crossable**, because connectedness is what a river IS and a connected
+/// impassable line is exactly what disconnects a world. Fords are placed on a cadence, so a
+/// river long enough to need one has one.
+#[test]
+fn a_river_long_enough_to_block_you_has_a_ford() {
+    let b = balance();
+    let ford_every = b.worldgen.river_ford_every;
+    for seed in [1u64, 7, 42, 424242] {
+        let a = deep_world(seed);
+        if a.rivers.is_empty() {
+            continue;
+        }
+        let chains = a.rivers.iter().filter(|n| n[3] >= 0.5).count();
+        let longest = {
+            let mut best = 0usize;
+            let mut cur = 0usize;
+            for n in &a.rivers {
+                if n[3] >= 0.5 {
+                    cur = 0;
+                }
+                cur += 1;
+                best = best.max(cur);
+            }
+            best
+        };
+        assert!(
+            longest <= ford_every + 1,
+            "seed {seed}: an unbroken river chain of {longest} nodes, with fords every \
+             {ford_every} — a stretch that long is a wall"
+        );
+        assert!(chains >= 1, "seed {seed}: river nodes with no chain start");
+    }
+}
+
+/// Inland water generates, in QUANTITY and at SIZE — and the floors are what matter here,
+/// not the existence checks.
+///
+/// ⚠️ **A `> 0` bar passed while the feature was gutted.** An earlier attempt bounded every
+/// body to its own section's radius band, which made the whole suite green and, measured, cut
+/// a world out to d2400 down to 3-5 lakes of mean radius 44 and river chains of 2-3 nodes —
+/// a 26-unit "river". Every test still passed, because every test only asked whether water
+/// existed. Measured floors are the only thing that catches that class of regression, so
+/// these are set from a real census (10-15 basins of mean radius 104-124, and 31-37 river
+/// nodes per world) with generous headroom for seed variance.
+#[test]
+fn a_world_holds_lakes_and_rivers_worth_the_name() {
+    let seeds = [1u64, 7, 42, 99, 424242, 987654];
+    let (mut basins, mut nodes, mut radius_sum) = (0usize, 0usize, 0.0f32);
+    for seed in seeds {
+        let a = deep_world(seed);
+        basins += a.basins.len();
+        nodes += a.rivers.len();
+        radius_sum += a.basins.iter().map(|b| b[2]).sum::<f32>();
+    }
+    assert!(
+        basins >= 30,
+        "only {basins} standing bodies across {} deep worlds — inland water is generating, \
+         but nowhere near enough of it to meet",
+        seeds.len()
+    );
+    assert!(nodes >= 60, "only {nodes} river nodes across {} deep worlds", seeds.len());
+    let mean = radius_sum / basins.max(1) as f32;
+    assert!(
+        mean >= 60.0,
+        "mean lake radius is {mean:.0} — that is a pond. Something is clamping the fill, \
+         which is exactly the regression this test exists for (see the note above)."
+    );
+}
+
+/// A lake is water you COLLIDE with and not ground the shader digs — the distinction that
+/// keeps `Shore::sea` (which drives ground displacement toward a globally-zero sea level)
+/// separate from `Shore::water`. Asserted on a real generated world, not a fixture.
+#[test]
+fn a_generated_lake_is_not_in_the_sea_field() {
+    for seed in [1u64, 42, 424242] {
+        let a = deep_world(seed);
+        for b in &a.basins {
+            let shore = a.shore();
+            assert!(shore.inland(b[0], b[1]) > 0.0, "seed {seed}: a basin's centre is dry");
+            assert!(!a.on_land(b[0] as f64, b[1] as f64), "seed {seed}: you can stand in a lake");
+            assert!(
+                shore.sea(b[0], b[1]) < 0.0,
+                "seed {seed}: a lake leaked into the SEA field, so the ground shader will \
+                 dig it a second time below its own bed"
+            );
+        }
+    }
+}

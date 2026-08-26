@@ -2441,6 +2441,14 @@ pub struct Arena {
     /// WORLD-space like `straits`, so `radialize` does NOT bend them. Rides the wire and is
     /// selected per section by the same radius-band filter.
     pub lobes: Vec<meld_proto::coast::Lobe>,
+    /// **Standing inland water** — lakes, ponds, bogs, marshes, lagoons, oases, all one
+    /// [`meld_proto::coast::Basin`]. The NAME is emergent (size, slope, biome, adjacency),
+    /// which is why the primitive has no `kind`.
+    pub basins: Vec<meld_proto::coast::Basin>,
+    /// **Flowing inland water** — rivers and creeks, as chains of
+    /// [`meld_proto::coast::RiverNode`]. A node marked `chain_start` begins a new chain, and
+    /// the gap before it is a FORD.
+    pub rivers: Vec<meld_proto::coast::RiverNode>,
     terrain_cell: f64,
     terraces_per_area: f64,
     max_level: u8,
@@ -2642,8 +2650,11 @@ impl Arena {
     pub fn shore(&self) -> meld_proto::coast::Shore<'_> {
         meld_proto::coast::Shore {
             arc_half: self.radial_half as f32,
+            terrain_off: self.terrain_off,
             straits: &self.straits,
             lobes: &self.lobes,
+            basins: &self.basins,
+            rivers: &self.rivers,
         }
     }
 
@@ -2763,6 +2774,8 @@ impl Arena {
             peaks: Vec::new(),
             straits: Vec::new(),
             lobes: Vec::new(),
+            basins: Vec::new(),
+            rivers: Vec::new(),
             terrain_cell: wg.terrain_cell,
             terraces_per_area: wg.terraces_per_area,
             max_level: wg.max_level,
@@ -2834,8 +2847,15 @@ impl Arena {
         // everything else has to be checked against them, so take copies the `&mut` loops
         // below can read.
         let (straits, lobes) = (self.straits.clone(), self.lobes.clone());
-        let shore =
-            meld_proto::coast::Shore { arc_half: half as f32, straits: &straits, lobes: &lobes };
+        let (basins, rivers) = (self.basins.clone(), self.rivers.clone());
+        let shore = meld_proto::coast::Shore {
+            arc_half: half as f32,
+            terrain_off: toff,
+            straits: &straits,
+            lobes: &lobes,
+            basins: &basins,
+            rivers: &rivers,
+        };
         let tf = |p: Position| -> Position {
             let r = p.x.max(0.0);
             let theta = (p.y / lat).clamp(-1.0, 1.0) * half;
@@ -2911,6 +2931,8 @@ impl Arena {
             *b = nudge_to_walkable(*b, toff, shore);
         }
         self.portal = nudge_to_walkable(self.portal, toff, shore);
+        // The initial chain bends every entity at once against the finished shoreline, so
+        // the loops above already saw the water; this is only the portal's own check.
         if let Some(last) = self.path.last_mut() {
             *last = self.portal;
         }
@@ -2950,10 +2972,14 @@ impl Arena {
         let path = self.path.clone();
         let web = self.web.clone();
         let (straits, lobes) = (self.straits.clone(), self.lobes.clone());
+        let (basins, rivers) = (self.basins.clone(), self.rivers.clone());
         let shore = meld_proto::coast::Shore {
             arc_half: self.radial_half as f32,
+            terrain_off: self.terrain_off,
             straits: &straits,
             lobes: &lobes,
+            basins: &basins,
+            rivers: &rivers,
         };
         self.obstacles.retain(|o| {
             dist_to_path(&o.position, &path) > clear_r + o.radius
@@ -3021,6 +3047,8 @@ impl Arena {
         let p0 = self.path.len();
         let w0 = self.corridor_web.len();
         let pk0 = self.peaks.len();
+        // Where this section's inland water starts, so `drown_proof` can scope itself to it.
+        let (wb0, wr0) = (self.basins.len(), self.rivers.len());
 
         self.push_section(balance, i); // corridor-space append; advances `cursor`.
 
@@ -3035,8 +3063,15 @@ impl Arena {
         // The straits and lobes are already WORLD-space, so they are not bent — but
         // everything the bend touches is checked against them (see `radialize`).
         let (straits, lobes) = (self.straits.clone(), self.lobes.clone());
-        let shore =
-            meld_proto::coast::Shore { arc_half: half as f32, straits: &straits, lobes: &lobes };
+        let (basins, rivers) = (self.basins.clone(), self.rivers.clone());
+        let shore = meld_proto::coast::Shore {
+            arc_half: half as f32,
+            terrain_off: toff,
+            straits: &straits,
+            lobes: &lobes,
+            basins: &basins,
+            rivers: &rivers,
+        };
         let tf = |p: Position| -> Position {
             let r = p.x.max(0.0);
             let theta = (p.y / lat).clamp(-1.0, 1.0) * half;
@@ -3094,6 +3129,9 @@ impl Arena {
                 nudge_to_walkable(tf(b), toff, shore),
             ));
         }
+        // Anything an inland body sprung this section is now standing in gets moved ashore —
+        // including entities from EARLIER sections, which the sweeps above never look at.
+        self.drown_proof(wb0, wr0);
         // Straight-wall biome seams don't survive the bend — drop the ones just added.
         self.seams.truncate(s0);
         // The bend distorts the clear-path tube AND appending this section's waypoint
@@ -3209,6 +3247,10 @@ impl Arena {
         // Same place, same reason — before the route is drawn, so A* walks around a bay
         // instead of the bay being rejected from the path tube and becoming scenery.
         self.push_lobes(balance, i, start_x, end_x, length);
+        // …and its inland water: a river that runs downhill and the lakes it pools into.
+        // Also before the route, for the same reason — and it matters more here, because a
+        // river is the one water body that can genuinely sever the world.
+        self.push_water(balance, i, start_x, end_x);
 
         // WG-1: every Nth procedural section is a DUNGEON — rooms divided by walls
         // with a door on the clear path (connectivity guaranteed like a biome seam),
@@ -3273,11 +3315,16 @@ impl Arena {
         // and always empty in corridor mode.) Cloned so the placement loop can read it while
         // it appends to `self.monsters`.
         let (sea, sea_lobes) = (self.straits.clone(), self.lobes.clone());
+        let (sea_basins, sea_rivers) = (self.basins.clone(), self.rivers.clone());
+        let toff_wet = self.terrain_off;
         let wet = move |w: &Position| -> bool {
             meld_proto::coast::Shore {
                 arc_half: bend_half as f32,
+                terrain_off: toff_wet,
                 straits: &sea,
                 lobes: &sea_lobes,
+                basins: &sea_basins,
+                rivers: &sea_rivers,
             }
             .is_ocean(w.x as f32, w.y as f32)
         };
@@ -4332,7 +4379,12 @@ impl Arena {
                 let th = side * self.radial_half;
                 let share = wg.bay_radius_share_min
                     + rng.unit() * (wg.bay_radius_share_max - wg.bay_radius_share_min).max(0.0);
-                let radius = r_c * self.radial_half * share;
+                // ⚠️ BOTH bounds. The share is a share of the LOCAL HALF-ARC, which grows
+                // linearly with depth — at r=2000 a 0.30 share is a 1,500-unit "bay", which
+                // is a sea, and `nudge_ashore` cannot walk a creature out of one (a creature
+                // did stand in exactly that, at seed 1). The share keeps a bay from severing
+                // the fan; the absolute cap keeps it a coastal FEATURE.
+                let radius = (r_c * self.radial_half * share).min(wg.bay_radius_max);
                 let lobe: meld_proto::coast::Lobe = [
                     (r_c * th.cos()) as f32,
                     (r_c * th.sin()) as f32,
@@ -4372,6 +4424,273 @@ impl Arena {
             });
             if clear {
                 self.lobes.push([cx as f32, cz as f32, radius as f32, meld_proto::coast::LOBE_ISLE]);
+            }
+        }
+    }
+
+    /// **Spring this section's INLAND WATER — a river that runs downhill, and the lakes it
+    /// pools into.**
+    ///
+    /// Nine names, two mechanisms (see [`meld_proto::coast::Basin`] /
+    /// [`meld_proto::coast::RiverNode`]): standing water filling a hollow to a level, and
+    /// flowing water descending the terrain. Pond, lake, bog, marsh, lagoon and oasis are
+    /// all the first; spring, creek and river are all the second. Nothing here authors a
+    /// name — size, slope, biome and adjacency do that.
+    ///
+    /// **The laws of water hold by construction rather than by validation.**
+    /// `terrain::height` is a pure analytic function, so a river is gradient descent on it:
+    /// it runs downhill because downhill is the only direction this function can step. It
+    /// terminates in one of exactly two ways, and both are hydrologically right:
+    ///
+    /// * it reaches the SEA (`shore.sea(..) > 0`) and drains, or
+    /// * it reaches a hollow it cannot climb out of — and a hollow a river cannot leave
+    ///   **is a lake**, so the endorheic case builds its own terminus instead of needing a
+    ///   rule. "A river must reach the ocean" is not a check that can fail here.
+    ///
+    /// Fords are placed on a fixed cadence, not rolled: connectedness is what a river IS,
+    /// and a connected impassable line is exactly the thing that disconnects a world. Same
+    /// contract as a strait's isthmus — a guarantee, never a repair.
+    fn push_water(&mut self, balance: &Balance, i: usize, start_x: f64, end_x: f64) {
+        let wg = &balance.worldgen;
+        if self.tutorial
+            || self.radial_half <= 0.0
+            || i < wg.water_min_section
+            || start_x < wg.water_min_reach
+        {
+            return;
+        }
+        let mut rng = Rng(section_seed(self.seed_base, i) ^ 0x0BEA_4E12_0BEA_4E12);
+        let (half, lat) = (self.radial_half, self.corridor_lateral.max(1.0));
+        let toff = self.terrain_off;
+        let h = |x: f64, z: f64| meld_proto::terrain::height(x as f32, z as f32, toff.0, toff.1) as f64;
+
+        // ⚠️ **WATER WANDERS, AND THAT IS WHY IT NEEDS ITS OWN RULE.** Unlike a strait or a
+        // bay, which are placed where they are drawn, a river and a lake are FOUND by
+        // walking downhill — up to ~364u and ~800u — and that walk does not respect section
+        // boundaries. So water generated for section 20 can land in section 19, whose clear
+        // path is already routed and whose creatures are already standing. Both
+        // `the_clear_path_crosses_at_an_isthmus_and_never_swims` and
+        // `nothing_stands_in_the_water` failed on exactly that.
+        //
+        // **The path yields nothing; entities move.** A route already fixed cannot be
+        // re-routed, so water keeps off it (`off_drawn`) and a river node that would sit on
+        // it becomes a FORD instead — the in-fiction repair, and the same "the clear path
+        // always wins" rule `retain_placeable_obstacles` applies to props. Anything that can
+        // be moved is moved instead, by `drown_proof` after the bend.
+        //
+        // ⚠️ It is deliberately NOT bounded to the section's band, though that was the first
+        // fix and it passed every test. MEASURED, it also gutted the feature: 3-5 lakes in a
+        // whole world out to d2400 and river chains of 2-3 nodes — a 26-unit "river". A
+        // green suite is not evidence that a generator generates anything.
+        // ⚠️ **THE PATH IS IN CORRIDOR SPACE HERE AND THE WATER IS IN WORLD SPACE.** Section
+        // generation runs entirely in the corridor frame and `radialize`/`ensure_frontier`
+        // bend it afterwards, so `self.path` is corridor coordinates — while a basin and a
+        // river node are placed through `radial_tf` and are already world. Comparing them
+        // directly is comparing two coordinate systems, which is what the first version of
+        // this check did: it silently always passed, and the clear path kept ending up in the
+        // water at the same waypoint. Bend the path forward instead.
+        //
+        // Bending the VERTICES is enough because they are dense: `astar_route` returns
+        // waypoints at its 1.5-unit cell spacing, so the chord between two of them hugs the
+        // arc. This is the same reason `push_bent_segment` densifies — a sparse path bent by
+        // its endpoints cuts across the fan.
+        let drawn: Vec<Position> =
+            self.path.iter().map(|p| radial_tf(*p, half, lat)).collect();
+        let clear = self.path_clear_radius;
+        let off_drawn = |p: Position, pad: f64| dist_to_path(&p, &drawn) > clear + pad;
+        // A body smaller than this is not worth placing — it renders as a puddle and reads
+        // as an artefact rather than as water.
+        const MIN_BODY: f64 = 18.0;
+
+        // A world-space point drawn from this section's own band, so the water belongs to
+        // the section that will carry it on the wire.
+        let pick = |rng: &mut Rng| -> Position {
+            let cx = start_x + rng.unit() * (end_x - start_x).max(1.0);
+            let cy = lat * rng.signed() * 0.9;
+            radial_tf(Position::new(cx, cy), half, lat)
+        };
+
+        // --- the RIVER ----------------------------------------------------------------
+        if rng.unit() < wg.river_chance {
+            // A SPRING is the highest of a few candidates: water starts high, so choosing
+            // the highest is what makes the source read as a spring rather than a puddle
+            // that happens to leak.
+            let mut src = pick(&mut rng);
+            for _ in 0..5 {
+                let c = pick(&mut rng);
+                if h(c.x, c.y) > h(src.x, src.y) {
+                    src = c;
+                }
+            }
+            let mut nodes: Vec<meld_proto::coast::RiverNode> = Vec::new();
+            let width = wg.river_half_width_min
+                + rng.unit() * (wg.river_half_width_max - wg.river_half_width_min).max(0.0);
+            let (mut x, mut z) = (src.x, src.y);
+            let mut cur = h(x, z);
+            let mut pooled: Option<Position> = None;
+            for n in 0..wg.river_max_nodes.max(2) {
+                // A ford every `river_ford_every` nodes: break the chain, and the gap is the
+                // crossing. Never the first node, which starts the first chain anyway.
+                let ford = n > 0 && wg.river_ford_every > 0 && n % wg.river_ford_every == 0;
+                nodes.push([x as f32, z as f32, width as f32, f32::from(n == 0 || ford)]);
+                // Reached the sea: it drains, and the river is done.
+                if self.shore().sea(x as f32, z as f32) > 0.0 {
+                    break;
+                }
+                // Step downhill. Central differences, matching `terrain::slope`.
+                let e = 6.0;
+                let dx = h(x + e, z) - h(x - e, z);
+                let dz = h(x, z + e) - h(x, z - e);
+                let m = (dx * dx + dz * dz).sqrt();
+                if m < 1e-6 {
+                    pooled = Some(Position::new(x, z));
+                    break; // dead flat: it pools here
+                }
+                let step = wg.river_step;
+                let (nx, nz) = (x - step * dx / m, z - step * dz / m);
+                let nh = h(nx, nz);
+                if nh >= cur {
+                    // It cannot descend any further — this hollow IS the lake.
+                    pooled = Some(Position::new(x, z));
+                    break;
+                }
+                (x, z, cur) = (nx, nz, nh);
+            }
+            // A node sitting on a path already drawn becomes a FORD: drop it and start a
+            // fresh chain after the gap. That is the in-fiction repair — the route crosses
+            // the river at a crossing — and it is the same "the clear path always wins" rule
+            // `retain_placeable_obstacles` applies to props.
+            let mut kept: Vec<meld_proto::coast::RiverNode> = Vec::new();
+            let mut broke = false;
+            for n in &nodes {
+                let p = Position::new(n[0] as f64, n[1] as f64);
+                if !off_drawn(p, n[2] as f64) {
+                    broke = true; // the trail crosses here — leave dry ground for it
+                    continue;
+                }
+                let mut n = *n;
+                if broke {
+                    n[3] = 1.0; // a new chain resumes past the crossing
+                    broke = false;
+                }
+                kept.push(n);
+            }
+            // A chain of one is not a river; a chain of two is the shortest creek there is.
+            if kept.len() >= 2 {
+                self.rivers.extend_from_slice(&kept);
+            }
+            // Where it stopped without reaching the sea, it pools: the terminus lake.
+            if let Some(p) = pooled {
+                let radius = wg.basin_radius_min
+                    + rng.unit() * (wg.basin_radius_max - wg.basin_radius_min).max(0.0);
+                if radius >= MIN_BODY && off_drawn(p, radius) {
+                    self.basins.push([
+                        p.x as f32,
+                        p.y as f32,
+                        radius as f32,
+                        (h(p.x, p.y) + wg.basin_fill) as f32,
+                    ]);
+                }
+            }
+        }
+
+        // --- STANDING water with nothing feeding it -----------------------------------
+        // Walk downhill from a drawn point to find the hollow, then fill it. The same
+        // descent the river uses, which is why a lake here and a river's terminus lake are
+        // the same object rather than two.
+        if rng.unit() < wg.basin_chance {
+            let seed_pt = pick(&mut rng);
+            let (mut x, mut z) = (seed_pt.x, seed_pt.y);
+            let mut cur = h(x, z);
+            for _ in 0..80 {
+                let e = 6.0;
+                let dx = h(x + e, z) - h(x - e, z);
+                let dz = h(x, z + e) - h(x, z - e);
+                let m = (dx * dx + dz * dz).sqrt();
+                if m < 1e-6 {
+                    break;
+                }
+                let (nx, nz) = (x - 10.0 * dx / m, z - 10.0 * dz / m);
+                let nh = h(nx, nz);
+                if nh >= cur {
+                    break;
+                }
+                (x, z, cur) = (nx, nz, nh);
+            }
+            // Not in the sea — a "lake" overlapping the ocean is just the ocean, and the
+            // fold would hide it anyway.
+            let radius = wg.basin_radius_min
+                + rng.unit() * (wg.basin_radius_max - wg.basin_radius_min).max(0.0);
+            let p = Position::new(x, z);
+            if self.shore().sea(x as f32, z as f32) < 0.0
+                && radius >= MIN_BODY
+                && off_drawn(p, radius)
+            {
+                self.basins.push([x as f32, z as f32, radius as f32, (cur + wg.basin_fill) as f32]);
+            }
+        }
+    }
+
+    /// **Move anything a newly-sprung body of water is standing on.**
+    ///
+    /// Inland water is FOUND by walking downhill, so it does not respect section boundaries:
+    /// a lake discovered while building section 20 can spread back into section 19, whose
+    /// creatures, nodes and chests were placed and bent long ago. The bend-time sweeps only
+    /// ever look at the entities a section just added, so nothing would notice.
+    ///
+    /// The clear path is the exception and gets the opposite treatment — it cannot be
+    /// re-routed once drawn, so water yields to IT (see `push_water`'s `off_drawn`, which
+    /// turns a river node on the trail into a ford). Everything else moves.
+    ///
+    /// Scoped to the water added since `(b0, r0)` rather than re-checking the whole world:
+    /// water grows with every section, so a full re-sweep would be quadratic in the section
+    /// count and this runs at the frontier of an endlessly streaming world.
+    fn drown_proof(&mut self, b0: usize, r0: usize) {
+        if self.basins.len() == b0 && self.rivers.len() == r0 {
+            return;
+        }
+        let fresh = meld_proto::coast::Shore {
+            arc_half: self.radial_half as f32,
+            terrain_off: self.terrain_off,
+            straits: &[],
+            lobes: &[],
+            basins: &self.basins[b0..],
+            rivers: &self.rivers[r0..],
+        };
+        // A creature's whole territory has to come with it, or it spends the dive walking at
+        // water it can never reach (`home`) or gets dragged back by its pack anchor.
+        let wet = |p: Position| fresh.inland(p.x as f32, p.y as f32) > 0.0;
+        let mut moves: Vec<(usize, Position)> = Vec::new();
+        for (i, m) in self.monsters.iter().enumerate() {
+            if wet(m.position) || wet(m.home) || wet(m.pack_home) {
+                moves.push((i, m.position));
+            }
+        }
+        let (half, straits, lobes) = (self.radial_half, self.straits.clone(), self.lobes.clone());
+        let (basins, rivers, toff) =
+            (self.basins.clone(), self.rivers.clone(), self.terrain_off);
+        let shore = meld_proto::coast::Shore {
+            arc_half: half as f32,
+            terrain_off: toff,
+            straits: &straits,
+            lobes: &lobes,
+            basins: &basins,
+            rivers: &rivers,
+        };
+        for (i, _) in moves {
+            let m = &mut self.monsters[i];
+            m.position = nudge_ashore(m.position, shore);
+            m.home = nudge_ashore(m.home, shore);
+            m.pack_home = nudge_ashore(m.pack_home, shore);
+        }
+        for r in self.resources.iter_mut() {
+            if fresh.inland(r.position.x as f32, r.position.y as f32) > 0.0 {
+                r.position = nudge_to_walkable(r.position, toff, shore);
+            }
+        }
+        for c in self.chests.iter_mut() {
+            if fresh.inland(c.position.x as f32, c.position.y as f32) > 0.0 {
+                c.position = nudge_to_walkable(c.position, toff, shore);
             }
         }
     }
@@ -4663,11 +4982,16 @@ impl Arena {
         // fan was one unbroken landmass, and the moment WG-7 put a strait in the middle of a
         // section it became a boar wading across open sea.
         let (straits, lobes) = (self.straits.clone(), self.lobes.clone());
+        let (basins, rivers) = (self.basins.clone(), self.rivers.clone());
+        let toff_dry = self.terrain_off;
         let dry = |p: &Position| -> bool {
             meld_proto::coast::Shore {
                 arc_half: radial_half as f32,
+                terrain_off: toff_dry,
                 straits: &straits,
                 lobes: &lobes,
+                basins: &basins,
+                rivers: &rivers,
             }
             .is_land(p.x as f32, p.y as f32)
         };
@@ -6304,8 +6628,12 @@ fn nudge_ashore(p: Position, shore: meld_proto::coast::Shore<'_>) -> Position {
     if dry(&p) {
         return p;
     }
-    for step in 1..48 {
-        let r = step as f64 * 2.0;
+    // Far enough to walk out of the widest LEGAL body of water: a bay is capped at
+    // `bay_radius_max` and a basin at `basin_radius_max`, both under 200 units, so a spiral
+    // to ~360 clears the centre of either. The old 96-unit reach silently failed inside a
+    // large bay and left the creature standing in the sea.
+    for step in 1..90 {
+        let r = step as f64 * 4.0;
         for k in 0..12 {
             let a = k as f64 * std::f64::consts::TAU / 12.0;
             let q = Position::new(p.x + r * a.cos(), p.y + r * a.sin());

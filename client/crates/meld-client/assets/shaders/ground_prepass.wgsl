@@ -68,6 +68,15 @@ struct BiomeParams {
     lobes: array<vec4<f32>, 12>,
     lobe_count: u32,
     _pad_lc0: u32, _pad_lc1: u32, _pad_lc2: u32,
+    // INLAND WATER. `basins` is [cx, cz, radius, LEVEL] — that fourth number, the water
+    // surface elevation, is what makes inland water a different thing from the sea, whose
+    // level is globally zero. `rivers` is a chain of [x, z, half_width, chain_start]; a node
+    // with chain_start >= 0.5 begins a new chain and the gap before it is a FORD.
+    basins: array<vec4<f32>, 10>,
+    rivers: array<vec4<f32>, 28>,
+    basin_count: u32,
+    river_count: u32,
+    _pad_wc0: u32, _pad_wc1: u32,
     // The Shift's tell (CANON D20/§W2): (inner_radius, outer_radius, intensity, 0).
     // A region is a radius ring in the WG-4 fan and this ground is already painted in
     // rings, so the doomed region draws as an annulus in the same frame as everything
@@ -145,6 +154,47 @@ fn strait_depth_at(wxz: vec2<f32>, k: i32) -> f32 {
     if (b.y > 0.0) { off_bridge = min(off_bridge, abs(ang_diff(theta, b.x)) * r - b.y); }
     if (b.w > 0.0) { off_bridge = min(off_bridge, abs(ang_diff(theta, b.z)) * r - b.w); }
     return min(min(in_band, in_span), off_bridge);
+}
+
+// How far INSIDE inland water a point is — positive in a lake or a channel, negative on the
+// land around them. MUST match `coast::Shore::inland`.
+//
+// ⚠️ This is deliberately NOT part of `sea_depth_at`. That field is what `total_height` dips
+// the ground toward the sea floor over, and sea level is globally zero — a basin sits at its
+// OWN elevation and its hollow is already in the heightmap, which is what makes it a basin.
+// Folding this in would excavate every lake a second time, below its own bed.
+fn inland_depth_at(wxz: vec2<f32>) -> f32 {
+    var d = -1000.0;
+    // Standing water: inside the radius bound AND below the surface level. The vertical
+    // margin is divided by a nominal shore slope so it shares world units with the radial
+    // one — `coast::BASIN_SHORE_SLOPE`, and it must match.
+    let nb = i32(params.basin_count);
+    for (var k = 0; k < nb; k = k + 1) {
+        let b = params.basins[k];
+        if (b.z <= 0.0) { continue; }
+        let within = b.z - length(wxz - b.xy);
+        // `terrain_height_wgsl` takes an ALREADY-OFFSET position, like every other caller.
+        // The divisor is `coast::BASIN_SHORE_SLOPE`, held against this file by
+        // `the_basin_shore_slope_matches_the_shader`.
+        let below = (b.w - terrain_height_wgsl(wxz + params.terrain_off)) / 0.12;
+        d = max(d, min(within, below));
+    }
+    // Flowing water: distance to each chain segment, minus its half-width.
+    let nr = i32(params.river_count);
+    for (var k = 1; k < nr; k = k + 1) {
+        let a = params.rivers[k - 1];
+        let b = params.rivers[k];
+        if (b.w >= 0.5) { continue; }   // a new chain starts here — the gap is the ford
+        let half = (a.z + b.z) * 0.5;
+        if (half <= 0.0) { continue; }
+        let p = wxz - a.xy;
+        let s = b.xy - a.xy;
+        let len2 = dot(s, s);
+        var t = 0.0;
+        if (len2 > 1e-6) { t = clamp(dot(p, s) / len2, 0.0, 1.0); }
+        d = max(d, half - length(p - s * t));
+    }
+    return d;
 }
 
 // How far INTO the sea a point is, in world units (negative on land). Mirrors

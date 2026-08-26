@@ -289,6 +289,9 @@ pub struct TerrainSectionView {
     pub straits: Vec<meld_proto::coast::Strait>,
     /// The coast's own shape: bays and isles ([`meld_proto::coast::Lobe`]).
     pub lobes: Vec<meld_proto::coast::Lobe>,
+    /// Inland water: standing bodies and river chains.
+    pub basins: Vec<meld_proto::coast::Basin>,
+    pub rivers: Vec<meld_proto::coast::RiverNode>,
 }
 
 /// One resolved effect for hit feedback (a damage or heal on a combatant).
@@ -662,6 +665,9 @@ pub enum ServerMsg {
         world_seed: u64,
         /// The coast's own shape: this world's bays and isles.
         lobes: Vec<meld_proto::coast::Lobe>,
+        /// Inland water: this world's standing bodies and river chains.
+        basins: Vec<meld_proto::coast::Basin>,
+        rivers: Vec<meld_proto::coast::RiverNode>,
         tutorial: bool,
     },
     /// The caller's hero roster (name/class/level/stats) for the party panel.
@@ -2392,12 +2398,33 @@ impl Inner {
                             .collect()
                     })
                     .unwrap_or_default();
+                // Inland water — four floats each, like the lobes.
+                let quads = |key: &str| -> Vec<[f32; 4]> {
+                    raw.payload[key]
+                        .as_array()
+                        .map(|arr| {
+                            arr.iter()
+                                .filter_map(|v| {
+                                    let a = v.as_array()?;
+                                    let mut out = [0.0f32; 4];
+                                    for (i, slot) in out.iter_mut().enumerate() {
+                                        *slot = a.get(i)?.as_f64()? as f32;
+                                    }
+                                    Some(out)
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default()
+                };
+                let (basins, rivers) = (quads("basins"), quads("rivers"));
                 self.out.push_back(ServerMsg::RunStarted {
                     terrain_off,
                     peaks,
                     straits,
                     world_seed,
                     lobes,
+                    basins,
+                    rivers,
                     tutorial,
                 });
                 self.emit_backpack();
@@ -2973,6 +3000,8 @@ impl Inner {
                         peaks: t.peaks,
                         straits: t.straits,
                         lobes: t.lobes,
+                        basins: t.basins,
+                        rivers: t.rivers,
                     };
                     self.out.push_back(ServerMsg::TerrainSection { section });
                 }

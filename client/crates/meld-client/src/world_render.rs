@@ -59,13 +59,20 @@ const STRAIT_SLOTS: usize = meld_proto::coast::MAX_STRAITS * 2;
 /// (`[cx, cz, radius, kind]`), windowed around the player like the straits.
 const LOBE_SLOTS: usize = meld_proto::coast::MAX_LOBES;
 
+/// `vec4` slots for standing inland water (`[cx, cz, radius, level]`) and for river-chain
+/// nodes (`[x, z, half_width, chain_start]`), both windowed around the player.
+const BASIN_SLOTS: usize = meld_proto::coast::MAX_BASINS;
+const RIVER_SLOTS: usize = meld_proto::coast::MAX_RIVER_NODES;
+
 /// `dead_code` is allowed for exactly this one item: the `ShaderType` derive generates a
 /// per-field `check` fn that nothing ever calls, and there is no way to annotate code a
 /// macro emits. Scoped to a submodule so the rest of this file still reports its own dead
 /// code honestly — every field here IS read, by the WGSL side of the uniform.
 mod biome_params {
     #![allow(dead_code)]
-    use super::{LOBE_SLOTS, MAX_BIOME_RINGS, PEAK_SLOTS, STRAIT_SLOTS};
+    use super::{
+        BASIN_SLOTS, LOBE_SLOTS, MAX_BIOME_RINGS, PEAK_SLOTS, RIVER_SLOTS, STRAIT_SLOTS,
+    };
     use bevy::prelude::*;
     use bevy::render::render_resource::ShaderType;
 
@@ -129,6 +136,18 @@ mod biome_params {
         pub(crate) _pad_lc0: u32,
         pub(crate) _pad_lc1: u32,
         pub(crate) _pad_lc2: u32,
+        /// Standing inland water, `[cx, cz, radius, level]` each — where `level` is the
+        /// water SURFACE elevation in the same units as `terrain::height`. That fourth
+        /// number is what makes inland water a different thing from the sea, whose level is
+        /// globally zero.
+        pub(crate) basins: [Vec4; BASIN_SLOTS],
+        /// River-chain nodes, `[x, z, half_width, chain_start]` each. A node with
+        /// `chain_start >= 0.5` begins a new chain, and the gap before it is a FORD.
+        pub(crate) rivers: [Vec4; RIVER_SLOTS],
+        pub(crate) basin_count: u32,
+        pub(crate) river_count: u32,
+        pub(crate) _pad_wc0: u32,
+        pub(crate) _pad_wc1: u32,
         /// The Shift's tell: `(inner_radius, outer_radius, intensity, 0)`. A region is a
         /// radius ring in the WG-4 fan and this ground is already painted in rings, so
         /// the doomed annulus needs no second coordinate system. `intensity == 0` is the
@@ -170,6 +189,12 @@ mod biome_params {
                 _pad_lc0: 0,
                 _pad_lc1: 0,
                 _pad_lc2: 0,
+                basins: [Vec4::ZERO; BASIN_SLOTS],
+                rivers: [Vec4::ZERO; RIVER_SLOTS],
+                basin_count: 0,
+                river_count: 0,
+                _pad_wc0: 0,
+                _pad_wc1: 0,
                 shift: Vec4::ZERO,
                 sea_anim: Vec4::ZERO,
                 peaks: [Vec4::ZERO; PEAK_SLOTS],
@@ -1589,13 +1614,10 @@ pub(crate) fn on_open_water(frame: &crate::WorldFrame, screen: &Screen, wx: f32,
             // is scattered — so this cull only started mattering once a section could hold
             // open water in the middle of it.
             frame.have && {
-                let (straits, lobes) = shore_snapshot();
-                (meld_proto::coast::Shore {
-                    arc_half: frame.radial_arc_degrees.to_radians() * 0.5,
-                    straits: &straits,
-                    lobes: &lobes,
-                })
-                .is_ocean(wx, wz)
+                let arc = frame.radial_arc_degrees.to_radians() * 0.5;
+                // EVERY kind of water here, salt and fresh: a tree standing in a lake reads
+                // as a bug in the lake.
+                shore_data().shore(arc).is_ocean(wx, wz)
             }
         }
         // Last City is a SEPARATE SCENE in its own coordinates — its `coast` uniform is
@@ -1855,15 +1877,109 @@ pub(crate) fn set_section_lobes(index: u32, lobes: &[meld_proto::coast::Lobe]) {
     }
 }
 
-/// **The whole shoreline's data, owned** — straits and lobes together, because every caller
-/// needs both to build a [`meld_proto::coast::Shore`] and asking for one without the other
-/// is how a surface ends up drawing half a coastline (the minimap did exactly that: it knew
-/// the ocean and not the straits).
-pub(crate) fn shore_snapshot() -> (Vec<meld_proto::coast::Strait>, Vec<meld_proto::coast::Lobe>) {
-    (
-        STRAITS.read().map(|s| s.clone()).unwrap_or_default(),
-        LOBES.read().map(|l| l.clone()).unwrap_or_default(),
-    )
+/// Inland water: standing bodies and the chains of flowing ones. Same base/per-section
+/// split as everything else the coastline is made of.
+static BASINS: std::sync::RwLock<Vec<meld_proto::coast::Basin>> =
+    std::sync::RwLock::new(Vec::new());
+static RIVERS: std::sync::RwLock<Vec<meld_proto::coast::RiverNode>> =
+    std::sync::RwLock::new(Vec::new());
+static BASE_WATER: std::sync::RwLock<(Vec<meld_proto::coast::Basin>, Vec<meld_proto::coast::RiverNode>)> =
+    std::sync::RwLock::new((Vec::new(), Vec::new()));
+#[allow(clippy::type_complexity)]
+static SECTION_WATER: std::sync::RwLock<
+    std::collections::BTreeMap<u32, (Vec<meld_proto::coast::Basin>, Vec<meld_proto::coast::RiverNode>)>,
+> = std::sync::RwLock::new(std::collections::BTreeMap::new());
+
+/// Replace this run's inland water (call on `run.started`).
+pub(crate) fn set_water(
+    basins: Vec<meld_proto::coast::Basin>,
+    rivers: Vec<meld_proto::coast::RiverNode>,
+) {
+    if let Ok(mut by_section) = SECTION_WATER.write() {
+        by_section.clear();
+    }
+    if let Ok(mut b) = BASE_WATER.write() {
+        *b = (basins.clone(), rivers.clone());
+    }
+    if let Ok(mut x) = BASINS.write() {
+        *x = basins;
+    }
+    if let Ok(mut x) = RIVERS.write() {
+        *x = rivers;
+    }
+}
+
+/// Set one SECTION's inland water (call on `world.terrain_section`).
+///
+/// ⚠️ A river CROSSES section boundaries, so each section carries only the nodes in its own
+/// band and the chain is re-assembled from all of them. The per-section map is a `BTreeMap`,
+/// so it re-assembles in section order — which is the order the nodes were generated in, and
+/// therefore the order the chain runs. Iterating it out of order would connect a river's
+/// head to a downstream node and draw a channel across open country.
+pub(crate) fn set_section_water(
+    index: u32,
+    basins: &[meld_proto::coast::Basin],
+    rivers: &[meld_proto::coast::RiverNode],
+) {
+    let Ok(mut by_section) = SECTION_WATER.write() else { return };
+    if basins.is_empty() && rivers.is_empty() && !by_section.contains_key(&index) {
+        return;
+    }
+    by_section.insert(index, (basins.to_vec(), rivers.to_vec()));
+    let mut sb: Vec<meld_proto::coast::Basin> = Vec::new();
+    let mut sr: Vec<meld_proto::coast::RiverNode> = Vec::new();
+    for (b, r) in by_section.values() {
+        sb.extend_from_slice(b);
+        sr.extend_from_slice(r);
+    }
+    if let Ok(base) = BASE_WATER.read() {
+        if let Ok(mut x) = BASINS.write() {
+            *x = base.0.iter().copied().chain(sb).collect();
+        }
+        if let Ok(mut x) = RIVERS.write() {
+            *x = base.1.iter().copied().chain(sr).collect();
+        }
+    }
+}
+
+/// **Every piece of this world's shoreline, owned** — so a caller can build a borrowed
+/// [`meld_proto::coast::Shore`] from it.
+///
+/// One bundle rather than a getter per list, because asking for some of the shoreline and
+/// not the rest is how a surface ends up drawing half a coast — which the minimap did: it
+/// knew the ocean and not the straits, so inland seas were invisible on the one screen that
+/// exists to answer "where am I".
+pub(crate) struct ShoreData {
+    pub(crate) terrain_off: (f32, f32),
+    pub(crate) straits: Vec<meld_proto::coast::Strait>,
+    pub(crate) lobes: Vec<meld_proto::coast::Lobe>,
+    pub(crate) basins: Vec<meld_proto::coast::Basin>,
+    pub(crate) rivers: Vec<meld_proto::coast::RiverNode>,
+}
+
+impl ShoreData {
+    /// Borrow it as a [`meld_proto::coast::Shore`] for the given fan.
+    pub(crate) fn shore(&self, arc_half: f32) -> meld_proto::coast::Shore<'_> {
+        meld_proto::coast::Shore {
+            arc_half,
+            terrain_off: self.terrain_off,
+            straits: &self.straits,
+            lobes: &self.lobes,
+            basins: &self.basins,
+            rivers: &self.rivers,
+        }
+    }
+}
+
+/// A snapshot of the whole shoreline.
+pub(crate) fn shore_data() -> ShoreData {
+    ShoreData {
+        terrain_off: terrain_offset(),
+        straits: STRAITS.read().map(|s| s.clone()).unwrap_or_default(),
+        lobes: LOBES.read().map(|l| l.clone()).unwrap_or_default(),
+        basins: BASINS.read().map(|b| b.clone()).unwrap_or_default(),
+        rivers: RIVERS.read().map(|r| r.clone()).unwrap_or_default(),
+    }
 }
 
 /// **The seed of the world we are in — its public NAME** (CANON D19: the target overworld
@@ -1942,8 +2058,11 @@ pub(crate) fn terrain_height(x: f32, z: f32) -> f32 {
         // whole world back up where the land used to be, over open water — the same bug this
         // function already shipped once for the ocean.
         {
-            let (straits, lobes) = shore_snapshot();
-            (meld_proto::coast::Shore { arc_half, straits: &straits, lobes: &lobes }).depth(x, z)
+            // ⚠️ `sea`, NOT `water`. This is the field the ground is DIPPED toward the sea
+            // floor over, and sea level is globally zero — an inland basin sits at its own
+            // elevation and its hollow is already in the heightmap. Folding inland water in
+            // here would excavate every lake a second time, below its own bed.
+            shore_data().shore(arc_half).sea(x, z)
         }
     } else {
         // Corridor mode (tests, the tutorial): no fan, so no sea anywhere.
@@ -2117,6 +2236,55 @@ pub(crate) fn update_ground_biome_rings(
         };
     }
     mat.extension.params.lobe_count = near_lobes.len() as u32;
+    // …and inland water. Basins window by radius like the rest. River nodes do NOT get
+    // sorted: a chain's order IS the channel, so re-ordering them would connect a river's
+    // head to a downstream node and draw water across open country. They are taken as a
+    // contiguous run around the player's own ring instead.
+    let water = shore_data();
+    let mut near_basins = water.basins.clone();
+    near_basins.sort_by(|a, b| {
+        let da = (a[0].hypot(a[1]) - pr).abs();
+        let db = (b[0].hypot(b[1]) - pr).abs();
+        da.total_cmp(&db)
+    });
+    near_basins.truncate(BASIN_SLOTS);
+    for (i, slot) in mat.extension.params.basins.iter_mut().enumerate() {
+        *slot = match near_basins.get(i) {
+            Some(b) => Vec4::new(b[0], b[1], b[2], b[3]),
+            None => Vec4::ZERO,
+        };
+    }
+    mat.extension.params.basin_count = near_basins.len() as u32;
+
+    let nodes = &water.rivers;
+    let start = if nodes.len() <= RIVER_SLOTS {
+        0
+    } else {
+        // Centre the window on the node nearest the player, then pull it back inside.
+        let mid = nodes
+            .iter()
+            .enumerate()
+            .min_by(|a, b| {
+                let da = (a.1[0].hypot(a.1[1]) - pr).abs();
+                let db = (b.1[0].hypot(b.1[1]) - pr).abs();
+                da.total_cmp(&db)
+            })
+            .map(|(i, _)| i)
+            .unwrap_or(0);
+        mid.saturating_sub(RIVER_SLOTS / 2).min(nodes.len() - RIVER_SLOTS)
+    };
+    let window = &nodes[start..(start + RIVER_SLOTS).min(nodes.len())];
+    for (i, slot) in mat.extension.params.rivers.iter_mut().enumerate() {
+        *slot = match window.get(i) {
+            // The first node of a window always starts a chain: the segment joining it to
+            // whatever fell outside the window does not exist as far as this frame knows,
+            // and drawing it would invent a channel across whatever lies between.
+            Some(n) if i == 0 => Vec4::new(n[0], n[1], n[2], 1.0),
+            Some(n) => Vec4::new(n[0], n[1], n[2], n[3]),
+            None => Vec4::ZERO,
+        };
+    }
+    mat.extension.params.river_count = window.len() as u32;
     // (outer_radius, biome_index) per section, sorted by radius (= corridor end_x).
     let mut rings: Vec<(f32, f32)> = terrain
         .sections
@@ -2981,6 +3149,27 @@ mod ground_uniform_tests {
         assert!(main.contains(binding) && prepass.contains(binding), "the uniform moved");
     }
 
+    /// `coast::BASIN_SHORE_SLOPE` is written as a literal in both shaders, because a WGSL
+    /// module cannot import a Rust const. Same situation as `terrain::BEACH_BLEND`, and the
+    /// same answer: read the shader source and hold the two together, so a retune fails a
+    /// test instead of quietly giving inland water a different shore than the one the server
+    /// collides against.
+    #[test]
+    fn the_basin_shore_slope_matches_the_shader() {
+        let want = format!("/ {:?};", meld_proto::coast::BASIN_SHORE_SLOPE);
+        for (name, wgsl) in [
+            ("ground_biome", include_str!("../assets/shaders/ground_biome.wgsl")),
+            ("ground_prepass", include_str!("../assets/shaders/ground_prepass.wgsl")),
+        ] {
+            assert!(
+                wgsl.contains(&want),
+                "{name}.wgsl must divide a basin's vertical margin by \
+                 `coast::BASIN_SHORE_SLOPE` ({want:?}) — a mismatch gives every lake a \
+                 different shore in the renderer than the server collides with"
+            );
+        }
+    }
+
     #[test]
     fn the_ground_uniform_matches_the_shader_that_reads_it() {
         let size = <biome_params::BiomeParams as ShaderType>::min_size().get();
@@ -2997,7 +3186,8 @@ mod ground_uniform_tests {
         for field in [
             "rings", "count", "uv_scale", "blend_half", "terrain_amp", "terrain_off",
             "_pad_peaks", "peaks", "peak_count", "straits", "strait_count", "lobes",
-            "lobe_count", "shift", "sea_anim",
+            "lobe_count", "basins", "rivers", "basin_count", "river_count", "shift",
+            "sea_anim",
         ] {
             assert!(body.contains(&format!("{field}:")), "the shader is missing `{field}`");
         }
@@ -3026,9 +3216,13 @@ mod ground_uniform_tests {
         // `peaks` before straits existed; it is checked for both now, because an array
         // length is a duplicated number and this repo only tolerates duplication that is
         // held by a test.
-        for (field, slots) in
-            [("peaks", PEAK_SLOTS), ("straits", STRAIT_SLOTS), ("lobes", LOBE_SLOTS)]
-        {
+        for (field, slots) in [
+            ("peaks", PEAK_SLOTS),
+            ("straits", STRAIT_SLOTS),
+            ("lobes", LOBE_SLOTS),
+            ("basins", BASIN_SLOTS),
+            ("rivers", RIVER_SLOTS),
+        ] {
             let decl = format!("{field}: array<vec4<f32>, {slots}>");
             assert!(
                 body.contains(&decl),

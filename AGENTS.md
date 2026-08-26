@@ -1637,6 +1637,72 @@ exactly that ring (corridor `y = 0` maps to angle 0, so the gap is EXACTLY zero)
 that never crossed its own centre line would be the real bug. It asserts the DISTRIBUTION
 now — 14 of 15 seeds land 178-1892u off — which is what actually proves the fan bends.
 
+**THE WORLD HAS CONTINENTS, A SHAPED COAST, AND INLAND WATER — all one signed field.**
+[`meld_proto::coast`](shared/meld-proto/src/coast.rs) owns every shoreline the game has, and
+each kind is a TERM in the same function rather than a system beside it, which is why each
+one cost almost nothing: `astar_route` land-checks every bent edge, `apply_move` collides
+against the same predicate, and both ground shaders already ramp a beach over the magnitude.
+Ask `Shore::is_land(x, z)` — a bundle, because the argument list went `(x, z, arc_half)` →
+`+ straits` → `+ lobes` → `+ basins, rivers` and every addition meant revisiting ~15 call
+sites.
+
+- A **`Strait`** is an inland sea filling an annular sector, pierced by **isthmuses**; the
+  CONTINENT is the land between two. Its span always stops inside the fan and it always
+  carries isthmuses, so there are FOUR ways past every one — which is what keeps it from
+  being the retired `Seam`, a full-width wall with one door that made the world read as a
+  corridor.
+- A **`Lobe`** is a disc that edits the coast: `LOBE_BAY` adds water (a bay bitten into the
+  rim, bounded to `BAY_LAND_SHARE` of the local half-arc so it can never pinch the fan in
+  two — it carries no isthmus), `LOBE_ISLE` adds land (an isle offshore, honestly scenery).
+- A **`Basin`** is standing water filling a hollow to a **LEVEL**, and a **`RiverNode`**
+  chain is flowing water. **Nine names, two mechanisms**: pond/lake/bog/marsh/lagoon/oasis
+  are all the first and spring/creek/river all the second, so neither primitive has a `kind`.
+  Size separates a pond from a lake; **SLOPE separates a bog from a lake for free**, because
+  a basin fills to the terrain's own CONTOUR rather than being drawn as a circle (the same
+  level over flat ground floods a wide ragged sheet); biome names it, since the client
+  already picks its water tile per section; and a lagoon is a basin whose contour reaches the
+  sea.
+
+⚠️ **`Shore::sea` and `Shore::water` are NOT interchangeable.** `sea` is the ocean, straits
+and lobes, and it is what the vertex stage dips the ground toward the sea floor over — sea
+level is globally zero. `water` adds the inland bodies and is what collision and tinting ask.
+A basin sits at its OWN elevation and its hollow is already in the heightmap, which is what
+makes it a basin: fold it into `sea` and every lake is excavated a second time below its own
+bed. The client's `terrain_height` must use `sea`; everything asking "can I stand here" must
+use `water`.
+
+**Water flows downhill BY CONSTRUCTION, not by validation.** A river is gradient descent on
+`terrain::height`, so it runs downhill because downhill is the only direction the generator
+can step. It ends at the sea, or in a hollow it cannot climb out of — and a hollow a river
+cannot leave IS a lake, so the endorheic case builds its own terminus. "A river reaches the
+ocean" is not a check that can fail. **Fords are a cadence, never a roll**
+(`river_ford_every`): connectedness is what a river is, and a connected impassable line is
+exactly what disconnects a world — the same contract as a strait's isthmus.
+
+⚠️ **A BARRIER IS PLACED BEFORE THE ROUTE, BUT THE ROUTE ALREADY DRAWN ALWAYS WINS.** Straits
+and bays are placed where they are drawn, so cutting them before `astar_route` is enough.
+Rivers and lakes are *found* by walking downhill, up to ~364 and ~800 units, and that walk
+does not respect section boundaries — so water generated for section 20 lands in section 19,
+whose path is routed and whose creatures are standing. Water yields to a drawn path (a river
+node on the trail becomes a **ford**); everything that can move is moved instead
+(`drown_proof`, scoped to the water just added, because water accumulates and a full
+re-sweep would be quadratic in the section count).
+
+⚠️ **AND THE PATH IS IN CORRIDOR SPACE WHILE THE WATER IS IN WORLD SPACE.** Section
+generation runs in the corridor frame and the bend happens afterwards, so `self.path` is
+corridor coordinates while a basin is already world. The first version of that check compared
+the two directly, silently always passed, and put the clear path in a lake at the same
+waypoint three runs in a row. This is the same corridor-is-an-ANGLE trap as the creature
+spacing below: **any distance asked between a generated entity and the path must be asked in
+ONE frame.**
+
+⚠️ **AND A GREEN SUITE IS NOT EVIDENCE THAT A GENERATOR GENERATES ANYTHING.** The first fix
+for the above bounded every body to its own section's band. Every test passed. Measured, it
+had cut a world out to d2400 from 13-15 lakes of mean radius ~115 to **3-5 of mean radius
+44**, and river chains from full length to 2-3 nodes — a 26-unit "river" — because every
+assertion only asked whether water *existed*. `a_world_holds_lakes_and_rivers_worth_the_name`
+holds measured FLOORS for exactly that reason. Census before you believe a generator.
+
 **Density is a per-AREA question, and the fan distorts it.** WG-4 bends a fixed-width
   corridor into an arc that grows with radius, so anything placed *per unit of corridor* is
   smeared ever thinner outward: at r=230 the arc is ~1400 units across. Both creatures and

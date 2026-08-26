@@ -929,6 +929,8 @@ fn terrain_section_msg(
     peaks: Vec<[f32; 4]>,
     straits: Vec<meld_proto::coast::Strait>,
     lobes: Vec<meld_proto::coast::Lobe>,
+    basins: Vec<meld_proto::coast::Basin>,
+    rivers: Vec<meld_proto::coast::RiverNode>,
 ) -> ww::TerrainSection {
     let t = &area.terrain;
     ww::TerrainSection {
@@ -958,6 +960,8 @@ fn terrain_section_msg(
         peaks,
         straits,
         lobes,
+        basins,
+        rivers,
     }
 }
 
@@ -5304,6 +5308,10 @@ impl GameState {
                     // …and the coast's own shape (bays, isles), for the same reason the
                     // straits ride: the client ramps its beach over the same signed field.
                     lobes: inst.arena.lobes.clone(),
+                    // …and its inland water. A basin is defined against the HEIGHTMAP, so
+                    // the client can only place it because `terrain_offset` rides here too.
+                    basins: inst.arena.basins.clone(),
+                    rivers: inst.arena.rivers.clone(),
                     // The world's own fact, not the caller's request: a joiner who asked
                     // for a normal dive still lands in a live tutorial world.
                     tutorial: inst.tutorial,
@@ -5341,6 +5349,8 @@ impl GameState {
                         Vec::new(),
                         rh,
                         cl,
+                        Vec::new(),
+                        Vec::new(),
                         Vec::new(),
                         Vec::new(),
                         Vec::new(),
@@ -9557,6 +9567,30 @@ impl WorldActor {
                     })
                     .copied()
                     .collect();
+                // …and its inland water, by the same band filter. A river's chain is
+                // filtered NODE-wise: a river crosses section boundaries, so each section
+                // carries the nodes that fall in its own band and the client re-assembles
+                // the chain from all of them.
+                let section_basins: Vec<meld_proto::coast::Basin> = self
+                    .arena
+                    .basins
+                    .iter()
+                    .filter(|b| {
+                        let r = (b[0] as f64).hypot(b[1] as f64);
+                        r >= s0 && r < e0
+                    })
+                    .copied()
+                    .collect();
+                let section_rivers: Vec<meld_proto::coast::RiverNode> = self
+                    .arena
+                    .rivers
+                    .iter()
+                    .filter(|n| {
+                        let r = (n[0] as f64).hypot(n[1] as f64);
+                        r >= s0 && r < e0
+                    })
+                    .copied()
+                    .collect();
                 let msg = terrain_section_msg(
                     area,
                     seg,
@@ -9565,6 +9599,8 @@ impl WorldActor {
                     section_peaks,
                     section_straits,
                     section_lobes,
+                    section_basins,
+                    section_rivers,
                 );
                 for r in &self.run.runs {
                     out.push(out_msg(&r.player_id, &msg));
@@ -9900,7 +9936,39 @@ impl WorldActor {
                 })
                 .copied()
                 .collect();
-            let msg = terrain_section_msg(area, Vec::new(), rh, cl, peaks, straits, lobes);
+            // Inland water is carried forward too, for the same reason: a Shift re-cuts
+            // topography, never the water table.
+            let basins: Vec<meld_proto::coast::Basin> = self
+                .arena
+                .basins
+                .iter()
+                .filter(|b| {
+                    let r = (b[0] as f64).hypot(b[1] as f64);
+                    r >= a0 && r < a1
+                })
+                .copied()
+                .collect();
+            let rivers: Vec<meld_proto::coast::RiverNode> = self
+                .arena
+                .rivers
+                .iter()
+                .filter(|n| {
+                    let r = (n[0] as f64).hypot(n[1] as f64);
+                    r >= a0 && r < a1
+                })
+                .copied()
+                .collect();
+            let msg = terrain_section_msg(
+                area,
+                Vec::new(),
+                rh,
+                cl,
+                peaks,
+                straits,
+                lobes,
+                basins,
+                rivers,
+            );
             for pid in &members {
                 out.push(out_msg(pid, &msg));
             }
