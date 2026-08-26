@@ -1079,6 +1079,59 @@ burns on death/leave; some is single-use. See
     overworld, so `no_class_walks_the_overworld_with_nothing` is back to covering the
     whole roster with no carve-out.
 
+- [x] **CL-3 — Every fieldable class has its own face, and so does the shallow bestiary.**
+  The roster was ten and the art was five: `explorer/` was a **byte-identical copy of
+  `hunter/`** (same md5, same PixelLab character id), and `smithwright`, `keeper`,
+  `iron_hull` and `rift_knight` had no folder at all, so four orders silently wore the
+  Explorer's coat through `class_frames`' fallback. Five bespoke 8-direction sets now
+  ship — idle rotations, a walk cycle and a battle attack, `v3` custom so held gear
+  survives the swing — drawn to each order's lore.
+  - ⚠️ **The sizing rule this cost us, now written down** (`docs/asset-pipeline.md`): a
+    billboard maps the WHOLE png onto a fixed quad, so on-screen size is the **fraction
+    of the canvas the art fills**, not the art's pixel height. The shipped sets are ~90px
+    of art centred on 184 (**48% fill**) because PixelLab used to inflate its canvas ~40%
+    past the requested size. **It no longer does**, so a fresh class fills its frame and
+    renders ~1.9x too big — invisible in a preview, because a thumbnail is normalised.
+    `pad_sprites.py` pads (never scales); `install_class_sprite.sh` runs it every time.
+  - **Two hand-written class lists are gone**, both already drifted: `world_render`'s art
+    list held six keys, and `mocks::PARTY_CLASSES` held eight against `CLASS_INFO`'s ten
+    — so **the Iron Hull and the Rift Knight could not be mustered at all**, and their art
+    would have been unreachable even once it existed. Both derive from `CLASS_INFO` now.
+  - **A creature is TWO characters.** `<kind>` and `<kind>_minion`: a pack's leader and
+    its runts are the same species at 1.7x and 0.45x HP, and scaling one sprite only ever
+    made a bigger or smaller copy of the same animal. Which set a spawn uses comes off
+    `encounter_class` (overworld) and `pack:minion` (battle) — both already on the wire,
+    neither being drawn, so out in the world a pack was five identical bodies and the
+    hierarchy only appeared once you touched it.
+  - **Walk turns, attack does not.** Eight facings for the walk because the overworld
+    shows a creature from every angle; one south-facing attack because the arena always
+    faces the party. Driven by `client/scripts/gen_creature_sprites.py`, ordered by how
+    close to the hub a species lives so an interrupted run finishes the shallow end first.
+
+- [x] **CL-4 — The Briar Lord, the fae, and a lineage table that means something.**
+  An eleventh named boss (`meld_proto::bosses`) and a reworked lineage set.
+  - **`shade` is folded into `undead`** — it was one creature and a word the fiction never
+    defined, and a shade IS one of the risen. ⚠️ That has a real mechanical consequence:
+    the Phoenix Guard's `undead_bane` now bites the desert's shades, because that bonus
+    tests this exact string. **`wyrm` becomes `draconic`**, a bloodline rather than one
+    body plan. **`slime` is new**, and its appetite is its character: at war with
+    everything that lives, and with neither `construct` nor `undead`, because worked iron
+    and dry bone are equally not food — so a slime among golems or among the risen is the
+    one place it stands quietly.
+  - The Briar Lord is **`DUNGEON_ONLY`**, a new distinction that is load-bearing rather
+    than flavour: the end fight draws its peers from "every named boss", so without it a
+    boss whose entire identity is that you must go down into its barrow would turn up
+    standing in a field at d3200. Placed in **Verdant Barrow** — a barrow *is* a fairy
+    mound — which also ends a duplication, since both forest dungeons had been sharing
+    `hollowbishop`.
+  - Its kit is **control, not tonnage**: bind, charm, and take back what you spend.
+    `Bindings` and `Mind` afflictions do not wear off, so it is the reason to carry a
+    Keeper's Poultice or a Resonant's Sanctuary down there. Fire and cold iron burn it;
+    **Earth heals it outright**, so fighting it on its own ground with the wrong damage
+    feeds it. Its rarest row — the rebuke `signature_ability` picks — is a *heal*.
+  - `bosses_of_faction` had been a **second hand-written copy** of the ten keys sitting
+    four lines under `ALL_BOSSES`; it reads the roster now.
+
 ---
 
 ## Epic EC — Player-driven economy & vendors

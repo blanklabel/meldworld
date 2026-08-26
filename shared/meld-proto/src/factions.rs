@@ -15,20 +15,63 @@ pub const PLAYER: &str = "player";
 /// The risen. Named because it is not just another roster entry: the Phoenix Guard
 /// exists to eradicate it, so the engine checks this exact string when applying
 /// their standing bonus (docs/lore/factions.md).
+///
+/// ⚠️ It absorbed the old `shade` lineage, which was one creature (`sand_shade`) and a
+/// word nothing in the fiction ever defined. A shade IS one of the risen, so the fold is
+/// the fiction catching up with itself — but it has a MECHANICAL consequence worth
+/// knowing: the Phoenix Guard's `undead_bane` and its whole silvered kit now bite the
+/// desert's shades, because this string is what that bonus tests.
 pub const UNDEAD: &str = "undead";
 
-/// Unordered creature-faction pairs that don't get along. Tuned so **every**
-/// biome roster (`creatures_for_biome`) pairs two mutually-hostile factions, so
-/// overworld skirmishes are visible everywhere — not just tundra/mire.
+/// The old wild things — a briar court that predates the Last City and does not
+/// recognise it. Named for the same reason [`UNDEAD`] is: it is the one lineage that
+/// appears ONLY behind a dungeon door, never wandering the overworld, so anything
+/// reasoning about what a player can meet in the open has to be able to say so.
+pub const FAE: &str = "fae";
+
+/// Dragon lineage — wyverns, serpents, the leviathan. Renamed from `wyrm`, which read as
+/// one body plan rather than a bloodline and left no room for anything winged.
+pub const DRACONIC: &str = "draconic";
+
+/// The ooze. Its appetite is the point: a slime is at war with everything that LIVES and
+/// with nothing else, so it is the one lineage that makes a three-way fight likely
+/// wherever it stands. See [`HOSTILE_PAIRS`].
+pub const SLIME: &str = "slime";
+
+/// Every creature lineage. One list, so a new faction cannot be added to the hostility
+/// table and then forgotten by everything that enumerates lineages.
+pub const FACTIONS: &[&str] =
+    &["beast", "construct", DRACONIC, FAE, "fiend", "fungal", SLIME, UNDEAD];
+
+/// Unordered creature-faction pairs that don't get along. Tuned so **every** biome
+/// roster (`creatures_for_biome`) pairs two mutually-hostile factions, so overworld
+/// skirmishes are visible everywhere — not just tundra/mire.
 const HOSTILE_PAIRS: &[(&str, &str)] = &[
     ("beast", "fiend"),
-    ("beast", "undead"),  // tundra: frost_lurker vs ice_revenant
-    ("beast", "fungal"),  // forest: thornback_boar vs forest_bloom_stalker
+    ("beast", "undead"),    // tundra: frost_lurker vs ice_revenant
+    ("beast", "fungal"),    // forest: thornback_boar vs forest_bloom_stalker
     ("construct", "fungal"),
-    ("wyrm", "fungal"),   // mire: bog_serpent vs myconid_brute
-    ("wyrm", "shade"),    // desert: dune_wyrm vs sand_shade
+    ("draconic", "fungal"), // mire: bog_serpent vs myconid_brute
+    ("draconic", "undead"), // desert: dune_wyrm vs sand_shade
     ("fiend", "construct"), // ashfall: cinder_imp vs magma_golem
-    ("shade", "beast"),
+    ("fiend", "fungal"),    // mire: bog_stinger vs myconid_brute
+    // THE BRIAR COURT hates what is made of appetite, what is made of rot, and what
+    // refuses to stay buried. It does NOT hate beasts: a fae court and the animals of
+    // its wood are the same side, which is what lets it hold a barrow without its own
+    // ground turning on it.
+    ("fae", "fiend"),
+    ("fae", "fungal"),
+    ("fae", "undead"),
+    // THE OOZE EATS WHAT IS ALIVE, AND ONLY THAT. Its two exemptions are `construct` and
+    // `undead` — worked iron and dry bone are equally not food — and they are the whole
+    // character of the lineage rather than an oversight: a slime among golems or among
+    // the risen is the only place it stands quietly, so those are the pairings that
+    // build a den which does not eat itself.
+    ("slime", "beast"),
+    ("slime", "draconic"),
+    ("slime", "fae"),
+    ("slime", "fiend"),
+    ("slime", "fungal"),
 ];
 
 /// Do two creature FACTIONS dislike each other?
@@ -134,6 +177,63 @@ mod tests {
         // same species" just because neither carries one.
         assert!(battle_at_odds(PLAYER, "", "beast", "thornback_boar"));
         assert!(creatures_at_odds("beast", "", "undead", ""));
+    }
+
+    /// EVERY LINEAGE HAS AT LEAST ONE ENEMY, and every pair names a real lineage.
+    ///
+    /// A faction with nobody to fight never appears in a turf war (`CR-2`), which is
+    /// invisible rather than loud — it looks like the world simply being quiet. And a
+    /// pair naming a faction that no longer exists is a rule that silently does nothing:
+    /// exactly what the retired `shade` entries would have become when that lineage
+    /// folded into `undead`.
+    #[test]
+    fn every_lineage_has_an_enemy_and_every_pair_names_a_real_one() {
+        for (a, b) in HOSTILE_PAIRS {
+            assert!(FACTIONS.contains(a), "{a} is in a hostility pair but is not a lineage");
+            assert!(FACTIONS.contains(b), "{b} is in a hostility pair but is not a lineage");
+            assert_ne!(a, b, "a lineage cannot be hostile to itself - like does not fight like");
+        }
+        for f in FACTIONS {
+            assert!(
+                FACTIONS.iter().any(|o| creatures_hostile(f, o)),
+                "{f} is hostile to nothing, so it can never appear in a turf war"
+            );
+        }
+        for (i, (a, b)) in HOSTILE_PAIRS.iter().enumerate() {
+            for (c, d) in &HOSTILE_PAIRS[i + 1..] {
+                assert!(!((a == c && b == d) || (a == d && b == c)), "{a}/{b} is listed twice");
+            }
+        }
+    }
+
+    /// THE OOZE EATS WHAT IS ALIVE, AND ONLY THAT. Its two exemptions are the lineage's
+    /// whole character — a slime among golems or among the risen is the one place it
+    /// stands quietly — so they are asserted rather than left to be read off the table.
+    #[test]
+    fn a_slime_eats_the_living_and_leaves_iron_and_bone_alone() {
+        const NOT_FOOD: [&str; 2] = ["construct", UNDEAD];
+        for f in NOT_FOOD {
+            assert!(!creatures_hostile(SLIME, f), "{f} is not food for an ooze");
+        }
+        for f in FACTIONS {
+            if *f == SLIME || NOT_FOOD.contains(f) {
+                continue;
+            }
+            assert!(creatures_hostile(SLIME, f), "a slime should be at war with {f}");
+        }
+    }
+
+    /// The `shade` lineage is GONE, not merely unused, and `wyrm` is renamed. A stale
+    /// name in the table is a rule that quietly stops applying to anything.
+    #[test]
+    fn the_shade_lineage_is_folded_into_the_risen() {
+        assert!(!FACTIONS.contains(&"shade"));
+        assert!(!FACTIONS.contains(&"wyrm"), "wyrm was renamed to draconic");
+        assert!(FACTIONS.contains(&DRACONIC));
+        for f in FACTIONS {
+            assert!(!creatures_hostile("shade", f));
+            assert!(!creatures_hostile("wyrm", f));
+        }
     }
 
     /// NON-HOSTILE FACTIONS CAN SHARE A PACK AND KEEP THEIR OWN NAMES.

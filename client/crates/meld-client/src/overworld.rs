@@ -1669,6 +1669,26 @@ pub(crate) fn sync_overworld_sprites(
                     spawn_boss_char(&mut commands, &mut mats, &wa, &look, id, e, frames, scale, tint);
                     continue;
                 }
+                // An ordinary creature with an installed sprite set renders the way a
+                // boss does — animated, camera-facing, turning as it walks — instead of
+                // as one frozen billboard. A PACK'S RUNT GETS ITS OWN ART:
+                // `encounter_class` already rode the snapshot ("leader"/"minion"), the
+                // client just never used it for anything but boss scale, so a leader at
+                // 1.7x HP and its minion at 0.45x drew as the same animal out in the
+                // world and only separated once you touched them. The BASE art is the
+                // ordinary creature (a lone spawn, or a pack's minions); only the leader
+                // reaches for a set of its own.
+                let leader = e.encounter_class.as_deref() == Some("leader");
+                if let Some(frames) = wa.creature_frames(&kind, leader).cloned() {
+                    let scale = 2.0 * pack_scale_for(e.encounter_class.as_deref());
+                    let tint = if e.battling {
+                        Color::srgb(1.4, 0.75, 0.55)
+                    } else {
+                        Color::srgb(1.2, 1.15, 1.1)
+                    };
+                    spawn_boss_char(&mut commands, &mut mats, &wa, &look, id, e, &frames, scale, tint);
+                    continue;
+                }
                 // Pick the creature's billboard by normalized kind (shared with the
                 // battle arena so the same creature looks the same in both). Tinted
                 // faintly warm (like heroes) to stay vibrant under the cool ambient;
@@ -2203,6 +2223,18 @@ pub(crate) fn spawn_player_avatar(
 /// single static billboard — so a dungeon boss breathes and turns like a hero. A
 /// bigger `scale` makes it loom; no lamp/glow (that's the local player's).
 #[allow(clippy::too_many_arguments)]
+/// How big a pack member draws on the OVERWORLD. The battle arena has the same rule in
+/// `battle::pack_scale`, but reads it off the combatant `statuses` (`pack:leader`); out
+/// in the world the same fact rides `encounter_class`, which was already on the snapshot
+/// and unused. Same numbers, so a creature does not change size when the fight starts.
+pub(crate) fn pack_scale_for(encounter_class: Option<&str>) -> f32 {
+    match encounter_class {
+        Some("leader") => 1.3,
+        Some("minion") => 0.75,
+        _ => 1.0,
+    }
+}
+
 pub(crate) fn spawn_boss_char(
     commands: &mut Commands,
     mats: &mut Assets<StandardMaterial>,

@@ -1,0 +1,260 @@
+{
+ "_comment": [
+  "The bestiary's sprite manifest: every creature variant, per species, in the order a",
+  "player MEETS them (forest/mire d0, ashfall 250, desert 400, tundra 550).",
+  "",
+  "A variant is one CHARACTER and one asset folder. `<key>` is the ordinary creature, and",
+  "`<key>_pack_leader` is the one leading a pack; everything else is a sibling of the",
+  "ordinary form, so a pack of five draws five different bodies instead of one sprite at",
+  "five sizes. Variants are also where roles will hang: a `_mage` or a `_healer` is",
+  "already drawn as something that casts.",
+  "",
+  "The driver only makes what is MISSING - a variant already complete on disk is skipped",
+  "without even needing its character id - so this file is the roster, not a queue."
+ ],
+ "style": "in a weird HD-2D fantasy style",
+ "creatures": [
+  {
+   "key": "forest_bloom_stalker",
+   "biome": "forest",
+   "gate": 0,
+   "walk": "creeping forward on barbed legs",
+   "attack": "lunging forward and striking with a barbed foreleg",
+   "variants": {
+    "forest_bloom_stalker": "a small young fungal stalker, a squat pale-chitin crawler with a single half-open violet spore-bloom on its back and stubby barbed legs, no eyes",
+    "forest_bloom_stalker_pack_leader": "a huge predatory fungal stalker, pale woody chitin scarred and darkened, a thick crown of glowing violet spore-blooms erupting from its back, long barbed legs, no eyes",
+    "forest_bloom_stalker_baby": "a tiny fungal stalker hatchling, a pale soft-chitin crawler barely bigger than a fist with one closed violet bud on its back",
+    "forest_bloom_stalker_adult": "a large fungal stalker, a long-legged spider-like body of pale woody chitin with a cluster of violet spore-blooms across its back, four barbed legs, no eyes"
+   }
+  },
+  {
+   "key": "thornback_boar",
+   "biome": "forest",
+   "gate": 0,
+   "walk": "trotting forward on four hooves",
+   "attack": "charging forward and goring with its tusks",
+   "variants": {
+    "thornback_boar": "a wild boar with a short ridge of dark thorns along its spine, curved yellow tusks and coarse brown bristles",
+    "thornback_boar_pack_leader": "an enormous scarred wild boar with a tall ridge of long black thorns down its spine, huge curved yellow tusks, matted brown bristles and a torn ear",
+    "thornback_boar_beta": "a small young wild boar with a stubble of dark thorns along its spine, little tusks and soft brown bristles",
+    "thornback_boar_charger": "a lean muscular wild boar lowered into a charge, a hard ridge of black thorns down its spine and long forward-swept tusks",
+    "thornback_boar_goarer": "a heavy scarred wild boar with enormous curved goring tusks, thick matted bristles and a torn ear"
+   }
+  },
+  {
+   "key": "sporeling",
+   "biome": "forest",
+   "gate": 0,
+   "walk": "waddling forward on stubby roots",
+   "attack": "bursting forward in a puff of spores",
+   "variants": {
+    "sporeling": "a walking mushroom creature, a mottled cream-and-ochre cap over a stumpy fibrous body with two short root-like arms",
+    "sporeling_pack_leader": "a bloated walking mushroom, a thick dark mottled cap over a heavy fibrous body with two knotted root arms, venting green spore clouds",
+    "sporeling_baby": "a tiny walking mushroom sprout, a small pale button cap over a thin stalk body with two little root arms",
+    "sporeling_sprout": "a young walking mushroom, a bright speckled cap over a slender pale stalk body with two root arms and a green leaf sprouting at its base",
+    "sporeling_healer": "a walking mushroom with a wide pale cap trailing soft green spores, cradling a glowing seed pod in its root-like hands"
+   }
+  },
+  {
+   "key": "verdant_ooze",
+   "biome": "forest",
+   "gate": 0,
+   "walk": "oozing forward, body wobbling",
+   "attack": "rearing up and slamming down as a wave of acid",
+   "variants": {
+    "verdant_ooze": "a translucent green slime, a rounded blob of jelly with a darker acidic core and half-dissolved leaves suspended inside it, two glowing eye-spots",
+    "verdant_ooze_pack_leader": "a large dark emerald slime, a heavy rounded blob of jelly with a bright acidic core and bones and branches suspended inside it, two glowing eye-spots",
+    "verdant_ooze_blob": "a small translucent green slime droplet, a little rounded blob of jelly with a faint core and one glowing eye-spot",
+    "verdant_ooze_blopper": "a wide flattened green slime spread low across the ground, rippling, with twigs and bark suspended inside it",
+    "verdant_ooze_healer": "a pale mint-green slime with a soft glowing core, faint motes of light drifting up out of its surface"
+   }
+  },
+  {
+   "key": "bog_serpent",
+   "biome": "mire",
+   "gate": 0,
+   "walk": "slithering forward in an S-curve",
+   "attack": "striking forward with its fangs",
+   "variants": {
+    "bog_serpent": "a swamp serpent, moss-green scales slick with algae, a flat viper head with amber eyes and dripping fangs",
+    "bog_serpent_pack_leader": "a huge coiled swamp serpent, thick moss-green scales slick with algae, a broad flat viper head with burning amber eyes and long dripping fangs, a ragged fin along its back",
+    "bog_serpent_slither": "a slender young swamp snake, thin moss-green scales, a narrow viper head with small amber eyes",
+    "bog_serpent_female": "a thick swamp serpent with a broad patterned hood, deep olive scales and pale belly bands, amber eyes",
+    "bog_serpent_twin_tail": "a swamp serpent with a forked twin tail, mottled bog-green scales and a wide flat head with amber eyes"
+   }
+  },
+  {
+   "key": "myconid_brute",
+   "biome": "mire",
+   "gate": 0,
+   "walk": "lumbering forward with heavy steps",
+   "attack": "swinging a heavy knotted fist downward",
+   "variants": {
+    "myconid_brute": "a hulking fungus brute, a broad humanoid body of dense grey fibrous flesh with a dark bruise-purple cap for a head and thick knotted arms",
+    "myconid_brute_minion": "a small stooped fungus thrall, a wiry humanoid body of pale grey fibre with a small drooping purple cap for a head and thin arms",
+    "myconid_brute_mage": "a tall gaunt fungus mystic, a slender grey fibrous body under a wide domed violet cap, glowing spore-motes circling its raised hands",
+    "myconid_brute_pack_leader": "an immense elder fungus brute, its grey fibrous body armoured in shelf-fungus plates, a towering dark cap ringed with pale gills, huge knotted arms",
+    "myconid_brute_boss": "a massive fungus brute, a broad humanoid body of dense dark fibrous flesh with a huge split bruise-purple cap and enormous knotted arms"
+   }
+  },
+  {
+   "key": "bog_stinger",
+   "biome": "mire",
+   "gate": 0,
+   "walk": "flying forward, wings beating",
+   "attack": "darting forward and driving its stinger down",
+   "variants": {
+    "bog_stinger": "a swamp wasp-fiend, an armoured black-and-yellow segmented body, four translucent wings, barbed legs and a dripping venom stinger",
+    "bog_stinger_licker": "a swamp wasp-fiend with a long barbed tongue coiled beneath its jaws, sickly yellow segments and ragged wings",
+    "bog_stinger_pack_leader": "a giant swamp wasp-fiend, a heavily armoured black-and-sickly-yellow segmented body, four ragged translucent wings, barbed legs and a long dripping venom stinger",
+    "bog_stinger_buzz": "a small swamp wasp drone, a slight black-and-yellow segmented body, two thin translucent wings and a short venom stinger",
+    "bog_stinger_piercer": "a lean swamp wasp with an extremely long needle stinger, narrow black-and-amber segments and swept-back wings"
+   }
+  },
+  {
+   "key": "bog_ooze",
+   "biome": "mire",
+   "gate": 0,
+   "walk": "oozing forward, body wobbling",
+   "attack": "rearing up and slamming down as a wave of muck",
+   "variants": {
+    "bog_ooze": "a murky brown swamp slime, a sagging blob of silt-thick jelly dripping mud, with reeds suspended inside it and two dull glowing eye-spots",
+    "bog_ooze_pack_leader": "a large murky swamp slime, a heavy sagging blob of silt-thick jelly dripping mud, with bones and reeds suspended inside it and two glowing eye-spots",
+    "bog_ooze_baby": "a small murky brown swamp slime, a little sagging blob of muddy jelly with one dull glowing eye-spot",
+    "bog_ooze_belcher": "a bloated brown swamp slime venting swamp gas bubbles from its surface, silt-thick and sagging",
+    "bog_ooze_grump": "a dark heavy swamp slime with a sour downturned fold across its front, thick with silt and grit"
+   }
+  },
+  {
+   "key": "briarling",
+   "biome": "forest",
+   "gate": 0,
+   "walk": "darting forward in quick light steps",
+   "attack": "lashing forward with a whip of thorns",
+   "variants": {
+    "briarling": "a small fae thorn-sprite, a lithe knot of living briar and bark shaped like a slender figure, glowing amber eyes in a hollow face, thorned vines for arms",
+    "briarling_thistleback": "a fae thorn-sprite bristling with long thistle spines down its back, bark-skinned and thin, amber eyes",
+    "briarling_piper": "a slender fae sprite of pale birch-bark holding a reed pipe to its hollow face, trailing drifting seed-motes, amber eyes",
+    "briarling_pack_leader": "a tall crowned fae thorn-knight of woven briar and blackthorn, a circlet of pale blossom above hollow amber eyes, long thorned vine arms"
+   }
+  },
+  {
+   "key": "cinder_imp",
+   "biome": "ashfall",
+   "gate": 250,
+   "walk": "stalking forward, embers trailing",
+   "attack": "lashing forward with burning claws",
+   "variants": {
+    "cinder_imp": "a horned fire imp, cracked charcoal-black skin glowing molten orange in the fissures, ember wings, curved horns and clawed hands",
+    "cinder_imp_pack_leader": "a large horned fire imp, deeply cracked charcoal skin blazing molten orange, broad ember wings, long curved horns and clawed hands wreathed in flame",
+    "cinder_imp_wolf": "a four-legged fire imp hound, cracked charcoal hide with molten orange seams, a mane of flame and burning eyes",
+    "cinder_imp_dog": "a small squat fire imp hound, dull charcoal hide with faint orange cracks, stubby snout and a smouldering tail",
+    "cinder_imp_fire_mage": "a slender horned fire imp with long curling horns, holding a spinning ball of flame above one clawed hand, ember wings"
+   }
+  },
+  {
+   "key": "magma_golem",
+   "biome": "ashfall",
+   "gate": 250,
+   "walk": "striding forward with grinding stone steps",
+   "attack": "smashing both boulder fists down",
+   "variants": {
+    "magma_golem": "a golem of fused basalt slabs with molten orange magma glowing between the plates, boulder fists and no face",
+    "magma_golem_pack_leader": "a towering golem of fused basalt slabs with bright molten magma glowing between the plates, huge boulder fists and no face, smoke venting from its shoulders",
+    "magma_golem_cinderling": "a small squat basalt golem, rough dark stone plates with thin molten seams, short blocky fists and no face",
+    "magma_golem_slagfist": "a lopsided basalt golem with one enormous molten-cored fist far bigger than the other, smoke venting from its shoulder"
+   }
+  },
+  {
+   "key": "ember_wisp",
+   "biome": "ashfall",
+   "gate": 250,
+   "walk": "drifting forward, flames trailing",
+   "attack": "surging forward in a flare of fire",
+   "variants": {
+    "ember_wisp": "a hovering ember spirit, a roiling core of orange fire trailing ribbons of flame and drifting ash, no solid body",
+    "ember_wisp_pack_leader": "a large hovering ember spirit, a bright roiling core of white-hot fire trailing long ribbons of flame and drifting ash, no solid body",
+    "ember_wisp_mote": "a small hovering ember mote, a dim flickering core of orange fire with a short trail of sparks, no solid body",
+    "ember_wisp_cinderveil": "a wide hovering ember spirit trailing a long veil of drifting sparks and grey ash, a dull red core"
+   }
+  },
+  {
+   "key": "dune_wyrm",
+   "biome": "desert",
+   "gate": 400,
+   "walk": "surging forward through sand",
+   "attack": "lunging forward with its maw of mandibles wide",
+   "variants": {
+    "dune_wyrm": "a desert wyrm, a sand-scoured tan-scaled serpentine body with a ring of black hooked mandibles around a round maw",
+    "dune_wyrm_pack_leader": "a huge desert wyrm, a thick sand-scoured tan-scaled serpentine body with a wide ring of black hooked mandibles around a round maw, vestigial claws",
+    "dune_wyrm_hatchling": "a small desert wyrmling, a slender pale tan-scaled serpentine body with a small ring of hooked mandibles",
+    "dune_wyrm_glassback": "a desert wyrm with fused glass plates along its back from swallowing lightning-struck sand, tan scales and hooked mandibles"
+   }
+  },
+  {
+   "key": "sand_shade",
+   "biome": "desert",
+   "gate": 400,
+   "walk": "gliding forward, shroud streaming",
+   "attack": "reaching forward with skeletal hands",
+   "variants": {
+    "sand_shade": "a risen desert wraith, a hollow tattered burial shroud of bleached linen streaming sand, empty glowing pale-blue eye sockets and skeletal hands",
+    "sand_shade_pack_leader": "a tall risen desert wraith in a vast tattered shroud of bleached linen streaming sand, empty burning pale-blue eye sockets and long skeletal grasping hands",
+    "sand_shade_wisp": "a small risen desert wisp, a short ragged scrap of bleached shroud trailing sand with a single faint pale-blue eye light",
+    "sand_shade_gravebound": "a risen desert wraith still wrapped in cracked funerary gold, its shroud heavy with sand, pale-blue eye lights"
+   }
+  },
+  {
+   "key": "dune_colossus",
+   "biome": "desert",
+   "gate": 400,
+   "walk": "striding forward with heavy grinding steps",
+   "attack": "bringing a huge carved fist down",
+   "variants": {
+    "dune_colossus": "a weathered sandstone statue-golem, carved blocky limbs pitted by sand, faded glyphs on its chest and a featureless carved head",
+    "dune_colossus_pack_leader": "a colossal weathered sandstone statue-golem, huge carved blocky limbs pitted by sand, deep ancient glyphs cut into its chest and a featureless carved head",
+    "dune_colossus_shardling": "a small weathered sandstone construct, squat carved blocky limbs, a few worn glyphs and a featureless carved head",
+    "dune_colossus_sunmarked": "a sandstone statue-golem whose carved glyphs still glow faint gold, blocky limbs and a featureless head"
+   }
+  },
+  {
+   "key": "frost_lurker",
+   "biome": "tundra",
+   "gate": 550,
+   "walk": "loping forward through snow",
+   "attack": "pouncing forward, jaws wide",
+   "variants": {
+    "frost_lurker": "a shaggy snow wolf, thick white-and-grey frost-rimed fur, pale blue eyes and long fangs",
+    "frost_lurker_pack_leader": "a huge shaggy snow wolf, thick white-and-grey frost-rimed fur, burning pale blue eyes, long fangs and ice crusted along its back",
+    "frost_lurker_pup": "a small lean snow wolf pup, thin white-grey fur, pale blue eyes and short fangs",
+    "frost_lurker_rimefang": "a snow wolf with long icicle-crusted fangs and frost caked along its muzzle and shoulders, pale blue eyes"
+   }
+  },
+  {
+   "key": "ice_revenant",
+   "biome": "tundra",
+   "gate": 550,
+   "walk": "marching forward stiffly",
+   "attack": "swinging a jagged icicle blade downward",
+   "variants": {
+    "ice_revenant": "an undead warrior sheathed in blue-white ice, frost-cracked rusted plate, a frozen skull face with cold blue eye-lights, gripping an icicle blade",
+    "ice_revenant_pack_leader": "a tall armoured undead warrior sheathed in blue-white ice, a horned frost-cracked helm, a frozen skull face with burning blue eye-lights, gripping a great jagged icicle blade",
+    "ice_revenant_thrall": "a small stooped undead thrall in cracked frozen rags, a frost-covered skull with dim blue eye-lights and bare bony hands",
+    "ice_revenant_shieldbound": "an undead warrior in frost-cracked plate carrying a slab of blue glacial ice as a shield, cold blue eye-lights"
+   }
+  },
+  {
+   "key": "glacier_maw",
+   "biome": "tundra",
+   "gate": 550,
+   "walk": "lumbering forward on four heavy legs",
+   "attack": "rearing up and swiping with an ice-crusted claw",
+   "variants": {
+    "glacier_maw": "a shaggy white beast built like a bear, slabs of blue glacial ice fused into its back, a jaw of jagged ice teeth and small black eyes",
+    "glacier_maw_pack_leader": "a massive shaggy white beast built like a bear, thick slabs of blue glacial ice fused into its back and shoulders, a huge jaw of jagged ice teeth and small black eyes",
+    "glacier_maw_cub": "a small shaggy white beast cub, a few thin shards of blue ice along its back, a short jaw of ice teeth and small black eyes",
+    "glacier_maw_frostjaw": "a white bear-like beast with an enormous distended jaw of long blue ice teeth, ice slabs along its shoulders"
+   }
+  }
+ ]
+}

@@ -6,17 +6,14 @@ use meld_client::net::{CombatantView, GearLine, SkillLine};
 
 use super::*;
 
-/// The classes the party builder cycles through.
-pub(crate) const PARTY_CLASSES: [&str; 8] = [
-    "explorer",
-    "hunter",
-    "psyker",
-    "resonant",
-    "shifter",
-    "phoenix_guard",
-    "smithwright",
-    "keeper",
-];
+/// The classes the party builder cycles through — the client's own roster
+/// ([`crate::screens::CLASS_INFO`]) rather than a second list beside it. It was two
+/// lists, and they had already drifted: the picker described the Iron Hull and the Rift
+/// Knight while this one held eight keys, so neither could be mustered and neither one's
+/// art was ever reachable in play.
+pub(crate) fn party_classes() -> impl Iterator<Item = &'static str> {
+    crate::screens::CLASS_INFO.iter().map(|c| c.key)
+}
 
 /// Pre-fill the party builder from flags: `?party=` (whole party) wins, else
 /// `?class=` sets the lead (slot 0). Both default to the diverse starting party.
@@ -25,7 +22,7 @@ pub(crate) fn apply_class_flag(mut session: ResMut<Session>) {
         let party: Vec<String> = p
             .split(',')
             .map(|s| s.trim().to_lowercase())
-            .filter(|s| PARTY_CLASSES.contains(&s.as_str()))
+            .filter(|s| party_classes().any(|c| c == s.as_str()))
             .collect();
         if !party.is_empty() {
             session.party = party;

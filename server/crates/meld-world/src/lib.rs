@@ -234,11 +234,16 @@ fn creatures_for_biome(biome: &str) -> &'static [&'static str] {
     // (index 0 stays the tutorial creature). Stats live under `[creature.<key>]`.
     match biome {
         // The field is the forest's open ground: the same fauna, room to see it coming.
-        "field" | "forest" => &["forest_bloom_stalker", "thornback_boar", "sporeling"],
+        // The 4th entry in each roster is an OOZE — the `slime` lineage, which is at war
+        // with everything alive and at peace with iron and bone. Putting one in a roster
+        // is what makes that lineage exist in the world rather than only in the table.
+        "field" | "forest" => {
+            &["forest_bloom_stalker", "thornback_boar", "sporeling", "verdant_ooze"]
+        }
         "desert" => &["dune_wyrm", "sand_shade", "dune_colossus"],
         "ashfall" => &["cinder_imp", "magma_golem", "ember_wisp"],
         "tundra" => &["frost_lurker", "ice_revenant", "glacier_maw"],
-        _ => &["bog_serpent", "myconid_brute", "bog_stinger"],
+        _ => &["bog_serpent", "myconid_brute", "bog_stinger", "bog_ooze"],
     }
 }
 
@@ -3444,7 +3449,12 @@ impl Arena {
                 {
                     self.end_fight_placed = true;
                     became_rite = true;
-                    let all = abilities::all_bosses();
+                    // The end fight's peers come from what can stand in the OPEN WORLD,
+                    // not from the whole roster: a dungeon's own boss is sealed behind
+                    // its door, and finding it in a field at d3200 would undo the only
+                    // thing that makes it worth going down there.
+                    let overworld = abilities::overworld_bosses();
+                    let all = overworld.as_slice();
                     for n in 0..enc.end_fight_bosses.max(1) {
                         let bidx = if n == 0 {
                             leader_idx
@@ -10161,18 +10171,59 @@ mod tests {
     fn each_biome_gains_a_distinct_archetype_creature() {
         let b = Balance::load_default().unwrap();
         let p = Position::new(50.0, 0.0);
-        // Every new creature is defined in balance (build panics if a key is missing).
-        for k in ["sporeling", "dune_colossus", "ember_wisp", "glacier_maw", "bog_stinger"] {
-            let _ = MonsterSpawn::build(&b, "m".into(), k, p, 1);
+        // EVERY creature in EVERY roster is defined in balance (build panics on a
+        // missing key). Read off the rosters rather than a hand-written list, which is
+        // the list a newly-added creature gets left off.
+        for biome in BIOMES {
+            for k in creatures_for_biome(biome) {
+                let _ = MonsterSpawn::build(&b, "m".into(), k, p, 1);
+            }
         }
         // A SWARMER is fast + fragile; a BRUISER is slow + tanky — the rhythm differs.
         let swarmer = MonsterSpawn::build(&b, "s".into(), "sporeling", p, 1);
         let bruiser = MonsterSpawn::build(&b, "br".into(), "dune_colossus", p, 1);
         assert!(swarmer.speed_stat > bruiser.speed_stat, "swarmer acts faster");
         assert!(bruiser.max_hp > swarmer.max_hp * 3, "bruiser is a tank vs the swarmer");
-        // Each biome's creature pool grew to 3 (the tutorial creature, index 0, is kept).
-        assert_eq!(creatures_for_biome("forest").len(), 3);
+        // An ABSORBER is the third archetype: it is not tanky by `base_def` — it is
+        // tanky by damage PROFILE, so the assertion is about the profile, not the stat.
+        // (Asserting a big `base_def` here would pass for a bruiser too and prove nothing.)
+        let ooze = MonsterSpawn::build(&b, "o".into(), "verdant_ooze", p, 1);
+        assert!(ooze.speed_stat < swarmer.speed_stat, "an ooze does not chase");
+        let ooze_mod = |t| {
+            abilities::creature_damage_modifiers("verdant_ooze")
+                .into_iter()
+                .find(|(k, _)| *k == t)
+                .map(|(_, v)| v)
+                .unwrap_or(1.0)
+        };
+        for t in [meld_proto::DamageType::Slash, meld_proto::DamageType::Blunt] {
+            assert!(
+                ooze_mod(t) < 1.0,
+                "an ooze should shrug off {t:?} - that is what makes it an absorber"
+            );
+        }
+        assert!(
+            ooze_mod(meld_proto::DamageType::Fire) > 1.0,
+            "and fold to fire - an absorber with no weakness is just a wall"
+        );
+        // Index 0 stays the tutorial creature: area 0 is the deterministic first fight.
         assert_eq!(creatures_for_biome("forest")[0], "forest_bloom_stalker");
+        // Every roster is non-empty and holds no duplicates - a repeated kind is a
+        // biome that reads as less varied than its length claims.
+        for biome in BIOMES {
+            let pool = creatures_for_biome(biome);
+            assert!(!pool.is_empty(), "{biome} has no creatures");
+            for (i, k) in pool.iter().enumerate() {
+                assert!(!pool[i + 1..].contains(k), "{biome} lists {k} twice");
+            }
+        }
+        // The SLIME lineage exists in the world, not only in the faction table: a
+        // lineage nothing spawns as can never appear in a turf war.
+        let spawnable: Vec<&str> = BIOMES.iter().flat_map(|b| creatures_for_biome(b)).copied().collect();
+        assert!(
+            spawnable.iter().any(|k| b.creature[*k].faction == meld_proto::factions::SLIME),
+            "no creature spawns as a slime, so the lineage is inert"
+        );
     }
 
     #[test]
@@ -11536,8 +11587,19 @@ mod tests {
         for made in ["ironmaw", "rustfang", "gloamhound", "weepingcolossus", "pyrewarden"] {
             assert_eq!(abilities::boss_faction(made), Some("construct"), "{made}");
         }
-        assert_eq!(abilities::boss_faction("ashenleviathan"), Some("wyrm"));
+        // Renamed from `wyrm`: the lineage is a BLOODLINE, not one body plan, so a
+        // wyvern and a leviathan are the same family.
+        assert_eq!(abilities::boss_faction("ashenleviathan"), Some("draconic"));
+        assert_eq!(abilities::boss_faction("briarlord"), Some("fae"));
         assert_eq!(abilities::boss_faction("not_a_boss"), None);
+        // Every lineage a boss claims has to be a real one.
+        for key in meld_proto::bosses::keys() {
+            let f = abilities::boss_faction(key).expect("a lineage");
+            assert!(
+                meld_proto::factions::FACTIONS.contains(&f),
+                "{key} fights as {f}, which is not a lineage"
+            );
+        }
 
         // Every named boss has a lineage, or it would silently keep its host's.
         for key in meld_proto::bosses::keys() {
@@ -11549,7 +11611,7 @@ mod tests {
         assert_eq!(abilities::bosses_of_faction("undead").len(), 4);
         assert_eq!(abilities::bosses_of_faction("construct").len(), 5);
 
-        // The engine's roster and the shared registry are the SAME ten. The registry is
+        // The engine's roster and the shared registry are the SAME SET. The registry is
         // what the client draws a name plate from, so a boss listed here and missing
         // there would fight under a name nobody outside the server ever sees.
         let mut engine: Vec<&str> = abilities::all_bosses().to_vec();
