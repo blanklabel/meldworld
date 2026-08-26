@@ -229,6 +229,17 @@ pub mod world {
         /// `[cx, cz, radius, height]`; see `terrain::peak_height` / `run.started.peaks`).
         #[serde(default)]
         pub peaks: Vec<[f32; 4]>,
+        /// **CONTINENTS (WG-7):** the STRAITS this section holds — inland seas that
+        /// separate one landmass from the next, each pierced by isthmuses. See
+        /// [`crate::coast::Strait`] for the eight numbers.
+        ///
+        /// ⚠️ A re-sent section REPLACES its own straits, exactly as it replaces its own
+        /// peaks — so a **retile must carry them forward unchanged**. A Shift re-cuts a
+        /// region's topography and does not move its coastline (a continent does not
+        /// wander), so an empty list here on a retile would delete a sea the server still
+        /// collides against, and the client would draw walkable ground over water.
+        #[serde(default)]
+        pub straits: Vec<crate::coast::Strait>,
     }
     impl Message for TerrainSection {
         const TYPE: &'static str = "world.terrain_section";
@@ -686,6 +697,16 @@ pub mod run {
         /// summit. Streamed sections append more via `world.terrain_section`.
         #[serde(default)]
         pub peaks: Vec<[f32; 4]>,
+        /// **CONTINENTS (WG-7):** this world's STRAITS — the inland seas that separate one
+        /// landmass from the next ([`crate::coast::Strait`]). The initial chain's ride
+        /// here; streamed sections append theirs via `world.terrain_section`.
+        ///
+        /// The client needs them for the same reason it needs `terrain_off`: its ground
+        /// shader ramps a beach and tints a depth over `coast::sea_depth_with`, and its
+        /// prop placement asks the same predicate the server collides with. A shoreline
+        /// the client has not been told about is walkable ground drawn over open water.
+        #[serde(default)]
+        pub straits: Vec<crate::coast::Strait>,
     }
     /// Walkable extent of the instance (world-generation.md corridor bounds).
     #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -2422,6 +2422,17 @@ pub struct Arena {
     /// with a boss/treasure on the summit. Bent into the fan by `radialize` like the rest
     /// of the content; sent to the client so each mountain renders + is climbable.
     pub peaks: Vec<[f32; 4]>,
+    /// **CONTINENTS (WG-7): this world's STRAITS** — the inland seas that separate one
+    /// landmass from the next. Each is an annular sector of water pierced by isthmuses
+    /// ([`meld_proto::coast::Strait`]), generated per section by [`Arena::push_strait`] and
+    /// already in WORLD `(radius, bearing)` terms, so — unlike everything else a section
+    /// produces — it is NOT bent by `radialize`.
+    ///
+    /// It is a term in the same signed field the ocean is, so `on_land`, `astar_route` and
+    /// the ground shader all answer for continents with no code of their own. Rides the
+    /// wire beside `peaks` (`run.started.straits` + `world.terrain_section.straits`),
+    /// selected per section by the same radius-band filter.
+    pub straits: Vec<meld_proto::coast::Strait>,
     terrain_cell: f64,
     terraces_per_area: f64,
     max_level: u8,
@@ -2610,7 +2621,12 @@ impl Arena {
     /// the creature tick). Routed through the same `coast` module the client renders from,
     /// so the shoreline the player sees is the shoreline they collide with.
     pub fn on_land(&self, x: f64, z: f64) -> bool {
-        meld_proto::coast::is_land(x as f32, z as f32, self.radial_half as f32)
+        meld_proto::coast::is_land_with(
+            x as f32,
+            z as f32,
+            self.radial_half as f32,
+            &self.straits,
+        )
     }
 
     /// Like [`Self::generate`], but with a DEV/QA `force_biome` override (from the
@@ -2727,6 +2743,7 @@ impl Arena {
             force_biome,
             terrain_off,
             peaks: Vec::new(),
+            straits: Vec::new(),
             terrain_cell: wg.terrain_cell,
             terraces_per_area: wg.terraces_per_area,
             max_level: wg.max_level,
@@ -2793,17 +2810,29 @@ impl Arena {
         // but corridor_lateral is what streaming reuses after lateral widens).
         let lat = self.corridor_lateral.max(1.0);
         let toff = self.terrain_off;
+        // The straits are already in WORLD terms (`push_strait` emits radius + bearing), so
+        // unlike everything else here they are NOT bent — but everything else has to be
+        // checked against them, so take a copy the `&mut` loops below can read.
+        let straits = self.straits.clone();
         let tf = |p: Position| -> Position {
             let r = p.x.max(0.0);
             let theta = (p.y / lat).clamp(-1.0, 1.0) * half;
             Position::new(r * theta.cos(), r * theta.sin())
         };
         for m in &mut self.monsters {
-            m.position = tf(m.position);
-            m.home = tf(m.home);
+            // A creature is scattered without asking the shoreline, so the bend can drop
+            // one into a strait — a fight nobody can reach, wandering in open water. Nudged
+            // ashore rather than dropped: removing a spawn here would take a pack leader out
+            // from under its own minions (`join_pack` has already run).
+            //
+            // ⚠️ WATER ONLY. `nudge_to_walkable` would also pull creatures off CLIFFS, which
+            // they have always been allowed to stand on, and that moved every creature in
+            // every seeded world. A fix for the sea must not quietly become one for terrain.
+            m.position = nudge_ashore(tf(m.position), half, &straits);
+            m.home = nudge_ashore(tf(m.home), half, &straits);
             // The pack anchor is world-space like `home`, so it bends with it. A member
             // left anchored in corridor space would roam a disc a quarter-turn away.
-            m.pack_home = tf(m.pack_home);
+            m.pack_home = nudge_ashore(tf(m.pack_home), half, &straits);
             // Keep the corridor [start_x, end_x] as a RADIUS band: after the bend a
             // creature's hub-distance is its corridor x, so `step_creatures` clamps its
             // radius to this band and it never wanders out of its biome ring (#10).
@@ -2814,13 +2843,13 @@ impl Arena {
         // reachable. (Summit chests already sit on the walkable route, so it's a no-op
         // for them.) Obstacles are left on cliffs — impassable scenery is fine there.
         for r in &mut self.resources {
-            r.position = nudge_to_walkable(tf(r.position), toff);
+            r.position = nudge_to_walkable(tf(r.position), toff, half, &straits);
         }
         for o in &mut self.obstacles {
             o.position = tf(o.position);
         }
         for c in &mut self.chests {
-            c.position = nudge_to_walkable(tf(c.position), toff);
+            c.position = nudge_to_walkable(tf(c.position), toff, half, &straits);
         }
         // Bend each authored peak's CENTRE into the fan (radius/height are world-space
         // scalars — the dome is a world circle at the bent centre, matching its summit
@@ -2856,24 +2885,17 @@ impl Arena {
         // the web trails + portal onto walkable ground (the web isn't A*-routed), and
         // re-anchor the portal to the routed path's walkable end.
         for (a, b) in self.web.iter_mut() {
-            *a = nudge_to_walkable(*a, toff);
-            *b = nudge_to_walkable(*b, toff);
+            *a = nudge_to_walkable(*a, toff, half, &straits);
+            *b = nudge_to_walkable(*b, toff, half, &straits);
         }
-        self.portal = nudge_to_walkable(self.portal, toff);
+        self.portal = nudge_to_walkable(self.portal, toff, half, &straits);
         if let Some(last) = self.path.last_mut() {
             *last = self.portal;
         }
         // The non-linear bend distorts the carefully-carved clear tube, so an obstacle
         // can end up on the backbone OR a web trail. Re-clear both (in bent coords) so
         // every route stays feasible by construction, as in the corridor.
-        let clear_r = self.path_clear_radius;
-        let web_r = self.web_clear();
-        let path = self.path.clone();
-        let web = self.web.clone();
-        self.obstacles.retain(|o| {
-            dist_to_path(&o.position, &path) > clear_r + o.radius
-                && dist_to_web(&o.position, &web) > web_r + o.radius
-        });
+        self.retain_placeable_obstacles();
         // Straight-wall biome seams don't survive the bend — drop them.
         self.seams.clear();
         // A square box that contains the whole fan (radius up to the frontier).
@@ -2881,6 +2903,42 @@ impl Arena {
         self.x_min = -rmax;
         self.x_max = rmax;
         self.lateral = rmax;
+    }
+
+    /// Drop every obstacle that must not stand where it landed — **one rule, one place**,
+    /// because this was two byte-identical copies (`radialize` and `ensure_frontier`) and
+    /// the third thing it has to check would have gone into only one of them.
+    ///
+    /// Two reasons an obstacle goes:
+    ///
+    /// - It is inside the **guaranteed route's tube** (the backbone or a web trail). The
+    ///   radial bend distorts the tube carved in corridor space, and streaming a section
+    ///   adds a path segment near the old frontier — either can pull an already-placed prop
+    ///   onto a route. Re-clearing keeps a way out feasible by construction across the whole
+    ///   streamed world.
+    /// - It is **at sea** (WG-7). A prop is placed without asking the shoreline, which was
+    ///   harmless while the fan was one landmass: the ocean lies outside the fan and nothing
+    ///   is placed out there. A section holding a strait has open water in the middle of it,
+    ///   and a tree standing in the sea reads as a bug in the water rather than in the tree.
+    ///   There is nothing to salvage by nudging — an obstacle is scenery, and the sea already
+    ///   blocks.
+    fn retain_placeable_obstacles(&mut self) {
+        let clear_r = self.path_clear_radius;
+        let web_r = self.web_clear();
+        let path = self.path.clone();
+        let web = self.web.clone();
+        let half = self.radial_half;
+        let straits = self.straits.clone();
+        self.obstacles.retain(|o| {
+            dist_to_path(&o.position, &path) > clear_r + o.radius
+                && dist_to_web(&o.position, &web) > web_r + o.radius
+                && meld_proto::coast::is_land_with(
+                    o.position.x as f32,
+                    o.position.y as f32,
+                    half as f32,
+                    &straits,
+                )
+        });
     }
 
     /// Generate one more section if the frontier is within `stream_lookahead` of
@@ -2953,29 +3011,40 @@ impl Arena {
         // Bend this section's freshly-added tail into the arc (same map as radialize).
         let half = self.radial_half;
         let lat = self.corridor_lateral.max(1.0);
+        // The straits are already WORLD-space, so they are not bent — but everything the
+        // bend touches is checked against them (see `radialize`).
+        let straits = self.straits.clone();
         let tf = |p: Position| -> Position {
             let r = p.x.max(0.0);
             let theta = (p.y / lat).clamp(-1.0, 1.0) * half;
             Position::new(r * theta.cos(), r * theta.sin())
         };
         for m in &mut self.monsters[m0..] {
-            m.position = tf(m.position);
-            m.home = tf(m.home);
+            // A creature is scattered without asking the shoreline, so the bend can drop
+            // one into a strait — a fight nobody can reach, wandering in open water. Nudged
+            // ashore rather than dropped: removing a spawn here would take a pack leader out
+            // from under its own minions (`join_pack` has already run).
+            //
+            // ⚠️ WATER ONLY. `nudge_to_walkable` would also pull creatures off CLIFFS, which
+            // they have always been allowed to stand on, and that moved every creature in
+            // every seeded world. A fix for the sea must not quietly become one for terrain.
+            m.position = nudge_ashore(tf(m.position), half, &straits);
+            m.home = nudge_ashore(tf(m.home), half, &straits);
             // The pack anchor is world-space like `home`, so it bends with it. A member
             // left anchored in corridor space would roam a disc a quarter-turn away.
-            m.pack_home = tf(m.pack_home);
+            m.pack_home = nudge_ashore(tf(m.pack_home), half, &straits);
             // Keep [start_x, end_x] as a radius band (see `radialize`) so streamed
             // creatures also stay inside their own biome ring (#10).
         }
         // Keep streamed chests + harvest nodes off cliffs too (see `radialize`).
         for r in &mut self.resources[r0..] {
-            r.position = nudge_to_walkable(tf(r.position), toff);
+            r.position = nudge_to_walkable(tf(r.position), toff, half, &straits);
         }
         for o in &mut self.obstacles[o0..] {
             o.position = tf(o.position);
         }
         for c in &mut self.chests[c0..] {
-            c.position = nudge_to_walkable(tf(c.position), toff);
+            c.position = nudge_to_walkable(tf(c.position), toff, half, &straits);
         }
         // Bend this streamed section's new peak centres into the fan (see `radialize`).
         for k in pk0..self.peaks.len() {
@@ -2997,7 +3066,10 @@ impl Arena {
         // Bend this section's new web edges and append to the public `web`.
         for e in w0..self.corridor_web.len() {
             let (a, b) = self.corridor_web[e];
-            self.web.push((nudge_to_walkable(tf(a), toff), nudge_to_walkable(tf(b), toff)));
+            self.web.push((
+                nudge_to_walkable(tf(a), toff, half, &straits),
+                nudge_to_walkable(tf(b), toff, half, &straits),
+            ));
         }
         // Straight-wall biome seams don't survive the bend — drop the ones just added.
         self.seams.truncate(s0);
@@ -3006,14 +3078,7 @@ impl Arena {
         // already-placed obstacle into the tube. Re-clear ALL obstacles against the
         // full bent path, exactly as the one-shot `radialize` does, so a feasible route
         // outward stays guaranteed by construction across the whole streamed world.
-        let clear_r = self.path_clear_radius;
-        let web_r = self.web_clear();
-        let path = self.path.clone();
-        let web = self.web.clone();
-        self.obstacles.retain(|o| {
-            dist_to_path(&o.position, &path) > clear_r + o.radius
-                && dist_to_web(&o.position, &web) > web_r + o.radius
-        });
+        self.retain_placeable_obstacles();
         // Grow the fan's bounding box to contain the new outer ring.
         let rmax = self.cursor + 4.0;
         self.x_min = -rmax;
@@ -3103,6 +3168,21 @@ impl Arena {
         let length = (nominal * (1.0 + wg.area_length_jitter * rng.signed())).max(8.0);
         let end_x = start_x + length;
 
+        // CONTINENTS (WG-7): this section may hold a STRAIT — an inland sea filling an
+        // annular sector, pierced by isthmuses. The CONTINENT is the land between two
+        // straits, which is hundreds to thousands of units across; what a player actually
+        // experiences of one is not the sea's width but its coast and the crossing.
+        //
+        // **Generated HERE, before the clear path is routed**, which is the whole reason
+        // it works: `astar_route` land-checks every bent edge against `self.straits`, so
+        // the guaranteed backbone bends to an isthmus by itself. A barrier placed after
+        // the route would be rejected from the path tube and become scenery you walk past
+        // — which is exactly what a pond already is.
+        //
+        // Its own rng stream, like the elite roll above: drawing from the section's main
+        // stream would shift every placement after it and move every seeded world.
+        self.push_strait(balance, i, start_x, end_x, length);
+
         // WG-1: every Nth procedural section is a DUNGEON — rooms divided by walls
         // with a door on the clear path (connectivity guaranteed like a biome seam),
         // packed denser with creatures and ending in a guaranteed loot chest. Never
@@ -3162,6 +3242,13 @@ impl Arena {
             let theta = (p.y / bend_lat).clamp(-1.0, 1.0) * bend_half;
             Position::new(p.x.max(0.0) * theta.cos(), p.x.max(0.0) * theta.sin())
         };
+        // Is this BENT position open water? (WG-7 continents; empty until a strait is cut,
+        // and always empty in corridor mode.) Cloned so the placement loop can read it while
+        // it appends to `self.monsters`.
+        let sea = self.straits.clone();
+        let wet = move |w: &Position| -> bool {
+            meld_proto::coast::is_ocean_with(w.x as f32, w.y as f32, bend_half as f32, &sea)
+        };
         let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
         for lane in 0..lanes {
             let mut lane_rng =
@@ -3182,7 +3269,11 @@ impl Arena {
                 let Some((pos, world)) = (0..CREATURE_PLACEMENT_TRIES).find_map(|_| {
                     let p = Position::new(x, wg.creature_lateral_spread * rng.signed());
                     let w = bend(p);
-                    (!taken.crowded(&w)).then_some((p, w))
+                    // Crowded OR at sea (WG-7). Asked HERE, in the bent frame, because
+                    // this is already where "is this spot acceptable" lives — so the spot
+                    // grid stays consistent and no post-hoc nudge disturbs the spacing this
+                    // very check exists to protect.
+                    (!taken.crowded(&w) && !wet(&w)).then_some((p, w))
                 }) else {
                     let gap = creature_spacing * (1.0 + wg.monster_spacing_jitter * rng.signed());
                     x += gap.max(2.0);
@@ -4044,6 +4135,115 @@ impl Arena {
     /// Returns the corridor waypoints AFTER `entry` (last one ≈ a walkable `exit_target`).
     /// Falls back to a straight `[exit_target]` if no route is found (the connected base
     /// makes that essentially never happen).
+    /// **Cut this section's STRAIT — the boundary between two continents.**
+    ///
+    /// A strait is an annular sector of sea: a radius band inside this section's own band,
+    /// across a span of bearing, pierced by `[worldgen] strait_bridges` isthmuses. It is
+    /// analytic ([`meld_proto::coast::strait_depth`]) rather than colliders, so it costs
+    /// nothing on the tick and it is a term in the same signed field the ground shader
+    /// already ramps a beach over — routing, collision and rendering all come along.
+    ///
+    /// Three things are guaranteed BY CONSTRUCTION rather than repaired afterwards, and
+    /// every one of them is why this is not the retired `Seam` (a full-width wall with one
+    /// door, which made the world read as a corridor and was removed for it):
+    ///
+    /// 1. **Both shores stay inside this section.** The band is a bounded share of the
+    ///    section's length with margin either side, so the section's clear path enters on
+    ///    dry ground and leaves on dry ground and A* always has two land endpoints to route
+    ///    an isthmus crossing between. A strait spanning a section boundary would put both
+    ///    of a section's path endpoints in the water.
+    /// 2. **The span stops inside the fan**, so rounding either end is always available.
+    /// 3. **Every isthmus is at least [`meld_proto::coast::MIN_BRIDGE_HALF_WIDTH`] of arc
+    ///    wide** — comfortably past the clear path's tube plus a player.
+    ///
+    /// Nothing is placed if the roll or the geometry says no: a strait that would fail
+    /// [`meld_proto::coast::strait_is_crossable`] is not cut at all rather than cut and
+    /// patched. `a_strait_is_cut_and_it_is_always_crossable` is what keeps that from
+    /// silently disabling the feature.
+    fn push_strait(&mut self, balance: &Balance, i: usize, start_x: f64, end_x: f64, length: f64) {
+        let wg = &balance.worldgen;
+        // No fan means no sea (corridor mode: the tutorial and every flat unit test), and
+        // the on-ramp stays coastline-free — CANON §B owns the shallow bands.
+        if self.tutorial
+            || self.radial_half <= 0.0
+            || i < wg.strait_min_section
+            || start_x < meld_proto::coast::STRAIT_MIN_REACH as f64
+        {
+            return;
+        }
+        let mut rng = Rng(section_seed(self.seed_base, i) ^ 0xC0A5_7_C0A5_7_C0A5);
+        if rng.unit() >= wg.strait_chance {
+            return;
+        }
+        // The band, kept off both of the section's ends so each shore is dry ground inside
+        // this same section. `portal_setback` is in the outer margin because a section's
+        // portal sits there and a drowned portal is a dive with no way home.
+        let r_half = length * wg.strait_thickness_share * 0.5;
+        let shore = length * 0.15;
+        let lo = start_x + r_half + shore;
+        let hi = end_x - r_half - shore - wg.portal_setback;
+        if hi <= lo {
+            return; // too thin a section to hold a sea with land on both shores
+        }
+        let r_c = lo + rng.unit() * (hi - lo);
+        let r_out = r_c + r_half;
+
+        // The bearing span. Clamped so both ends stop `STRAIT_FAN_MARGIN` of ARC inside the
+        // fan's rim — an angular margin would be metres at the hub and kilometres at the
+        // frontier, the lesson `coast::sea_depth` already carries.
+        let fan_margin = meld_proto::coast::STRAIT_FAN_MARGIN as f64 / r_out.max(1.0);
+        let span_min = wg.strait_span_min_degrees.to_radians();
+        let span_max = wg.strait_span_max_degrees.to_radians();
+        let mut th_half = (span_min + rng.unit() * (span_max - span_min).max(0.0)) * 0.5;
+        th_half = th_half.min((self.radial_half - fan_margin).max(0.0) * 0.9);
+        if th_half <= 0.0 {
+            return;
+        }
+        let th_limit = self.radial_half - th_half - fan_margin;
+        if th_limit <= 0.0 {
+            return; // the fan is too narrow to hold a strait AND a way around it
+        }
+        let th_c = rng.signed() * th_limit;
+
+        // The isthmuses. Spread across the span in equal cells so two never merge into one
+        // door, each at least a bridge-width of arc inside the span's own ends (a bridge
+        // flush with an end is the end, and buys nothing).
+        let bw = wg
+            .strait_bridge_half_width
+            .max(meld_proto::coast::MIN_BRIDGE_HALF_WIDTH as f64);
+        let bw_ang = bw / r_out.max(1.0);
+        let mut bridges = [(0.0_f64, 0.0_f64); 2];
+        let want = wg.strait_bridges.clamp(1, 2);
+        let inner = th_half - bw_ang * 1.5; // half-span still available to a bridge centre
+        if inner <= 0.0 {
+            return; // the span cannot hold an isthmus this wide — no strait rather than a wall
+        }
+        for k in 0..want {
+            // Cell centre in [-inner, inner], jittered inside its own cell.
+            let cells = want as f64;
+            let c = -inner + (2.0 * inner) * ((k as f64) + 0.5) / cells;
+            let jit = (2.0 * inner / cells) * 0.3 * rng.signed();
+            bridges[k] = ((c + jit).clamp(-inner, inner), bw);
+        }
+
+        let s: meld_proto::coast::Strait = [
+            r_c as f32,
+            r_half as f32,
+            th_c as f32,
+            th_half as f32,
+            (th_c + bridges[0].0) as f32,
+            bridges[0].1 as f32,
+            (th_c + bridges[1].0) as f32,
+            bridges[1].1 as f32,
+        ];
+        // The contract, asked of the thing rather than assumed of the arithmetic. A strait
+        // that cannot be crossed is not cut: no barrier is always better than a sealed one.
+        if !meld_proto::coast::strait_is_crossable(&s, self.radial_half as f32) {
+            return;
+        }
+        self.straits.push(s);
+    }
+
     fn astar_route(&self, entry: Position, exit_target: Position) -> Vec<Position> {
         use std::cmp::Reverse;
         use std::collections::{BinaryHeap, HashMap};
@@ -4054,11 +4254,15 @@ impl Arena {
         let half = self.radial_half;
         let lat = self.corridor_lateral.max(1.0);
         let (ox, oz) = self.terrain_off;
+        // The continents' straits, so the guaranteed backbone routes AROUND an inland sea
+        // and through an isthmus by itself — no second copy of "what is water" anywhere in
+        // the pathfinder, which is the drift that has bitten this repo three times.
+        let straits: &[meld_proto::coast::Strait] = &self.straits;
         // A corridor cell is passable iff its BENT (world) position is walkable ground.
         let walk = |c: (i64, i64)| -> bool {
             let w = radial_tf(Position::new(c.0 as f64 * CELL, c.1 as f64 * CELL), half, lat);
             meld_proto::terrain::routable(w.x as f32, w.y as f32, ox, oz)
-                && meld_proto::coast::is_land(w.x as f32, w.y as f32, half as f32)
+                && meld_proto::coast::is_land_with(w.x as f32, w.y as f32, half as f32, straits)
         };
         // The radial bend makes a 1-cell corridor step span many WORLD units tangentially
         // at large radius, so checking only cell centres would leap over buttes. Check the
@@ -4078,7 +4282,7 @@ impl Arena {
                 let c = Position::new(ca.x + (cb.x - ca.x) * t, ca.y + (cb.y - ca.y) * t);
                 let w = radial_tf(c, half, lat);
                 if !meld_proto::terrain::routable(w.x as f32, w.y as f32, ox, oz)
-                    || !meld_proto::coast::is_land(w.x as f32, w.y as f32, half as f32)
+                    || !meld_proto::coast::is_land_with(w.x as f32, w.y as f32, half as f32, straits)
                 {
                     return false;
                 }
@@ -4303,6 +4507,16 @@ impl Arena {
         // Arc params for un-bending world → corridor when sampling terrace elevation
         // (creatures stay on their own level even though the world fans around the hub).
         let (radial_half, corridor_lateral) = (self.radial_half, self.corridor_lateral);
+        // **CREATURES DO NOT SWIM.** `apply_move` has always run its candidate through
+        // `t_walkable` (terrain AND shoreline); this mover checked obstacles and elevation
+        // and nothing else — the same one-rule-two-call-sites split as the wall-collision
+        // line that stopped creatures and let players walk through. It cost nothing while the
+        // fan was one unbroken landmass, and the moment WG-7 put a strait in the middle of a
+        // section it became a boar wading across open sea.
+        let straits = self.straits.clone();
+        let dry = |p: &Position| -> bool {
+            meld_proto::coast::is_land_with(p.x as f32, p.y as f32, radial_half as f32, &straits)
+        };
         let corridorize = |p: &Position| -> Position {
             if radial_half <= 0.0 {
                 *p
@@ -4530,14 +4744,21 @@ impl Arena {
                 // Creatures don't walk through terrain either (slide per axis), and
                 // they stay on their own elevation (never wander off a terrace edge).
                 let cand = Position::new(nx, ny);
-                if !obstacles.blocks(&cand, 0.5) && area_level_at(areas, &corridorize(&cand)) == m.elevation {
+                let axis_x = Position::new(nx, m.position.y);
+                let axis_y = Position::new(m.position.x, ny);
+                if !obstacles.blocks(&cand, 0.5)
+                    && dry(&cand)
+                    && area_level_at(areas, &corridorize(&cand)) == m.elevation
+                {
                     m.position = cand;
-                } else if !obstacles.blocks(&Position::new(nx, m.position.y), 0.5)
-                    && area_level_at(areas, &corridorize(&Position::new(nx, m.position.y))) == m.elevation
+                } else if !obstacles.blocks(&axis_x, 0.5)
+                    && dry(&axis_x)
+                    && area_level_at(areas, &corridorize(&axis_x)) == m.elevation
                 {
                     m.position.x = nx;
-                } else if !obstacles.blocks(&Position::new(m.position.x, ny), 0.5)
-                    && area_level_at(areas, &corridorize(&Position::new(m.position.x, ny))) == m.elevation
+                } else if !obstacles.blocks(&axis_y, 0.5)
+                    && dry(&axis_y)
+                    && area_level_at(areas, &corridorize(&axis_y)) == m.elevation
                 {
                     m.position.y = ny;
                 }
@@ -5915,8 +6136,20 @@ fn hub_terrain_offset(seed: u64) -> (f32, f32) {
 /// Buttes are small + convex and sit in a connected walkable base, so a short search
 /// always finds walkable terrain around them — this routes the clear path AROUND a
 /// cliff instead of through it, keeping the world feasible under slope collision.
-fn nudge_to_walkable(p: Position, off: (f32, f32)) -> Position {
-    if meld_proto::terrain::walkable(p.x as f32, p.y as f32, off.0, off.1) {
+/// Move `p` to the nearest DRY ground if it is at sea, and leave it exactly where it is
+/// otherwise. The sibling of [`nudge_to_walkable`], and deliberately **not** the same
+/// function: that one also refuses steep terrain, and creatures have always been allowed to
+/// stand on a cliff. Widening the sea fix into a terrain fix moved every creature in every
+/// seeded world — three unrelated pack/formation tests went red on the first attempt.
+///
+/// The backstop rather than the main line: creature placement rejects a wet spot where it
+/// already rejects a crowded one, so what reaches here is a pack minion or a rite's retinue
+/// scattered around an already-dry leader — a short hop, if any.
+fn nudge_ashore(p: Position, arc_half: f64, straits: &[meld_proto::coast::Strait]) -> Position {
+    let dry = |q: &Position| {
+        meld_proto::coast::is_land_with(q.x as f32, q.y as f32, arc_half as f32, straits)
+    };
+    if dry(&p) {
         return p;
     }
     for step in 1..48 {
@@ -5924,7 +6157,37 @@ fn nudge_to_walkable(p: Position, off: (f32, f32)) -> Position {
         for k in 0..12 {
             let a = k as f64 * std::f64::consts::TAU / 12.0;
             let q = Position::new(p.x + r * a.cos(), p.y + r * a.sin());
-            if meld_proto::terrain::walkable(q.x as f32, q.y as f32, off.0, off.1) {
+            if dry(&q) {
+                return q;
+            }
+        }
+    }
+    p
+}
+
+fn nudge_to_walkable(
+    p: Position,
+    off: (f32, f32),
+    arc_half: f64,
+    straits: &[meld_proto::coast::Strait],
+) -> Position {
+    // "Walkable" has to mean DRY as well as gentle. It did not, and it did not matter while
+    // the fan was one unbroken landmass — but a section that holds a strait (WG-7) has open
+    // water in the middle of it, and a chest or a harvest node nudged off a cliff into the
+    // sea is exactly the unreachable reward this function exists to prevent.
+    let ok = |q: &Position| {
+        meld_proto::terrain::walkable(q.x as f32, q.y as f32, off.0, off.1)
+            && meld_proto::coast::is_land_with(q.x as f32, q.y as f32, arc_half as f32, straits)
+    };
+    if ok(&p) {
+        return p;
+    }
+    for step in 1..48 {
+        let r = step as f64 * 2.0;
+        for k in 0..12 {
+            let a = k as f64 * std::f64::consts::TAU / 12.0;
+            let q = Position::new(p.x + r * a.cos(), p.y + r * a.sin());
+            if ok(&q) {
                 return q;
             }
         }

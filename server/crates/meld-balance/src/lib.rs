@@ -1240,6 +1240,36 @@ pub struct WorldGen {
     /// Nearest hub distance an authored peak may spawn — keeps the big domes out of the
     /// tight near-hub rings where they'd swamp the width.
     pub peak_min_distance: f64,
+
+    /// **CONTINENTS (WG-7).** Chance a deep-enough section holds a STRAIT — an inland sea
+    /// filling an annular sector, pierced by isthmuses. The CONTINENT is the land between
+    /// two of them. Deliberately under 1.0: a continent should be several sections across,
+    /// and a world where every ring is a coast is an archipelago.
+    pub strait_chance: f64,
+    /// Earliest section index that may hold a strait. Sections grow with depth
+    /// (`base_area_length + area_length_growth*i`), so this is simultaneously what makes a
+    /// section thick enough to hold a sea with dry land on both shores, and what keeps the
+    /// on-ramp coastline-free.
+    pub strait_min_section: usize,
+    /// A strait's radial thickness as a share of its own section's length. Bounded well
+    /// under 1 so land always remains on BOTH shores inside the same section — the clear
+    /// path enters that section on one side and leaves on the other, so A* always has dry
+    /// ground at each end to route an isthmus crossing between.
+    pub strait_thickness_share: f64,
+    /// Narrowest angular span of a strait, in degrees. Below this it reads as a river
+    /// rather than a sea, and you would cross it without noticing there was a choice.
+    pub strait_span_min_degrees: f64,
+    /// Widest angular span, in degrees. Capped so "walk around its end" stays a real
+    /// alternative to an isthmus instead of a joke.
+    pub strait_span_max_degrees: f64,
+    /// Isthmuses per strait. **Two**, not one — one door is the retired `Seam`, which
+    /// funnelled the world into a corridor. With the span's two ends that is four ways past.
+    pub strait_bridges: usize,
+    /// Half the arc width of an isthmus, in WORLD units rather than radians (an angular
+    /// bridge is a few units wide near the hub and hundreds at the frontier). Must stay
+    /// above [`meld_proto::coast::MIN_BRIDGE_HALF_WIDTH`], the walkability floor
+    /// `coast::strait_is_crossable` enforces.
+    pub strait_bridge_half_width: f64,
 }
 
 /// Creature AI tunables (overworld movement + encounter grouping).

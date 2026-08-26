@@ -927,6 +927,7 @@ fn terrain_section_msg(
     radial_half: f64,
     corridor_lateral: f64,
     peaks: Vec<[f32; 4]>,
+    straits: Vec<meld_proto::coast::Strait>,
 ) -> ww::TerrainSection {
     let t = &area.terrain;
     ww::TerrainSection {
@@ -954,6 +955,7 @@ fn terrain_section_msg(
         radial_half,
         corridor_lateral,
         peaks,
+        straits,
     }
 }
 
@@ -5288,6 +5290,11 @@ impl GameState {
                         [ox, oz]
                     },
                     peaks: inst.arena.peaks.clone(),
+                    // CONTINENTS (WG-7): the client's ground shader ramps a beach over the
+                    // same signed field the server collides against, and its prop placement
+                    // asks the same predicate — a shoreline it has not been told about is
+                    // walkable ground drawn over open water.
+                    straits: inst.arena.straits.clone(),
                     // The world's own fact, not the caller's request: a joiner who asked
                     // for a normal dive still lands in a live tutorial world.
                     tutorial: inst.tutorial,
@@ -5316,9 +5323,12 @@ impl GameState {
             // these carry no path segment.
             let (rh, cl) = (inst.arena.radial_half(), inst.arena.corridor_lateral());
             for area in &inst.arena.areas {
-                // Initial-chain peaks ride `run.started.peaks`, so the per-section
+                // Initial-chain peaks + straits ride `run.started`, so the per-section
                 // messages carry none (avoids double-sending).
-                out.push(out_msg(pid, &terrain_section_msg(area, Vec::new(), rh, cl, Vec::new())));
+                out.push(out_msg(
+                    pid,
+                    &terrain_section_msg(area, Vec::new(), rh, cl, Vec::new(), Vec::new()),
+                ));
             }
         }
         self.pending_gear_load.extend(party_ids.iter().cloned());
@@ -9509,7 +9519,17 @@ impl WorldActor {
                     })
                     .copied()
                     .collect();
-                let msg = terrain_section_msg(area, seg, rh, cl, section_peaks);
+                // …and its STRAITS (WG-7), by the same band filter: `push_strait` keeps a
+                // strait's whole radial band inside its own section, so its centre radius
+                // identifies which section owns it.
+                let section_straits: Vec<meld_proto::coast::Strait> = self
+                    .arena
+                    .straits
+                    .iter()
+                    .filter(|s| (s[0] as f64) >= s0 && (s[0] as f64) < e0)
+                    .copied()
+                    .collect();
+                let msg = terrain_section_msg(area, seg, rh, cl, section_peaks, section_straits);
                 for r in &self.run.runs {
                     out.push(out_msg(&r.player_id, &msg));
                 }
@@ -9817,7 +9837,21 @@ impl WorldActor {
                 .find(|(n, _)| *n == i)
                 .map(|(_, p)| p.clone())
                 .unwrap_or_default();
-            let msg = terrain_section_msg(area, Vec::new(), rh, cl, peaks);
+            // ⚠️ THE COASTLINE IS NOT RE-CUT, SO IT HAS TO BE RE-SENT. A Shift re-scatters
+            // props and re-cuts peaks; a continent does not wander, and keeping the shoreline
+            // out of the churn is also what keeps §W5's replay cheap (two integers, no map).
+            // But the client REPLACES a section's straits from this message the same way it
+            // replaces its peaks — so an empty list here would delete a sea the server still
+            // collides against, and the retiled ring would draw walkable ground over water.
+            let (a0, a1) = (area.start_x, area.end_x);
+            let straits: Vec<meld_proto::coast::Strait> = self
+                .arena
+                .straits
+                .iter()
+                .filter(|s| (s[0] as f64) >= a0 && (s[0] as f64) < a1)
+                .copied()
+                .collect();
+            let msg = terrain_section_msg(area, Vec::new(), rh, cl, peaks, straits);
             for pid in &members {
                 out.push(out_msg(pid, &msg));
             }

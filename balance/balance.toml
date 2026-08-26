@@ -1654,6 +1654,29 @@ summit_min_height = 7.0          # min world terrain height a clear-path crest m
 peak_radius = 26.0               # world-radius of an authored CLIMBABLE landmark mountain (#3); its height = radius * PEAK_MAX_ASPECT * ~0.9 so the dome stays walkable (you climb it) while reading as a real peak
 peak_min_distance = 45.0         # nearest hub distance an authored peak may spawn (keeps big domes out of the tight near-hub rings)
 
+# CONTINENTS (WG-7). The fan used to be ONE landmass — `coast::is_ocean` returned "land,
+# always" for every bearing inside the arc — so the only water a diver could reach was the
+# gap behind Last City, which tells you which way is out and has nothing on the far side to
+# walk toward. A STRAIT is an inland sea filling an annular sector (a radius band across a
+# span of bearing), pierced by isthmuses; the CONTINENT is the land between two of them.
+#
+# It is analytic (`coast::strait_depth`), never colliders, so it costs nothing on the tick
+# — one r=150 water disc measured +63% on the creature step, and a sea sized to gate
+# anything at depth is hundreds of units across.
+#
+# Feasibility is guaranteed BY CONSTRUCTION, not by rolling dice against the route: a
+# strait's span always stops inside the fan (so you can round either end) and always
+# carries isthmuses at least `coast::MIN_BRIDGE_HALF_WIDTH` of arc wide. Three or more ways
+# across every barrier is what makes this a decision rather than the retired `Seam` — a
+# full-width wall with one door, which made the world read as a corridor and was removed.
+strait_chance = 0.55             # chance a deep-enough section holds a strait (0..1). Not 1.0: a continent should be several sections across, and a world where every ring is a coast is a world of islands. [TUNABLE]
+strait_min_section = 6           # earliest section index that may hold one. Sections are 20 + 7*i long, so this is also what makes them thick enough to hold a sea with land margin either side — and it keeps the on-ramp coastline-free.
+strait_thickness_share = 0.34    # a strait's radial thickness as a share of its section's length. Bounded well under 1 so land always remains on BOTH shores inside the same section: the section's clear path enters on one side and leaves on the other, so A* always has dry ground at both ends to route between. [TUNABLE]
+strait_span_min_degrees = 34.0   # narrowest angular span of a strait. Below this it is a river, not a sea — you would cross it without noticing you had a choice. [TUNABLE]
+strait_span_max_degrees = 96.0   # widest. Capped so rounding an end stays a real alternative to an isthmus rather than a joke: at r=600 a 96-degree span is ~1000 units of arc, so its far end is ~500 units of lateral walking. [TUNABLE]
+strait_bridges = 2               # isthmuses per strait. TWO, not one: one door is the `Seam` again. With the two ends that is four ways past every strait.
+strait_bridge_half_width = 17.0  # half the arc width of an isthmus, in WORLD units — not an angle, or a bridge would be a few units wide near the hub and hundreds at the frontier. Must stay above `coast::MIN_BRIDGE_HALF_WIDTH` (11.0), which is the walkability floor the contract enforces. [TUNABLE]
+
 # Content-ish stats per creature, keyed by content id. Bases are pre-scale; the
 # world multiplies each by stat_mult(distance) at spawn, so the SAME base grows
 # menacing with depth. Forest bases are tuned so a solo explorer can win the first
