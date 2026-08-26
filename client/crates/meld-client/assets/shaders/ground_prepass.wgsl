@@ -62,6 +62,12 @@ struct BiomeParams {
     straits: array<vec4<f32>, 16>,
     strait_count: u32,
     _pad_sc0: u32, _pad_sc1: u32, _pad_sc2: u32,
+    // The coast's own shape: BAYS (water bitten into the fan's rim) and ISLES (land standing
+    // offshore). One vec4 each, `[cx, cz, radius, kind]`, kind 0 = bay and 1 = isle — one
+    // array for both because they are one primitive, a disc that edits the shoreline.
+    lobes: array<vec4<f32>, 12>,
+    lobe_count: u32,
+    _pad_lc0: u32, _pad_lc1: u32, _pad_lc2: u32,
     // The Shift's tell (CANON D20/§W2): (inner_radius, outer_radius, intensity, 0).
     // A region is a radius ring in the WG-4 fan and this ground is already painted in
     // rings, so the doomed region draws as an annulus in the same frame as everything
@@ -190,6 +196,16 @@ fn sea_depth_at(wxz: vec2<f32>) -> f32 {
     let ns = i32(params.strait_count);
     for (var k = 0; k < ns; k = k + 1) {
         sea = max(sea, strait_depth_at(wxz, k));
+    }
+    // Then the coast's own shape, in list order — MUST match `coast::Shore::depth`. A bay is
+    // a `max` (water wins over land) and an isle a `min` (land wins over water), so a later
+    // isle stands inside an earlier bay. Both are signed distances, so both get a beach.
+    let nl = i32(params.lobe_count);
+    for (var k = 0; k < nl; k = k + 1) {
+        let l = params.lobes[k];
+        if (l.z <= 0.0) { continue; }
+        let inside = l.z - length(wxz - l.xy);
+        if (l.w < 0.5) { sea = max(sea, inside); } else { sea = min(sea, -inside); }
     }
     return sea;
 }

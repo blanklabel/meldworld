@@ -55,13 +55,17 @@ const PEAK_SLOTS: usize = 24;
 /// straits that can be on screen are the ones near you.
 const STRAIT_SLOTS: usize = meld_proto::coast::MAX_STRAITS * 2;
 
+/// `vec4` slots for the coast's LOBES — bays and isles, one `vec4` each
+/// (`[cx, cz, radius, kind]`), windowed around the player like the straits.
+const LOBE_SLOTS: usize = meld_proto::coast::MAX_LOBES;
+
 /// `dead_code` is allowed for exactly this one item: the `ShaderType` derive generates a
 /// per-field `check` fn that nothing ever calls, and there is no way to annotate code a
 /// macro emits. Scoped to a submodule so the rest of this file still reports its own dead
 /// code honestly — every field here IS read, by the WGSL side of the uniform.
 mod biome_params {
     #![allow(dead_code)]
-    use super::{MAX_BIOME_RINGS, PEAK_SLOTS, STRAIT_SLOTS};
+    use super::{LOBE_SLOTS, MAX_BIOME_RINGS, PEAK_SLOTS, STRAIT_SLOTS};
     use bevy::prelude::*;
     use bevy::render::render_resource::ShaderType;
 
@@ -118,6 +122,13 @@ mod biome_params {
         pub(crate) _pad_sc0: u32,
         pub(crate) _pad_sc1: u32,
         pub(crate) _pad_sc2: u32,
+        /// The coast's own shape: bays (water) and isles (land), `[cx, cz, radius, kind]`
+        /// each. One array for both, because they are one primitive.
+        pub(crate) lobes: [Vec4; LOBE_SLOTS],
+        pub(crate) lobe_count: u32,
+        pub(crate) _pad_lc0: u32,
+        pub(crate) _pad_lc1: u32,
+        pub(crate) _pad_lc2: u32,
         /// The Shift's tell: `(inner_radius, outer_radius, intensity, 0)`. A region is a
         /// radius ring in the WG-4 fan and this ground is already painted in rings, so
         /// the doomed annulus needs no second coordinate system. `intensity == 0` is the
@@ -154,6 +165,11 @@ mod biome_params {
                 _pad_sc0: 0,
                 _pad_sc1: 0,
                 _pad_sc2: 0,
+                lobes: [Vec4::ZERO; LOBE_SLOTS],
+                lobe_count: 0,
+                _pad_lc0: 0,
+                _pad_lc1: 0,
+                _pad_lc2: 0,
                 shift: Vec4::ZERO,
                 sea_anim: Vec4::ZERO,
                 peaks: [Vec4::ZERO; PEAK_SLOTS],
@@ -1568,17 +1584,19 @@ pub(crate) fn on_open_water(frame: &crate::WorldFrame, screen: &Screen, wx: f32,
     match screen {
         // The maze: ask the shoreline itself.
         Screen::Overworld => {
-            frame.have
-                && meld_proto::coast::is_ocean_with(
-                    wx,
-                    wz,
-                    frame.radial_arc_degrees.to_radians() * 0.5,
-                    // …the STRAITS too (WG-7 continents). Scenery is scattered client-side
-                    // without asking the shoreline, and the ocean sits outside the fan where
-                    // nothing is scattered — so this cull only started mattering once a
-                    // section could hold open water in the MIDDLE of it.
-                    &straits_snapshot(),
-                )
+            // …the STRAITS and the BAYS too (WG-7). Scenery is scattered client-side
+            // without asking the shoreline, and the ocean sits outside the fan where nothing
+            // is scattered — so this cull only started mattering once a section could hold
+            // open water in the middle of it.
+            frame.have && {
+                let (straits, lobes) = shore_snapshot();
+                (meld_proto::coast::Shore {
+                    arc_half: frame.radial_arc_degrees.to_radians() * 0.5,
+                    straits: &straits,
+                    lobes: &lobes,
+                })
+                .is_ocean(wx, wz)
+            }
         }
         // Last City is a SEPARATE SCENE in its own coordinates — its `coast` uniform is
         // deliberately zeroed, so `is_ocean` cannot answer here. Its sea is authored from
@@ -1799,6 +1817,55 @@ pub(crate) fn straits_snapshot() -> Vec<meld_proto::coast::Strait> {
     STRAITS.read().map(|s| s.clone()).unwrap_or_default()
 }
 
+/// The coast's own shape: **bays** bitten into the fan's rim and **isles** standing off it
+/// ([`meld_proto::coast::Lobe`] — one list for both, since they are one primitive differing
+/// only in which side of the waterline the disc adds to). Kept exactly as `STRAITS` is,
+/// base/per-section split included, so a retile replaces a section's own.
+static LOBES: std::sync::RwLock<Vec<meld_proto::coast::Lobe>> =
+    std::sync::RwLock::new(Vec::new());
+static BASE_LOBES: std::sync::RwLock<Vec<meld_proto::coast::Lobe>> =
+    std::sync::RwLock::new(Vec::new());
+static SECTION_LOBES: std::sync::RwLock<
+    std::collections::BTreeMap<u32, Vec<meld_proto::coast::Lobe>>,
+> = std::sync::RwLock::new(std::collections::BTreeMap::new());
+
+/// Replace this run's lobes (call on `run.started`).
+pub(crate) fn set_lobes(lobes: Vec<meld_proto::coast::Lobe>) {
+    if let Ok(mut by_section) = SECTION_LOBES.write() {
+        by_section.clear();
+    }
+    if let Ok(mut b) = BASE_LOBES.write() {
+        *b = lobes.clone();
+    }
+    if let Ok(mut l) = LOBES.write() {
+        *l = lobes;
+    }
+}
+
+/// Set one SECTION's lobes (call on `world.terrain_section`).
+pub(crate) fn set_section_lobes(index: u32, lobes: &[meld_proto::coast::Lobe]) {
+    let Ok(mut by_section) = SECTION_LOBES.write() else { return };
+    if lobes.is_empty() && !by_section.contains_key(&index) {
+        return;
+    }
+    by_section.insert(index, lobes.to_vec());
+    let streamed: Vec<meld_proto::coast::Lobe> = by_section.values().flatten().copied().collect();
+    if let (Ok(mut l), Ok(base)) = (LOBES.write(), BASE_LOBES.read()) {
+        *l = base.iter().copied().chain(streamed).collect();
+    }
+}
+
+/// **The whole shoreline's data, owned** — straits and lobes together, because every caller
+/// needs both to build a [`meld_proto::coast::Shore`] and asking for one without the other
+/// is how a surface ends up drawing half a coastline (the minimap did exactly that: it knew
+/// the ocean and not the straits).
+pub(crate) fn shore_snapshot() -> (Vec<meld_proto::coast::Strait>, Vec<meld_proto::coast::Lobe>) {
+    (
+        STRAITS.read().map(|s| s.clone()).unwrap_or_default(),
+        LOBES.read().map(|l| l.clone()).unwrap_or_default(),
+    )
+}
+
 /// **The seed of the world we are in — its public NAME** (CANON D19: the target overworld
 /// is a *player-seeded* World, and §W5 stores this number rather than a map because the
 /// baseline is a pure function of it).
@@ -1874,7 +1941,10 @@ pub(crate) fn terrain_height(x: f32, z: f32) -> f32 {
         // creature and the player's own feet; a strait it did not know about would put the
         // whole world back up where the land used to be, over open water — the same bug this
         // function already shipped once for the ocean.
-        meld_proto::coast::sea_depth_with(x, z, arc_half, &straits_snapshot())
+        {
+            let (straits, lobes) = shore_snapshot();
+            (meld_proto::coast::Shore { arc_half, straits: &straits, lobes: &lobes }).depth(x, z)
+        }
     } else {
         // Corridor mode (tests, the tutorial): no fan, so no sea anywhere.
         return amp * land;
@@ -2031,6 +2101,22 @@ pub(crate) fn update_ground_biome_rings(
         };
     }
     mat.extension.params.strait_count = near.len() as u32;
+    // …and the coast's lobes, windowed the same way and for the same reason.
+    let mut near_lobes: Vec<meld_proto::coast::Lobe> =
+        LOBES.read().map(|l| l.clone()).unwrap_or_default();
+    near_lobes.sort_by(|a, b| {
+        let da = (a[0].hypot(a[1]) - pr).abs();
+        let db = (b[0].hypot(b[1]) - pr).abs();
+        da.total_cmp(&db)
+    });
+    near_lobes.truncate(LOBE_SLOTS);
+    for (i, slot) in mat.extension.params.lobes.iter_mut().enumerate() {
+        *slot = match near_lobes.get(i) {
+            Some(l) => Vec4::new(l[0], l[1], l[2], l[3]),
+            None => Vec4::ZERO,
+        };
+    }
+    mat.extension.params.lobe_count = near_lobes.len() as u32;
     // (outer_radius, biome_index) per section, sorted by radius (= corridor end_x).
     let mut rings: Vec<(f32, f32)> = terrain
         .sections
@@ -2910,8 +2996,8 @@ mod ground_uniform_tests {
             .0;
         for field in [
             "rings", "count", "uv_scale", "blend_half", "terrain_amp", "terrain_off",
-            "_pad_peaks", "peaks", "peak_count", "straits", "strait_count", "shift",
-            "sea_anim",
+            "_pad_peaks", "peaks", "peak_count", "straits", "strait_count", "lobes",
+            "lobe_count", "shift", "sea_anim",
         ] {
             assert!(body.contains(&format!("{field}:")), "the shader is missing `{field}`");
         }
@@ -2940,7 +3026,9 @@ mod ground_uniform_tests {
         // `peaks` before straits existed; it is checked for both now, because an array
         // length is a duplicated number and this repo only tolerates duplication that is
         // held by a test.
-        for (field, slots) in [("peaks", PEAK_SLOTS), ("straits", STRAIT_SLOTS)] {
+        for (field, slots) in
+            [("peaks", PEAK_SLOTS), ("straits", STRAIT_SLOTS), ("lobes", LOBE_SLOTS)]
+        {
             let decl = format!("{field}: array<vec4<f32>, {slots}>");
             assert!(
                 body.contains(&decl),

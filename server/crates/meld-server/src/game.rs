@@ -928,6 +928,7 @@ fn terrain_section_msg(
     corridor_lateral: f64,
     peaks: Vec<[f32; 4]>,
     straits: Vec<meld_proto::coast::Strait>,
+    lobes: Vec<meld_proto::coast::Lobe>,
 ) -> ww::TerrainSection {
     let t = &area.terrain;
     ww::TerrainSection {
@@ -956,6 +957,7 @@ fn terrain_section_msg(
         corridor_lateral,
         peaks,
         straits,
+        lobes,
     }
 }
 
@@ -5299,6 +5301,9 @@ impl GameState {
                     // which world they are in — and read off the world rather than echoed
                     // back from whatever they asked for, for the same reason `tutorial` is.
                     world_seed: inst.arena.seed(),
+                    // …and the coast's own shape (bays, isles), for the same reason the
+                    // straits ride: the client ramps its beach over the same signed field.
+                    lobes: inst.arena.lobes.clone(),
                     // The world's own fact, not the caller's request: a joiner who asked
                     // for a normal dive still lands in a live tutorial world.
                     tutorial: inst.tutorial,
@@ -5331,7 +5336,15 @@ impl GameState {
                 // messages carry none (avoids double-sending).
                 out.push(out_msg(
                     pid,
-                    &terrain_section_msg(area, Vec::new(), rh, cl, Vec::new(), Vec::new()),
+                    &terrain_section_msg(
+                        area,
+                        Vec::new(),
+                        rh,
+                        cl,
+                        Vec::new(),
+                        Vec::new(),
+                        Vec::new(),
+                    ),
                 ));
             }
         }
@@ -9533,7 +9546,26 @@ impl WorldActor {
                     .filter(|s| (s[0] as f64) >= s0 && (s[0] as f64) < e0)
                     .copied()
                     .collect();
-                let msg = terrain_section_msg(area, seg, rh, cl, section_peaks, section_straits);
+                // …and its bays/isles, by the same band filter.
+                let section_lobes: Vec<meld_proto::coast::Lobe> = self
+                    .arena
+                    .lobes
+                    .iter()
+                    .filter(|l| {
+                        let r = (l[0] as f64).hypot(l[1] as f64);
+                        r >= s0 && r < e0
+                    })
+                    .copied()
+                    .collect();
+                let msg = terrain_section_msg(
+                    area,
+                    seg,
+                    rh,
+                    cl,
+                    section_peaks,
+                    section_straits,
+                    section_lobes,
+                );
                 for r in &self.run.runs {
                     out.push(out_msg(&r.player_id, &msg));
                 }
@@ -9855,7 +9887,20 @@ impl WorldActor {
                 .filter(|s| (s[0] as f64) >= a0 && (s[0] as f64) < a1)
                 .copied()
                 .collect();
-            let msg = terrain_section_msg(area, Vec::new(), rh, cl, peaks, straits);
+            // The lobes are carried forward for the same reason the straits are: a Shift
+            // re-cuts topography, never the coastline, and the client REPLACES a section's
+            // from this message.
+            let lobes: Vec<meld_proto::coast::Lobe> = self
+                .arena
+                .lobes
+                .iter()
+                .filter(|l| {
+                    let r = (l[0] as f64).hypot(l[1] as f64);
+                    r >= a0 && r < a1
+                })
+                .copied()
+                .collect();
+            let msg = terrain_section_msg(area, Vec::new(), rh, cl, peaks, straits, lobes);
             for pid in &members {
                 out.push(out_msg(pid, &msg));
             }

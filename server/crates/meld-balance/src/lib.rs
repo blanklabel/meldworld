@@ -1270,6 +1270,33 @@ pub struct WorldGen {
     /// above [`meld_proto::coast::MIN_BRIDGE_HALF_WIDTH`], the walkability floor
     /// `coast::strait_is_crossable` enforces.
     pub strait_bridge_half_width: f64,
+
+    /// **BAYS (WG-7).** Chance a deep-enough section's rim holds a bay — a disc of water
+    /// biting inward. Lower than `strait_chance`, because the fan has TWO rims so this
+    /// fires twice per band on average, and a coast bitten at every ring is a fjord system.
+    pub bay_chance: f64,
+    /// Earliest section index that may hold a bay or an isle. Shallower than a strait's
+    /// gate: a bay does not block the way out, it only bends it.
+    pub bay_min_section: usize,
+    /// Nearest hub distance a bay may be cut. The western gap near the hub is a narrow
+    /// wedge closed by the neck, so a bay there would eat the walk home to Last City.
+    pub bay_min_reach: f64,
+    /// A bay's radius as a share of the local half-arc — smallest and largest drawn. Both
+    /// must stay under [`meld_proto::coast::BAY_LAND_SHARE`], which is the hard guarantee
+    /// `coast::bay_leaves_a_shore` enforces; these are the range drawn inside it.
+    pub bay_radius_share_min: f64,
+    pub bay_radius_share_max: f64,
+    /// **ISLES (WG-7).** Chance a section stands an isle offshore of its rim. Freer than a
+    /// bay because an isle is outside the fan and cannot block anything.
+    pub isle_chance: f64,
+    /// Isle radius range, world units.
+    pub isle_radius_min: f64,
+    pub isle_radius_max: f64,
+    /// How far past the fan's rim an isle's shore sits, as an ARC length rather than an
+    /// angle — an angular offset would beach it on the rim near the hub and strand it over
+    /// the horizon at the frontier.
+    pub isle_offshore_min: f64,
+    pub isle_offshore_max: f64,
 }
 
 /// Creature AI tunables (overworld movement + encounter grouping).

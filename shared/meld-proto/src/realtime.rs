@@ -240,6 +240,14 @@ pub mod world {
         /// collides against, and the client would draw walkable ground over water.
         #[serde(default)]
         pub straits: Vec<crate::coast::Strait>,
+        /// **The coast's own shape:** bays bitten into this section's rim and isles standing
+        /// off it ([`crate::coast::Lobe`] — one type for both, since they differ only in
+        /// which side of the waterline the disc adds to).
+        ///
+        /// ⚠️ Replaced per section like `straits` and `peaks`, so a retile must carry them
+        /// forward unchanged — an empty list deletes a bay the server still collides with.
+        #[serde(default)]
+        pub lobes: Vec<crate::coast::Lobe>,
     }
     impl Message for TerrainSection {
         const TYPE: &'static str = "world.terrain_section";
@@ -717,6 +725,10 @@ pub mod run {
         /// asked for is the bug that pattern was added to prevent.
         #[serde(default)]
         pub world_seed: u64,
+        /// **The coast's own shape:** this world's bays and isles ([`crate::coast::Lobe`]).
+        /// The initial chain's ride here; streamed sections append theirs.
+        #[serde(default)]
+        pub lobes: Vec<crate::coast::Lobe>,
     }
     /// Walkable extent of the instance (world-generation.md corridor bounds).
     #[derive(Debug, Clone, Serialize, Deserialize)]

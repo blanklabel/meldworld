@@ -264,12 +264,10 @@ fn sample(
     // follow the shore to one you cannot — and a coastline you cannot see on the map makes
     // the second option undiscoverable, which collapses the decision back to the wall the
     // retired `Seam` was.
-    if meld_proto::coast::is_ocean_with(
-        wx,
-        wz,
-        arc_half,
-        &crate::world_render::straits_snapshot(),
-    ) {
+    let (straits, lobes) = crate::world_render::shore_snapshot();
+    if (meld_proto::coast::Shore { arc_half, straits: &straits, lobes: &lobes })
+        .is_ocean(wx, wz)
+    {
         return Some((water_tile(&sec.biome), 1.0));
     }
 
@@ -520,6 +518,7 @@ mod tests {
             // shading, and a strait here would put water over the cells they assert on.
             // The straits' own map behaviour is covered by `coast`'s geometry tests.
             straits: vec![],
+            lobes: vec![],
         }
     }
 

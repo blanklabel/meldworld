@@ -440,6 +440,145 @@ pub fn strait_is_crossable(s: &Strait, arc_half_rad: f32) -> bool {
     bridged && ends_inside
 }
 
+// ---------------------------------------------------------------------------------------
+// BAYS AND ISLANDS
+// ---------------------------------------------------------------------------------------
+//
+// The [`Strait`] above gave the world INTERIOR structure. These two give its edge a shape:
+// a **bay** bites inward from the fan's rim, and an **isle** stands out in the open sea.
+//
+// **They are ONE primitive**, and that is not a shortcut — a disc that edits the
+// shoreline is exactly what both of them are, and they differ only in which side of the
+// waterline the disc adds to. Keeping them as one type means one wire field, one uniform
+// array, and one fold; two near-identical lists is how the pond/bog-pool/frozen-pond rule
+// ended up written three times and one edit from disagreeing (see [`is_water_kind`]).
+//
+// A bay is the cheaper half of `WG-7`'s "regions with shapes": it is **convex**, so routing
+// around one costs `πr / 2r` = **π/2 ≈ 1.57x** the straight line — bounded, where a ridge or
+// a river can force an arbitrarily long detour. And it cannot sever the world, because a
+// bay's reach inward is bounded to a share of the local half-arc, so there is always land
+// between it and the fan's centre line ([`BAY_LAND_SHARE`], the same discipline
+// [`CHANNEL_LAND_SHARE`] uses to guarantee the channel beside the city's spit).
+//
+// An isle is honestly **scenery**: it stands in the western gap, which no one can walk to,
+// so nothing is ever placed on one. It is here because an ocean with nothing in it reads as
+// a backdrop, and because it costs one term in a function that is already being evaluated.
+
+/// One LOBE of the coastline: a disc that edits where the water is.
+/// `[cx, cz, radius, kind]` — world-space centre, world-unit radius, and
+/// [`LOBE_BAY`] (water) or [`LOBE_ISLE`] (land).
+///
+/// The 4th component carries the kind because a disc leaves it free, and because the
+/// alternative — two arrays, two counts, two lots of uniform padding — costs more on both
+/// sides of the wire than one tagged list. A radius of zero is an empty slot.
+///
+/// Lobes apply **in order**, so an isle listed after a bay stands *in* that bay. That falls
+/// out of the fold rather than needing a rule.
+pub type Lobe = [f32; 4];
+
+/// A [`Lobe`] that is WATER: a bay or gulf, biting inward from the fan's rim.
+pub const LOBE_BAY: f32 = 0.0;
+
+/// A [`Lobe`] that is LAND: an isle standing in the sea.
+pub const LOBE_ISLE: f32 = 1.0;
+
+/// Max lobes a ground shader blends at once, windowed around the player like the straits.
+pub const MAX_LOBES: usize = 12;
+
+/// The most of the local half-arc a bay may eat, leaving the rest as land. **This is what
+/// makes a bay unable to sever the world** — there is always ground between it and the
+/// fan's centre line, at every radius, whatever the arc is retuned to. Same guarantee, and
+/// the same reasoning, as [`CHANNEL_LAND_SHARE`].
+pub const BAY_LAND_SHARE: f32 = 0.42;
+
+/// **The whole shoreline of one world**, gathered so it can be asked in one place.
+///
+/// It is a bundle rather than five more parameters because the argument list was already
+/// growing one entry per feature — `(x, z, arc_half)`, then `straits`, then lobes — and
+/// every addition meant touching all ~15 call sites again. The call sites ask
+/// `shore.is_land(x, z)` now, so the NEXT thing the coastline learns costs one field here
+/// and nothing anywhere else.
+#[derive(Clone, Copy)]
+pub struct Shore<'a> {
+    /// Half the world's fan, in radians (`radial_arc_degrees.to_radians() * 0.5`). Zero is
+    /// corridor mode: no fan, so no sea at all and every other field is inert.
+    pub arc_half: f32,
+    /// The inland seas that separate the continents ([`Strait`]).
+    pub straits: &'a [Strait],
+    /// Bays cut into the rim and isles standing offshore ([`Lobe`]).
+    pub lobes: &'a [Lobe],
+}
+
+impl<'a> Shore<'a> {
+    /// A shoreline with nothing but the ocean — the world as it was before continents.
+    /// Handy for the City (whose own coast is [`city_sea_depth`]) and for corridor mode.
+    pub fn bare(arc_half: f32) -> Self {
+        Shore { arc_half, straits: &[], lobes: &[] }
+    }
+
+    /// **How far past this world's shoreline `(x, z)` is** — negative on land, positive at
+    /// sea, zero on the waterline. The one answer every other method here is a sign test of.
+    ///
+    /// Order is deliberate and it is the order the shapes were added to the world: the
+    /// ocean and its spit, then the straits that break the fan into continents, then the
+    /// lobes that shape its edge. A bay is a `max` (water wins over land) and an isle a
+    /// `min` (land wins over water), so a later isle stands inside an earlier bay.
+    ///
+    /// Every term is a signed distance in world units, so the field stays CONTINUOUS and
+    /// the ground shader's beach ramp has a gradient to ramp over. That is the one property
+    /// this module keeps having to re-learn: a boolean wearing a float renders as a
+    /// vertical wall of water with no beach possible in between.
+    pub fn depth(&self, x: f32, z: f32) -> f32 {
+        let mut d = sea_depth_with(x, z, self.arc_half, self.straits);
+        if self.arc_half <= 0.0 {
+            return d; // corridor mode: no fan, no sea, and so no coastline to shape
+        }
+        for l in self.lobes {
+            let (cx, cz, r, kind) = (l[0], l[1], l[2], l[3]);
+            if r <= 0.0 {
+                continue; // an empty slot
+            }
+            // Positive inside the disc, negative outside — a circle's signed distance.
+            let inside = r - (x - cx).hypot(z - cz);
+            if kind < 0.5 {
+                d = d.max(inside); // BAY: water, so it wins over whatever was land
+            } else {
+                d = d.min(-inside); // ISLE: land, so it wins over whatever was sea
+            }
+        }
+        d
+    }
+
+    /// Is `(x, z)` open water? The sign of [`Self::depth`], so the water a player SEES and
+    /// the water they COLLIDE with cannot disagree — the whole reason this module exists.
+    pub fn is_ocean(&self, x: f32, z: f32) -> bool {
+        self.depth(x, z) > 0.0
+    }
+
+    /// Is `(x, z)` walkable ground as far as the coast is concerned? Named for the call
+    /// sites, which read as "can I stand here".
+    pub fn is_land(&self, x: f32, z: f32) -> bool {
+        !self.is_ocean(x, z)
+    }
+}
+
+/// Does this bay leave land between itself and the fan's centre line, at its own radius?
+///
+/// The contract, asked of the thing rather than assumed of the arithmetic that built it —
+/// the same discipline as [`strait_is_crossable`]. A bay that fails this can pinch the fan
+/// in two, and unlike a strait it carries no isthmus to cross at.
+pub fn bay_leaves_a_shore(l: &Lobe, arc_half_rad: f32) -> bool {
+    if l[3] >= 0.5 {
+        return true; // an isle is land; it cannot cut anything off
+    }
+    let (r, radius) = (l[0].hypot(l[1]), l[2]);
+    if radius <= 0.0 {
+        return true;
+    }
+    // Half the arc available at this radius, and the share of it a bay may take.
+    radius <= r * arc_half_rad * BAY_LAND_SHARE
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -782,6 +921,171 @@ mod tests {
         assert!(!is_ocean_with(600.0, 0.0, 0.0, &[s]));
         assert!(!is_ocean_with(600.0, 30.0, 0.0, &[s]));
         assert!(sea_depth_with(600.0, 0.0, 0.0, &[s]) < 0.0);
+    }
+
+    // -----------------------------------------------------------------------------------
+    // BAYS AND ISLANDS
+    // -----------------------------------------------------------------------------------
+
+    /// A bay sitting ON the fan's rim at r=800, biting inward.
+    fn test_bay() -> Lobe {
+        let (r, th) = (800.0_f32, ARC_HALF);
+        [r * th.cos(), r * th.sin(), 90.0, LOBE_BAY]
+    }
+
+    /// **A bay eats into the fan and never through it.** Water at the rim where it sits,
+    /// land still there between it and the centre line — which is the guarantee, because
+    /// unlike a strait a bay carries no isthmus to cross at.
+    #[test]
+    fn a_bay_bites_into_the_fan_but_never_through_it() {
+        let bay = test_bay();
+        let lobes = [bay];
+        let shore = Shore { arc_half: ARC_HALF, straits: &[], lobes: &lobes };
+
+        // Its own centre, on the rim, is water.
+        assert!(shore.is_ocean(bay[0], bay[1]), "a bay is water");
+        // And it has genuinely bitten INWARD: a point just inside the rim, at the bay's
+        // radius, is now sea where the bare fan called it land.
+        let inward_th = ARC_HALF - 20.0 / 800.0; // 20 units of arc inside the rim
+        let (ix, iz) = (800.0 * inward_th.cos(), 800.0 * inward_th.sin());
+        assert!(shore.is_ocean(ix, iz), "the bay must reach inside the fan's rim");
+        assert!(
+            Shore::bare(ARC_HALF).is_land(ix, iz),
+            "…and that point must be land without it, or this test proves nothing"
+        );
+
+        // But the centre line at the same radius is still dry, at every radius the bay
+        // touches — there is always a way past it.
+        for r in [720.0_f32, 800.0, 880.0] {
+            assert!(
+                shore.is_land(r, 0.0),
+                "a bay must never reach the fan's centre line (r={r}) — that is a barrier \
+                 with no way around and no isthmus to cross"
+            );
+        }
+    }
+
+    /// The contract, asked as a contract: a bay bounded to its share of the local half-arc
+    /// leaves a shore; one that is not can pinch the fan in two.
+    #[test]
+    fn the_bay_contract_catches_one_that_would_pinch_the_fan() {
+        assert!(bay_leaves_a_shore(&test_bay(), ARC_HALF));
+
+        let mut greedy = test_bay();
+        greedy[2] = 800.0 * ARC_HALF; // the whole half-arc
+        assert!(
+            !bay_leaves_a_shore(&greedy, ARC_HALF),
+            "a bay spanning the entire half-arc cuts the fan in two"
+        );
+
+        // An isle is land and can never cut anything off, whatever its radius.
+        let big_isle = [-400.0, 0.0, 9_000.0, LOBE_ISLE];
+        assert!(bay_leaves_a_shore(&big_isle, ARC_HALF));
+    }
+
+    /// **An isle is land standing in water**, and the sea around it is still sea.
+    #[test]
+    fn an_isle_stands_in_the_open_sea() {
+        // Out past the spit's tip and OFF the axis: open ocean in the bare world.
+        //
+        // Off-axis on purpose. Dead on the axis past the tip, `peninsula_half_width` is 0
+        // and so `past_spit` is exactly 0 — the measure-zero waterline where a depth of 0.0
+        // makes `is_ocean` false while the boolean `is_ocean` calls it sea. That line is
+        // precisely what `the_depth_field_agrees_with_the_predicate` skips with its epsilon,
+        // and putting a fixture on it tests the tie-break rather than the isle.
+        let (cx, cz) = (-(PENINSULA_LENGTH + 120.0), 90.0);
+        assert!(Shore::bare(ARC_HALF).is_ocean(cx, cz), "the fixture must start as sea");
+
+        let lobes = [[cx, cz, 40.0, LOBE_ISLE]];
+        let shore = Shore { arc_half: ARC_HALF, straits: &[], lobes: &lobes };
+        assert!(shore.is_land(cx, cz), "an isle is dry land");
+        assert!(shore.is_land(cx + 30.0, cz), "…across its whole width");
+        assert!(shore.is_ocean(cx + 60.0, cz), "and the sea closes again past its shore");
+    }
+
+    /// Lobes apply IN ORDER, so an isle listed after a bay stands in that bay. This falls
+    /// out of the `max`/`min` fold rather than needing a rule of its own.
+    #[test]
+    fn an_isle_listed_after_a_bay_stands_in_it() {
+        let bay = test_bay();
+        let isle = [bay[0], bay[1], 25.0, LOBE_ISLE];
+        let lobes = [bay, isle];
+        let shore = Shore { arc_half: ARC_HALF, straits: &[], lobes: &lobes };
+        assert!(shore.is_land(bay[0], bay[1]), "the isle wins where it overlaps the bay");
+        // …and the bay is still water just outside the isle.
+        let out = 40.0;
+        let (ox, oz) = (bay[0] + out * ARC_HALF.cos(), bay[1] + out * ARC_HALF.sin());
+        assert!(shore.is_ocean(ox, oz) || shore.is_land(ox, oz), "field is defined either way");
+        assert!(shore.is_ocean(bay[0] - 45.0, bay[1]), "the bay survives beside its isle");
+    }
+
+    /// The bundle's sign is its own depth, over a world carrying every kind of shape at
+    /// once — the same invariant `the_depth_field_agrees_with_the_predicate` holds for the
+    /// bare ocean. A disagreement here is water you can walk on.
+    #[test]
+    fn the_whole_shoreline_agrees_with_itself() {
+        let straits = [[600.0, 20.0, 0.0, 0.44, -0.24, 14.0, 0.22, 14.0]];
+        let lobes = [
+            test_bay(),
+            [-(PENINSULA_LENGTH + 120.0), 0.0, 40.0, LOBE_ISLE],
+            [500.0 * (-ARC_HALF).cos(), 500.0 * (-ARC_HALF).sin(), 60.0, LOBE_BAY],
+        ];
+        let shore = Shore { arc_half: ARC_HALF, straits: &straits, lobes: &lobes };
+        let mut checked = 0u32;
+        for xi in -70..=70 {
+            for zi in -70..=70 {
+                let (x, z) = (xi as f32 * 13.7, zi as f32 * 13.7);
+                if x.hypot(z) < 1.0 {
+                    continue;
+                }
+                let d = shore.depth(x, z);
+                if d.abs() > 1e-3 {
+                    assert_eq!(d > 0.0, shore.is_ocean(x, z), "({x}, {z}): depth {d}");
+                    checked += 1;
+                }
+            }
+        }
+        assert!(checked > 10_000, "the sweep covered almost nothing ({checked})");
+    }
+
+    /// A bay's and an isle's shores both get a BEACH, not a cliff — the field has to stay
+    /// continuous across them, because the ground shader smoothsteps over its magnitude.
+    /// This module has shipped the flat-field bug twice; a disc is easy to get right and
+    /// easy to get wrong the same way.
+    #[test]
+    fn a_lobes_shoreline_has_a_beach_rather_than_a_cliff() {
+        let lobes = [test_bay(), [-(PENINSULA_LENGTH + 120.0), 0.0, 40.0, LOBE_ISLE]];
+        let shore = Shore { arc_half: ARC_HALF, straits: &[], lobes: &lobes };
+        for l in &lobes {
+            // March out through the lobe's own shore in 0.5-unit steps.
+            let mut prev: Option<f32> = None;
+            let mut t = -1.5 * l[2];
+            while t <= 1.5 * l[2] {
+                let d = shore.depth(l[0] + t, l[1]);
+                if let Some(p) = prev {
+                    assert!(
+                        (d - p).abs() < 2.0,
+                        "the depth jumped {:.1} over a 0.5-unit step at t={t} on lobe \
+                         {l:?} — that is a cliff of water, and every smoothstep over it \
+                         collapses into a step",
+                        (d - p).abs()
+                    );
+                }
+                prev = Some(d);
+                t += 0.5;
+            }
+        }
+    }
+
+    /// Corridor mode has no fan, so it has no sea — and therefore no bays and no isles,
+    /// however many are handed in. The tutorial and every flat unit test stay untouched.
+    #[test]
+    fn corridor_mode_has_no_coastline_to_shape() {
+        let lobes = [test_bay(), [-300.0, 0.0, 40.0, LOBE_ISLE]];
+        let shore = Shore { arc_half: 0.0, straits: &[], lobes: &lobes };
+        assert!(shore.is_land(600.0, 0.0));
+        assert!(shore.is_land(-300.0, 0.0));
+        assert!(shore.depth(600.0, 30.0) < 0.0);
     }
 }
 

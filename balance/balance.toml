@@ -1677,6 +1677,29 @@ strait_span_max_degrees = 96.0   # widest. Capped so rounding an end stays a rea
 strait_bridges = 2               # isthmuses per strait. TWO, not one: one door is the `Seam` again. With the two ends that is four ways past every strait.
 strait_bridge_half_width = 17.0  # half the arc width of an isthmus, in WORLD units — not an angle, or a bridge would be a few units wide near the hub and hundreds at the frontier. Must stay above `coast::MIN_BRIDGE_HALF_WIDTH` (11.0), which is the walkability floor the contract enforces. [TUNABLE]
 
+# BAYS AND ISLES (WG-7, the coast's own shape). The straits above give the fan interior
+# structure; these give its EDGE a shape. Both are one primitive — `coast::Lobe`, a disc
+# that edits the shoreline — differing only in which side of the waterline they add to.
+#
+# A BAY is a real barrier and the cheapest well-behaved one there is: convex, so routing
+# around it costs pi/2 ~ 1.57x the straight line, bounded — where a ridge or a river can
+# force an arbitrarily long detour. It is bounded to `coast::BAY_LAND_SHARE` of the local
+# half-arc, so there is ALWAYS dry ground between it and the fan's centre line: a bay
+# carries no isthmus, so unlike a strait it must never be crossable only at a point.
+#
+# An ISLE is honestly scenery. It stands outside the fan, where nothing is placed and
+# nobody can walk, and it exists so open water reads as a sea rather than a backdrop.
+bay_chance = 0.30                # chance a deep-enough section's rim holds a bay (0..1). Lower than `strait_chance`: a coast bitten at every ring is a fjord system, and the fan has two rims, so this fires twice per band on average. [TUNABLE]
+bay_min_section = 4              # earliest section index that may hold a bay or an isle. Shallower than a strait's gate, because a bay does not block the way out — it only bends it — so it is safe nearer the on-ramp.
+bay_min_reach = 120.0            # nearest hub distance a bay may be cut. The gap near the hub is a narrow wedge and the neck closes it, so a bay there would eat the walk home to Last City. [TUNABLE]
+bay_radius_share_min = 0.10      # a bay's radius as a share of the local half-arc, smallest. [TUNABLE]
+bay_radius_share_max = 0.30      # …and largest. Both MUST stay under `coast::BAY_LAND_SHARE` (0.42), which is the hard guarantee the contract enforces; these are the range actually drawn inside it. [TUNABLE]
+isle_chance = 0.45               # chance a section puts an isle offshore of its rim (0..1). Freer than a bay because an isle cannot block anything. [TUNABLE]
+isle_radius_min = 14.0           # smallest isle, world units. [TUNABLE]
+isle_radius_max = 46.0           # largest. [TUNABLE]
+isle_offshore_min = 25.0         # nearest an isle's shore may sit to the fan's rim, as an ARC length — not an angle, or an isle would beach itself on the rim near the hub and sit over the horizon at the frontier. [TUNABLE]
+isle_offshore_max = 130.0        # furthest. Past the interest radius it is never drawn, so there is no point scattering them into the void. [TUNABLE]
+
 # Content-ish stats per creature, keyed by content id. Bases are pre-scale; the
 # world multiplies each by stat_mult(distance) at spawn, so the SAME base grows
 # menacing with depth. Forest bases are tuned so a solo explorer can win the first

@@ -287,6 +287,8 @@ pub struct TerrainSectionView {
     /// one landmass from the next ([`meld_proto::coast::Strait`]). A re-sent section replaces
     /// its own, exactly as it replaces its own peaks.
     pub straits: Vec<meld_proto::coast::Strait>,
+    /// The coast's own shape: bays and isles ([`meld_proto::coast::Lobe`]).
+    pub lobes: Vec<meld_proto::coast::Lobe>,
 }
 
 /// One resolved effect for hit feedback (a damage or heal on a combatant).
@@ -658,6 +660,8 @@ pub enum ServerMsg {
         /// what we asked for: a client that shows the seed it requested rather than the one
         /// it got is the exact bug `tutorial` beside it exists to prevent.
         world_seed: u64,
+        /// The coast's own shape: this world's bays and isles.
+        lobes: Vec<meld_proto::coast::Lobe>,
         tutorial: bool,
     },
     /// The caller's hero roster (name/class/level/stats) for the party panel.
@@ -2372,11 +2376,28 @@ impl Inner {
                 // full u64 and f64 loses every bit past 2^53, which would quietly hand the
                 // player a seed that regenerates a DIFFERENT world than the one they are in.
                 let world_seed = raw.payload["world_seed"].as_u64().unwrap_or(0);
+                // Bays and isles — four floats each, same shape as `peaks`.
+                let lobes: Vec<meld_proto::coast::Lobe> = raw.payload["lobes"]
+                    .as_array()
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|l| {
+                                let a = l.as_array()?;
+                                let mut out = [0.0f32; 4];
+                                for (i, slot) in out.iter_mut().enumerate() {
+                                    *slot = a.get(i)?.as_f64()? as f32;
+                                }
+                                Some(out)
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
                 self.out.push_back(ServerMsg::RunStarted {
                     terrain_off,
                     peaks,
                     straits,
                     world_seed,
+                    lobes,
                     tutorial,
                 });
                 self.emit_backpack();
@@ -2951,6 +2972,7 @@ impl Inner {
                         corridor_lateral: t.corridor_lateral,
                         peaks: t.peaks,
                         straits: t.straits,
+                        lobes: t.lobes,
                     };
                     self.out.push_back(ServerMsg::TerrainSection { section });
                 }
