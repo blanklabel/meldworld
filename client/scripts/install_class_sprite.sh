@@ -43,6 +43,9 @@ rm -rf "$DEST"; mkdir -p "$DEST"
 cp -R "$STATE"/. "$DEST"/
 [ -f "$TMP/x/metadata.json" ] && cp "$TMP/x/metadata.json" "$DEST"/
 
+# Fill the western facings from their eastern mirrors BEFORE padding, so the flip
+# operates on the raw art. A no-op on a set that was generated with all eight.
+python3 "$ROOT/client/scripts/mirror_sprites.py" "$DEST"
 python3 "$ROOT/client/scripts/pad_sprites.py" "$DEST"
 
 echo "==> $CLASS: $(find "$DEST" -name '*.png' | wc -l | tr -d ' ') frames"

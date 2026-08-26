@@ -36,7 +36,14 @@ ALL_DIRS = ["south", "south-east", "east", "north-east", "north", "north-west", 
 # An attack is only ever seen in a BATTLE, where the arena faces the party — so seven of
 # its eight directions would be art for a camera angle that never happens.
 # `hd2d::load_creature_clips` reuses the south attack for every facing.
-CLIP_DIRS = {"walk": ALL_DIRS, "attack": ["south"]}
+# THE WESTERN HALF IS THE EASTERN HALF FLIPPED, so it is not drawn. The eight facings
+# are symmetric about the north-south axis: `south` and `north` sit ON that axis, and the
+# rest are three mirrored pairs. Five generated directions give all eight once
+# `mirror_sprites.py` fills the other three, which cuts a walk by 37% AND — because a
+# clip's directions are one job each against a fixed cap — lets two characters' walks run
+# at once instead of one.
+MIRRORED_DIRS = ["south", "north", "south-east", "east", "north-east"]
+CLIP_DIRS = {"walk": MIRRORED_DIRS, "attack": ["south"]}
 TOKEN = os.environ.get("PIXELLAB_TOKEN", "")
 
 
@@ -77,10 +84,10 @@ def log(msg):
     print(f"[{time.strftime('%H:%M:%S')}] {msg}", flush=True)
 
 
-# The account's concurrency cap. A south-only clip is ONE job, so a whole chunk of
-# characters can be in flight at once — which is the entire reason the clips are
-# south-only. Left at 8 rather than 10 so a retry always has somewhere to land.
-SLOTS = 8
+# The account's concurrency cap. A five-direction walk is five jobs, so exactly two
+# characters' walks fit at once; a one-direction attack is one job, so a whole chunk of
+# them goes at once.
+SLOTS = 10
 
 
 def active_jobs():
@@ -231,8 +238,8 @@ def main():
             plan.append({"asset": asset, "desc": c[rank], "walk": c["walk"],
                          "attack": c["attack"], "gate": c["gate"]})
 
-    log(f"{len(plan)} characters, ~{len(plan) * 21} generations "
-        f"(8-dir rotations + 8-dir walk + south-only attack)")
+    log(f"{len(plan)} characters, ~{len(plan) * 15} generations "
+        f"(8-dir rotations + 5-dir walk mirrored to 8 + south-only attack)")
     if a.dry_run:
         for p in plan:
             print(f"  d{p['gate']:<4} {p['asset']}")
