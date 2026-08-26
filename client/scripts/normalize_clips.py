@@ -15,7 +15,10 @@ naming is free. Run it before mirroring and padding.
 Lowercasing plus an alias table, and it refuses to merge two clips onto one name rather
 than silently letting one win.
 """
-import argparse, pathlib, sys
+import argparse, pathlib, shutil, sys
+
+DIRS = ["south", "south-east", "east", "north-east", "north", "north-west", "west",
+        "south-west"]
 
 # Display name (lowercased) -> the key the renderer asks for. Derived from the names
 # actually in use across the bestiary, not guessed.
@@ -51,6 +54,22 @@ def main():
     if not anims.is_dir():
         print(f"{a.dir.name}: no animations/, nothing to normalize")
         return
+    # A clip exported from two groups of the same name disambiguates the directions they
+    # share by appending a hash (`north-east-3f445859`). Those are not facings the loader
+    # knows, so the extra copy is dropped and the plain name kept.
+    for clip in sorted(p for p in anims.iterdir() if p.is_dir()):
+        for d in sorted(x for x in clip.iterdir() if x.is_dir()):
+            if "-" not in d.name:
+                continue
+            base = d.name.rsplit("-", 1)[0]
+            if base in DIRS and len(d.name.rsplit("-", 1)[1]) == 8:
+                if (clip / base).is_dir():
+                    shutil.rmtree(d)
+                    print(f"  {a.dir.name}: dropped duplicate facing {clip.name}/{d.name}")
+                else:
+                    d.rename(clip / base)
+                    print(f"  {a.dir.name}: {clip.name}/{d.name} -> {base}")
+
     renamed = []
     for clip in sorted(p for p in anims.iterdir() if p.is_dir()):
         if clip.name.lower().startswith(UNNAMED_PREFIX):
@@ -63,12 +82,19 @@ def main():
         if want == clip.name:
             continue
         dst = anims / want
-        if dst.exists():
-            # Two clips claiming one key: say so rather than picking a winner, because
-            # the loser is art that silently never plays.
+        # ⚠️ macOS IS CASE-INSENSITIVE, so `Fireball` and `fireball` are the same path and
+        # a pure lowercasing reads as a collision with itself. `Fireball` and `Walking`
+        # both survived a whole sync because of this — the art installed under names the
+        # loader never opens, and the creature stood frozen with its clips right there.
+        # Go via a temporary name so the rename is a real move on any filesystem.
+        if dst.exists() and clip.name.lower() != want.lower():
+            # Genuinely two different clips claiming one key: say so rather than picking a
+            # winner, because the loser is art that silently never plays.
             sys.exit(f"{a.dir.name}: both '{clip.name}' and '{want}' exist - "
                      f"rename one in PixelLab; refusing to merge them")
-        clip.rename(dst)
+        tmp = anims / f".{want}.renaming"
+        clip.rename(tmp)
+        tmp.rename(dst)
         renamed.append(f"{clip.name} -> {want}")
     print(f"{a.dir.name}: " + (", ".join(renamed) if renamed else "clip names already canonical"))
 
