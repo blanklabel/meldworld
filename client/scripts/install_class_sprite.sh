@@ -38,6 +38,11 @@ unzip -q "$TMP/c.zip" -d "$TMP/x"
 STATE=$(find "$TMP/x" -mindepth 1 -maxdepth 1 -type d)
 [ "$(echo "$STATE" | wc -l)" -eq 1 ] || { echo "expected one state folder, got:"; echo "$STATE"; exit 1; }
 
+# ⚠️ THIS REPLACES THE FOLDER WHOLESALE, so a clip the account no longer has is LOST
+# here even though the game still uses it. A `--all` re-pull silently destroyed six
+# attack clips that way — they existed only in this repo, and nothing in the account,
+# the audit or the tests would have missed them. Prefer targeted pulls, and check
+# `git status` after a broad one.
 echo "==> installing -> $ASSET_DIR/$CLASS"
 rm -rf "$DEST"; mkdir -p "$DEST"
 cp -R "$STATE"/. "$DEST"/
