@@ -374,7 +374,13 @@ pub(crate) fn boss_keys() -> impl Iterator<Item = &'static str> {
 /// Held against what is actually on disk by `every_installed_creature_set_is_loaded`, so
 /// art that lands unlisted — art nobody would ever see — fails rather than sitting unused.
 pub(crate) const CREATURE_CHARS: &[&str] = &[
+    "bog_serpent",
+    "bog_serpent_pack_leader",
     "forest_bloom_stalker_pack_leader",
+    "myconid_brute",
+    "myconid_brute_pack_leader",
+    "sporeling",
+    "thornback_boar",
 ];
 
 /// Which installed set a creature draws from: a pack leader's own art when it has some,
