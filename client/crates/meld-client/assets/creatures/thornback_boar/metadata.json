@@ -1,11 +1,11 @@
 {
-  "group_id": "1bdd210c-ce0a-4456-aedf-bcbcb70680bd",
+  "group_id": "64727742-0897-4151-b46f-40ab7d856e30",
   "states": [
     {
       "character": {
-        "id": "3ac89c40-4d7b-478f-a95f-ebc01971a664",
+        "id": "3289ed1b-03b6-4662-b0d7-66dc06d3ae95",
         "name": "Idle",
-        "prompt": "an enormous scarred wild boar with a ridge of long black thorns down its spine, heavy curved yellow tusks, matted brown bristles and a torn ear in a weird HD-2D fantasy style. Full body, head to toe, whole creature inside the frame, standing on the ground.",
+        "prompt": "a small young wild boar with a short stubble of dark thorns along its spine, little tusks and soft brown bristles in a weird HD-2D fantasy style. Full body, head to toe, whole creature inside the frame, standing on the ground.",
         "size": {
           "width": 96,
           "height": 96
@@ -13,7 +13,7 @@
         "template_id": "mannequin",
         "directions": 8,
         "view": "low top-down",
-        "created_at": "2026-08-26T14:58:06.957228+00:00"
+        "created_at": "2026-08-26T14:58:08.177193+00:00"
       },
       "folder": "Idle",
       "frames": {
@@ -28,18 +28,6 @@
           "south-west": "Idle/rotations/south-west.png"
         },
         "animations": {
-          "walk": {
-            "south": [
-              "Idle/animations/walk/south/frame_000.png",
-              "Idle/animations/walk/south/frame_001.png",
-              "Idle/animations/walk/south/frame_002.png",
-              "Idle/animations/walk/south/frame_003.png",
-              "Idle/animations/walk/south/frame_004.png",
-              "Idle/animations/walk/south/frame_005.png",
-              "Idle/animations/walk/south/frame_006.png",
-              "Idle/animations/walk/south/frame_007.png"
-            ]
-          },
           "attack": {
             "south": [
               "Idle/animations/attack/south/frame_000.png",
@@ -51,11 +39,65 @@
               "Idle/animations/attack/south/frame_006.png",
               "Idle/animations/attack/south/frame_007.png"
             ]
+          },
+          "walk": {
+            "north-east": [
+              "Idle/animations/walk/north-east/frame_000.png",
+              "Idle/animations/walk/north-east/frame_001.png",
+              "Idle/animations/walk/north-east/frame_002.png",
+              "Idle/animations/walk/north-east/frame_003.png",
+              "Idle/animations/walk/north-east/frame_004.png",
+              "Idle/animations/walk/north-east/frame_005.png",
+              "Idle/animations/walk/north-east/frame_006.png",
+              "Idle/animations/walk/north-east/frame_007.png"
+            ],
+            "north": [
+              "Idle/animations/walk/north/frame_000.png",
+              "Idle/animations/walk/north/frame_001.png",
+              "Idle/animations/walk/north/frame_002.png",
+              "Idle/animations/walk/north/frame_003.png",
+              "Idle/animations/walk/north/frame_004.png",
+              "Idle/animations/walk/north/frame_005.png",
+              "Idle/animations/walk/north/frame_006.png",
+              "Idle/animations/walk/north/frame_007.png"
+            ],
+            "east": [
+              "Idle/animations/walk/east/frame_000.png",
+              "Idle/animations/walk/east/frame_001.png",
+              "Idle/animations/walk/east/frame_002.png",
+              "Idle/animations/walk/east/frame_003.png",
+              "Idle/animations/walk/east/frame_004.png",
+              "Idle/animations/walk/east/frame_005.png",
+              "Idle/animations/walk/east/frame_006.png",
+              "Idle/animations/walk/east/frame_007.png"
+            ],
+            "south-east": [
+              "Idle/animations/walk/south-east/frame_000.png",
+              "Idle/animations/walk/south-east/frame_001.png",
+              "Idle/animations/walk/south-east/frame_002.png",
+              "Idle/animations/walk/south-east/frame_003.png",
+              "Idle/animations/walk/south-east/frame_004.png",
+              "Idle/animations/walk/south-east/frame_005.png",
+              "Idle/animations/walk/south-east/frame_006.png",
+              "Idle/animations/walk/south-east/frame_007.png"
+            ]
+          },
+          "walk-9079c2fa": {
+            "south": [
+              "Idle/animations/walk-9079c2fa/south/frame_000.png",
+              "Idle/animations/walk-9079c2fa/south/frame_001.png",
+              "Idle/animations/walk-9079c2fa/south/frame_002.png",
+              "Idle/animations/walk-9079c2fa/south/frame_003.png",
+              "Idle/animations/walk-9079c2fa/south/frame_004.png",
+              "Idle/animations/walk-9079c2fa/south/frame_005.png",
+              "Idle/animations/walk-9079c2fa/south/frame_006.png",
+              "Idle/animations/walk-9079c2fa/south/frame_007.png"
+            ]
           }
         }
       }
     }
   ],
   "export_version": "3.1",
-  "export_date": "2026-08-26T15:09:07.874712"
+  "export_date": "2026-08-26T15:38:24.399790"
 }

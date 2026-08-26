@@ -136,16 +136,22 @@ def installed_on_disk(asset):
     d = ASSETS / asset
     if not (d / "rotations" / "south.png").is_file():
         return False
-    walk = d / "animations" / "walk"
-    attack = d / "animations" / "attack"
-    if not walk.is_dir() or not attack.is_dir():
-        return False
-    return len([x for x in walk.iterdir() if x.is_dir()]) >= 8 and (attack / "south").is_dir()
+    # All EIGHT walk facings by name (five drawn, three mirrored), and a south attack.
+    return set(ALL_DIRS) <= clip_dirs_on_disk(asset, "walk") and \
+        "south" in clip_dirs_on_disk(asset, "attack")
 
 
 def clip_dirs_on_disk(asset, clip):
+    """Which facings of this clip actually exist, BY NAME.
+
+    Counting is not enough: a colliding export produced seven directions with `south`
+    missing, and `len(...) >= 5` happily called that finished. A set of names cannot make
+    that mistake.
+    """
     d = ASSETS / asset / "animations" / clip
-    return len([x for x in d.iterdir() if x.is_dir()]) if d.is_dir() else 0
+    if not d.is_dir():
+        return set()
+    return {x.name for x in d.iterdir() if x.is_dir() and any(x.glob("*.png"))}
 
 
 def load_state():
@@ -173,7 +179,7 @@ def load_state():
         if s.get("installed"):
             continue
         for clip, dirs in CLIP_DIRS.items():
-            if s.get(clip) and clip_dirs_on_disk(asset, clip) < len(dirs):
+            if s.get(clip) and not set(dirs) <= clip_dirs_on_disk(asset, clip):
                 s.pop(clip, None)
     return st
 
@@ -195,7 +201,35 @@ def create(name, description, style):
     raise RuntimeError(f"create failed for {name}: {out[:300]}")
 
 
+def existing_clip_groups(cid, clip):
+    """Animation-group ids already on this character under `clip`.
+
+    ⚠️ TWO GROUPS OF THE SAME NAME COLLIDE ON EXPORT. The download zip lays a group out as
+    `animations/<name>/<dir>/`, so a second group called `walk` writes into the same
+    folders as the first — and what came back was seven directions with `south` silently
+    missing, because both groups had a `south` and only one survived. Re-generating a clip
+    therefore has to REPLACE, not append.
+    """
+    out = call("get_character", {"character_id": cid, "include_preview": False})
+    ids = []
+    for line in out.splitlines():
+        stripped = line.strip()
+        if not stripped.startswith(clip):
+            continue
+        # `  <name> — <N> dir (...), 8f <date> [type=...] [group: <uuid>]`
+        if "[group:" not in stripped:
+            continue
+        name = stripped.split("—", 1)[0].strip() if "—" in stripped else ""
+        if name != clip:
+            continue
+        ids.append(stripped.split("[group:", 1)[1].split("]", 1)[0].strip())
+    return ids
+
+
 def animate(cid, clip, action):
+    for gid in existing_clip_groups(cid, clip):
+        call("delete_animation", {"animation_group_id": gid})
+        log(f"    dropped a stale {clip} group ({gid[:8]})")
     out = call("animate_character", {
         "character_id": cid, "mode": "v3", "animation_name": clip,
         "action_description": action, "frame_count": 8,
@@ -234,7 +268,11 @@ def main():
         if a.only and c["key"] != a.only:
             continue
         for rank in ("leader", "minion"):
-            asset = c["key"] if rank == "leader" else f"{c['key']}_minion"
+            # THE BASE NAME IS THE ORDINARY CREATURE, and the leader is the marked one.
+            # Most spawns are ordinary — a lone creature or a pack's rank and file — so
+            # the unsuffixed key is the common case, and `<kind>_pack_leader` is the
+            # variant that has to earn its own art.
+            asset = f"{c['key']}_pack_leader" if rank == "leader" else c["key"]
             plan.append({"asset": asset, "desc": c[rank], "walk": c["walk"],
                          "attack": c["attack"], "gate": c["gate"]})
 

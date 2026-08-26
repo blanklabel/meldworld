@@ -526,7 +526,10 @@ pub fn creature_body(kind: &str) -> Body {
     match kind {
         "dune_colossus" | "glacier_maw" | "weepingcolossus" => Body::Rigid,
         "magma_golem" | "ironmaw" | "rustfang" => Body::Plated,
-        "sand_shade" | "ember_wisp" | "gloamhound" => Body::Amorphous,
+        // An ooze has nothing solid to swing at; that IS its defence.
+        "sand_shade" | "ember_wisp" | "gloamhound" | "verdant_ooze" | "bog_ooze" => {
+            Body::Amorphous
+        }
         "sporeling" | "myconid_brute" | "forest_bloom_stalker" | "bog_stinger"
         | "choirmother" | "hollowbishop" | "miredrowned" | "sepulcher" | "briarlord" => {
             Body::Soft
@@ -555,6 +558,12 @@ fn creature_elemental_modifiers(kind: &str) -> Vec<(DamageType, f64)> {
         "bog_serpent" => vec![(Ice, 1.5), (Poison, -0.5), (Earth, 0.75)],
         "myconid_brute" => vec![(Fire, 2.0), (Poison, 0.0)],
         "bog_stinger" => vec![(Fire, 1.5), (Wind, 1.5), (Poison, 0.0)],
+        // The ooze pays for shrugging off steel by having no answer at all to heat or
+        // cold — which is the whole point of the archetype: it is the creature that
+        // punishes a party carrying only swords, and folds to the one that packed a
+        // brand. Its own acid is nothing to it.
+        "verdant_ooze" => vec![(Fire, 2.0), (Ice, 1.75), (Poison, 0.0), (Earth, 0.5)],
+        "bog_ooze" => vec![(Fire, 2.0), (Ice, 1.75), (Poison, 0.0), (Water, 0.25)],
         // -------------------------------------------------- bosses (FS-4) --
         "gloamhound" => vec![(Celestial, 1.5), (Shadow, -0.25), (Fire, 0.75)],
         "rustfang" => vec![(Water, 1.5), (Lightning, -0.25), (Earth, 0.75)],
@@ -672,6 +681,8 @@ pub fn creature_basic_attack_type(kind: &str) -> DamageType {
         }
         "forest_bloom_stalker" | "sand_shade" | "cinder_imp" | "ice_revenant" => Slash,
         "ember_wisp" => Fire,
+        // It engulfs rather than bites: acid, not a point.
+        "verdant_ooze" | "bog_ooze" => Poison,
         // Bosses (FS-4): a fang/claw/maw basic, flavored per identity.
         "gloamhound" | "sepulcher" | "hollowbishop" => Shadow,
         "rustfang" | "ironmaw" | "weepingcolossus" => Blunt,
