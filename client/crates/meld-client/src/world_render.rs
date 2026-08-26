@@ -1951,6 +1951,7 @@ pub(crate) fn set_section_water(
 /// exists to answer "where am I".
 pub(crate) struct ShoreData {
     pub(crate) terrain_off: (f32, f32),
+    pub(crate) peaks: Vec<[f32; 4]>,
     pub(crate) straits: Vec<meld_proto::coast::Strait>,
     pub(crate) lobes: Vec<meld_proto::coast::Lobe>,
     pub(crate) basins: Vec<meld_proto::coast::Basin>,
@@ -1959,10 +1960,15 @@ pub(crate) struct ShoreData {
 
 impl ShoreData {
     /// Borrow it as a [`meld_proto::coast::Shore`] for the given fan.
+    ///
+    /// The PEAKS are part of the shoreline here because a basin fills against
+    /// `height + peak_height` — a hill standing in a lake is an island, and leaving the domes
+    /// out floods straight through a mountain.
     pub(crate) fn shore(&self, arc_half: f32) -> meld_proto::coast::Shore<'_> {
         meld_proto::coast::Shore {
             arc_half,
             terrain_off: self.terrain_off,
+            peaks: &self.peaks,
             straits: &self.straits,
             lobes: &self.lobes,
             basins: &self.basins,
@@ -1975,6 +1981,7 @@ impl ShoreData {
 pub(crate) fn shore_data() -> ShoreData {
     ShoreData {
         terrain_off: terrain_offset(),
+        peaks: peaks_snapshot(),
         straits: STRAITS.read().map(|s| s.clone()).unwrap_or_default(),
         lobes: LOBES.read().map(|l| l.clone()).unwrap_or_default(),
         basins: BASINS.read().map(|b| b.clone()).unwrap_or_default(),

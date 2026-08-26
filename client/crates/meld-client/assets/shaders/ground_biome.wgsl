@@ -235,6 +235,24 @@ fn body_variant(centre: vec2<f32>) -> f32 {
     return fract(sin(dot(centre, vec2<f32>(12.9898, 78.233))) * 43758.5453);
 }
 
+// Authored CLIMBABLE peaks: smooth raised-cosine domes summed onto the ground — MUST
+// match `meld_proto::terrain::peak_height`. World-space (NOT offset-shifted).
+fn peak_dome(wxz: vec2<f32>) -> f32 {
+    var h = 0.0;
+    let n = i32(params.peak_count);
+    for (var i = 0; i < n; i = i + 1) {
+        let p = params.peaks[i];
+        let r = p.z;
+        if (r > 0.0) {
+            let d = distance(wxz, p.xy);
+            if (d < r) {
+                h = h + p.w * 0.5 * (1.0 + cos(3.14159265 * d / r));
+            }
+        }
+    }
+    return h;
+}
+
 // `(depth, variant)` — how far inside inland water this point is, and WHICH body it belongs
 // to. The variant is what lets a swamp hold a black mere, a tannin-purple one and a green one
 // instead of one flat green everywhere: colour is per-BODY, not per-biome.
@@ -252,7 +270,8 @@ fn inland_water_at(wxz: vec2<f32>) -> vec2<f32> {
         // `terrain_height_wgsl` takes an ALREADY-OFFSET position, like every other caller.
         // The divisor is `coast::BASIN_SHORE_SLOPE`, held against this file by
         // `the_basin_shore_slope_matches_the_shader`.
-        let below = (b.w - terrain_height_wgsl(wxz + params.terrain_off)) / 0.12;
+        let ground = terrain_height_wgsl(wxz + params.terrain_off) + peak_dome(wxz);
+        let below = (b.w - ground) / 0.12;
         let dd = min(within, below);
         if (dd > d) { d = dd; v = body_variant(b.xy); }
     }
@@ -338,23 +357,6 @@ fn sea_depth_at(wxz: vec2<f32>) -> f32 {
     return sea;
 }
 
-// Authored CLIMBABLE peaks: smooth raised-cosine domes summed onto the ground — MUST
-// match `meld_proto::terrain::peak_height`. World-space (NOT offset-shifted).
-fn peak_dome(wxz: vec2<f32>) -> f32 {
-    var h = 0.0;
-    let n = i32(params.peak_count);
-    for (var i = 0; i < n; i = i + 1) {
-        let p = params.peaks[i];
-        let r = p.z;
-        if (r > 0.0) {
-            let d = distance(wxz, p.xy);
-            if (d < r) {
-                h = h + p.w * 0.5 * (1.0 + cos(3.14159265 * d / r));
-            }
-        }
-    }
-    return h;
-}
 
 // TOTAL ground height at world `wxz`: base rolling field (through the run offset) + the
 // authored peak domes, all scaled by `terrain_amp` (0 flattens City/menus). This is the
