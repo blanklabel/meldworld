@@ -229,6 +229,32 @@ pub mod world {
         /// `[cx, cz, radius, height]`; see `terrain::peak_height` / `run.started.peaks`).
         #[serde(default)]
         pub peaks: Vec<[f32; 4]>,
+        /// **CONTINENTS (WG-7):** the STRAITS this section holds — inland seas that
+        /// separate one landmass from the next, each pierced by isthmuses. See
+        /// [`crate::coast::Strait`] for the eight numbers.
+        ///
+        /// ⚠️ A re-sent section REPLACES its own straits, exactly as it replaces its own
+        /// peaks — so a **retile must carry them forward unchanged**. A Shift re-cuts a
+        /// region's topography and does not move its coastline (a continent does not
+        /// wander), so an empty list here on a retile would delete a sea the server still
+        /// collides against, and the client would draw walkable ground over water.
+        #[serde(default)]
+        pub straits: Vec<crate::coast::Strait>,
+        /// **The coast's own shape:** bays bitten into this section's rim and isles standing
+        /// off it ([`crate::coast::Lobe`] — one type for both, since they differ only in
+        /// which side of the waterline the disc adds to).
+        ///
+        /// ⚠️ Replaced per section like `straits` and `peaks`, so a retile must carry them
+        /// forward unchanged — an empty list deletes a bay the server still collides with.
+        #[serde(default)]
+        pub lobes: Vec<crate::coast::Lobe>,
+        /// **Inland water** this section holds: standing bodies ([`crate::coast::Basin`]) and
+        /// the chains of flowing ones ([`crate::coast::RiverNode`]). Replaced per section
+        /// like everything else here, so a retile must carry them forward.
+        #[serde(default)]
+        pub basins: Vec<crate::coast::Basin>,
+        #[serde(default)]
+        pub rivers: Vec<crate::coast::RiverNode>,
     }
     impl Message for TerrainSection {
         const TYPE: &'static str = "world.terrain_section";
@@ -686,6 +712,37 @@ pub mod run {
         /// summit. Streamed sections append more via `world.terrain_section`.
         #[serde(default)]
         pub peaks: Vec<[f32; 4]>,
+        /// **CONTINENTS (WG-7):** this world's STRAITS — the inland seas that separate one
+        /// landmass from the next ([`crate::coast::Strait`]). The initial chain's ride
+        /// here; streamed sections append theirs via `world.terrain_section`.
+        ///
+        /// The client needs them for the same reason it needs `terrain_off`: its ground
+        /// shader ramps a beach and tints a depth over `coast::sea_depth_with`, and its
+        /// prop placement asks the same predicate the server collides with. A shoreline
+        /// the client has not been told about is walkable ground drawn over open water.
+        #[serde(default)]
+        pub straits: Vec<crate::coast::Strait>,
+    /// **The WORLD's seed — its public name** (CANON D19: the overworld is a
+        /// *player-seeded* World, and §W5 stores this number instead of a map because the
+        /// baseline is a pure function of it).
+        ///
+        /// It rides here because it is **the world's own fact, not the caller's request** —
+        /// the same rule `tutorial` above exists to enforce. A diver who asks for seed X and
+        /// is placed in a live world seeded Y must be TOLD Y; a client that displays what it
+        /// asked for is the bug that pattern was added to prevent.
+        #[serde(default)]
+        pub world_seed: u64,
+        /// **The coast's own shape:** this world's bays and isles ([`crate::coast::Lobe`]).
+        /// The initial chain's ride here; streamed sections append theirs.
+        #[serde(default)]
+        pub lobes: Vec<crate::coast::Lobe>,
+        /// **Inland water:** this world's standing bodies and river chains. Lakes, ponds,
+        /// bogs, marshes, lagoons, oases, creeks, springs and rivers are all one of these
+        /// two — the name is emergent from size, slope, biome and adjacency.
+        #[serde(default)]
+        pub basins: Vec<crate::coast::Basin>,
+        #[serde(default)]
+        pub rivers: Vec<crate::coast::RiverNode>,
     }
     /// Walkable extent of the instance (world-generation.md corridor bounds).
     #[derive(Debug, Clone, Serialize, Deserialize)]

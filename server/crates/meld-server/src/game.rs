@@ -921,12 +921,58 @@ fn broadcast_ser<'a>(
 /// connector props. `path` carries the section's trail contribution — non-empty for
 /// streamed sections (they extend the trail); the initial chain's path already
 /// rides `run.started.path`, so those pass an empty vec.
+/// **The world geometry one section carries** — its mountains and every piece of its
+/// shoreline.
+///
+/// A bundle, for the reason [`meld_proto::coast::Shore`] is one: this list grows every time
+/// the world learns a new shape (peaks, then straits, then bays and isles, then basins and
+/// rivers), and it was passed as five positional arguments that tripped
+/// `clippy::too_many_arguments` the moment inland water landed. It also had three call sites
+/// each hand-rolling the same band filters.
+///
+/// ⚠️ **A retile must carry all of it forward.** The client REPLACES a section's geometry
+/// from the message, so an empty field deletes what is still there — a Shift re-cuts
+/// topography, never the coastline or the water table. Having one type for the whole payload
+/// is what makes that rule statable in one place instead of five.
+#[derive(Default)]
+struct SectionGeometry {
+    peaks: Vec<[f32; 4]>,
+    straits: Vec<meld_proto::coast::Strait>,
+    lobes: Vec<meld_proto::coast::Lobe>,
+    basins: Vec<meld_proto::coast::Basin>,
+    rivers: Vec<meld_proto::coast::RiverNode>,
+}
+
+impl SectionGeometry {
+    /// Everything whose own position falls in the radius band `[start, end)`.
+    ///
+    /// One filter for all five, because they are all selected the same way and the three
+    /// call sites were writing it out separately. `push_strait` keeps a strait's whole band
+    /// inside its section, and a basin and a bay likewise belong to the section holding their
+    /// centre. A RIVER is the exception worth knowing: its chain crosses section boundaries,
+    /// so each section carries the nodes in its own band and the client re-assembles the
+    /// chain from all of them in section order.
+    fn for_band(arena: &Arena, start: f64, end: f64) -> Self {
+        let holds = |x: f32, z: f32| {
+            let r = (x as f64).hypot(z as f64);
+            r >= start && r < end
+        };
+        SectionGeometry {
+            peaks: arena.peaks.iter().filter(|p| holds(p[0], p[1])).copied().collect(),
+            straits: arena.straits.iter().filter(|s| holds(s[0], s[1])).copied().collect(),
+            lobes: arena.lobes.iter().filter(|l| holds(l[0], l[1])).copied().collect(),
+            basins: arena.basins.iter().filter(|b| holds(b[0], b[1])).copied().collect(),
+            rivers: arena.rivers.iter().filter(|n| holds(n[0], n[1])).copied().collect(),
+        }
+    }
+}
+
 fn terrain_section_msg(
     area: &Area,
     path: Vec<Position>,
     radial_half: f64,
     corridor_lateral: f64,
-    peaks: Vec<[f32; 4]>,
+    geom: SectionGeometry,
 ) -> ww::TerrainSection {
     let t = &area.terrain;
     ww::TerrainSection {
@@ -953,7 +999,11 @@ fn terrain_section_msg(
         biome: area.biome.to_string(),
         radial_half,
         corridor_lateral,
-        peaks,
+        peaks: geom.peaks,
+        straits: geom.straits,
+        lobes: geom.lobes,
+        basins: geom.basins,
+        rivers: geom.rivers,
     }
 }
 
@@ -5288,6 +5338,22 @@ impl GameState {
                         [ox, oz]
                     },
                     peaks: inst.arena.peaks.clone(),
+                    // CONTINENTS (WG-7): the client's ground shader ramps a beach over the
+                    // same signed field the server collides against, and its prop placement
+                    // asks the same predicate — a shoreline it has not been told about is
+                    // walkable ground drawn over open water.
+                    straits: inst.arena.straits.clone(),
+                    // This world's NAME (CANON D19). Sent so a player can see and share
+                    // which world they are in — and read off the world rather than echoed
+                    // back from whatever they asked for, for the same reason `tutorial` is.
+                    world_seed: inst.arena.seed(),
+                    // …and the coast's own shape (bays, isles), for the same reason the
+                    // straits ride: the client ramps its beach over the same signed field.
+                    lobes: inst.arena.lobes.clone(),
+                    // …and its inland water. A basin is defined against the HEIGHTMAP, so
+                    // the client can only place it because `terrain_offset` rides here too.
+                    basins: inst.arena.basins.clone(),
+                    rivers: inst.arena.rivers.clone(),
                     // The world's own fact, not the caller's request: a joiner who asked
                     // for a normal dive still lands in a live tutorial world.
                     tutorial: inst.tutorial,
@@ -5316,9 +5382,12 @@ impl GameState {
             // these carry no path segment.
             let (rh, cl) = (inst.arena.radial_half(), inst.arena.corridor_lateral());
             for area in &inst.arena.areas {
-                // Initial-chain peaks ride `run.started.peaks`, so the per-section
+                // Initial-chain peaks + straits ride `run.started`, so the per-section
                 // messages carry none (avoids double-sending).
-                out.push(out_msg(pid, &terrain_section_msg(area, Vec::new(), rh, cl, Vec::new())));
+                out.push(out_msg(
+                    pid,
+                    &terrain_section_msg(area, Vec::new(), rh, cl, SectionGeometry::default()),
+                ));
             }
         }
         self.pending_gear_load.extend(party_ids.iter().cloned());
@@ -9496,20 +9565,10 @@ impl WorldActor {
                 } else {
                     Vec::new()
                 };
-                // This streamed section's peaks (centre radius in its band); the client
-                // appends them so the streamed mountains render.
-                let (s0, e0) = (area.start_x, area.end_x);
-                let section_peaks: Vec<[f32; 4]> = self
-                    .arena
-                    .peaks
-                    .iter()
-                    .filter(|p| {
-                        let r = (p[0] as f64).hypot(p[1] as f64);
-                        r >= s0 && r < e0
-                    })
-                    .copied()
-                    .collect();
-                let msg = terrain_section_msg(area, seg, rh, cl, section_peaks);
+                // Everything this streamed section adds — its mountains and every piece of
+                // its shoreline — selected by the one band filter.
+                let geom = SectionGeometry::for_band(&self.arena, area.start_x, area.end_x);
+                let msg = terrain_section_msg(area, seg, rh, cl, geom);
                 for r in &self.run.runs {
                     out.push(out_msg(&r.player_id, &msg));
                 }
@@ -9808,16 +9867,18 @@ impl WorldActor {
         let (rh, cl) = (self.arena.radial_half(), self.arena.corridor_lateral());
         for &i in &outcome.sections {
             let Some(area) = self.arena.areas.get(i) else { continue };
-            // The section's NEW mountains ride with it. The client keys peaks by section,
-            // so this replaces whatever that ring used to raise rather than adding to it —
-            // which is what lets a Shift to Desert actually flatten a range.
-            let peaks = outcome
-                .peaks
-                .iter()
-                .find(|(n, _)| *n == i)
-                .map(|(_, p)| p.clone())
-                .unwrap_or_default();
-            let msg = terrain_section_msg(area, Vec::new(), rh, cl, peaks);
+            // ⚠️ EVERYTHING this ring holds rides with the retile, not just its new
+            // mountains. The client REPLACES a section's geometry from this message, so an
+            // empty field DELETES what is still standing there — and a Shift re-cuts
+            // topography, never the coastline or the water table (a continent does not
+            // wander, and keeping the shore out of the churn is what keeps §W5's replay two
+            // integers). The peaks are the one part the Shift actually re-rolls, so they come
+            // from the outcome; the rest is re-read from the arena unchanged.
+            let mut geom = SectionGeometry::for_band(&self.arena, area.start_x, area.end_x);
+            if let Some((_, p)) = outcome.peaks.iter().find(|(n, _)| *n == i) {
+                geom.peaks = p.clone();
+            }
+            let msg = terrain_section_msg(area, Vec::new(), rh, cl, geom);
             for pid in &members {
                 out.push(out_msg(pid, &msg));
             }

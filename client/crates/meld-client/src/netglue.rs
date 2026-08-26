@@ -175,6 +175,17 @@ pub(crate) fn pump_net(
                 // a RE-sent section (how a Shift retiles the ground) replaces its own
                 // mountains rather than growing a second one beside each of the first.
                 crate::world_render::set_section_peaks(section.index, &section.peaks);
+                // …and its STRAITS (WG-7 continents), keyed the same way and for the same
+                // reason. ⚠️ A Shift does NOT re-cut the coastline (a continent does not
+                // wander), so the server re-sends a retiled section's straits unchanged —
+                // if it ever stops, this drops a sea it is still colliding against.
+                crate::world_render::set_section_straits(section.index, &section.straits);
+                crate::world_render::set_section_lobes(section.index, &section.lobes);
+                crate::world_render::set_section_water(
+                    section.index,
+                    &section.basins,
+                    &section.rivers,
+                );
                 terrain.sections.insert(section.index, section);
             }
             ServerMsg::DungeonScene { active, theme, floor, width, height } => {
@@ -212,7 +223,16 @@ pub(crate) fn pump_net(
                     next.set(Screen::City);
                 }
             }
-            ServerMsg::RunStarted { terrain_off, peaks, tutorial } => {
+            ServerMsg::RunStarted {
+                terrain_off,
+                peaks,
+                straits,
+                world_seed,
+                lobes,
+                basins,
+                rivers,
+                tutorial,
+            } => {
                 // Seed this run's terrain BEFORE the ground/entities render, so the shader
                 // + every entity Y grow the same per-run-varied hills (no "same hill by the
                 // hub every run").
@@ -220,6 +240,16 @@ pub(crate) fn pump_net(
                 // Replace any prior run's mountains with this run's authored peaks (the
                 // initial-chain sections' peaks all ride here on run.started).
                 crate::world_render::set_peaks(peaks);
+                // …and this world's CONTINENTS (WG-7): the straits its ground shader ramps a
+                // beach over and its prop placement culls against. The initial chain's all
+                // ride here, as the peaks do.
+                crate::world_render::set_straits(straits);
+                // …and remember which WORLD this is, so the player can read and share its
+                // name (CANON D19). Taken from the server rather than from whatever we
+                // asked for — see `RunStarted::world_seed`.
+                crate::world_render::set_world_seed(world_seed);
+                crate::world_render::set_lobes(lobes);
+                crate::world_render::set_water(basins, rivers);
                 // Fresh dive: drop any terrain from the previous run before the new
                 // section stream arrives (server sends them right after this).
                 terrain.sections.clear();

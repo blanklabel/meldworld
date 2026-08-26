@@ -283,6 +283,15 @@ pub struct TerrainSectionView {
     pub corridor_lateral: f64,
     /// Authored CLIMBABLE peaks this streamed section adds (`[cx, cz, radius, height]`).
     pub peaks: Vec<[f32; 4]>,
+    /// **CONTINENTS (WG-7):** the STRAITS this section holds — the inland seas that separate
+    /// one landmass from the next ([`meld_proto::coast::Strait`]). A re-sent section replaces
+    /// its own, exactly as it replaces its own peaks.
+    pub straits: Vec<meld_proto::coast::Strait>,
+    /// The coast's own shape: bays and isles ([`meld_proto::coast::Lobe`]).
+    pub lobes: Vec<meld_proto::coast::Lobe>,
+    /// Inland water: standing bodies and river chains.
+    pub basins: Vec<meld_proto::coast::Basin>,
+    pub rivers: Vec<meld_proto::coast::RiverNode>,
 }
 
 /// One resolved effect for hit feedback (a damage or heal on a combatant).
@@ -645,7 +654,22 @@ pub enum ServerMsg {
     Error { message: String },
     /// `run.started` — carries this run's terrain offset so the bin can seed the ground
     /// shader + entity Y (the lib netcode can't reach the render module directly).
-    RunStarted { terrain_off: (f32, f32), peaks: Vec<[f32; 4]>, tutorial: bool },
+    RunStarted {
+        terrain_off: (f32, f32),
+        peaks: Vec<[f32; 4]>,
+        /// **CONTINENTS (WG-7):** this world's straits ([`meld_proto::coast::Strait`]).
+        straits: Vec<meld_proto::coast::Strait>,
+        /// **This WORLD's seed — its public name** (CANON D19). The world's own fact, never
+        /// what we asked for: a client that shows the seed it requested rather than the one
+        /// it got is the exact bug `tutorial` beside it exists to prevent.
+        world_seed: u64,
+        /// The coast's own shape: this world's bays and isles.
+        lobes: Vec<meld_proto::coast::Lobe>,
+        /// Inland water: this world's standing bodies and river chains.
+        basins: Vec<meld_proto::coast::Basin>,
+        rivers: Vec<meld_proto::coast::RiverNode>,
+        tutorial: bool,
+    },
     /// The caller's hero roster (name/class/level/stats) for the party panel.
     Party {
         heroes: Vec<HeroLine>,
@@ -2335,7 +2359,74 @@ impl Inner {
                 // keypress. An older server omits it and it reads false, which is the safe
                 // way round: no walkthrough over a run that may not be guided.
                 let tutorial = raw.payload["tutorial"].as_bool().unwrap_or(false);
-                self.out.push_back(ServerMsg::RunStarted { terrain_off, peaks, tutorial });
+                // CONTINENTS (WG-7): this world's straits, each the eight numbers of
+                // `coast::Strait`. An older server omits them and the list reads empty,
+                // which is the safe way round — a world with no inland seas, i.e. exactly
+                // what the fan was before this shipped.
+                let straits: Vec<meld_proto::coast::Strait> = raw.payload["straits"]
+                    .as_array()
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|s| {
+                                let a = s.as_array()?;
+                                let mut out = [0.0f32; 8];
+                                for (i, slot) in out.iter_mut().enumerate() {
+                                    *slot = a.get(i)?.as_f64()? as f32;
+                                }
+                                Some(out)
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                // This world's NAME (CANON D19). `as_u64` rather than `as_f64`: a seed is a
+                // full u64 and f64 loses every bit past 2^53, which would quietly hand the
+                // player a seed that regenerates a DIFFERENT world than the one they are in.
+                let world_seed = raw.payload["world_seed"].as_u64().unwrap_or(0);
+                // Bays and isles — four floats each, same shape as `peaks`.
+                let lobes: Vec<meld_proto::coast::Lobe> = raw.payload["lobes"]
+                    .as_array()
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|l| {
+                                let a = l.as_array()?;
+                                let mut out = [0.0f32; 4];
+                                for (i, slot) in out.iter_mut().enumerate() {
+                                    *slot = a.get(i)?.as_f64()? as f32;
+                                }
+                                Some(out)
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                // Inland water — four floats each, like the lobes.
+                let quads = |key: &str| -> Vec<[f32; 4]> {
+                    raw.payload[key]
+                        .as_array()
+                        .map(|arr| {
+                            arr.iter()
+                                .filter_map(|v| {
+                                    let a = v.as_array()?;
+                                    let mut out = [0.0f32; 4];
+                                    for (i, slot) in out.iter_mut().enumerate() {
+                                        *slot = a.get(i)?.as_f64()? as f32;
+                                    }
+                                    Some(out)
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default()
+                };
+                let (basins, rivers) = (quads("basins"), quads("rivers"));
+                self.out.push_back(ServerMsg::RunStarted {
+                    terrain_off,
+                    peaks,
+                    straits,
+                    world_seed,
+                    lobes,
+                    basins,
+                    rivers,
+                    tutorial,
+                });
                 self.emit_backpack();
                 if let Some(pts) = raw.payload["path"].as_array() {
                     let points: Vec<(f64, f64)> = pts
@@ -2907,6 +2998,10 @@ impl Inner {
                         radial_half: t.radial_half,
                         corridor_lateral: t.corridor_lateral,
                         peaks: t.peaks,
+                        straits: t.straits,
+                        lobes: t.lobes,
+                        basins: t.basins,
+                        rivers: t.rivers,
                     };
                     self.out.push_back(ServerMsg::TerrainSection { section });
                 }

@@ -1240,6 +1240,96 @@ pub struct WorldGen {
     /// Nearest hub distance an authored peak may spawn — keeps the big domes out of the
     /// tight near-hub rings where they'd swamp the width.
     pub peak_min_distance: f64,
+
+    /// **CONTINENTS (WG-7).** Chance a deep-enough section holds a STRAIT — an inland sea
+    /// filling an annular sector, pierced by isthmuses. The CONTINENT is the land between
+    /// two of them. Deliberately under 1.0: a continent should be several sections across,
+    /// and a world where every ring is a coast is an archipelago.
+    pub strait_chance: f64,
+    /// Earliest section index that may hold a strait. Sections grow with depth
+    /// (`base_area_length + area_length_growth*i`), so this is simultaneously what makes a
+    /// section thick enough to hold a sea with dry land on both shores, and what keeps the
+    /// on-ramp coastline-free.
+    pub strait_min_section: usize,
+    /// A strait's radial thickness as a share of its own section's length. Bounded well
+    /// under 1 so land always remains on BOTH shores inside the same section — the clear
+    /// path enters that section on one side and leaves on the other, so A* always has dry
+    /// ground at each end to route an isthmus crossing between.
+    pub strait_thickness_share: f64,
+    /// Narrowest angular span of a strait, in degrees. Below this it reads as a river
+    /// rather than a sea, and you would cross it without noticing there was a choice.
+    pub strait_span_min_degrees: f64,
+    /// Widest angular span, in degrees. Capped so "walk around its end" stays a real
+    /// alternative to an isthmus instead of a joke.
+    pub strait_span_max_degrees: f64,
+    /// Isthmuses per strait. **Two**, not one — one door is the retired `Seam`, which
+    /// funnelled the world into a corridor. With the span's two ends that is four ways past.
+    pub strait_bridges: usize,
+    /// Half the arc width of an isthmus, in WORLD units rather than radians (an angular
+    /// bridge is a few units wide near the hub and hundreds at the frontier). Must stay
+    /// above [`meld_proto::coast::MIN_BRIDGE_HALF_WIDTH`], the walkability floor
+    /// `coast::strait_is_crossable` enforces.
+    pub strait_bridge_half_width: f64,
+
+    /// **BAYS (WG-7).** Chance a deep-enough section's rim holds a bay — a disc of water
+    /// biting inward. Lower than `strait_chance`, because the fan has TWO rims so this
+    /// fires twice per band on average, and a coast bitten at every ring is a fjord system.
+    pub bay_chance: f64,
+    /// Earliest section index that may hold a bay or an isle. Shallower than a strait's
+    /// gate: a bay does not block the way out, it only bends it.
+    pub bay_min_section: usize,
+    /// Nearest hub distance a bay may be cut. The western gap near the hub is a narrow
+    /// wedge closed by the neck, so a bay there would eat the walk home to Last City.
+    pub bay_min_reach: f64,
+    /// A bay's radius as a share of the local half-arc — smallest and largest drawn. Both
+    /// must stay under [`meld_proto::coast::BAY_LAND_SHARE`], which is the hard guarantee
+    /// `coast::bay_leaves_a_shore` enforces; these are the range drawn inside it.
+    pub bay_radius_share_min: f64,
+    pub bay_radius_share_max: f64,
+    /// ⚠️ **Absolute** cap on a bay's radius, world units. The share above is a share of the
+    /// LOCAL HALF-ARC, which grows linearly with depth — so at r=2000 a 0.30 share is a
+    /// 1,500-unit "bay", which is a sea, and no `nudge_ashore` can walk a creature out of
+    /// one. The share keeps a bay from severing the fan; this keeps it a coastal *feature*.
+    /// Both apply, whichever is smaller.
+    pub bay_radius_max: f64,
+    /// **ISLES (WG-7).** Chance a section stands an isle offshore of its rim. Freer than a
+    /// bay because an isle is outside the fan and cannot block anything.
+    pub isle_chance: f64,
+    /// Isle radius range, world units.
+    pub isle_radius_min: f64,
+    pub isle_radius_max: f64,
+    /// How far past the fan's rim an isle's shore sits, as an ARC length rather than an
+    /// angle — an angular offset would beach it on the rim near the hub and strand it over
+    /// the horizon at the frontier.
+    pub isle_offshore_min: f64,
+    pub isle_offshore_max: f64,
+    /// **INLAND WATER (WG-7).** Earliest section index, and nearest hub distance, that may
+    /// hold a basin or a river. The on-ramp stays dry: a river across a player's first
+    /// minutes is a barrier before they know what a ford is.
+    pub water_min_section: usize,
+    pub water_min_reach: f64,
+    /// Chance a deep-enough section springs a river.
+    pub river_chance: f64,
+    /// World units between river nodes, and the node budget before a river gives up and
+    /// pools into a lake instead. The budget caps the wire payload and the descent cost.
+    pub river_step: f64,
+    pub river_max_nodes: usize,
+    /// A channel's half-width: the low end reads as a creek, the high end as a river.
+    pub river_half_width_min: f64,
+    pub river_half_width_max: f64,
+    /// A FORD every this many nodes. ⚠️ A **guarantee**, not a decoration — connectedness is
+    /// what a river is, and a connected impassable line is exactly what disconnects a
+    /// world. Same contract as a strait's isthmus.
+    pub river_ford_every: usize,
+    /// Chance a section also holds standing water with no river feeding it.
+    pub basin_chance: f64,
+    /// Bounds on how far a basin may spread. The SHAPE is the terrain's own contour; these
+    /// only stop a flat hollow flooding the whole ring.
+    pub basin_radius_min: f64,
+    pub basin_radius_max: f64,
+    /// How far above a hollow's floor the water surface sits, in HEIGHT units (the field
+    /// runs about ±16). A deeper fill floods wider, because a contour is wider higher up.
+    pub basin_fill: f64,
 }
 
 /// Creature AI tunables (overworld movement + encounter grouping).

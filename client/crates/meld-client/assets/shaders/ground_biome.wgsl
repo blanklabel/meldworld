@@ -61,6 +61,31 @@ struct BiomeParams {
     coast: vec4<f32>,
     // Peninsula widths: (neck_half, city_half, tip_taper, sea_depth).
     coast_w: vec4<f32>,
+    // CONTINENTS (WG-7): this world's STRAITS — the inland seas that separate one landmass
+    // from the next. TWO vec4s each, packed with the same eight numbers as
+    // `meld_proto::coast::Strait`: slot 2k is (r_center, r_half, theta_center, theta_half)
+    // and slot 2k+1 is (bridge0_theta, bridge0_half, bridge1_theta, bridge1_half). The
+    // `peaks` precedent — an explicit table rather than noise, because a barrier has to be
+    // STRUCTURED: an isotropic threshold over a sum of sines cannot make a long connected
+    // channel with a pass in it at any amplitude.
+    straits: array<vec4<f32>, 16>,
+    strait_count: u32,
+    _pad_sc0: u32, _pad_sc1: u32, _pad_sc2: u32,
+    // The coast's own shape: BAYS (water bitten into the fan's rim) and ISLES (land standing
+    // offshore). One vec4 each, `[cx, cz, radius, kind]`, kind 0 = bay and 1 = isle — one
+    // array for both because they are one primitive, a disc that edits the shoreline.
+    lobes: array<vec4<f32>, 12>,
+    lobe_count: u32,
+    _pad_lc0: u32, _pad_lc1: u32, _pad_lc2: u32,
+    // INLAND WATER. `basins` is [cx, cz, radius, LEVEL] — that fourth number, the water
+    // surface elevation, is what makes inland water a different thing from the sea, whose
+    // level is globally zero. `rivers` is a chain of [x, z, half_width, chain_start]; a node
+    // with chain_start >= 0.5 begins a new chain and the gap before it is a FORD.
+    basins: array<vec4<f32>, 10>,
+    rivers: array<vec4<f32>, 28>,
+    basin_count: u32,
+    river_count: u32,
+    _pad_wc0: u32, _pad_wc1: u32,
     // The Shift's tell (CANON D20/§W2): (inner_radius, outer_radius, intensity, 0).
     // A region is a radius ring in the WG-4 fan and this ground is already painted in
     // rings, so the doomed region draws as an annulus in the same frame as everything
@@ -124,6 +149,79 @@ fn spit_half_width(d: f32) -> f32 {
     return min(w, d * tan(gap_half) * params.coast.w);
 }
 
+// Signed difference between two bearings, wrapped to [-PI, PI] — MUST match
+// `meld_proto::coast::ang_diff`. Without the wrap a strait centred near due west is
+// silently a strait spanning the whole world the other way round.
+fn ang_diff(a: f32, b: f32) -> f32 {
+    let TAU = 6.28318530718;
+    var d = a - b;
+    d = d - TAU * floor((d + 3.14159265359) / TAU);
+    return d;
+}
+
+// How far INSIDE strait `k` a point is, in world units (negative on the land around it).
+// MUST match `meld_proto::coast::strait_depth`. Every term is a world-unit margin — the
+// angular span is multiplied by `r` into an ARC so it composes with the radial one — which
+// is what makes this a continuous field the beach can ramp over rather than three booleans
+// wearing a float (the bug the fan's own edge already shipped once).
+fn strait_depth_at(wxz: vec2<f32>, k: i32) -> f32 {
+    let a = params.straits[k * 2];
+    let b = params.straits[k * 2 + 1];
+    let r_half = a.y;
+    let th_half = a.w;
+    if (r_half <= 0.0 || th_half <= 0.0) { return -1000.0; }
+    let r = length(wxz);
+    let theta = atan2(wxz.y, wxz.x);
+    let in_band = r_half - abs(r - a.x);
+    let in_span = (th_half - abs(ang_diff(theta, a.z))) * r;
+    // …and not standing on one of its isthmuses.
+    var off_bridge = 1e9;
+    if (b.y > 0.0) { off_bridge = min(off_bridge, abs(ang_diff(theta, b.x)) * r - b.y); }
+    if (b.w > 0.0) { off_bridge = min(off_bridge, abs(ang_diff(theta, b.z)) * r - b.w); }
+    return min(min(in_band, in_span), off_bridge);
+}
+
+// How far INSIDE inland water a point is — positive in a lake or a channel, negative on the
+// land around them. MUST match `coast::Shore::inland`.
+//
+// ⚠️ This is deliberately NOT part of `sea_depth_at`. That field is what `total_height` dips
+// the ground toward the sea floor over, and sea level is globally zero — a basin sits at its
+// OWN elevation and its hollow is already in the heightmap, which is what makes it a basin.
+// Folding this in would excavate every lake a second time, below its own bed.
+fn inland_depth_at(wxz: vec2<f32>) -> f32 {
+    var d = -1000.0;
+    // Standing water: inside the radius bound AND below the surface level. The vertical
+    // margin is divided by a nominal shore slope so it shares world units with the radial
+    // one — `coast::BASIN_SHORE_SLOPE`, and it must match.
+    let nb = i32(params.basin_count);
+    for (var k = 0; k < nb; k = k + 1) {
+        let b = params.basins[k];
+        if (b.z <= 0.0) { continue; }
+        let within = b.z - length(wxz - b.xy);
+        // `terrain_height_wgsl` takes an ALREADY-OFFSET position, like every other caller.
+        // The divisor is `coast::BASIN_SHORE_SLOPE`, held against this file by
+        // `the_basin_shore_slope_matches_the_shader`.
+        let below = (b.w - terrain_height_wgsl(wxz + params.terrain_off)) / 0.12;
+        d = max(d, min(within, below));
+    }
+    // Flowing water: distance to each chain segment, minus its half-width.
+    let nr = i32(params.river_count);
+    for (var k = 1; k < nr; k = k + 1) {
+        let a = params.rivers[k - 1];
+        let b = params.rivers[k];
+        if (b.w >= 0.5) { continue; }   // a new chain starts here — the gap is the ford
+        let half = (a.z + b.z) * 0.5;
+        if (half <= 0.0) { continue; }
+        let p = wxz - a.xy;
+        let s = b.xy - a.xy;
+        let len2 = dot(s, s);
+        var t = 0.0;
+        if (len2 > 1e-6) { t = clamp(dot(p, s) / len2, 0.0, 1.0); }
+        d = max(d, half - length(p - s * t));
+    }
+    return d;
+}
+
 // How far INTO the sea a point is, in world units (negative on land). Mirrors
 // `meld_proto::coast::is_ocean` but signed, so the shoreline can fade instead of snapping
 // to a hard edge one texel wide.
@@ -165,7 +263,26 @@ fn sea_depth_at(wxz: vec2<f32>) -> f32 {
     let past_fan = (theta - arc_half) * d;
     let past_spit = abs(wxz.y) - spit_half_width(d);
     let past_neck = d - params.coast.y;
-    return min(min(past_fan, past_spit), past_neck);
+    var sea = min(min(past_fan, past_spit), past_neck);
+    // CONTINENTS (WG-7): the sea is the OCEAN *union* every strait, and a signed depth's
+    // union is a `max` — past the ocean's land, or inside an inland sea. On open ground far
+    // from either, the ocean's own (negative) distance survives, so the beach at the fan's
+    // rim is unchanged. Mirrors `meld_proto::coast::sea_depth_with`.
+    let ns = i32(params.strait_count);
+    for (var k = 0; k < ns; k = k + 1) {
+        sea = max(sea, strait_depth_at(wxz, k));
+    }
+    // Then the coast's own shape, in list order — MUST match `coast::Shore::depth`. A bay is
+    // a `max` (water wins over land) and an isle a `min` (land wins over water), so a later
+    // isle stands inside an earlier bay. Both are signed distances, so both get a beach.
+    let nl = i32(params.lobe_count);
+    for (var k = 0; k < nl; k = k + 1) {
+        let l = params.lobes[k];
+        if (l.z <= 0.0) { continue; }
+        let inside = l.z - length(wxz - l.xy);
+        if (l.w < 0.5) { sea = max(sea, inside); } else { sea = min(sea, -inside); }
+    }
+    return sea;
 }
 
 // Authored CLIMBABLE peaks: smooth raised-cosine domes summed onto the ground — MUST

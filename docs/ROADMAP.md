@@ -1754,6 +1754,84 @@ design for this epic: [`proposals/worldgen-wg.md`](proposals/worldgen-wg.md).
     the fan and the clear path runs radially, so nothing draws a player sideways. Behind the
     city it pays immediately; along the arc edges it only pays once this item's angular
     structure gives a reason to travel laterally. Ocean and wedges are complements.
+  - [x] *SHIPPED — **CONTINENTS**: the fan is no longer one landmass.* The coastline below
+    gave the world an edge; this gives it INTERIOR structure, which is the half that
+    changes how you walk. One early return in `coast::is_ocean` — *inside the arc, land,
+    always* — was what made the whole fan a single continent: every bearing solid ground
+    from the hub to the frontier, and the only reachable water the framing gap behind Last
+    City. A [`Strait`](../shared/meld-proto/src/coast.rs) is an inland sea filling an
+    annular sector (a radius band × a span of bearing) pierced by **isthmuses**; the
+    continent is the land between two of them.
+    - *It is a TERM IN `sea_depth`, not a second answer beside `is_ocean`* —
+      `sea_depth_with` is `max(ocean, strait)`, a signed-distance union, and
+      `strait_depth` is a `min` of three **world-unit** margins with the angular span
+      multiplied by `r` into an arc. That keeps the field continuous, so the ground
+      shader's beach ramp still has a gradient to ramp over; a BOOLEAN strait would render
+      as the vertical wall of water this file already shipped once (#307).
+      `a_straits_shoreline_has_a_beach_rather_than_a_cliff` holds it to 0.5-unit steps.
+    - *Which is also why it was cheap:* four systems already read `coast` rather than
+      keeping their own shoreline, so carving here bought all of them — `astar_route`
+      land-checks every bent edge and bends to an isthmus **by itself**, `apply_move`
+      collides against the same predicate, and both ground shaders already tint and ramp
+      the signed field. Still **analytic**, so `BlockField`'s cell is untouched.
+    - *Feasibility is by CONSTRUCTION, and it is what makes this not the retired `Seam`.*
+      A seam was a full-width wall with ONE door and was removed for funnelling the world
+      into a corridor. A strait's span always stops `STRAIT_FAN_MARGIN` of arc inside the
+      fan (so you can round either end) and always carries isthmuses at least
+      `MIN_BRIDGE_HALF_WIDTH` wide — **four ways past every barrier**. So meeting a coast
+      is a decision: cross where you can see, or follow the shore to a crossing you
+      cannot. That lateral choice is the thing a purely radial world has never had, and it
+      is the first time two players walking out on different bearings see different
+      worlds — this item's opening complaint. A strait that would fail
+      `strait_is_crossable` is not cut at all: no barrier beats a sealed one.
+    - *A strait fits inside ONE section's radius band*, with dry shores either side, which
+      is what gives A* two land endpoints to route a crossing between. Straits start at
+      `STRAIT_MIN_REACH` so CANON §B keeps the on-ramp.
+    - ⚠️ *Three latent bugs it made visible rather than caused.* **Creatures did not
+      respect the shoreline** — `apply_move` ran candidates through `t_walkable` (terrain
+      AND coast) while `step_creatures` checked obstacles and elevation only, the same
+      one-rule-two-call-sites split as the wall-collision line that stopped creatures and
+      let players walk through. **The obstacle retain was two byte-identical copies**
+      (`radialize` / `ensure_frontier`), so the sea test would have gone into one of them;
+      it is `retain_placeable_obstacles` now. And **`nudge_to_walkable` did not mean dry**,
+      so a chest nudged off a cliff could land in the sea.
+    - ⚠️ *A fix for the sea must not quietly become a fix for terrain.* The first attempt
+      nudged creatures with `nudge_to_walkable`, which also pulls them off CLIFFS — which
+      they have always been allowed to stand on — and that moved every creature in every
+      seeded world; three unrelated pack/formation tests went red proving it. Creatures get
+      `nudge_ashore` (water only), and placement rejects a wet spot where it already
+      rejects a crowded one, so the spot grid stays consistent and no post-hoc nudge
+      disturbs the spacing that check exists to protect.
+  - [x] *SHIPPED — **the coast has a shape**, and **inland water**.* Three more terms in the
+    same signed field, which is why each was nearly free.
+    - **Bays and isles are one primitive** (`coast::Lobe`, a disc that edits the shoreline;
+      `LOBE_BAY` adds water, `LOBE_ISLE` adds land). A bay is the best-behaved barrier
+      available — convex, so routing around costs a bounded π/2 ≈ 1.57x — but it carries no
+      isthmus, so it is bounded to `BAY_LAND_SHARE` of the local half-arc and always leaves
+      dry ground to the fan's centre line. ⚠️ It needed an ABSOLUTE cap too: the share is a
+      share of the half-arc, which grows linearly with depth, so at r=2000 a 0.30 share is a
+      1,500-unit "bay" that no `nudge_ashore` can walk a creature out of — and a creature was
+      found standing in exactly that. An isle is honestly scenery; it stands outside the fan.
+    - **Inland water is nine names and two mechanisms** (`coast::Basin` standing,
+      `coast::RiverNode` flowing). Neither has a `kind`, because the names are emergent: size
+      makes a pond a lake, **slope makes a lake a bog** (a basin fills to the terrain's own
+      CONTOUR, so the same level floods wide over flat ground — nothing authored a marsh),
+      biome names an oasis and an ice tarn, and a lagoon is a basin whose contour reaches the
+      sea. Same discipline CANON D21 sets for `Structure`.
+    - **The laws hold by construction.** A river is gradient descent on `terrain::height`, so
+      it runs downhill because that is the generator's only move; it ends at the sea or in a
+      hollow it cannot climb out of, and such a hollow IS a lake. Fords are a cadence, not a
+      roll — connectedness is what a river is, and a connected impassable line is what
+      disconnects a world.
+    - ⚠️ *`Shore::sea` vs `Shore::water` is load-bearing.* `sea` drives the ground's dip
+      toward a globally-zero sea level; a basin sits at its own elevation with its hollow
+      already in the heightmap, so folding it in excavates every lake below its own bed.
+    - ⚠️ *Two bugs worth remembering.* The route-avoidance check compared the CORRIDOR-space
+      path against WORLD-space water, silently always passed, and put the clear path in a
+      lake at the same waypoint three runs running. And the first fix for it — bounding every
+      body to its section's band — passed the entire suite while cutting a world from 13-15
+      lakes of mean radius ~115 to **3-5 of radius 44**, because every assertion only asked
+      whether water existed. The floors are measured now.
   - [x] *SHIPPED — the coastline and the peninsula, as one shared constant.*
     [`meld_proto::coast`](../shared/meld-proto/src/coast.rs) owns the shoreline **and the
     neck**, because the geometry is authored in two scenes that cannot see each other (the
@@ -3647,6 +3725,54 @@ Directly underpins CR-4 (sim budget), MON-2 (persistent camps/instances), and LC
     (single-owner/no-locks invariant intact). **Remaining:** the b1-B boundary (spawn
     `WorldActor` as its own task so it never calls `GameState` methods), then multi-world
     + hub handoff + Postgres hibernation, and the two-world isolation QA test.
+  - 🔴 *Design settled, not built: **a dormant world catches up in CLOSED FORM, never by
+    replaying ticks**.* Asked for directly — a world asleep for a while should wake to
+    "now", with its Shifts, regrowth, conflicts and (later) fields and raids having
+    happened. Replaying the sim cannot do it, and the arithmetic is not close: the tick is
+    100 ms and the measured creature step at d1300 (11,836 creatures) is **15.8 ms**, so
+    | dormant | ticks | CPU to replay |
+    |---|---|---|
+    | 1 hour | 36,000 | **~9.5 min** |
+    | 1 day | 864,000 | ~3.8 h |
+    | 1 week | 6,048,000 | **~26 h** |
+    — on a single-owner task that ticks nothing else meanwhile. An HOUR of dormancy is
+    already an unacceptable login cost, so catch-up-by-stepping is dead at any dormancy
+    worth having.
+    - *Almost nothing needs stepping, which is what makes it tractable.* **Shifts** are
+      already closed-form and already EXACT: `shift::land_tick(seed, g)` is pure in
+      `(seed, g)` with no running state (its own doc notes a world left up for a *year*
+      folds ~100k `u64` adds), so you enumerate the generations landing in
+      `(last_tick, now]` and apply each — ~504 for a dormant week, each a section re-roll
+      rather than a tick. This is the one subsystem you genuinely iterate, and you MUST:
+      `shift_region` picks least-recently-disturbed half the time, so order is history and
+      cannot be collapsed. **Regrowth / node re-stock / creature mending** are rate ×
+      elapsed, clamped — and they SATURATE (`creature_regen_fraction_per_sec = 0.01` is a
+      full heal in 100 s), so past ~2 minutes the answer is not an approximation, it is a
+      fixed point. **Structures** fall out of the Shift enumeration for free: an anchor pays
+      `shift_hold_damage_fraction` per Shift held, so ~4 held Shifts (~80 min) kills an
+      untended one, deterministically.
+    - *So the contract is a per-subsystem `advance_to(tick)`, and anything that cannot
+      supply a closed form must declare a **saturation horizon** past which its state is a
+      fixed point.* That is also what makes CAPPING the catch-up honest rather than a
+      cheat — past a few days every rate has clamped and every untended structure has
+      already fallen, so more dormancy changes nothing.
+    - *And CANON §W2 survives it.* Wall-clock enters at exactly ONE place — converting
+      elapsed real time into a target tick, at the world boundary, the same discipline that
+      confines `MELD_*` reads there and keeps `meld-world` pure. Everything inside stays a
+      pure function of `(seed, tick)`, so the same wake-time reproduces the same world and
+      §W5 persistence stays two integers.
+    - *Ecology (food, fields, population diffs) and raids do not exist yet* — Epic E is
+      itself gated on this item — so what to build now is the HOOK, not the contents.
+  - 🔴 *And "let the player change the seed in town" needs this item, not a button.* Asked
+    for as "it would cause a game reload"; in today's build it is heavier than that. A world
+    **outlives its divers** by design (§W1) and holds player-built structures (BD-2
+    buildings, BD-3 anchors, forward towns), and there is exactly one live world
+    (`WORLD_KEY = "default"`, `world: Option<WorldActor>`) — so a seed-change button today
+    does not reload *your* world, it destroys *everyone's*. The non-destructive shape is
+    `world_key = seed` plus hibernate-and-restore (which already works), i.e. this item's
+    multi-world slice. What ships ahead of it is the seed as a **readable name**: on the
+    wire as the world's own fact and shown on the menu's Map column, so "come to world
+    12345" is a thing a player can say.
 - [ ] **SC-4 — Cross-process sim + gateways (only when one box can't hold it).**
   Keep the sim central/authoritative; push per-client fan-out to horizontally-scaled
   gateway processes next to the sockets. Determinism makes live instance migration

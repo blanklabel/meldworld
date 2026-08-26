@@ -645,6 +645,27 @@ pub(crate) fn render_main_menu(
                             ] {
                                 col.spawn(glass::text(line, 19.0, glass::TEXT));
                             }
+                            // **WHICH WORLD THIS IS** (CANON D19: the overworld is a
+                            // *player-seeded* World, and §W5 stores this number instead of a
+                            // map because the baseline is a pure function of it). It belongs
+                            // on the Map column rather than as a seventh nav row: it is a
+                            // fact about the place the map is OF.
+                            //
+                            // Read off the world, never off what we asked for — a client
+                            // showing a requested seed instead of the live one is the bug
+                            // `run.started.tutorial` exists to prevent.
+                            //
+                            // Shown in FULL: it is the name a player says out loud to bring
+                            // somebody else here, so a truncated or prettified form would be
+                            // a name that does not work.
+                            let seed = crate::world_render::world_seed();
+                            if seed != 0 {
+                                col.spawn(glass::text(
+                                    format!("World      {seed}"),
+                                    19.0,
+                                    glass::TEXT,
+                                ));
+                            }
                             col.spawn(glass::divider());
                             explored_map(col, perks, explored, ground.as_deref());
                         }

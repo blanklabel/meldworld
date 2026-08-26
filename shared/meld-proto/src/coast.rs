@@ -250,6 +250,493 @@ pub fn is_land(x: f32, z: f32, arc_half_rad: f32) -> bool {
     !is_ocean(x, z, arc_half_rad)
 }
 
+// ---------------------------------------------------------------------------------------
+// CONTINENTS
+// ---------------------------------------------------------------------------------------
+//
+// **The fan was ONE landmass, and the line that made it one was `is_ocean`'s first
+// branch: inside the arc, land, always.** So the world had a coastline and no
+// continents — every bearing was solid ground from the hub to the frontier, and the only
+// water a diver could ever reach was the gap behind Last City (a *frame*: it tells you
+// which way is out, and there is nothing on the far side of it to walk toward).
+//
+// A continent here is the land BETWEEN straits. A [`Strait`] is an inland sea filling an
+// annular sector — a radius band across a span of bearing — pierced by **isthmuses**. The
+// landmass on either side of one is hundreds to thousands of units across, which is what
+// you actually experience of a continent: not the ocean's width, but its coast and the
+// crossing.
+//
+// ```text
+//                        . . . . . . . . . .
+//                  .                         .        ← continent (outer)
+//              .  ~~~~~~~~~~~~~~~~~~~~~~~       .
+//            .  ~~~~~~~~~[ISTHMUS]~~~~~~~~~~      .   ← a STRAIT: radius band × bearing span
+//           .   ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~     .
+//          .                                       .  ← continent (inner)
+//         .              (hub)                      .
+// ```
+//
+// # Why this is nearly free
+//
+// It is a term in [`sea_depth`], and four systems already read this module rather than
+// keeping their own copy of the shoreline: `astar_route` land-checks **every bent edge**
+// (so the guaranteed backbone routes around a strait honestly, and to an isthmus, with no
+// new pathfinding), `apply_move` collides against the same predicate, and both ground
+// shaders already ramp a beach and tint a depth over the signed field. Carve the strait
+// here and routing, collision and rendering come along. It also stays **analytic** — no
+// colliders, so `BlockField`'s cell (sized from the largest radius in the world) is
+// untouched, where one r=150 water disc measured **+63%** on the creature tick.
+//
+// # Two things are guaranteed by CONSTRUCTION, and both are load-bearing
+//
+// 1. **A strait never spans the whole fan.** Both angular ends stay
+//    [`STRAIT_FAN_MARGIN`] inside the arc, so you can always walk *around* either end.
+// 2. **Every strait carries isthmuses**, each at least [`MIN_BRIDGE_HALF_WIDTH`] of arc
+//    to a side — comfortably wider than the clear path's tube plus a player.
+//
+// Together those are why this is not the retired `Seam`. A seam was a full-width wall
+// with **one** door, and it was removed for good reason: it "funnelled you through a
+// single pass" and the world read as a corridor. Three or more ways across every barrier
+// — two isthmuses and either end — is the difference between a funnel and a *decision*:
+// you meet a coast, and you choose whether the crossing you can see is worth less walking
+// than the one you cannot. That lateral choice is the thing the radial world has never
+// had; two players on different bearings finally see different worlds.
+
+/// One STRAIT, flat so it rides the wire and a shader uniform as two `vec4`s (the
+/// [`crate::terrain::peak_height`] precedent — an explicit table, not noise, because a
+/// barrier has to be *structured*: an isotropic threshold over a sum of sines cannot make
+/// a long connected channel with a pass in it at any amplitude).
+///
+/// `[r_center, r_half, theta_center, theta_half, b0_theta, b0_half, b1_theta, b1_half]`
+///
+/// Radii and the two bridge half-widths are **world units**; the two `theta`s and
+/// `theta_half` are **radians**. That split is deliberate and it is the same lesson
+/// [`sea_depth`] already carries: a bridge measured as an ANGLE would be a few units wide
+/// near the hub and hundreds at the frontier, so the one number that has to stay walkable
+/// is stored as an arc length. A bridge with `half <= 0` is absent.
+pub type Strait = [f32; 8];
+
+/// Max straits a ground shader blends at once — windowed around the player's radius, the
+/// way the biome rings are. The run holds as many as it has streamed.
+pub const MAX_STRAITS: usize = 8;
+
+/// The narrowest an isthmus may ever be, as half its arc width. It has to clear the
+/// guaranteed route's tube (`[worldgen] path_clear_radius`, 1.9) plus a player, with room
+/// to walk rather than thread — a "crossing" you can only find by pixel-hunting is a
+/// funnel with extra steps.
+pub const MIN_BRIDGE_HALF_WIDTH: f32 = 11.0;
+
+/// How far inside the fan's edge a strait's angular span must stop, as an ARC LENGTH.
+/// This is what keeps "walk around its end" available at every depth: measured as an angle
+/// it would vanish near the hub and be kilometres out at the frontier.
+pub const STRAIT_FAN_MARGIN: f32 = 40.0;
+
+/// A strait is generated no shallower than this, so the on-ramp is untouched water-free
+/// ground. CANON §B is not negotiable — distance is difficulty — and a diver's first
+/// minutes should not be a coastline.
+pub const STRAIT_MIN_REACH: f32 = 180.0;
+
+/// Signed difference between two bearings, wrapped to `[-π, π]`, so a strait centred near
+/// due west is not silently a strait spanning the entire world the other way round.
+fn ang_diff(a: f32, b: f32) -> f32 {
+    let mut d = a - b;
+    while d > std::f32::consts::PI {
+        d -= std::f32::consts::TAU;
+    }
+    while d < -std::f32::consts::PI {
+        d += std::f32::consts::TAU;
+    }
+    d
+}
+
+/// **How far INSIDE this strait `(x, z)` is, in world units** — positive in the water,
+/// negative on the land around it, zero on its waterline. The twin of [`sea_depth`] for
+/// one inland sea.
+///
+/// Every term is a world-unit margin, and that is what makes it composable: the angular
+/// span is multiplied by `r` into an ARC so it can be `min`'d against the radial one, and
+/// the result is a continuous field the ground shader can ramp a beach over. Returning an
+/// angle for one term and a length for another would give the coast a beach on its curved
+/// edges and a cliff on its flat ones.
+///
+/// Land is the union of everything, so water is the INTERSECTION of "in the band", "in the
+/// span" and "not on an isthmus" — a `min` of the three. An isthmus subtracts: off the
+/// bridge its term is positive (still water), on it negative (land bridge).
+pub fn strait_depth(x: f32, z: f32, s: &Strait) -> f32 {
+    let (r_c, r_half, th_c, th_half) = (s[0], s[1], s[2], s[3]);
+    if r_half <= 0.0 || th_half <= 0.0 {
+        return -1000.0; // an empty slot is not a sea
+    }
+    let r = x.hypot(z);
+    let theta = z.atan2(x);
+    // Inside the radius band…
+    let in_band = r_half - (r - r_c).abs();
+    // …inside the bearing span, as an arc length so it composes with the rest…
+    let in_span = (th_half - ang_diff(theta, th_c).abs()) * r;
+    // …and not standing on one of its isthmuses.
+    let mut off_bridge = f32::MAX;
+    for b in [(s[4], s[5]), (s[6], s[7])] {
+        if b.1 > 0.0 {
+            off_bridge = off_bridge.min(ang_diff(theta, b.0).abs() * r - b.1);
+        }
+    }
+    in_band.min(in_span).min(off_bridge)
+}
+
+/// [`sea_depth`] plus this world's inland seas — the full shoreline of a world that has
+/// **continents** rather than one unbroken fan.
+///
+/// The sea is the union of the ocean and every strait, and a signed depth's union is a
+/// `max`: past the ocean's land OR inside a strait. On open ground far from either the
+/// ocean's own (negative) distance survives, so the beach at the fan's rim is unchanged.
+pub fn sea_depth_with(x: f32, z: f32, arc_half_rad: f32, straits: &[Strait]) -> f32 {
+    let mut d = sea_depth(x, z, arc_half_rad);
+    if arc_half_rad <= 0.0 {
+        return d; // corridor mode: no fan, no sea, and so no continents either
+    }
+    for s in straits {
+        d = d.max(strait_depth(x, z, s));
+    }
+    d
+}
+
+/// [`is_ocean`], including the inland seas that separate the continents. Its sign is
+/// [`sea_depth_with`] exactly — the water you SEE and the water you COLLIDE with are one
+/// shoreline, which is the entire reason this module exists.
+pub fn is_ocean_with(x: f32, z: f32, arc_half_rad: f32, straits: &[Strait]) -> bool {
+    if is_ocean(x, z, arc_half_rad) {
+        return true;
+    }
+    if arc_half_rad <= 0.0 {
+        return false;
+    }
+    straits.iter().any(|s| strait_depth(x, z, s) > 0.0)
+}
+
+/// Is `(x, z)` walkable ground, continents included? The inverse of [`is_ocean_with`].
+pub fn is_land_with(x: f32, z: f32, arc_half_rad: f32, straits: &[Strait]) -> bool {
+    !is_ocean_with(x, z, arc_half_rad, straits)
+}
+
+/// Does `s` honour the two construction guarantees — an isthmus wide enough to walk, and
+/// both angular ends stopping inside the fan so you can round either one?
+///
+/// Exposed (rather than left to the generator) because it is the *contract*, and this repo
+/// has learned twice that a guarantee enforced only where a thing is built is a guarantee
+/// the next builder does not know about. The generator asserts it; so do the tests.
+pub fn strait_is_crossable(s: &Strait, arc_half_rad: f32) -> bool {
+    let (r_c, r_half, th_c, th_half) = (s[0], s[1], s[2], s[3]);
+    if r_half <= 0.0 || th_half <= 0.0 || r_c <= r_half {
+        return false;
+    }
+    // At least one isthmus, wide enough to walk, and inside the span it pierces.
+    let bridged = [(s[4], s[5]), (s[6], s[7])].iter().any(|&(bt, bh)| {
+        bh >= MIN_BRIDGE_HALF_WIDTH && ang_diff(bt, th_c).abs() <= th_half
+    });
+    // Both ends stop inside the fan, so rounding either one is always an option.
+    let r_out = r_c + r_half;
+    let margin = STRAIT_FAN_MARGIN / r_out.max(1.0);
+    let ends_inside = th_c.abs() + th_half + margin <= arc_half_rad;
+    bridged && ends_inside
+}
+
+// ---------------------------------------------------------------------------------------
+// BAYS AND ISLANDS
+// ---------------------------------------------------------------------------------------
+//
+// The [`Strait`] above gave the world INTERIOR structure. These two give its edge a shape:
+// a **bay** bites inward from the fan's rim, and an **isle** stands out in the open sea.
+//
+// **They are ONE primitive**, and that is not a shortcut — a disc that edits the
+// shoreline is exactly what both of them are, and they differ only in which side of the
+// waterline the disc adds to. Keeping them as one type means one wire field, one uniform
+// array, and one fold; two near-identical lists is how the pond/bog-pool/frozen-pond rule
+// ended up written three times and one edit from disagreeing (see [`is_water_kind`]).
+//
+// A bay is the cheaper half of `WG-7`'s "regions with shapes": it is **convex**, so routing
+// around one costs `πr / 2r` = **π/2 ≈ 1.57x** the straight line — bounded, where a ridge or
+// a river can force an arbitrarily long detour. And it cannot sever the world, because a
+// bay's reach inward is bounded to a share of the local half-arc, so there is always land
+// between it and the fan's centre line ([`BAY_LAND_SHARE`], the same discipline
+// [`CHANNEL_LAND_SHARE`] uses to guarantee the channel beside the city's spit).
+//
+// An isle is honestly **scenery**: it stands in the western gap, which no one can walk to,
+// so nothing is ever placed on one. It is here because an ocean with nothing in it reads as
+// a backdrop, and because it costs one term in a function that is already being evaluated.
+
+/// One LOBE of the coastline: a disc that edits where the water is.
+/// `[cx, cz, radius, kind]` — world-space centre, world-unit radius, and
+/// [`LOBE_BAY`] (water) or [`LOBE_ISLE`] (land).
+///
+/// The 4th component carries the kind because a disc leaves it free, and because the
+/// alternative — two arrays, two counts, two lots of uniform padding — costs more on both
+/// sides of the wire than one tagged list. A radius of zero is an empty slot.
+///
+/// Lobes apply **in order**, so an isle listed after a bay stands *in* that bay. That falls
+/// out of the fold rather than needing a rule.
+pub type Lobe = [f32; 4];
+
+/// A [`Lobe`] that is WATER: a bay or gulf, biting inward from the fan's rim.
+pub const LOBE_BAY: f32 = 0.0;
+
+/// A [`Lobe`] that is LAND: an isle standing in the sea.
+pub const LOBE_ISLE: f32 = 1.0;
+
+/// Max lobes a ground shader blends at once, windowed around the player like the straits.
+pub const MAX_LOBES: usize = 12;
+
+/// The most of the local half-arc a bay may eat, leaving the rest as land. **This is what
+/// makes a bay unable to sever the world** — there is always ground between it and the
+/// fan's centre line, at every radius, whatever the arc is retuned to. Same guarantee, and
+/// the same reasoning, as [`CHANNEL_LAND_SHARE`].
+pub const BAY_LAND_SHARE: f32 = 0.42;
+
+// ---------------------------------------------------------------------------------------
+// INLAND WATER
+// ---------------------------------------------------------------------------------------
+//
+// Lakes, ponds, bogs, marshes, lagoons, creeks, springs, oases, rivers. **Nine names, two
+// mechanisms** — and collapsing them is the whole design, the same discipline CANON D21
+// demands of `Structure` ("do not build towns, anchors, portals and camps as separate
+// systems"). Nine systems is nine subtly different answers to "where is the water".
+//
+// | mechanism | what it is | the names that fall out of it |
+// |---|---|---|
+// | [`Basin`] | standing water filling a hollow to a LEVEL | pond, lake, bog, marsh, lagoon, oasis |
+// | [`RiverNode`] | flowing water descending the terrain | spring, creek, river |
+//
+// **The names are emergent, not authored, and that is why there is no `kind` field.**
+//
+// * **size** separates a pond from a lake — one radius draw.
+// * **SLOPE separates a bog from a lake**, for free, because a basin is filled to a
+//   CONTOUR rather than drawn as a circle: the same `level` over near-flat ground floods a
+//   wide ragged sheet and over rolling ground makes a small round pool. Marshes come out
+//   looking like marshes because the terrain under them is flat, not because anything asked
+//   for a marsh.
+// * **biome** names a bog a bog, an oasis an oasis, and an ice tarn an ice tarn — and it
+//   already does, because the client picks its water tile from the section's biome
+//   (`water_tile`), exactly as it does for the sea.
+// * **adjacency** makes a lagoon: a basin whose contour reaches the sea.
+//
+// # The one thing that is genuinely new: water has a LEVEL
+//
+// The ocean works as a single scalar field because sea level is globally zero, so
+// [`sea_depth`] can drive both the ground's dip and the water's tint. **An inland body sits
+// at its own elevation**, and that is the difference between this and the bays above.
+//
+// It also makes it CHEAPER, not dearer: a basin needs no ground displacement at all,
+// because the hollow is already in the heightmap — that is what makes it a basin. The
+// terrain is the lakebed, and the water is a tint whose depth is `level - height`. So
+// inland water deliberately does **not** join [`Shore::sea`] (which the vertex stage dips
+// toward the sea floor); it joins [`Shore::water`], which is what collision and tinting
+// ask. Folding it into the displacement field would dig every lake a second time, below
+// its own bed.
+//
+// # And the laws hold BY CONSTRUCTION
+//
+// `terrain::height` is a pure analytic function, so a river is gradient descent on it: it
+// runs downhill because downhill is the only direction it is generated in. It ends at the
+// sea, or in a hollow it cannot climb out of — and a hollow a river cannot leave **is** a
+// lake, so the endorheic case builds its own terminus rather than needing a rule. "Rivers
+// flow to the ocean" is therefore not a check that can fail; it is the generator's only
+// move.
+
+/// A BASIN: standing water filling a hollow up to a level.
+/// `[cx, cz, radius, level]` — world-space centre, a world-unit bound on how far it may
+/// spread, and the **water surface elevation** in the same units as `terrain::height`.
+///
+/// The radius is a *bound*, not the shape. The shape is the terrain's own contour at
+/// `level`, which is what makes a lake look like a lake instead of a disc — and what makes
+/// a bog spread wide over flat ground with no extra machinery.
+pub type Basin = [f32; 4];
+
+/// One node of a river's chain. `[x, z, half_width, chain_start]`.
+///
+/// A river is a polyline, so it is the one water body that cannot be four floats. Nodes are
+/// stored consecutively and a node with `chain_start >= 0.5` **begins a new chain** — which
+/// is how a **FORD** is expressed: the gap between two chains is dry ground, a stony
+/// crossing. That matters structurally, because connectedness is what a river *is*, and a
+/// connected impassable line is exactly what disconnects a world. Fords are therefore
+/// placed by the generator at a fixed cadence — a guarantee, like a strait's isthmus, never
+/// a repair afterwards.
+pub type RiverNode = [f32; 4];
+
+/// Max basins a ground shader blends at once, windowed around the player.
+pub const MAX_BASINS: usize = 10;
+
+/// Max river nodes a ground shader holds at once, windowed around the player. A river of
+/// `river_max_nodes` is a handful of these, so this is a few rivers' worth.
+pub const MAX_RIVER_NODES: usize = 28;
+
+/// Nominal shoreline slope, used to turn a basin's *vertical* margin (`level - height`)
+/// into an approximate *horizontal* distance so it can share a `min` with the radius bound
+/// and hand the ground shader a beach of sane width.
+///
+/// It is an approximation on purpose. The exact horizontal distance to the contour is
+/// `(level - height) / |∇height|`, which blows up to infinity on flat ground — and flat
+/// ground is precisely the bog case, where the shore really is enormously wide and a
+/// renderer still needs a finite number.
+pub const BASIN_SHORE_SLOPE: f32 = 0.12;
+
+/// **How far INSIDE this basin `(x, z)` is** — positive in the water, negative on the land
+/// around it. Needs the run's terrain offset, because a basin is defined against the
+/// heightmap rather than against a shape.
+///
+/// Two terms, both brought into world units so the field stays continuous and the beach has
+/// a gradient: inside the radius bound, and below the water level.
+pub fn basin_depth(x: f32, z: f32, b: &Basin, ox: f32, oz: f32) -> f32 {
+    let (cx, cz, r, level) = (b[0], b[1], b[2], b[3]);
+    if r <= 0.0 {
+        return -1000.0; // an empty slot
+    }
+    let within = r - (x - cx).hypot(z - cz);
+    let below = (level - crate::terrain::height(x, z, ox, oz)) / BASIN_SHORE_SLOPE;
+    within.min(below)
+}
+
+/// **How far INSIDE a river `(x, z)` is** — positive in the channel. The max over every
+/// segment, where a segment joins two consecutive nodes and a node marked `chain_start`
+/// begins a new chain instead (so the gap before it is a dry FORD).
+pub fn river_depth(x: f32, z: f32, nodes: &[RiverNode]) -> f32 {
+    let mut best = -1000.0f32;
+    for w in nodes.windows(2) {
+        let (a, b) = (w[0], w[1]);
+        if b[3] >= 0.5 {
+            continue; // a new chain starts here — the gap is the ford
+        }
+        let half = (a[2] + b[2]) * 0.5;
+        if half <= 0.0 {
+            continue;
+        }
+        // Distance from the point to the segment a→b.
+        let (px, pz) = (x - a[0], z - a[1]);
+        let (sx, sz) = (b[0] - a[0], b[1] - a[1]);
+        let len2 = sx * sx + sz * sz;
+        let t = if len2 > 1e-6 { ((px * sx + pz * sz) / len2).clamp(0.0, 1.0) } else { 0.0 };
+        let d = (px - sx * t).hypot(pz - sz * t);
+        best = best.max(half - d);
+    }
+    best
+}
+
+/// **The whole shoreline of one world**, gathered so it can be asked in one place.
+///
+/// It is a bundle rather than an ever-growing argument list: the call sites went from
+/// `(x, z, arc_half)` to `+ straits` to `+ lobes` to `+ basins, rivers`, and every addition
+/// meant revisiting all ~15 of them. They ask `shore.is_land(x, z)` now, so the next thing
+/// the coastline learns costs one field here and nothing anywhere else.
+#[derive(Clone, Copy, Default)]
+pub struct Shore<'a> {
+    /// Half the world's fan, in radians (`radial_arc_degrees.to_radians() * 0.5`). Zero is
+    /// corridor mode: no fan, so no sea at all and every other field is inert.
+    pub arc_half: f32,
+    /// This run's terrain offset, because a [`Basin`] is defined against the heightmap
+    /// rather than against a shape of its own.
+    pub terrain_off: (f32, f32),
+    /// The inland seas that separate the continents ([`Strait`]).
+    pub straits: &'a [Strait],
+    /// Bays cut into the rim and isles standing offshore ([`Lobe`]).
+    pub lobes: &'a [Lobe],
+    /// Standing inland water — lakes, ponds, bogs, marshes, lagoons, oases ([`Basin`]).
+    pub basins: &'a [Basin],
+    /// Flowing inland water — rivers and creeks, as chains of [`RiverNode`].
+    pub rivers: &'a [RiverNode],
+}
+
+impl<'a> Shore<'a> {
+    /// A shoreline with nothing but the ocean — the world as it was before continents.
+    /// Handy for the City (whose own coast is [`city_sea_depth`]) and for corridor mode.
+    pub fn bare(arc_half: f32) -> Self {
+        Shore { arc_half, ..Default::default() }
+    }
+
+    /// **The SEA's signed depth** at `(x, z)` — the ocean, the straits that break the fan
+    /// into continents, and the lobes that shape its edge. Negative on land, positive at
+    /// sea, zero on the waterline.
+    ///
+    /// ⚠️ **Inland water is deliberately NOT in here**, and that is the load-bearing
+    /// distinction of this module. This is the field the vertex stage dips the ground
+    /// toward the sea floor over (`terrain::with_sea`), and sea level is globally zero. A
+    /// [`Basin`] sits at its OWN elevation and needs no dip at all — the hollow is already
+    /// in the heightmap, which is what makes it a basin. Folding it in here would excavate
+    /// every lake a second time, below its own bed. Collision and tinting want
+    /// [`Self::water`] instead.
+    ///
+    /// Order is the order the shapes were added to the world, and every term is a signed
+    /// distance in world units, so the field stays CONTINUOUS and the beach ramp has a
+    /// gradient to ramp over. That is the property this module keeps having to re-learn: a
+    /// boolean wearing a float renders as a vertical wall of water with no beach in between.
+    pub fn sea(&self, x: f32, z: f32) -> f32 {
+        let mut d = sea_depth_with(x, z, self.arc_half, self.straits);
+        if self.arc_half <= 0.0 {
+            return d; // corridor mode: no fan, no sea, and so no coastline to shape
+        }
+        for l in self.lobes {
+            let (cx, cz, r, kind) = (l[0], l[1], l[2], l[3]);
+            if r <= 0.0 {
+                continue; // an empty slot
+            }
+            // Positive inside the disc, negative outside — a circle's signed distance.
+            let inside = r - (x - cx).hypot(z - cz);
+            if kind < 0.5 {
+                d = d.max(inside); // BAY: water, so it wins over whatever was land
+            } else {
+                d = d.min(-inside); // ISLE: land, so it wins over whatever was sea
+            }
+        }
+        d
+    }
+
+    /// **Inland water's signed depth** at `(x, z)` — basins and rivers only, negative
+    /// everywhere else. Positive in standing or flowing fresh water.
+    pub fn inland(&self, x: f32, z: f32) -> f32 {
+        if self.arc_half <= 0.0 {
+            return -1000.0; // corridor mode has no water of any kind
+        }
+        let (ox, oz) = self.terrain_off;
+        let mut d = river_depth(x, z, self.rivers);
+        for b in self.basins {
+            d = d.max(basin_depth(x, z, b, ox, oz));
+        }
+        d
+    }
+
+    /// **All water, salt and fresh** — the union of [`Self::sea`] and [`Self::inland`], and
+    /// the field every "can I stand here" question is a sign test of.
+    pub fn water(&self, x: f32, z: f32) -> f32 {
+        self.sea(x, z).max(self.inland(x, z))
+    }
+
+    /// Is `(x, z)` water? The sign of [`Self::water`], so the water a player SEES and the
+    /// water they COLLIDE with cannot disagree — the whole reason this module exists.
+    pub fn is_ocean(&self, x: f32, z: f32) -> bool {
+        self.water(x, z) > 0.0
+    }
+
+    /// Is `(x, z)` walkable ground as far as water is concerned? Named for the call sites,
+    /// which read as "can I stand here".
+    pub fn is_land(&self, x: f32, z: f32) -> bool {
+        !self.is_ocean(x, z)
+    }
+}
+
+/// Does this bay leave land between itself and the fan's centre line, at its own radius?
+///
+/// The contract, asked of the thing rather than assumed of the arithmetic that built it —
+/// the same discipline as [`strait_is_crossable`]. A bay that fails this can pinch the fan
+/// in two, and unlike a strait it carries no isthmus to cross at.
+pub fn bay_leaves_a_shore(l: &Lobe, arc_half_rad: f32) -> bool {
+    if l[3] >= 0.5 {
+        return true; // an isle is land; it cannot cut anything off
+    }
+    let (r, radius) = (l[0].hypot(l[1]), l[2]);
+    if radius <= 0.0 {
+        return true;
+    }
+    // Half the arc available at this radius, and the share of it a bay may take.
+    radius <= r * arc_half_rad * BAY_LAND_SHARE
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -330,8 +817,10 @@ mod tests {
 
     #[test]
     fn the_fan_is_all_land() {
-        // Every angle inside the fan, at every depth, is walkable ground — the sea only
-        // ever occupies the western gap.
+        // Every angle inside the fan, at every depth, is walkable ground — the OCEAN only
+        // ever occupies the western gap. This is a statement about the ocean's shape, not
+        // about the world having one landmass: the inland seas that separate the continents
+        // are a separate term, and they come in through `is_ocean_with`.
         for i in 0..=100 {
             let th = -ARC_HALF + (i as f32 / 100.0) * 2.0 * ARC_HALF;
             for r in [5.0_f32, 40.0, 200.0, 1200.0] {
@@ -423,6 +912,513 @@ mod tests {
     fn corridor_mode_has_no_sea() {
         // A zero arc is the flat-corridor world the tests and the tutorial still use.
         assert!(!is_ocean(-500.0, 400.0, 0.0));
+    }
+
+    // -----------------------------------------------------------------------------------
+    // CONTINENTS
+    // -----------------------------------------------------------------------------------
+
+    /// A strait for the tests below: a band 40 units thick at r=600, spanning 50° of
+    /// bearing centred on the axis, with two isthmuses in it.
+    fn test_strait() -> Strait {
+        let th_half = 50.0_f32.to_radians() * 0.5;
+        [600.0, 20.0, 0.0, th_half, -th_half * 0.55, 14.0, th_half * 0.5, 14.0]
+    }
+
+    /// The whole point of the feature: a strait is water, and there are **three or more**
+    /// ways past it — each isthmus, and around either end. That is what separates this from
+    /// the retired `Seam`, a full-width wall with one door that made the world read as a
+    /// corridor.
+    #[test]
+    fn a_strait_is_water_you_can_cross_and_water_you_can_round() {
+        let s = test_strait();
+        let at = |theta: f32, r: f32| {
+            let (x, z) = (r * theta.cos(), r * theta.sin());
+            is_ocean_with(x, z, ARC_HALF, &[s])
+        };
+        let th_half = s[3];
+
+        // Open water: mid-band, mid-span, clear of both isthmuses.
+        assert!(at(th_half * 0.9, 600.0), "the middle of the strait is open water");
+
+        // Both isthmuses are dry land bridges, right through the middle of the band.
+        assert!(!at(s[4], 600.0), "the first isthmus is a land bridge");
+        assert!(!at(s[6], 600.0), "the second isthmus is a land bridge");
+
+        // Either end of the span is land, so you can always walk around it…
+        assert!(!at(th_half * 1.3, 600.0), "past the span's far end is land");
+        assert!(!at(-th_half * 1.3, 600.0), "past the span's near end is land");
+        // …and so is the ground on both shores.
+        assert!(!at(th_half * 0.9, 540.0), "the near shore is land");
+        assert!(!at(th_half * 0.9, 660.0), "the far shore is land");
+    }
+
+    /// Sweep the strait's own band and count how many separate stretches of land cross it.
+    /// Three is the floor (two isthmuses + one end); the far end is outside the swept span
+    /// on purpose, so this asserts the crossings that are *inside* the barrier.
+    #[test]
+    fn a_strait_never_severs_the_continent_it_borders() {
+        let s = test_strait();
+        let th_half = s[3];
+        let mut crossings = 0;
+        let mut was_land = false;
+        for i in 0..=4000 {
+            let th = -th_half * 1.2 + (i as f32 / 4000.0) * th_half * 2.4;
+            let (x, z) = (600.0 * th.cos(), 600.0 * th.sin());
+            let land = !is_ocean_with(x, z, ARC_HALF, &[s]);
+            if land && !was_land {
+                crossings += 1;
+            }
+            was_land = land;
+        }
+        assert!(
+            crossings >= 3,
+            "a strait must offer at least three ways past it — two isthmuses and its ends \
+             — or it is the retired `Seam`: one door, and a world that reads as a corridor. \
+             Found {crossings}"
+        );
+    }
+
+    /// The contract, checked as a contract: an isthmus wide enough to walk, and both ends
+    /// stopping inside the fan. A strait that fails this can sever the world.
+    #[test]
+    fn the_crossable_contract_catches_a_severing_strait() {
+        let arc = ARC_HALF;
+        assert!(strait_is_crossable(&test_strait(), arc));
+
+        let mut narrow = test_strait();
+        narrow[5] = MIN_BRIDGE_HALF_WIDTH - 0.5;
+        narrow[7] = MIN_BRIDGE_HALF_WIDTH - 0.5;
+        assert!(!strait_is_crossable(&narrow, arc), "a thread is not an isthmus");
+
+        let mut unbridged = test_strait();
+        unbridged[5] = 0.0;
+        unbridged[7] = 0.0;
+        assert!(!strait_is_crossable(&unbridged, arc), "a strait with no isthmus is a wall");
+
+        // A span that reaches the fan's rim closes the "walk around its end" option.
+        let mut rim = test_strait();
+        rim[3] = arc;
+        assert!(!strait_is_crossable(&rim, arc), "a span that reaches the rim has no end to round");
+
+        // An isthmus outside the span it is meant to pierce pierces nothing.
+        let mut adrift = test_strait();
+        adrift[4] = arc * 0.9;
+        adrift[6] = arc * 0.9;
+        assert!(!strait_is_crossable(&adrift, arc), "an isthmus must sit inside its own strait");
+    }
+
+    /// The continental shoreline is ONE shoreline, exactly as the ocean's is
+    /// (`the_depth_field_agrees_with_the_predicate`). The server collides against
+    /// `is_ocean_with` and the ground shader ramps its beach over `sea_depth_with`; a
+    /// disagreement is water you can walk on, or a beach drawn over sea.
+    #[test]
+    fn the_continental_depth_field_agrees_with_the_predicate() {
+        let straits = [
+            test_strait(),
+            [300.0, 18.0, 0.6, 0.35, 0.45, 13.0, 0.72, 13.0],
+            [900.0, 30.0, -0.9, 0.5, -1.1, 16.0, -0.7, 16.0],
+        ];
+        let mut checked = 0u32;
+        for xi in -70..=70 {
+            for zi in -70..=70 {
+                let (x, z) = (xi as f32 * 13.7, zi as f32 * 13.7);
+                if x.hypot(z) < 1.0 {
+                    continue; // the origin has no angle
+                }
+                let depth = sea_depth_with(x, z, ARC_HALF, &straits);
+                let ocean = is_ocean_with(x, z, ARC_HALF, &straits);
+                if depth.abs() > 1e-3 {
+                    assert_eq!(
+                        depth > 0.0,
+                        ocean,
+                        "({x}, {z}): sea_depth_with says {depth} but is_ocean_with says \
+                         {ocean} — the shoreline the player SEES and the one they COLLIDE \
+                         with have drifted"
+                    );
+                    checked += 1;
+                }
+            }
+        }
+        assert!(checked > 10_000, "the sweep covered almost nothing ({checked} points)");
+    }
+
+    /// A strait's field has to be CONTINUOUS, because the ground shader smoothsteps a beach
+    /// over it — the same lesson this module already shipped twice (the flat `-1000` inside
+    /// the fan, and the city's `if z < back` early return). A jump means a wall of water
+    /// with no beach possible in between.
+    #[test]
+    fn a_straits_shoreline_has_a_beach_rather_than_a_cliff() {
+        let s = test_strait();
+        // March across the strait's near shore in 0.5-unit steps; the field may never jump
+        // by more than the step it took to get there (times slack for the arc's curvature).
+        let th = s[3] * 0.9;
+        let mut prev: Option<f32> = None;
+        let mut r = 540.0_f32;
+        while r <= 660.0 {
+            let (x, z) = (r * th.cos(), r * th.sin());
+            let d = sea_depth_with(x, z, ARC_HALF, &[s]);
+            if let Some(p) = prev {
+                assert!(
+                    (d - p).abs() < 2.0,
+                    "the sea depth jumped {:.1} units over a 0.5-unit step at r={r} — that \
+                     is a cliff of water, and every smoothstep over it collapses to a step",
+                    (d - p).abs()
+                );
+            }
+            prev = Some(d);
+            r += 0.5;
+        }
+    }
+
+    /// Corridor mode (the tutorial, and every unit test that runs flat) has no fan, so it
+    /// has no sea — and therefore no continents either, however many straits are handed in.
+    #[test]
+    fn corridor_mode_has_no_continents() {
+        let s = test_strait();
+        assert!(!is_ocean_with(600.0, 0.0, 0.0, &[s]));
+        assert!(!is_ocean_with(600.0, 30.0, 0.0, &[s]));
+        assert!(sea_depth_with(600.0, 0.0, 0.0, &[s]) < 0.0);
+    }
+
+    // -----------------------------------------------------------------------------------
+    // BAYS AND ISLANDS
+    // -----------------------------------------------------------------------------------
+
+    /// A bay sitting ON the fan's rim at r=800, biting inward.
+    fn test_bay() -> Lobe {
+        let (r, th) = (800.0_f32, ARC_HALF);
+        [r * th.cos(), r * th.sin(), 90.0, LOBE_BAY]
+    }
+
+    /// **A bay eats into the fan and never through it.** Water at the rim where it sits,
+    /// land still there between it and the centre line — which is the guarantee, because
+    /// unlike a strait a bay carries no isthmus to cross at.
+    #[test]
+    fn a_bay_bites_into_the_fan_but_never_through_it() {
+        let bay = test_bay();
+        let lobes = [bay];
+        let shore = Shore { arc_half: ARC_HALF, lobes: &lobes, ..Default::default() };
+
+        // Its own centre, on the rim, is water.
+        assert!(shore.is_ocean(bay[0], bay[1]), "a bay is water");
+        // And it has genuinely bitten INWARD: a point just inside the rim, at the bay's
+        // radius, is now sea where the bare fan called it land.
+        let inward_th = ARC_HALF - 20.0 / 800.0; // 20 units of arc inside the rim
+        let (ix, iz) = (800.0 * inward_th.cos(), 800.0 * inward_th.sin());
+        assert!(shore.is_ocean(ix, iz), "the bay must reach inside the fan's rim");
+        assert!(
+            Shore::bare(ARC_HALF).is_land(ix, iz),
+            "…and that point must be land without it, or this test proves nothing"
+        );
+
+        // But the centre line at the same radius is still dry, at every radius the bay
+        // touches — there is always a way past it.
+        for r in [720.0_f32, 800.0, 880.0] {
+            assert!(
+                shore.is_land(r, 0.0),
+                "a bay must never reach the fan's centre line (r={r}) — that is a barrier \
+                 with no way around and no isthmus to cross"
+            );
+        }
+    }
+
+    /// The contract, asked as a contract: a bay bounded to its share of the local half-arc
+    /// leaves a shore; one that is not can pinch the fan in two.
+    #[test]
+    fn the_bay_contract_catches_one_that_would_pinch_the_fan() {
+        assert!(bay_leaves_a_shore(&test_bay(), ARC_HALF));
+
+        let mut greedy = test_bay();
+        greedy[2] = 800.0 * ARC_HALF; // the whole half-arc
+        assert!(
+            !bay_leaves_a_shore(&greedy, ARC_HALF),
+            "a bay spanning the entire half-arc cuts the fan in two"
+        );
+
+        // An isle is land and can never cut anything off, whatever its radius.
+        let big_isle = [-400.0, 0.0, 9_000.0, LOBE_ISLE];
+        assert!(bay_leaves_a_shore(&big_isle, ARC_HALF));
+    }
+
+    /// **An isle is land standing in water**, and the sea around it is still sea.
+    #[test]
+    fn an_isle_stands_in_the_open_sea() {
+        // Out past the spit's tip and OFF the axis: open ocean in the bare world.
+        //
+        // Off-axis on purpose. Dead on the axis past the tip, `peninsula_half_width` is 0
+        // and so `past_spit` is exactly 0 — the measure-zero waterline where a depth of 0.0
+        // makes `is_ocean` false while the boolean `is_ocean` calls it sea. That line is
+        // precisely what `the_depth_field_agrees_with_the_predicate` skips with its epsilon,
+        // and putting a fixture on it tests the tie-break rather than the isle.
+        let (cx, cz) = (-(PENINSULA_LENGTH + 120.0), 90.0);
+        assert!(Shore::bare(ARC_HALF).is_ocean(cx, cz), "the fixture must start as sea");
+
+        let lobes = [[cx, cz, 40.0, LOBE_ISLE]];
+        let shore = Shore { arc_half: ARC_HALF, lobes: &lobes, ..Default::default() };
+        assert!(shore.is_land(cx, cz), "an isle is dry land");
+        assert!(shore.is_land(cx + 30.0, cz), "…across its whole width");
+        assert!(shore.is_ocean(cx + 60.0, cz), "and the sea closes again past its shore");
+    }
+
+    /// Lobes apply IN ORDER, so an isle listed after a bay stands in that bay. This falls
+    /// out of the `max`/`min` fold rather than needing a rule of its own.
+    #[test]
+    fn an_isle_listed_after_a_bay_stands_in_it() {
+        let bay = test_bay();
+        let isle = [bay[0], bay[1], 25.0, LOBE_ISLE];
+        let lobes = [bay, isle];
+        let shore = Shore { arc_half: ARC_HALF, lobes: &lobes, ..Default::default() };
+        assert!(shore.is_land(bay[0], bay[1]), "the isle wins where it overlaps the bay");
+        // …and the bay is still water just outside the isle.
+        let out = 40.0;
+        let (ox, oz) = (bay[0] + out * ARC_HALF.cos(), bay[1] + out * ARC_HALF.sin());
+        assert!(shore.is_ocean(ox, oz) || shore.is_land(ox, oz), "field is defined either way");
+        assert!(shore.is_ocean(bay[0] - 45.0, bay[1]), "the bay survives beside its isle");
+    }
+
+    /// The bundle's sign is its own depth, over a world carrying every kind of shape at
+    /// once — the same invariant `the_depth_field_agrees_with_the_predicate` holds for the
+    /// bare ocean. A disagreement here is water you can walk on.
+    #[test]
+    fn the_whole_shoreline_agrees_with_itself() {
+        let straits = [[600.0, 20.0, 0.0, 0.44, -0.24, 14.0, 0.22, 14.0]];
+        let lobes = [
+            test_bay(),
+            [-(PENINSULA_LENGTH + 120.0), 0.0, 40.0, LOBE_ISLE],
+            [500.0 * (-ARC_HALF).cos(), 500.0 * (-ARC_HALF).sin(), 60.0, LOBE_BAY],
+        ];
+        let shore = Shore { arc_half: ARC_HALF, straits: &straits, lobes: &lobes, ..Default::default() };
+        let mut checked = 0u32;
+        for xi in -70..=70 {
+            for zi in -70..=70 {
+                let (x, z) = (xi as f32 * 13.7, zi as f32 * 13.7);
+                if x.hypot(z) < 1.0 {
+                    continue;
+                }
+                let d = shore.water(x, z);
+                if d.abs() > 1e-3 {
+                    assert_eq!(d > 0.0, shore.is_ocean(x, z), "({x}, {z}): depth {d}");
+                    checked += 1;
+                }
+            }
+        }
+        assert!(checked > 10_000, "the sweep covered almost nothing ({checked})");
+    }
+
+    /// A bay's and an isle's shores both get a BEACH, not a cliff — the field has to stay
+    /// continuous across them, because the ground shader smoothsteps over its magnitude.
+    /// This module has shipped the flat-field bug twice; a disc is easy to get right and
+    /// easy to get wrong the same way.
+    #[test]
+    fn a_lobes_shoreline_has_a_beach_rather_than_a_cliff() {
+        let lobes = [test_bay(), [-(PENINSULA_LENGTH + 120.0), 0.0, 40.0, LOBE_ISLE]];
+        let shore = Shore { arc_half: ARC_HALF, lobes: &lobes, ..Default::default() };
+        for l in &lobes {
+            // March out through the lobe's own shore in 0.5-unit steps.
+            let mut prev: Option<f32> = None;
+            let mut t = -1.5 * l[2];
+            while t <= 1.5 * l[2] {
+                let d = shore.water(l[0] + t, l[1]);
+                if let Some(p) = prev {
+                    assert!(
+                        (d - p).abs() < 2.0,
+                        "the depth jumped {:.1} over a 0.5-unit step at t={t} on lobe \
+                         {l:?} — that is a cliff of water, and every smoothstep over it \
+                         collapses into a step",
+                        (d - p).abs()
+                    );
+                }
+                prev = Some(d);
+                t += 0.5;
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------------------
+    // INLAND WATER
+    // -----------------------------------------------------------------------------------
+
+    /// Find a hollow in the real height field near `(x0, z0)` by walking downhill, and
+    /// return its centre and floor height. The generator does exactly this, so the tests
+    /// exercise basins where the world would actually put them.
+    fn hollow_near(x0: f32, z0: f32) -> (f32, f32, f32) {
+        let (mut x, mut z) = (x0, z0);
+        let mut h = crate::terrain::height(x, z, 0.0, 0.0);
+        for _ in 0..400 {
+            let e = 6.0;
+            let dx = crate::terrain::height(x + e, z, 0.0, 0.0)
+                - crate::terrain::height(x - e, z, 0.0, 0.0);
+            let dz = crate::terrain::height(x, z + e, 0.0, 0.0)
+                - crate::terrain::height(x, z - e, 0.0, 0.0);
+            let m = (dx * dx + dz * dz).sqrt();
+            if m < 1e-5 {
+                break;
+            }
+            let (nx, nz) = (x - 8.0 * dx / m, z - 8.0 * dz / m);
+            let nh = crate::terrain::height(nx, nz, 0.0, 0.0);
+            if nh >= h {
+                break; // a local minimum: this is where a lake forms
+            }
+            (x, z, h) = (nx, nz, nh);
+        }
+        (x, z, h)
+    }
+
+    /// **A basin fills to a CONTOUR, not a circle**, and that is the single thing that makes
+    /// inland water look like water: its shoreline is the land's own shape. Proven by
+    /// sampling a ring at ONE distance from the centre and finding both wet and dry points
+    /// on it — impossible for a disc.
+    #[test]
+    fn a_basin_fills_to_a_contour_rather_than_a_circle() {
+        let (cx, cz, floor) = hollow_near(900.0, 400.0);
+        let basin = [cx, cz, 400.0, floor + 3.0];
+        let basins = [basin];
+        let shore = Shore { arc_half: ARC_HALF, basins: &basins, ..Default::default() };
+
+        let (mut wet, mut dry) = (0, 0);
+        for k in 0..180 {
+            let a = k as f32 * std::f32::consts::TAU / 180.0;
+            let (x, z) = (cx + 60.0 * a.cos(), cz + 60.0 * a.sin());
+            if shore.inland(x, z) > 0.0 { wet += 1 } else { dry += 1 }
+        }
+        assert!(
+            wet > 0 && dry > 0,
+            "a ring at one radius came out all-{} — the basin is a disc, not a contour, so \
+             every lake in the game is a circle",
+            if dry == 0 { "wet" } else { "dry" }
+        );
+        // …and its own floor is under water.
+        assert!(shore.inland(cx, cz) > 0.0, "the hollow's floor must be flooded");
+    }
+
+    /// **Slope is what separates a bog from a lake, for free.** The same water level over
+    /// flatter ground floods a wider sheet. Nothing authored a marsh; the terrain did.
+    #[test]
+    fn the_same_level_floods_wider_over_flatter_ground() {
+        // Measure flooded area for a fixed level offset at two hollows, and correlate it
+        // with the local slope around each.
+        let mut samples: Vec<(f32, f32)> = Vec::new(); // (mean slope, flooded fraction)
+        for (sx, sz) in [(900.0, 400.0), (-1500.0, 700.0), (2300.0, -1100.0), (400.0, 2600.0)] {
+            let (cx, cz, floor) = hollow_near(sx, sz);
+            let basins = [[cx, cz, 500.0, floor + 4.0]];
+            let shore = Shore { arc_half: ARC_HALF, basins: &basins, ..Default::default() };
+            let (mut wet, mut total, mut slope_sum) = (0.0f32, 0.0f32, 0.0f32);
+            for i in -30..=30 {
+                for j in -30..=30 {
+                    let (x, z) = (cx + i as f32 * 6.0, cz + j as f32 * 6.0);
+                    total += 1.0;
+                    if shore.inland(x, z) > 0.0 {
+                        wet += 1.0;
+                    }
+                    slope_sum += crate::terrain::slope(x, z, 0.0, 0.0);
+                }
+            }
+            samples.push((slope_sum / total, wet / total));
+        }
+        samples.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let (flat, steep) = (samples[0], samples[samples.len() - 1]);
+        assert!(
+            flat.1 > steep.1,
+            "the flattest hollow (slope {:.3}) flooded {:.1}% and the steepest (slope {:.3}) \
+             flooded {:.1}% — a bog is supposed to spread where a lake does not, and that \
+             only happens if the fill follows a contour",
+            flat.0,
+            flat.1 * 100.0,
+            steep.0,
+            steep.1 * 100.0
+        );
+    }
+
+    /// A river is water along its chain and **dry at its ford** — which is the guarantee,
+    /// because connectedness is what a river is and a connected impassable line is exactly
+    /// what disconnects a world.
+    #[test]
+    fn a_river_runs_wet_and_its_ford_is_dry() {
+        // Two chains along +x with a gap between them: the gap is the ford.
+        let rivers: Vec<RiverNode> = vec![
+            [0.0, 0.0, 8.0, 1.0],
+            [100.0, 0.0, 8.0, 0.0],
+            [160.0, 0.0, 8.0, 1.0], // new chain — the 100..160 gap is the ford
+            [260.0, 0.0, 8.0, 0.0],
+        ];
+        let shore = Shore { arc_half: ARC_HALF, rivers: &rivers, ..Default::default() };
+        assert!(shore.inland(50.0, 0.0) > 0.0, "mid-chain is water");
+        assert!(shore.inland(210.0, 0.0) > 0.0, "the second chain is water too");
+        assert!(shore.inland(130.0, 0.0) < 0.0, "the FORD must be dry ground");
+        assert!(shore.inland(50.0, 40.0) < 0.0, "and the bank beside it is dry");
+    }
+
+    /// ⚠️ **The load-bearing distinction: inland water is NOT in the sea field.** `sea` is
+    /// what the vertex stage dips the ground toward the sea floor over, and sea level is
+    /// globally zero — a lake sits at its own elevation and its hollow is already in the
+    /// heightmap. Folding it in would excavate every lake a second time, below its own bed.
+    #[test]
+    fn a_lake_is_water_you_collide_with_and_not_ground_the_shader_digs() {
+        let (cx, cz, floor) = hollow_near(900.0, 400.0);
+        let basins = [[cx, cz, 400.0, floor + 3.0]];
+        let rivers: Vec<RiverNode> = vec![[cx, cz, 9.0, 1.0], [cx + 90.0, cz, 9.0, 0.0]];
+        let shore =
+            Shore { arc_half: ARC_HALF, basins: &basins, rivers: &rivers, ..Default::default() };
+
+        assert!(shore.inland(cx, cz) > 0.0, "the lake is inland water");
+        assert!(shore.water(cx, cz) > 0.0, "…so it is water you collide with");
+        assert!(shore.is_ocean(cx, cz), "…and `is_land` refuses it");
+        assert!(
+            shore.sea(cx, cz) < 0.0,
+            "but the SEA field must still call it land, or the ground shader digs the lake \
+             a second time below its own bed"
+        );
+    }
+
+    /// Both inland shapes hand the shader a continuous field, so both get a beach. Same
+    /// check as the ocean's and the lobes' — this module has shipped the flat-field bug twice.
+    #[test]
+    fn inland_shorelines_have_beaches_rather_than_cliffs() {
+        let (cx, cz, floor) = hollow_near(900.0, 400.0);
+        let basins = [[cx, cz, 400.0, floor + 3.0]];
+        let rivers: Vec<RiverNode> = vec![[cx, cz - 300.0, 9.0, 1.0], [cx + 200.0, cz - 300.0, 9.0, 0.0]];
+        let shore =
+            Shore { arc_half: ARC_HALF, basins: &basins, rivers: &rivers, ..Default::default() };
+        for (sx, sz, span) in [(cx, cz, 260.0f32), (cx + 100.0, cz - 300.0, 40.0)] {
+            let mut prev: Option<f32> = None;
+            let mut t = -span;
+            while t <= span {
+                let d = shore.inland(sx + t, sz);
+                if let Some(p) = prev {
+                    assert!(
+                        (d - p).abs() < 6.0,
+                        "inland depth jumped {:.1} over a 0.5-unit step at t={t} — that is a \
+                         cliff of water, and every smoothstep over it collapses to a step",
+                        (d - p).abs()
+                    );
+                }
+                prev = Some(d);
+                t += 0.5;
+            }
+        }
+    }
+
+    /// Corridor mode has no water of any kind, however much is handed in — the tutorial and
+    /// every flat unit test stay exactly as they were.
+    #[test]
+    fn corridor_mode_has_no_inland_water() {
+        let basins = [[100.0, 0.0, 300.0, 999.0]]; // a level above every hill
+        let rivers: Vec<RiverNode> = vec![[0.0, 0.0, 20.0, 1.0], [200.0, 0.0, 20.0, 0.0]];
+        let shore = Shore { arc_half: 0.0, basins: &basins, rivers: &rivers, ..Default::default() };
+        assert!(shore.is_land(100.0, 0.0));
+        assert!(shore.inland(100.0, 0.0) < 0.0);
+    }
+
+    /// Corridor mode has no fan, so it has no sea — and therefore no bays and no isles,
+    /// however many are handed in. The tutorial and every flat unit test stay untouched.
+    #[test]
+    fn corridor_mode_has_no_coastline_to_shape() {
+        let lobes = [test_bay(), [-300.0, 0.0, 40.0, LOBE_ISLE]];
+        let shore = Shore { arc_half: 0.0, lobes: &lobes, ..Default::default() };
+        assert!(shore.is_land(600.0, 0.0));
+        assert!(shore.is_land(-300.0, 0.0));
+        assert!(shore.water(600.0, 30.0) < 0.0);
     }
 }
 
