@@ -4808,6 +4808,28 @@ impl GameState {
             .ok()
             .and_then(|v| v.trim().parse::<f64>().ok())
             .filter(|d| *d > 0.0);
+        // `MELD_WATER=<distance>` — DEV/QA: start beside the nearest INLAND body of water.
+        //
+        // ⚠️ THE SIBLING OF `MELD_COAST`, AND IT EXISTS FOR THE SAME REASON, ONE RELEASE
+        // LATER. Lakes, bogs and rivers shipped **invisible**: `inland_depth_at` was written,
+        // mirrored into both shaders, carried through the uniform, filled by the client and
+        // fed by the server, and never CALLED from a fragment — so every body of fresh water
+        // in the game existed in the world model, blocked movement, and drew nothing.
+        //
+        // Nothing caught it. The unit tests all assert on the Rust field; the shader mirror
+        // test compares the two shaders to each other and both were equally unwired; and
+        // there was no way to put a lake on screen on demand, because inland water starts at
+        // `water_min_reach` and is sparse, while autoplay walks the clear path — which water
+        // is deliberately kept OFF. So the one check that would have caught it in a second,
+        // looking at it, was the one check nobody could cheaply run.
+        //
+        // `MELD_COAST`'s own comment already said it: a rendering feature you cannot put on
+        // screen on demand cannot be developed, only guessed at. This is that lesson applied
+        // to the half of the water the flag did not cover.
+        let water_distance = std::env::var("MELD_WATER")
+            .ok()
+            .and_then(|v| v.trim().parse::<f64>().ok())
+            .filter(|d| *d > 0.0);
         let departure_hub_distance = dev_distance.unwrap_or(0);
         let speed = self.balance.world.avatar_speed_tiles_per_sec;
 
@@ -5085,6 +5107,71 @@ impl GameState {
                 theta_deg = theta.to_degrees(),
                 "MELD_COAST: party started on the shoreline (DEV/QA)"
             );
+        }
+        // MELD_WATER: stream out, then stand the party on dry ground at the SHORE of the
+        // nearest inland body — a lake, a bog or a river — so it fills the frame.
+        if let Some(reach) = water_distance {
+            let inst_balance = inst.balance.clone();
+            for _ in 0..256 {
+                if inst.arena.ensure_frontier(&inst_balance, reach + 120.0).is_empty() {
+                    break;
+                }
+            }
+            // The body whose own radius is nearest the asked-for depth. Basins first (a lake
+            // photographs better than a creek), then river nodes.
+            let target = inst
+                .arena
+                .basins
+                .iter()
+                .map(|b| (Position::new(b[0] as f64, b[1] as f64), b[2] as f64))
+                .chain(
+                    inst.arena
+                        .rivers
+                        .iter()
+                        .map(|n| (Position::new(n[0] as f64, n[1] as f64), n[2] as f64)),
+                )
+                .min_by(|a, b| {
+                    let da = (a.0.x.hypot(a.0.y) - reach).abs();
+                    let db = (b.0.x.hypot(b.0.y) - reach).abs();
+                    da.total_cmp(&db)
+                });
+            match target {
+                Some((centre, radius)) => {
+                    // Walk outward from the centre along its own bearing until we are on dry
+                    // land, then step back a little so the water is in front rather than
+                    // underfoot. Asked of the arena's own shoreline, so the landing cannot
+                    // disagree with what the player will collide with.
+                    let bearing = centre.y.atan2(centre.x);
+                    let (mut landing, mut d) = (centre, radius.max(8.0));
+                    for _ in 0..80 {
+                        let r = centre.x.hypot(centre.y) + d;
+                        let p = Position::new(r * bearing.cos(), r * bearing.sin());
+                        if inst.arena.on_land(p.x, p.y) {
+                            landing = p;
+                            break;
+                        }
+                        d += 6.0;
+                    }
+                    for pid in &party_ids {
+                        if let Some(a) = inst.arena.avatar_mut(pid) {
+                            a.position = landing;
+                            a.elevation = 0;
+                        }
+                    }
+                    tracing::warn!(
+                        asked = reach,
+                        at_radius = landing.x.hypot(landing.y),
+                        body_radius = radius,
+                        basins = inst.arena.basins.len(),
+                        rivers = inst.arena.rivers.len(),
+                        "MELD_WATER: party started at the water's edge (DEV/QA)"
+                    );
+                }
+                None => tracing::warn!(
+                    asked = reach,
+                    "MELD_WATER: no inland water within reach — nothing to stand beside"
+                ),
+            }
         }
         if departure_hub_distance > 0 {
             let reach = departure_hub_distance as f64;

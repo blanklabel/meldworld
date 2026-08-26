@@ -3154,20 +3154,55 @@ mod ground_uniform_tests {
     /// same answer: read the shader source and hold the two together, so a retune fails a
     /// test instead of quietly giving inland water a different shore than the one the server
     /// collides against.
+    /// **Every coast helper the ground shader defines must actually be CALLED.**
+    ///
+    /// ⚠️ This test exists because the whole inland-water feature shipped invisible.
+    /// `inland_depth_at` was written, mirrored into both shaders, carried through the
+    /// uniform, filled by the client and fed by the server — and never called from a
+    /// fragment. Lakes and rivers existed in the world model and blocked movement, and drew
+    /// nothing at all. WGSL does not complain about an unused function, and the mirror test
+    /// beside this one compares the two shaders to EACH OTHER, so it was perfectly happy
+    /// with both being equally unwired.
+    ///
+    /// A definition with no call site is the shader equivalent of the `pack:` and `boss_kind`
+    /// bugs this repo already carries warnings about: a thing that exists everywhere except
+    /// where the player could see it.
+    #[test]
+    fn every_coast_helper_is_actually_called() {
+        let wgsl = include_str!("../assets/shaders/ground_biome.wgsl");
+        for f in ["sea_depth_at", "inland_depth_at", "strait_depth_at", "spit_half_width"] {
+            let defined = wgsl.contains(&format!("fn {f}("));
+            let calls = wgsl.matches(&format!("{f}(")).count();
+            assert!(defined, "ground_biome.wgsl should define `{f}`");
+            assert!(
+                calls >= 2,
+                "`{f}` is DEFINED in ground_biome.wgsl and never called ({calls} occurrence). \
+                 A shader helper with no call site renders nothing, and nothing else in this \
+                 suite notices — which is exactly how inland water shipped invisible."
+            );
+        }
+    }
+
     #[test]
     fn the_basin_shore_slope_matches_the_shader() {
         let want = format!("/ {:?};", meld_proto::coast::BASIN_SHORE_SLOPE);
-        for (name, wgsl) in [
-            ("ground_biome", include_str!("../assets/shaders/ground_biome.wgsl")),
-            ("ground_prepass", include_str!("../assets/shaders/ground_prepass.wgsl")),
-        ] {
-            assert!(
-                wgsl.contains(&want),
-                "{name}.wgsl must divide a basin's vertical margin by \
-                 `coast::BASIN_SHORE_SLOPE` ({want:?}) — a mismatch gives every lake a \
-                 different shore in the renderer than the server collides with"
-            );
-        }
+        let biome = include_str!("../assets/shaders/ground_biome.wgsl");
+        assert!(
+            biome.contains(&want),
+            "ground_biome.wgsl must divide a basin's vertical margin by \
+             `coast::BASIN_SHORE_SLOPE` ({want:?}) — a mismatch gives every lake a different \
+             shore in the renderer than the server collides with"
+        );
+        // ⚠️ The PREPASS is exempt, and that is the point rather than an oversight: it is the
+        // ground's depth/shadow pass and carries no basin math at all, because inland water
+        // must never displace the ground (its hollow is already in the heightmap). The two
+        // files agree on the uniform's LAYOUT, not on what each reads from it.
+        let prepass = include_str!("../assets/shaders/ground_prepass.wgsl");
+        assert!(
+            !prepass.contains("fn inland_depth_at("),
+            "the prepass must not carry inland-water math — displacing a basin excavates \
+             every lake below its own bed"
+        );
     }
 
     #[test]

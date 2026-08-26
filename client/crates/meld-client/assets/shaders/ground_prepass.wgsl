@@ -156,46 +156,12 @@ fn strait_depth_at(wxz: vec2<f32>, k: i32) -> f32 {
     return min(min(in_band, in_span), off_bridge);
 }
 
-// How far INSIDE inland water a point is — positive in a lake or a channel, negative on the
-// land around them. MUST match `coast::Shore::inland`.
-//
-// ⚠️ This is deliberately NOT part of `sea_depth_at`. That field is what `total_height` dips
-// the ground toward the sea floor over, and sea level is globally zero — a basin sits at its
-// OWN elevation and its hollow is already in the heightmap, which is what makes it a basin.
-// Folding this in would excavate every lake a second time, below its own bed.
-fn inland_depth_at(wxz: vec2<f32>) -> f32 {
-    var d = -1000.0;
-    // Standing water: inside the radius bound AND below the surface level. The vertical
-    // margin is divided by a nominal shore slope so it shares world units with the radial
-    // one — `coast::BASIN_SHORE_SLOPE`, and it must match.
-    let nb = i32(params.basin_count);
-    for (var k = 0; k < nb; k = k + 1) {
-        let b = params.basins[k];
-        if (b.z <= 0.0) { continue; }
-        let within = b.z - length(wxz - b.xy);
-        // `terrain_height_wgsl` takes an ALREADY-OFFSET position, like every other caller.
-        // The divisor is `coast::BASIN_SHORE_SLOPE`, held against this file by
-        // `the_basin_shore_slope_matches_the_shader`.
-        let below = (b.w - terrain_height_wgsl(wxz + params.terrain_off)) / 0.12;
-        d = max(d, min(within, below));
-    }
-    // Flowing water: distance to each chain segment, minus its half-width.
-    let nr = i32(params.river_count);
-    for (var k = 1; k < nr; k = k + 1) {
-        let a = params.rivers[k - 1];
-        let b = params.rivers[k];
-        if (b.w >= 0.5) { continue; }   // a new chain starts here — the gap is the ford
-        let half = (a.z + b.z) * 0.5;
-        if (half <= 0.0) { continue; }
-        let p = wxz - a.xy;
-        let s = b.xy - a.xy;
-        let len2 = dot(s, s);
-        var t = 0.0;
-        if (len2 > 1e-6) { t = clamp(dot(p, s) / len2, 0.0, 1.0); }
-        d = max(d, half - length(p - s * t));
-    }
-    return d;
-}
+// ⚠️ THERE IS DELIBERATELY NO `inland_depth_at` HERE. This file is the ground's DEPTH and
+// SHADOW pass — vertex-stage only — and inland water must never displace the ground: a basin
+// sits at its own elevation and its hollow is already in the heightmap, so dipping it would
+// excavate every lake below its own bed. Painting inland water is a fragment-stage job and
+// lives in `ground_biome.wgsl` alone. The uniform still declares `basins`/`rivers` because
+// the two files must agree on the buffer LAYOUT, not on what they read from it.
 
 // How far INTO the sea a point is, in world units (negative on land). Mirrors
 // `meld_proto::coast::is_ocean` but signed, so the shoreline can fade instead of snapping
