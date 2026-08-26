@@ -232,6 +232,17 @@ pub(crate) fn spawn_enemy_actor(
     let boss_key = c.statuses.iter().find_map(|s| s.strip_prefix("boss:"));
     let boss_frames = boss_key.and_then(|k| wa.boss_frames(k));
     let h = if boss_frames.is_some() { h * 1.5 } else { h };
+    // An ordinary creature with an installed sprite set is animated here too, and a
+    // pack's runt draws from its OWN art rather than a shrunken copy of its leader. Only
+    // reached when this is not a named boss: a boss overlays a host creature, and its own
+    // set has to win over the host species'.
+    let creature_frames = if boss_frames.is_some() {
+        None
+    } else {
+        let kind = crate::overworld::creature_kind(&c.name);
+        let minion = c.statuses.iter().any(|s| s == "pack:minion");
+        wa.creature_frames(&kind, minion).cloned()
+    };
     // A pack's leader and its minions are the SAME species at 1.7x and 0.45x HP, so
     // drawing them identically made a 3.8x health gap look broken. Size is the read the
     // balance table already assumes ("one big spider with four little ones").
@@ -262,8 +273,8 @@ pub(crate) fn spawn_enemy_actor(
         Transform::from_translation(root),
         Visibility::default(),
     ));
-    if let Some(frames) = boss_frames {
-        // Animated boss actor: same CharSprite pattern spawn_hero_actor uses,
+    if let Some(frames) = boss_frames.cloned().or(creature_frames).as_ref() {
+        // Animated boss/creature actor: same CharSprite pattern spawn_hero_actor uses,
         // driven by the same generic `hd2d::animate_chars` system.
         let mat = mats.add(hd2d::sprite_material(base_tint, frames.idle[0].clone()));
         root_cmds.insert(CharSprite::new(frames.clone(), mat.clone(), root));

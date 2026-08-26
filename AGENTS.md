@@ -689,6 +689,29 @@ before a capture lands, which is exactly how a bug that only shows in the dark r
 release with nobody having seen it. `MELD_BATTLE=1` is the fixture: three creatures and an
 Explorer lead, no server, deterministic.
 
+**A SPRITE'S ON-SCREEN SIZE IS ITS CANVAS FILL, NOT ITS PIXEL HEIGHT.** A character
+billboard maps the WHOLE png onto a fixed quad, so what sets how big something draws is
+the FRACTION of the canvas its art fills. Every shipped class is ~90px of art centred on
+a 184px canvas — a **48% fill** — because PixelLab used to inflate its canvas ~40% past
+the requested `size`. **It no longer does**: ask for 96 and you get 96px of canvas with
+the character edge to edge, and that class walks into the party at roughly TWICE the size
+of everyone beside it. Nothing in a preview catches it, because a thumbnail is
+normalised. Generate at `size: 96`, then `client/scripts/pad_sprites.py` to 184 —
+**padding, never scaling**, since pixel art must not be resampled;
+`client/scripts/install_class_sprite.sh` does the whole dance. Asking for `size: 184`
+instead is the same too-big result at double the detail, which then clashes with the
+chunkier pixels beside it. See [`docs/asset-pipeline.md`](docs/asset-pipeline.md).
+
+**A CREATURE IS TWO CHARACTERS, AND ITS WALK TURNS WHILE ITS ATTACK DOES NOT.** A pack's
+leader and its runts are the same species at 1.7x and 0.45x HP; scaling one sprite only
+ever made a bigger or smaller copy of the same animal, so `<kind>` and `<kind>_minion`
+are separate art (`CREATURE_CHARS`, falling back to the species when a runt has none).
+The WALK is drawn eight ways because the overworld shows a creature from every angle; the
+ATTACK is drawn once, facing south, because it is only ever seen in the arena and the
+arena faces the party (`hd2d::load_creature_clips`). Which one a spawn uses comes off
+`encounter_class` on the overworld and the `pack:minion` status in battle — both were
+already on the wire and neither was being drawn.
+
 **Every item wears its own icon, and never instead of its name.** One rule, in
 [`icons.rs`](client/crates/meld-client/src/icons.rs): if we drew art for it, show the art —
 every harvestable has a `resource_<kind>.png`, and a shrunk copy of the bush you pulled it
@@ -1236,8 +1259,9 @@ Use these terms consistently in code, comments, and UI.
   (L100, party heal + Barrier + Regen). Its damage
   rides **Mnd**, not Str. Out of combat it **raises the alembic**, whose regen field is
   the only rest a party without a Resonant gets. See `Battle::resolve_keeper`.
-  *Neither class has its own sprite set yet — `class_frames` falls back to the Explorer's
-  until the art lands.*
+  *Both now have their own 8-direction sprite set (`CL-3`), as does every other fieldable
+  class — the Explorer's folder used to be a byte-copy of the Hunter's, and four orders
+  had no folder at all and silently wore its coat through `class_frames`' fallback.*
 - **Iron Hull** — the **Order of the Iron Hull's** ascetic monk: **no armour and no
   weapon**. It wears Light or Robe, fights with bound hands (`Gauntlet` — wraps, not a
   held thing, landing the same Blunt as `UNARMED_ATTACK_TYPE`), and survives by not being

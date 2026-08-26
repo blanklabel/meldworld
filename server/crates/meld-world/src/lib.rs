@@ -3444,7 +3444,12 @@ impl Arena {
                 {
                     self.end_fight_placed = true;
                     became_rite = true;
-                    let all = abilities::all_bosses();
+                    // The end fight's peers come from what can stand in the OPEN WORLD,
+                    // not from the whole roster: a dungeon's own boss is sealed behind
+                    // its door, and finding it in a field at d3200 would undo the only
+                    // thing that makes it worth going down there.
+                    let overworld = abilities::overworld_bosses();
+                    let all = overworld.as_slice();
                     for n in 0..enc.end_fight_bosses.max(1) {
                         let bidx = if n == 0 {
                             leader_idx
@@ -11536,8 +11541,19 @@ mod tests {
         for made in ["ironmaw", "rustfang", "gloamhound", "weepingcolossus", "pyrewarden"] {
             assert_eq!(abilities::boss_faction(made), Some("construct"), "{made}");
         }
-        assert_eq!(abilities::boss_faction("ashenleviathan"), Some("wyrm"));
+        // Renamed from `wyrm`: the lineage is a BLOODLINE, not one body plan, so a
+        // wyvern and a leviathan are the same family.
+        assert_eq!(abilities::boss_faction("ashenleviathan"), Some("draconic"));
+        assert_eq!(abilities::boss_faction("briarlord"), Some("fae"));
         assert_eq!(abilities::boss_faction("not_a_boss"), None);
+        // Every lineage a boss claims has to be a real one.
+        for key in meld_proto::bosses::keys() {
+            let f = abilities::boss_faction(key).expect("a lineage");
+            assert!(
+                meld_proto::factions::FACTIONS.contains(&f),
+                "{key} fights as {f}, which is not a lineage"
+            );
+        }
 
         // Every named boss has a lineage, or it would silently keep its host's.
         for key in meld_proto::bosses::keys() {
@@ -11549,7 +11565,7 @@ mod tests {
         assert_eq!(abilities::bosses_of_faction("undead").len(), 4);
         assert_eq!(abilities::bosses_of_faction("construct").len(), 5);
 
-        // The engine's roster and the shared registry are the SAME ten. The registry is
+        // The engine's roster and the shared registry are the SAME SET. The registry is
         // what the client draws a name plate from, so a boss listed here and missing
         // there would fight under a name nobody outside the server ever sees.
         let mut engine: Vec<&str> = abilities::all_bosses().to_vec();

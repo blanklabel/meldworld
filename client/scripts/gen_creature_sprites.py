@@ -20,15 +20,23 @@ import argparse, json, os, pathlib, subprocess, sys, time, urllib.error, urllib.
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 MANIFEST = ROOT / "client/scripts/creature_sprites.json"
 STATE = ROOT / "client/scripts/.creature_sprites_state.json"
+ASSETS = ROOT / "client/crates/meld-client/assets/creatures"
 ENDPOINT = "https://api.pixellab.ai/mcp"
-# WALK AND ATTACK ARE SOUTH-FACING ONLY. The idle ROTATIONS are still a full eight
-# directions — those come free with `create_character` — so a creature still turns to
-# face where it is going. What it does not get is eight separate walk cycles, and that
-# is the whole cost of the bestiary: an 8-direction clip is 8 jobs against a 10-job
-# concurrency cap, so it both costs 8x and serializes everything behind it. One
-# direction per clip takes a species from ~35 generations and ~8 minutes to ~7 and ~2.
-# `hd2d::load_creature_clips` reuses the south clip for every facing.
-CLIP_DIRS = ["south"]
+
+ALL_DIRS = ["south", "south-east", "east", "north-east", "north", "north-west", "west",
+            "south-west"]
+
+# WALK TURNS, ATTACK DOES NOT, and the split is about where each clip is SEEN.
+#
+# Walking is the overworld: a creature crosses the view in every direction, all the time,
+# and a body that slides sideways while facing you is the thing that reads as broken. So
+# the walk is drawn eight times, which costs eight jobs against a ten-job concurrency cap
+# and is most of this script's runtime.
+#
+# An attack is only ever seen in a BATTLE, where the arena faces the party — so seven of
+# its eight directions would be art for a camera angle that never happens.
+# `hd2d::load_creature_clips` reuses the south attack for every facing.
+CLIP_DIRS = {"walk": ALL_DIRS, "attack": ["south"]}
 TOKEN = os.environ.get("PIXELLAB_TOKEN", "")
 
 
@@ -104,8 +112,63 @@ def wait_for_idle(label):
         time.sleep(20)
 
 
+def installed_on_disk(asset):
+    """Is this species' art already complete in the repo?
+
+    THE LEDGER IS NOT THE TRUTH; THE REPO IS. The state file is a convenience that
+    remembers PixelLab character ids, and it is machine-local and gitignored — so it goes
+    missing, gets reset, or arrives on a different machine that has the art but not the
+    ids. Trusting it alone means a wiped ledger silently REGENERATES art that already
+    exists, which is how a bestiary ends up with six different first-area boars: pure
+    cost, and worse than pure cost, because the shallow end of the world is exactly where
+    a player notices the same species drawn six ways.
+
+    So completeness is read off the files: eight walk directions, an attack, and the
+    rotations. Anything short of that is genuinely unfinished and worth redoing.
+    """
+    d = ASSETS / asset
+    if not (d / "rotations" / "south.png").is_file():
+        return False
+    walk = d / "animations" / "walk"
+    attack = d / "animations" / "attack"
+    if not walk.is_dir() or not attack.is_dir():
+        return False
+    return len([x for x in walk.iterdir() if x.is_dir()]) >= 8 and (attack / "south").is_dir()
+
+
+def clip_dirs_on_disk(asset, clip):
+    d = ASSETS / asset / "animations" / clip
+    return len([x for x in d.iterdir() if x.is_dir()]) if d.is_dir() else 0
+
+
 def load_state():
-    return json.loads(STATE.read_text()) if STATE.exists() else {}
+    """The ledger, reconciled against the repo — in BOTH directions.
+
+    Art that is complete on disk is marked done even if the ledger has never heard of it
+    (a wiped or missing ledger must never cause a re-roll). And a clip the ledger calls
+    done that is NOT on disk at its full width has its flag cleared, so it gets redone.
+
+    That second half is not hypothetical: the walk was generated south-only for a while,
+    and a ledger saying `walk: true` happily carried those one-direction clips forward
+    forever. A flag is a claim about the repo; the repo is what settles it.
+    """
+    st = json.loads(STATE.read_text()) if STATE.exists() else {}
+    for d in sorted(ASSETS.iterdir()) if ASSETS.is_dir() else []:
+        if d.is_dir() and installed_on_disk(d.name):
+            st.setdefault(d.name, {})["installed"] = True
+    for asset, s in st.items():
+        # BOTH directions, and the clearing half is the one that matters. A stale
+        # `installed: true` shields everything under it, so a ledger written while the
+        # walk was generated south-only would carry those one-direction clips forward
+        # forever - which is exactly what happened.
+        if not installed_on_disk(asset):
+            s.pop("installed", None)
+        if s.get("installed"):
+            continue
+        for clip, dirs in CLIP_DIRS.items():
+            if s.get(clip) and clip_dirs_on_disk(asset, clip) < len(dirs):
+                s.pop(clip, None)
+    return st
 
 
 def save_state(st):
@@ -129,7 +192,7 @@ def animate(cid, clip, action):
     out = call("animate_character", {
         "character_id": cid, "mode": "v3", "animation_name": clip,
         "action_description": action, "frame_count": 8,
-        "keep_first_frame": False, "directions": CLIP_DIRS,
+        "keep_first_frame": False, "directions": CLIP_DIRS[clip],
     })
     if out.startswith("ERROR"):
         raise RuntimeError(f"{clip} failed: {out[:300]}")
@@ -147,6 +210,9 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--only", help="one creature key, both its leader and minion")
     ap.add_argument("--dry-run", action="store_true", help="print the plan, spend nothing")
+    ap.add_argument("--force", action="store_true",
+                    help="redo species whose art is already complete (spends generations "
+                         "on art you already have - only for a deliberate re-roll)")
     a = ap.parse_args()
     if not TOKEN and not a.dry_run:
         sys.exit("set PIXELLAB_TOKEN")
@@ -165,8 +231,8 @@ def main():
             plan.append({"asset": asset, "desc": c[rank], "walk": c["walk"],
                          "attack": c["attack"], "gate": c["gate"]})
 
-    log(f"{len(plan)} characters, ~{len(plan) * 7} generations "
-        f"(8-dir rotations + south-only walk/attack)")
+    log(f"{len(plan)} characters, ~{len(plan) * 21} generations "
+        f"(8-dir rotations + 8-dir walk + south-only attack)")
     if a.dry_run:
         for p in plan:
             print(f"  d{p['gate']:<4} {p['asset']}")
@@ -185,7 +251,10 @@ def main():
     # almost every player actually sees; phasing over all 34 would leave everything
     # half-made and nothing installed.
     CHUNK = 8
-    todo = [p for p in plan if not st.get(p["asset"], {}).get("installed")]
+    todo = [p for p in plan
+            if a.force or not st.get(p["asset"], {}).get("installed")]
+    if a.force:
+        log("--force: redoing art that already exists")
     log(f"{len(plan) - len(todo)} already installed, {len(todo)} to go")
 
     for base in range(0, len(todo), CHUNK):
@@ -208,7 +277,10 @@ def main():
                 s_ = st[p["asset"]]
                 if s_.get(clip):
                     continue
-                wait_for_slot(f"{p['asset']}/{clip}")
+                # An 8-direction clip needs the whole cap to itself; a 1-direction one
+                # shares happily. Asking for the clip's own width is what lets the attack
+                # wave run eight-up while the walk wave takes its turn.
+                wait_for_slot(f"{p['asset']}/{clip}", free=len(CLIP_DIRS[clip]))
                 animate(s_["id"], clip, p[clip])
                 s_[clip] = True
                 save_state(st)
