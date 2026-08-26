@@ -73,11 +73,19 @@ def call(tool, args):
             break
     d = json.loads(payload)
     if "error" in d:
-        return f"ERROR: {d['error']}"
+        raise RuntimeError(f"{tool}: {d['error']}")
+    result = d.get("result", {})
     try:
-        return d["result"]["content"][0]["text"]
+        text = result["content"][0]["text"]
     except Exception:
         return json.dumps(d)
+    # ⚠️ A FAILED TOOL CALL COMES BACK 200 WITH `isError`. Returning its message as an
+    # ordinary string is how `delete_animation` silently did nothing for a whole run
+    # while this script logged "dropped a stale group" after every one of them — the
+    # exact unchecked-success bug the install path had just been fixed for.
+    if result.get("isError"):
+        raise RuntimeError(f"{tool} failed: {text[:300]}")
+    return text
 
 
 def log(msg):
@@ -228,8 +236,13 @@ def existing_clip_groups(cid, clip):
 
 def animate(cid, clip, action):
     for gid in existing_clip_groups(cid, clip):
-        call("delete_animation", {"animation_group_id": gid})
+        call("delete_animation", {"character_id": cid, "animation_group_id": gid})
         log(f"    dropped a stale {clip} group ({gid[:8]})")
+    left = existing_clip_groups(cid, clip)
+    if left:
+        # Say so rather than generating into a group that is still there: a second group
+        # of the same name collides with the first on export and silently drops facings.
+        raise RuntimeError(f"{clip} still has groups after delete: {left}")
     out = call("animate_character", {
         "character_id": cid, "mode": "v3", "animation_name": clip,
         "action_description": action, "frame_count": 8,

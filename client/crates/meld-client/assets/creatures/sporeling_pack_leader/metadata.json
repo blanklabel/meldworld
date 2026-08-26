@@ -39,6 +39,16 @@
               "Idle/animations/walk/north-east/frame_006.png",
               "Idle/animations/walk/north-east/frame_007.png"
             ],
+            "south": [
+              "Idle/animations/walk/south/frame_000.png",
+              "Idle/animations/walk/south/frame_001.png",
+              "Idle/animations/walk/south/frame_002.png",
+              "Idle/animations/walk/south/frame_003.png",
+              "Idle/animations/walk/south/frame_004.png",
+              "Idle/animations/walk/south/frame_005.png",
+              "Idle/animations/walk/south/frame_006.png",
+              "Idle/animations/walk/south/frame_007.png"
+            ],
             "south-east": [
               "Idle/animations/walk/south-east/frame_000.png",
               "Idle/animations/walk/south-east/frame_001.png",
@@ -70,18 +80,6 @@
               "Idle/animations/walk/east/frame_007.png"
             ]
           },
-          "walk-4a0bcf0a": {
-            "south": [
-              "Idle/animations/walk-4a0bcf0a/south/frame_000.png",
-              "Idle/animations/walk-4a0bcf0a/south/frame_001.png",
-              "Idle/animations/walk-4a0bcf0a/south/frame_002.png",
-              "Idle/animations/walk-4a0bcf0a/south/frame_003.png",
-              "Idle/animations/walk-4a0bcf0a/south/frame_004.png",
-              "Idle/animations/walk-4a0bcf0a/south/frame_005.png",
-              "Idle/animations/walk-4a0bcf0a/south/frame_006.png",
-              "Idle/animations/walk-4a0bcf0a/south/frame_007.png"
-            ]
-          },
           "attack": {
             "south": [
               "Idle/animations/attack/south/frame_000.png",
@@ -99,5 +97,5 @@
     }
   ],
   "export_version": "3.1",
-  "export_date": "2026-08-26T16:28:16.623923"
+  "export_date": "2026-08-26T16:48:26.388359"
 }
