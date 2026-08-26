@@ -1675,9 +1675,11 @@ pub(crate) fn sync_overworld_sprites(
                 // `encounter_class` already rode the snapshot ("leader"/"minion"), the
                 // client just never used it for anything but boss scale, so a leader at
                 // 1.7x HP and its minion at 0.45x drew as the same animal out in the
-                // world and only separated once you touched them.
-                let minion = e.encounter_class.as_deref() == Some("minion");
-                if let Some(frames) = wa.creature_frames(&kind, minion).cloned() {
+                // world and only separated once you touched them. The BASE art is the
+                // ordinary creature (a lone spawn, or a pack's minions); only the leader
+                // reaches for a set of its own.
+                let leader = e.encounter_class.as_deref() == Some("leader");
+                if let Some(frames) = wa.creature_frames(&kind, leader).cloned() {
                     let scale = 2.0 * pack_scale_for(e.encounter_class.as_deref());
                     let tint = if e.battling {
                         Color::srgb(1.4, 0.75, 0.55)

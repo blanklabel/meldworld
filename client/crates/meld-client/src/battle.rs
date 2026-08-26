@@ -233,15 +233,16 @@ pub(crate) fn spawn_enemy_actor(
     let boss_frames = boss_key.and_then(|k| wa.boss_frames(k));
     let h = if boss_frames.is_some() { h * 1.5 } else { h };
     // An ordinary creature with an installed sprite set is animated here too, and a
-    // pack's runt draws from its OWN art rather than a shrunken copy of its leader. Only
+    // pack's LEADER draws from its own art rather than being a scaled-up copy of the
+    // rank and file standing beside it. Only
     // reached when this is not a named boss: a boss overlays a host creature, and its own
     // set has to win over the host species'.
     let creature_frames = if boss_frames.is_some() {
         None
     } else {
         let kind = crate::overworld::creature_kind(&c.name);
-        let minion = c.statuses.iter().any(|s| s == "pack:minion");
-        wa.creature_frames(&kind, minion).cloned()
+        let leader = c.statuses.iter().any(|s| s == "pack:leader");
+        wa.creature_frames(&kind, leader).cloned()
     };
     // A pack's leader and its minions are the SAME species at 1.7x and 0.45x HP, so
     // drawing them identically made a 3.8x health gap look broken. Size is the read the

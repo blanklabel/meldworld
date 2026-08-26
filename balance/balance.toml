@@ -2054,6 +2054,37 @@ aggression = "aggressive"
 flees = false
 loot_kind = "spore_pod"
 
+# --- The ooze (SLIME lineage). A third archetype beside swarmer and bruiser: an
+# ABSORBER. Its `Body::Amorphous` already halves slash and blunt and takes most of a
+# spike, so its defence is a damage PROFILE rather than a big `base_def` — which is what
+# makes it the creature that punishes a party carrying only swords, and folds instantly
+# to the elemental damage that same party has no answer for. Slow and territorial: a
+# slime does not chase, it is simply in the way. Priced at the same distance-0 budget as
+# everything else, with the physical halving paid for in low attack and low speed.
+[creature.verdant_ooze]     # forest ABSORBER — jelly that ate the undergrowth
+base_hp = 66
+base_atk = 6
+base_def = 2
+speed_stat = 46
+xp_reward = 54
+encounter_class = "standard"
+faction = "slime"
+aggression = "territorial"
+flees = false
+loot_kind = "ooze_core"
+
+[creature.bog_ooze]         # mire ABSORBER — silt-thick, heavier and slower
+base_hp = 74
+base_atk = 7
+base_def = 2
+speed_stat = 44
+xp_reward = 58
+encounter_class = "standard"
+faction = "slime"
+aggression = "territorial"
+flees = false
+loot_kind = "mire_ooze_core"
+
 [creature.dune_colossus]    # desert BRUISER — a slow, armoured wall that hits hard
 base_hp = 152
 base_atk = 13

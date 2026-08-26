@@ -363,31 +363,37 @@ pub(crate) fn boss_keys() -> impl Iterator<Item = &'static str> {
 /// A species listed here stops being a single frozen 32px billboard and starts turning,
 /// walking and swinging like everything else in the world.
 ///
-/// **`<key>_minion` is its own entry, and that is the point.** A pack's leader and its
-/// minions are the same species at 1.7x and 0.45x HP; drawing them from one sprite made
-/// a 3.8x health gap read as a rendering bug, and scaling one sprite only ever made it a
-/// bigger or smaller copy of the same animal. A runt is a different animal.
+/// **`<key>_pack_leader` is its own entry, and that is the point.** A pack's leader and
+/// its rank and file are the same species at 1.7x and 0.45x HP; drawing them from one
+/// sprite made a 3.8x health gap read as a rendering bug, and scaling one sprite only
+/// ever made a bigger or smaller copy of the same animal.
+///
+/// The BASE key is the ordinary creature — a lone spawn, or a pack's minions — because
+/// that is the common case; the LEADER is the variant that has to earn its own art.
 ///
 /// Held against what is actually on disk by `every_installed_creature_set_is_loaded`, so
 /// art that lands unlisted — art nobody would ever see — fails rather than sitting unused.
-pub(crate) const CREATURE_CHARS: &[&str] = &["forest_bloom_stalker"];
+pub(crate) const CREATURE_CHARS: &[&str] = &[
+    "forest_bloom_stalker_pack_leader",
+];
 
-/// Which installed set a creature draws from: the runt's own art when it has some, the
-/// species' otherwise, and nothing at all if the species has no art yet.
+/// Which installed set a creature draws from: a pack leader's own art when it has some,
+/// the ordinary creature's otherwise, and nothing at all if the species has no art yet.
 ///
-/// The FALLBACK is the point — art lands in batches, so a species can have its leader
-/// drawn and its runt not, and half a pack rendering as nothing is far worse than half a
-/// pack sharing one sprite. Split out from [`WorldAssets::creature_frames`] so the rule
-/// can be tested without standing up the whole asset resource.
+/// The FALLBACK is the point — art lands in batches, so a species can have its ordinary
+/// form drawn and its leader not, and a leader rendering as nothing is far worse than a
+/// leader that merely looks like a big one of its own kind. Split out from
+/// [`WorldAssets::creature_frames`] so the rule can be tested without standing up the
+/// whole asset resource.
 pub(crate) fn creature_art_key(
     kind: &str,
-    minion: bool,
+    leader: bool,
     installed: impl Fn(&str) -> bool,
 ) -> Option<String> {
-    if minion {
-        let runt = format!("{kind}_minion");
-        if installed(&runt) {
-            return Some(runt);
+    if leader {
+        let boss_of_the_pack = format!("{kind}_pack_leader");
+        if installed(&boss_of_the_pack) {
+            return Some(boss_of_the_pack);
         }
     }
     installed(kind).then(|| kind.to_string())
@@ -423,8 +429,9 @@ pub(crate) struct WorldAssets {
     /// Creatures stay 2D sprites — the HD-2D convention (2D actors, 3D world).
     pub(crate) monster_sprites: HashMap<String, Handle<Image>>,
     /// Per-species animated creature sets (`assets/creatures/<key>/`), keyed by the
-    /// [`CREATURE_CHARS`] entry — `<kind>` for a leader or a lone spawn, `<kind>_minion`
-    /// for a pack's runts. Absent for a species whose art has not landed, which keeps it
+    /// [`CREATURE_CHARS`] entry — `<kind>` for an ordinary creature or a pack's minions,
+    /// `<kind>_pack_leader` for the one leading it. Absent for a species whose art has
+    /// not landed, which keeps it
     /// on the old single-png billboard rather than on missing-asset errors.
     pub(crate) creature_chars: HashMap<String, CharacterFrames>,
     pub(crate) monster_pool: Vec<Handle<Image>>,
@@ -489,8 +496,8 @@ impl WorldAssets {
     /// static billboard. `minion` picks the runt's own art and FALLS BACK to the
     /// species' — a species may get its leader art before its minion art, and half a pack
     /// rendering as nothing at all is worse than half a pack sharing one sprite.
-    pub(crate) fn creature_frames(&self, kind: &str, minion: bool) -> Option<&CharacterFrames> {
-        let key = creature_art_key(kind, minion, |k| self.creature_chars.contains_key(k))?;
+    pub(crate) fn creature_frames(&self, kind: &str, leader: bool) -> Option<&CharacterFrames> {
+        let key = creature_art_key(kind, leader, |k| self.creature_chars.contains_key(k))?;
         self.creature_chars.get(&key)
     }
 
@@ -638,6 +645,9 @@ pub(crate) fn setup(
         ("ice_revenant", "monsters/skeletal_warrior.png"),
         ("bog_serpent", "monsters/adder.png"),
         ("myconid_brute", "monsters/troll.png"),
+        // The oozes, until their animated sets land (`CREATURE_CHARS`).
+        ("verdant_ooze", "monsters/jelly.png"),
+        ("bog_ooze", "monsters/acid_blob.png"),
     ]
     .into_iter()
     .map(|(k, p)| (k.to_string(), ld(p)))
@@ -3369,64 +3379,96 @@ mod sky_tests {
 mod creature_sprite_tests {
     use super::*;
 
-    /// ART THAT LANDS UNLISTED IS ART NOBODY SEES. `CREATURE_CHARS` is what the loader
-    /// walks, so a species whose folder is installed but whose key is missing here stays
-    /// a frozen 32px billboard with a full animated set sitting unused beside it — the
-    /// same silent gap the `pack:` token had, where the data existed and nothing drew it.
-    /// Reading the directory rather than a second list is the only way this cannot drift.
+    /// ART THAT LANDS UNLISTED IS ART NOBODY SEES — and art listed before it is
+    /// finished is a wall of missing-asset errors every launch. Both directions are
+    /// checked against the filesystem, because a second hand-written list would drift
+    /// from the first the way every other pair in this repo has.
+    ///
+    /// COMPLETENESS is the pivot, and it is per-facing rather than a count. A creature
+    /// that ended up with two animation groups both named `walk` exported seven facings
+    /// with `south` silently missing, because the two collided on the same folder; a
+    /// count-based check called that finished. `load_creature_clips` asks for all eight
+    /// by name, so this does too.
+    ///
+    /// A set that is on disk but INCOMPLETE is work in progress, not a bug — a
+    /// generation batch is hours long and lands species by species — so the rule is:
+    /// complete sets must be listed, incomplete ones must not be.
     #[test]
-    fn every_installed_creature_set_is_loaded() {
+    fn every_finished_creature_set_is_loaded_and_no_unfinished_one_is() {
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/creatures");
         let Ok(entries) = std::fs::read_dir(&dir) else {
             assert!(CREATURE_CHARS.is_empty(), "no assets/creatures dir, but keys are listed");
             return;
         };
-        let on_disk: Vec<String> = entries
-            .filter_map(|e| e.ok())
-            .filter(|e| e.path().is_dir())
-            .map(|e| e.file_name().to_string_lossy().into_owned())
-            .collect();
-        for key in &on_disk {
-            assert!(
-                CREATURE_CHARS.contains(&key.as_str()),
-                "assets/creatures/{key} is installed but not in CREATURE_CHARS, so it is \
-                 never loaded and the species still draws as a static billboard"
-            );
+        // Exactly what `load_creature_clips` will ask for: eight walk facings by name, a
+        // south attack, and the idle rotations.
+        let complete = |key: &str| -> bool {
+            let d = dir.join(key);
+            d.join("rotations/south.png").is_file()
+                && d.join("animations/attack/south/frame_000.png").is_file()
+                && hd2d::DIRS.iter().all(|f| {
+                    d.join("animations/walk").join(f).join("frame_000.png").is_file()
+                })
+        };
+        for e in entries.filter_map(|e| e.ok()).filter(|e| e.path().is_dir()) {
+            let key = e.file_name().to_string_lossy().into_owned();
+            let listed = CREATURE_CHARS.contains(&key.as_str());
+            if complete(&key) {
+                assert!(
+                    listed,
+                    "assets/creatures/{key} is finished but not in CREATURE_CHARS, so it \
+                     is never loaded and the species still draws as a static billboard"
+                );
+            } else {
+                assert!(
+                    !listed,
+                    "CREATURE_CHARS lists {key}, which is not finished - every missing \
+                     facing is a batch of asset errors on every launch. Run \
+                     client/scripts/sync_creature_chars.py once its art lands."
+                );
+            }
         }
         for key in CREATURE_CHARS {
             assert!(
-                on_disk.iter().any(|d| d == key),
-                "CREATURE_CHARS lists {key} but assets/creatures/{key} does not exist - \
-                 that is a wall of missing-asset errors every launch"
+                dir.join(key).is_dir(),
+                "CREATURE_CHARS lists {key} but assets/creatures/{key} does not exist"
             );
         }
     }
 
-    /// A runt falls back to its species' art, never to nothing — art lands in batches,
-    /// so a species can have its leader drawn and its runt not.
+    /// A leader falls back to the ordinary creature's art, never to nothing — art lands
+    /// in batches, so a species can have its ordinary form drawn and its leader not.
     #[test]
-    fn a_runt_without_its_own_art_borrows_the_species() {
-        let installed = |k: &str| matches!(k, "thornback_boar" | "bog_serpent" | "bog_serpent_minion");
-        // Its own art wins when it exists.
+    fn a_pack_leader_without_its_own_art_borrows_the_ordinary_creature() {
+        let installed =
+            |k: &str| matches!(k, "thornback_boar" | "bog_serpent" | "bog_serpent_pack_leader");
+        // A leader's own art wins when it exists.
         assert_eq!(
             creature_art_key("bog_serpent", true, installed).as_deref(),
-            Some("bog_serpent_minion")
+            Some("bog_serpent_pack_leader")
         );
-        // …and falls back to the species when it does not.
+        // …and falls back to the ordinary creature when it does not.
         assert_eq!(
             creature_art_key("thornback_boar", true, installed).as_deref(),
             Some("thornback_boar"),
-            "a runt fell back to no art at all"
+            "a leader fell back to no art at all"
         );
+        // An ordinary creature never reaches for the leader's art, which is what keeps a
+        // pack's rank and file from all drawing as their own leader.
         assert_eq!(
-            creature_art_key("thornback_boar", false, installed).as_deref(),
-            Some("thornback_boar")
+            creature_art_key("bog_serpent", false, installed).as_deref(),
+            Some("bog_serpent")
         );
         // A species with no art stays a static billboard rather than drawing nothing.
         assert_eq!(creature_art_key("sporeling", true, installed), None);
         assert_eq!(creature_art_key("sporeling", false, installed), None);
-        // A leader never borrows its own runt's art, whichever way round they land.
-        let only_runt = |k: &str| k == "glacier_maw_minion";
-        assert_eq!(creature_art_key("glacier_maw", false, only_runt), None);
+        // Leader art alone is not enough: the ordinary form is the common case, so a
+        // species with only a leader set stays on billboards for everything else.
+        let only_leader = |k: &str| k == "glacier_maw_pack_leader";
+        assert_eq!(creature_art_key("glacier_maw", false, only_leader), None);
+        assert_eq!(
+            creature_art_key("glacier_maw", true, only_leader).as_deref(),
+            Some("glacier_maw_pack_leader")
+        );
     }
 }

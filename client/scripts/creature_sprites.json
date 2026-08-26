@@ -6,116 +6,170 @@
     "the first thing anyone ever fights. Generating in this order means the shallow end",
     "is finished art first, which is what almost every player actually sees.",
     "",
-    "Each species is TWO characters. A pack's leader and its minions are the same",
-    "species at 1.7x and 0.45x HP, and drawing them from one sprite made a 3.8x health",
-    "gap read as a bug; size alone (pack_scale) helped but a minion is meant to be a",
-    "different ANIMAL of the same kind - a runt, a drone, a fledgling. Same palette and",
-    "same silhouette family so the pack reads as one group, different build so you can",
-    "tell at a glance which one is worth the turn."
+    "Each species is TWO characters, installed as `<key>` and `<key>_pack_leader`. The",
+    "BASE name is the ordinary creature - a lone spawn, or a pack's rank and file - and",
+    "the suffixed one is the leader. A pack's leader and its minions are the same species",
+    "at 1.7x and 0.45x HP; drawing them from one sprite made a 3.8x health gap read as a",
+    "rendering bug, and scaling one sprite only ever made a bigger or smaller copy of the",
+    "same animal. Same palette and silhouette family so the pack reads as one group,",
+    "different build so you can tell at a glance which one is worth the turn.",
+    "",
+    "The `leader` field describes the pack leader; `minion` describes the ordinary type."
   ],
   "style": "in a weird HD-2D fantasy style",
   "creatures": [
     {
-      "key": "forest_bloom_stalker", "biome": "forest", "gate": 0,
+      "key": "forest_bloom_stalker",
+      "biome": "forest",
+      "gate": 0,
       "leader": "a huge predatory fungal stalker, a long-legged spider-like body of pale woody chitin with a cluster of glowing violet spore-blooms erupting from its back, four barbed legs, no eyes",
       "minion": "a small young fungal stalker, a squat pale-chitin crawler with a single half-open violet spore-bloom on its back and stubby barbed legs, no eyes",
-      "walk": "creeping forward on barbed legs", "attack": "lunging forward and striking with a barbed foreleg"
+      "walk": "creeping forward on barbed legs",
+      "attack": "lunging forward and striking with a barbed foreleg"
     },
     {
-      "key": "thornback_boar", "biome": "forest", "gate": 0,
+      "key": "thornback_boar",
+      "biome": "forest",
+      "gate": 0,
       "leader": "an enormous scarred wild boar with a ridge of long black thorns down its spine, heavy curved yellow tusks, matted brown bristles and a torn ear",
       "minion": "a small young wild boar with a short stubble of dark thorns along its spine, little tusks and soft brown bristles",
-      "walk": "trotting forward on four hooves", "attack": "charging forward and goring with its tusks"
+      "walk": "trotting forward on four hooves",
+      "attack": "charging forward and goring with its tusks"
     },
     {
-      "key": "sporeling", "biome": "forest", "gate": 0,
+      "key": "sporeling",
+      "biome": "forest",
+      "gate": 0,
       "leader": "a bloated walking mushroom creature, a thick mottled cream-and-ochre cap over a stumpy fibrous body with two short root-like arms, venting green spore clouds",
       "minion": "a tiny walking mushroom sprout, a small pale button cap over a thin stalk body with two little root arms, a faint puff of green spores",
-      "walk": "waddling forward on stubby roots", "attack": "bursting forward in a puff of spores"
+      "walk": "waddling forward on stubby roots",
+      "attack": "bursting forward in a puff of spores"
     },
     {
-      "key": "verdant_ooze", "biome": "forest", "gate": 0,
+      "key": "verdant_ooze",
+      "biome": "forest",
+      "gate": 0,
       "leader": "a large translucent green slime, a heavy rounded blob of jelly with a darker acidic core and half-dissolved leaves and twigs suspended inside it, two glowing eye-spots",
       "minion": "a small translucent green slime droplet, a little rounded blob of jelly with a faint core and one glowing eye-spot",
-      "walk": "oozing forward, body wobbling", "attack": "rearing up and slamming down as a wave of acid"
+      "walk": "oozing forward, body wobbling",
+      "attack": "rearing up and slamming down as a wave of acid"
     },
     {
-      "key": "bog_serpent", "biome": "mire", "gate": 0,
+      "key": "bog_serpent",
+      "biome": "mire",
+      "gate": 0,
       "leader": "a huge coiled swamp serpent, thick moss-green scales slick with algae, a broad flat viper head with amber eyes and dripping fangs, a ragged fin along its back",
       "minion": "a slender young swamp snake, thin moss-green scales, a narrow viper head with small amber eyes and short fangs",
-      "walk": "slithering forward in an S-curve", "attack": "striking forward with its fangs"
+      "walk": "slithering forward in an S-curve",
+      "attack": "striking forward with its fangs"
     },
     {
-      "key": "myconid_brute", "biome": "mire", "gate": 0,
+      "key": "myconid_brute",
+      "biome": "mire",
+      "gate": 0,
       "leader": "a massive hulking fungus brute, a broad humanoid body of dense grey fibrous flesh with a huge dark bruise-purple cap for a head and thick knotted arms",
       "minion": "a small stooped fungus thrall, a wiry humanoid body of pale grey fibre with a small drooping purple cap for a head and thin arms",
-      "walk": "lumbering forward with heavy steps", "attack": "swinging a heavy knotted fist downward"
+      "walk": "lumbering forward with heavy steps",
+      "attack": "swinging a heavy knotted fist downward"
     },
     {
-      "key": "bog_stinger", "biome": "mire", "gate": 0,
+      "key": "bog_stinger",
+      "biome": "mire",
+      "gate": 0,
       "leader": "a giant swamp wasp-fiend, an armoured black-and-sickly-yellow segmented body, four ragged translucent wings, barbed legs and a long dripping venom stinger",
       "minion": "a small swamp wasp drone, a slight black-and-yellow segmented body, two thin translucent wings and a short venom stinger",
-      "walk": "flying forward, wings beating", "attack": "darting forward and driving its stinger down"
+      "walk": "flying forward, wings beating",
+      "attack": "darting forward and driving its stinger down"
     },
     {
-      "key": "bog_ooze", "biome": "mire", "gate": 0,
+      "key": "bog_ooze",
+      "biome": "mire",
+      "gate": 0,
       "leader": "a large murky brown swamp slime, a sagging blob of silt-thick jelly dripping mud, with bones and reeds suspended inside it and two dull glowing eye-spots",
       "minion": "a small murky brown swamp slime, a little sagging blob of muddy jelly with one dull glowing eye-spot",
-      "walk": "oozing forward, body wobbling", "attack": "rearing up and slamming down as a wave of muck"
+      "walk": "oozing forward, body wobbling",
+      "attack": "rearing up and slamming down as a wave of muck"
     },
     {
-      "key": "cinder_imp", "biome": "ashfall", "gate": 250,
+      "key": "cinder_imp",
+      "biome": "ashfall",
+      "gate": 250,
       "leader": "a large horned fire imp, cracked charcoal-black skin glowing molten orange in the fissures, broad ember wings, long curved horns and clawed hands wreathed in flame",
       "minion": "a small horned fire imp whelp, dull charcoal skin with faint orange cracks, stubby ember wings and short horns",
-      "walk": "stalking forward, embers trailing", "attack": "lashing forward with burning claws"
+      "walk": "stalking forward, embers trailing",
+      "attack": "lashing forward with burning claws"
     },
     {
-      "key": "magma_golem", "biome": "ashfall", "gate": 250,
+      "key": "magma_golem",
+      "biome": "ashfall",
+      "gate": 250,
       "leader": "a towering golem of fused basalt slabs with molten orange magma glowing between the plates, huge boulder fists and no face, smoke venting from its shoulders",
       "minion": "a small squat basalt golem, rough dark stone plates with thin molten seams, short blocky fists and no face",
-      "walk": "striding forward with grinding stone steps", "attack": "smashing both boulder fists down"
+      "walk": "striding forward with grinding stone steps",
+      "attack": "smashing both boulder fists down"
     },
     {
-      "key": "ember_wisp", "biome": "ashfall", "gate": 250,
+      "key": "ember_wisp",
+      "biome": "ashfall",
+      "gate": 250,
       "leader": "a large hovering ember spirit, a bright roiling core of white-hot fire trailing long ribbons of flame and drifting ash, no solid body",
       "minion": "a small hovering ember mote, a dim flickering core of orange fire with a short trail of sparks, no solid body",
-      "walk": "drifting forward, flames trailing", "attack": "surging forward in a flare of fire"
+      "walk": "drifting forward, flames trailing",
+      "attack": "surging forward in a flare of fire"
     },
     {
-      "key": "dune_wyrm", "biome": "desert", "gate": 400,
+      "key": "dune_wyrm",
+      "biome": "desert",
+      "gate": 400,
       "leader": "a huge desert wyrm, a thick sand-scoured tan-scaled serpentine body with a ring of black hooked mandibles around a round maw, small vestigial claws",
       "minion": "a small desert wyrmling, a slender pale tan-scaled serpentine body with a small ring of hooked mandibles",
-      "walk": "surging forward through sand", "attack": "lunging forward with its maw of mandibles wide"
+      "walk": "surging forward through sand",
+      "attack": "lunging forward with its maw of mandibles wide"
     },
     {
-      "key": "sand_shade", "biome": "desert", "gate": 400,
+      "key": "sand_shade",
+      "biome": "desert",
+      "gate": 400,
       "leader": "a tall risen desert wraith, a hollow tattered burial shroud of bleached linen streaming sand, empty glowing pale-blue eye sockets and skeletal grasping hands",
       "minion": "a small risen desert wisp, a short ragged scrap of bleached shroud trailing sand with a single faint pale-blue eye light",
-      "walk": "gliding forward, shroud streaming", "attack": "reaching forward with skeletal hands"
+      "walk": "gliding forward, shroud streaming",
+      "attack": "reaching forward with skeletal hands"
     },
     {
-      "key": "dune_colossus", "biome": "desert", "gate": 400,
+      "key": "dune_colossus",
+      "biome": "desert",
+      "gate": 400,
       "leader": "a colossal weathered sandstone statue-golem, huge carved blocky limbs pitted by sand, faded ancient glyphs cut into its chest and a featureless carved head",
       "minion": "a small weathered sandstone construct, squat carved blocky limbs, a few worn glyphs and a featureless carved head",
-      "walk": "striding forward with heavy grinding steps", "attack": "bringing a huge carved fist down"
+      "walk": "striding forward with heavy grinding steps",
+      "attack": "bringing a huge carved fist down"
     },
     {
-      "key": "frost_lurker", "biome": "tundra", "gate": 550,
+      "key": "frost_lurker",
+      "biome": "tundra",
+      "gate": 550,
       "leader": "a huge shaggy snow wolf, thick white-and-grey frost-rimed fur, pale blue eyes, long fangs and ice crusted along its back",
       "minion": "a small lean snow wolf pup, thin white-grey fur, pale blue eyes and short fangs",
-      "walk": "loping forward through snow", "attack": "pouncing forward, jaws wide"
+      "walk": "loping forward through snow",
+      "attack": "pouncing forward, jaws wide"
     },
     {
-      "key": "ice_revenant", "biome": "tundra", "gate": 550,
+      "key": "ice_revenant",
+      "biome": "tundra",
+      "gate": 550,
       "leader": "a tall armoured undead warrior sheathed in blue-white ice, frost-cracked rusted plate, a frozen skull face with cold blue eye-lights, gripping a jagged icicle blade",
       "minion": "a small stooped undead thrall in cracked frozen rags, a frost-covered skull with dim blue eye-lights and bare bony hands",
-      "walk": "marching forward stiffly", "attack": "swinging a jagged icicle blade downward"
+      "walk": "marching forward stiffly",
+      "attack": "swinging a jagged icicle blade downward"
     },
     {
-      "key": "glacier_maw", "biome": "tundra", "gate": 550,
+      "key": "glacier_maw",
+      "biome": "tundra",
+      "gate": 550,
       "leader": "a massive shaggy white beast built like a bear, slabs of blue glacial ice fused into its back and shoulders, a huge jaw of jagged ice teeth and small black eyes",
       "minion": "a small shaggy white beast cub, a few thin shards of blue ice along its back, a short jaw of ice teeth and small black eyes",
-      "walk": "lumbering forward on four heavy legs", "attack": "rearing up and swiping with an ice-crusted claw"
+      "walk": "lumbering forward on four heavy legs",
+      "attack": "rearing up and swiping with an ice-crusted claw"
     }
   ]
 }
