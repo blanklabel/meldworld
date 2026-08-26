@@ -18,10 +18,16 @@ own frame renders at twice the size of everything beside it).
 import argparse, json, os, pathlib, subprocess, sys, time, urllib.error, urllib.request
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
+# Set by --manifest / --assets, which is what lets this drive the town's NPCs as well
+# as the bestiary: they are the same job (make a character, give it a walk, install it),
+# differing only in what each one needs.
 MANIFEST = ROOT / "client/scripts/creature_sprites.json"
 STATE = ROOT / "client/scripts/.creature_sprites_state.json"
 ASSETS = ROOT / "client/crates/meld-client/assets/creatures"
 ENDPOINT = "https://api.pixellab.ai/mcp"
+ASSET_DIR = "creatures"
+# asset -> which clips it needs, filled from the manifest in main().
+NEEDS = {}
 
 ALL_DIRS = ["south", "south-east", "east", "north-east", "north", "north-west", "west",
             "south-west"]
@@ -122,7 +128,18 @@ def wait_for_idle(label):
         time.sleep(20)
 
 
-def installed_on_disk(asset):
+def clips_for(entry):
+    """Which clips this character actually needs.
+
+    NOT EVERY CHARACTER FIGHTS. A townsfolk needs to walk and nothing else, so demanding
+    an attack of one would leave every innkeeper permanently "unfinished" and re-queued
+    on every run. An entry declares its own needs by carrying an `attack` description or
+    not — so a soldier gets one and a shopkeeper does not.
+    """
+    return ["walk"] + (["attack"] if entry.get("attack") else [])
+
+
+def installed_on_disk(asset, clips=("walk", "attack")):
     """Is this species' art already complete in the repo?
 
     THE LEDGER IS NOT THE TRUTH; THE REPO IS. The state file is a convenience that
@@ -133,15 +150,15 @@ def installed_on_disk(asset):
     cost, and worse than pure cost, because the shallow end of the world is exactly where
     a player notices the same species drawn six ways.
 
-    So completeness is read off the files: eight walk directions, an attack, and the
-    rotations. Anything short of that is genuinely unfinished and worth redoing.
+    So completeness is read off the files: the rotations, eight walk directions, and an
+    attack IF this character is one that fights. Anything short is genuinely unfinished.
     """
     d = ASSETS / asset
     if not (d / "rotations" / "south.png").is_file():
         return False
-    # All EIGHT walk facings by name (five drawn, three mirrored), and a south attack.
-    return set(ALL_DIRS) <= clip_dirs_on_disk(asset, "walk") and \
-        "south" in clip_dirs_on_disk(asset, "attack")
+    if "walk" in clips and not set(ALL_DIRS) <= clip_dirs_on_disk(asset, "walk"):
+        return False
+    return "attack" not in clips or "south" in clip_dirs_on_disk(asset, "attack")
 
 
 def clip_dirs_on_disk(asset, clip):
@@ -170,18 +187,19 @@ def load_state():
     """
     st = json.loads(STATE.read_text()) if STATE.exists() else {}
     for d in sorted(ASSETS.iterdir()) if ASSETS.is_dir() else []:
-        if d.is_dir() and installed_on_disk(d.name):
+        if d.is_dir() and installed_on_disk(d.name, NEEDS.get(d.name, ("walk", "attack"))):
             st.setdefault(d.name, {})["installed"] = True
     for asset, s in st.items():
         # BOTH directions, and the clearing half is the one that matters. A stale
         # `installed: true` shields everything under it, so a ledger written while the
         # walk was generated south-only would carry those one-direction clips forward
         # forever - which is exactly what happened.
-        if not installed_on_disk(asset):
+        if not installed_on_disk(asset, NEEDS.get(asset, ("walk", "attack"))):
             s.pop("installed", None)
         if s.get("installed"):
             continue
-        for clip, dirs in CLIP_DIRS.items():
+        for clip in NEEDS.get(asset, ("walk", "attack")):
+            dirs = CLIP_DIRS[clip]
             on_disk = clip_dirs_on_disk(asset, clip)
             if set(dirs) <= on_disk:
                 # Drawn and complete: record it, even if this ledger never saw it made.
@@ -273,7 +291,7 @@ def animate(cid, clip, action):
     return out
 
 
-def install(cid, key):
+def install(cid, key, clips=("walk", "attack")):
     """Download, mirror, pad — then CHECK, and report whether it actually landed.
 
     An install that says "done" without looking is how half-finished sets get marked
@@ -285,7 +303,7 @@ def install(cid, key):
     # curl exit 56. Retry, then give up on THIS species rather than on the run.
     for attempt in range(4):
         r = subprocess.run(
-            [str(ROOT / "client/scripts/install_class_sprite.sh"), cid, key, "creatures"],
+            [str(ROOT / "client/scripts/install_class_sprite.sh"), cid, key, ASSET_DIR],
             env={**os.environ, "PIXELLAB_TOKEN": TOKEN},
         )
         if r.returncode == 0:
@@ -295,7 +313,7 @@ def install(cid, key):
             return False
         log(f"    {key}: install failed ({r.returncode}), retrying in 20s")
         time.sleep(20)
-    if installed_on_disk(key):
+    if installed_on_disk(key, clips):
         return True
     missing = sorted(set(ALL_DIRS) - clip_dirs_on_disk(key, "walk"))
     log(f"    ⚠ {key} came back incomplete (walk missing {', '.join(missing) or 'nothing'}"
@@ -307,6 +325,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--only", help="one creature key, both its leader and minion")
     ap.add_argument("--dry-run", action="store_true", help="print the plan, spend nothing")
+    ap.add_argument("--manifest", help="sprite manifest (default: the bestiary's)")
+    ap.add_argument("--assets", help="asset subdir under assets/ (default: creatures)")
     ap.add_argument("--force", action="store_true",
                     help="redo species whose art is already complete (spends generations "
                          "on art you already have - only for a deliberate re-roll)")
@@ -314,7 +334,16 @@ def main():
     if not TOKEN and not a.dry_run:
         sys.exit("set PIXELLAB_TOKEN")
 
+    global MANIFEST, STATE, ASSETS, ASSET_DIR
+    if a.manifest:
+        MANIFEST = ROOT / a.manifest
+        STATE = MANIFEST.with_name("." + MANIFEST.stem + "_state.json")
+    if a.assets:
+        ASSET_DIR = a.assets
+        ASSETS = ROOT / "client/crates/meld-client/assets" / a.assets
     man = json.loads(MANIFEST.read_text())
+    global NEEDS
+    NEEDS = {v: tuple(clips_for(c)) for c in man["creatures"] for v in c["variants"]}
     style = man["style"]
     # Leader before minion, species by species, shallowest biome first - the manifest is
     # already in the order a player meets them, so an interrupted run still leaves the
@@ -330,7 +359,7 @@ def main():
             continue
         for asset, desc in c["variants"].items():
             plan.append({"asset": asset, "desc": desc, "walk": c["walk"],
-                         "attack": c["attack"], "gate": c["gate"]})
+                         "attack": c.get("attack"), "gate": c.get("gate", 0)})
 
     log(f"{len(plan)} characters, ~{len(plan) * 12} generations "
         f"(8-dir rotations + templated 8-dir walk + south-only attack)")
@@ -401,6 +430,8 @@ def main():
             wait_for_idle(f"chunk/{clip}")
             for p in chunk:
                 s_ = st[p["asset"]]
+                if clip not in clips_for(p):
+                    continue  # a townsfolk has no attack to make
                 if s_.get(clip) or not s_.get("id") or p["asset"] in skipped:
                     continue
                 # An 8-direction clip needs the whole cap to itself; a 1-direction one
@@ -420,7 +451,7 @@ def main():
             s_ = st[p["asset"]]
             if s_.get("installed") or p["asset"] in skipped or not s_.get("id"):
                 continue
-            if not install(s_["id"], p["asset"]):
+            if not install(s_["id"], p["asset"], clips_for(p)):
                 # Its clips are re-queued next run: `load_state` clears any flag the
                 # files do not back up, so this heals itself rather than needing a human.
                 continue
