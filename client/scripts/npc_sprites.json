@@ -1,0 +1,57 @@
+{
+ "_comment": [
+  "The Last City's townsfolk. Same pipeline as the bestiary, different needs:",
+  "",
+  "MOST NPCs NEED ONLY A WALK. An innkeeper does not fight, so demanding an attack of",
+  "one would leave every shopkeeper permanently unfinished and re-queued every run. An",
+  "entry declares its own needs by carrying an `attack` description or not.",
+  "",
+  "Each is an ANCESTRY crossed with a ROLE, and the roles are the city's real ones -",
+  "the districts in `city.rs` and the orders in docs/lore/factions.md - so the crowd",
+  "explains the town instead of decorating it. Ancestry spread is deliberate: humans,",
+  "halflings, elves, dwarves, hare-folk, hobgoblins and gnomes, at different heights and",
+  "builds, because a crowd of one silhouette reads as a copy-paste however good each one is.",
+  "",
+  "They replace three Kenney GRAVEYARD models - a keeper, a ghost and a skeleton - that",
+  "have been standing in the friendly hub as 'a hint of the crowd to come'."
+ ],
+ "style": "in a weird HD-2D fantasy style",
+ "creatures": [
+  {
+   "key": "npc",
+   "variants": {
+    "npc_apothecary_keeper": "a slight elderly gnome apothecary with round green spectacles and a shock of white hair, in a stained herbalist's smock, carrying a rack of glass vials",
+    "npc_broker": "a sharp-eyed halfling broker in a fine embroidered waistcoat and half-moon glasses, a ledger under one arm and a coin purse at the belt",
+    "npc_master_smith": "a broad dwarf master smith with a forked iron-grey beard bound in rings, soot-black leather apron over heavy arms, a hammer through the belt",
+    "npc_alembic_keeper": "a tall willowy elf alchemist in layered pale-green robes with long braided hair, holding a softly glowing retort of blue liquid",
+    "npc_innkeeper": "a round cheerful halfling innkeeper in a rolled-sleeve shirt and long apron, a towel over one shoulder and a tankard in hand",
+    "npc_quartermaster": "a stern hobgoblin quartermaster with grey-green skin and a scarred jaw, in a Wall Defense tabard, holding a requisition slate",
+    "npc_vault_clerk": "a fastidious gnome vault clerk in a high-collared coat with brass buttons, a ring of heavy keys and a lantern",
+    "npc_bounty_clerk": "a lean hare-folk bounty clerk with long grey-brown ears and dark eyes, in a travelling coat, pinning a notice to a board",
+    "npc_townsfolk_human": "a middle-aged human townswoman in a plain belted dress and headscarf, carrying a covered basket",
+    "npc_townsfolk_halfling": "a stout halfling townsman in patched breeches and a knitted jerkin, barefoot, carrying a sack over one shoulder",
+    "npc_townsfolk_elf": "a slender elf townsman in a simple grey-green tunic with long pale hair tied back, carrying a bundle of scrolls",
+    "npc_townsfolk_dwarf": "a squat dwarf townswoman with a coiled red braid and heavy boots, carrying a stack of firewood",
+    "npc_townsfolk_harefolk": "a tall lean hare-folk townsman with long upright ears and soft brown fur, in a woven tunic, carrying a bundle of greens",
+    "npc_townsfolk_hobgoblin": "a burly hobgoblin townswoman with grey-green skin and tied-back black hair, in a leather working smock, carrying a crate",
+    "npc_townsfolk_gnome": "a tiny gnome townsman with an enormous white moustache and a floppy cap, carrying a toolbox nearly as big as he is",
+    "npc_child": "a small human child in an oversized patched tunic, barefoot, clutching a carved wooden toy",
+    "npc_beggar": "a gaunt stooped human in a threadbare hooded cloak, leaning on a stick, one hand out",
+    "npc_cartographer": "a weathered human cartographer of the Explorers in a long teal coat, a rolled map case at the hip and a brass compass in hand"
+   },
+   "walk": "walking forward at an unhurried pace"
+  },
+  {
+   "key": "npc_soldier",
+   "walk": "marching forward at a steady patrol pace",
+   "attack": "stepping into a forward strike with its weapon",
+   "variants": {
+    "npc_soldier_sword": "a human Wall Defense soldier in ivory-and-steel plate with a violet sash, a straight sword in one hand and a kite shield on the other arm",
+    "npc_soldier_bow": "a lean elf Wall Defense archer in light ivory scale over a violet gambeson, drawing a tall recurve bow, a quiver at the hip",
+    "npc_soldier_spear": "a dwarf Wall Defense spearman in heavy ivory-and-steel plate, gripping a long spear upright, a round shield slung at the back",
+    "npc_soldier_captain": "a scarred hobgoblin Wall Defense captain in ornate ivory plate with a violet half-cape and a plumed helm under one arm, hand on a sheathed blade",
+    "npc_phoenix_guard_sentry": "a Phoenix Guard sentry in heavy silvered plate chased with flame motifs, a tabard of deep red, holding a two-handed silvered sword point-down"
+   }
+  }
+ ]
+}
