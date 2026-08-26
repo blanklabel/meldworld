@@ -354,13 +354,27 @@ fn obstacle_radius_for(wg: &meld_balance::WorldGen, kind: &str, u: f64) -> f64 {
     wg.obstacle_min_radius + u * (wg.obstacle_max_radius - wg.obstacle_min_radius)
 }
 
+/// ⚠️ **NO BIOME SCATTERS WATER AS A PROP ANY MORE** — `pond`, `frozen_pond` and `bog_pool`
+/// are gone from these lists, and that is the point rather than an omission. Water is
+/// [`meld_proto::coast::Basin`] now: analytic, filling to the terrain's own CONTOUR, with no
+/// collider at all. Two mechanisms for the same substance is the duplication this repo keeps
+/// paying for, and the prop version lost on every axis:
+///
+/// * **It set the collision grid for the whole world.** `BlockField::new` sizes its cell from
+///   the LARGEST radius in it — water props ran to 10 while every other obstacle caps at 2.8,
+///   so they alone forced `cell` to 20 instead of 8. That is 2.5x wider cells holding ~6x the
+///   props, on the creature tick, everywhere — not just in the biomes that had water.
+/// * **A disc is not a shoreline.** A basin's edge is the land's own contour, so it looks like
+///   water sitting in ground instead of a coin dropped on it.
+/// * **And it was drawn by a second renderer** (mesh water with drifting UVs) beside the
+///   ground shader's analytic coast, so the same substance had two looks.
 fn obstacles_for_biome(biome: &str) -> &'static [&'static str] {
     match biome {
-        "field" | "forest" => &["tree", "boulder", "pond"],
+        "field" | "forest" => &["tree", "boulder"],
         "desert" => &["dune", "rock_spire", "cactus"],
         "ashfall" => &["cliff", "lava", "cinder_rock"],
-        "tundra" => &["ice_spire", "frozen_pond", "snow_drift"],
-        _ => &["bog_pool", "mire_root", "fungal_wall"],
+        "tundra" => &["ice_spire", "snow_drift"],
+        _ => &["mire_root", "fungal_wall"],
     }
 }
 
@@ -375,7 +389,30 @@ fn fill_kind_for_biome(biome: &str) -> &'static str {
         "desert" => "cactus",
         "ashfall" => "cinder_rock",
         "tundra" => "ice_spire",
-        _ => "bog_pool", // mire: flooded — water is the fill, land is the trail
+        // ⚠️ The mire's fill used to be `bog_pool` — water AS the maze, "land is the trail".
+        // Its water is [`meld_proto::coast::Basin`] now, so the fill is its roots and fungal
+        // walls and the flooding is real: large ragged meres following the terrain's contour,
+        // with land between, instead of a scatter of ~20-unit discs.
+        //
+        // This IS a change to how the mire plays, not a refactor of how it looks: the fill was
+        // its maze. It is deliberate — a swamp reads as wetland rather than as a pool maze —
+        // and `biome_water_mult` is what keeps it the wettest biome in the game.
+        _ => "mire_root",
+    }
+}
+
+/// How much standing water a biome gets, as a multiple of the base chance. **This is what
+/// makes the Mire a swamp** now that its water is no longer its fill: the flooding has to come
+/// from somewhere, and it comes from here. The Desert is the dry end — an oasis is meant to be
+/// a find, not scenery.
+fn biome_water_mult(biome: &str) -> f64 {
+    match biome {
+        "mire" => 3.2,
+        "tundra" => 1.2,
+        "field" | "forest" => 1.0,
+        "ashfall" => 0.5,
+        "desert" => 0.25,
+        _ => 1.0,
     }
 }
 
@@ -3250,7 +3287,7 @@ impl Arena {
         // …and its inland water: a river that runs downhill and the lakes it pools into.
         // Also before the route, for the same reason — and it matters more here, because a
         // river is the one water body that can genuinely sever the world.
-        self.push_water(balance, i, start_x, end_x);
+        self.push_water(balance, i, start_x, end_x, biome);
 
         // WG-1: every Nth procedural section is a DUNGEON — rooms divided by walls
         // with a door on the clear path (connectivity guaranteed like a biome seam),
@@ -4450,7 +4487,7 @@ impl Arena {
     /// Fords are placed on a fixed cadence, not rolled: connectedness is what a river IS,
     /// and a connected impassable line is exactly the thing that disconnects a world. Same
     /// contract as a strait's isthmus — a guarantee, never a repair.
-    fn push_water(&mut self, balance: &Balance, i: usize, start_x: f64, end_x: f64) {
+    fn push_water(&mut self, balance: &Balance, i: usize, start_x: f64, end_x: f64, biome: &str) {
         let wg = &balance.worldgen;
         if self.tutorial
             || self.radial_half <= 0.0
@@ -4511,7 +4548,10 @@ impl Arena {
         };
 
         // --- the RIVER ----------------------------------------------------------------
-        if rng.unit() < wg.river_chance {
+        // A biome's own wetness. The Mire is a swamp because of this line, now that its fill
+        // is roots rather than pools.
+        let wet_mult = biome_water_mult(biome);
+        if rng.unit() < wg.river_chance * wet_mult {
             // A SPRING is the highest of a few candidates: water starts high, so choosing
             // the highest is what makes the source read as a spring rather than a puddle
             // that happens to leak.
@@ -4598,6 +4638,10 @@ impl Arena {
         // Walk downhill from a drawn point to find the hollow, then fill it. The same
         // descent the river uses, which is why a lake here and a river's terminus lake are
         // the same object rather than two.
+        // Standing water, biome-weighted — and the Mire gets several passes, because one
+        // basin in a section is a pond and a swamp is a landscape of them.
+        let passes = (wet_mult.ceil() as usize).max(1);
+        for _pass in 0..passes {
         if rng.unit() < wg.basin_chance {
             let seed_pt = pick(&mut rng);
             let (mut x, mut z) = (seed_pt.x, seed_pt.y);
@@ -4628,6 +4672,7 @@ impl Arena {
             {
                 self.basins.push([x as f32, z as f32, radius as f32, (cur + wg.basin_fill) as f32]);
             }
+        }
         }
     }
 

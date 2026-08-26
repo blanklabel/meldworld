@@ -3170,7 +3170,7 @@ mod ground_uniform_tests {
     #[test]
     fn every_coast_helper_is_actually_called() {
         let wgsl = include_str!("../assets/shaders/ground_biome.wgsl");
-        for f in ["sea_depth_at", "inland_depth_at", "strait_depth_at", "spit_half_width"] {
+        for f in ["sea_depth_at", "inland_water_at", "strait_depth_at", "spit_half_width"] {
             let defined = wgsl.contains(&format!("fn {f}("));
             let calls = wgsl.matches(&format!("{f}(")).count();
             assert!(defined, "ground_biome.wgsl should define `{f}`");
@@ -3199,7 +3199,7 @@ mod ground_uniform_tests {
         // files agree on the uniform's LAYOUT, not on what each reads from it.
         let prepass = include_str!("../assets/shaders/ground_prepass.wgsl");
         assert!(
-            !prepass.contains("fn inland_depth_at("),
+            !prepass.contains("fn inland_water_at("),
             "the prepass must not carry inland-water math — displacing a basin excavates \
              every lake below its own bed"
         );

@@ -125,6 +125,46 @@ fn deep_tint_of(bi: i32) -> vec3<f32> {
     return vec3<f32>(0.09, 0.30, 0.46);                    // open sea
 }
 
+/// **A SWAMP IS NOT ONE GREEN, AND IT IS NOT BLUE.** Fresh water takes its deep colour from
+/// its own body's `variant` (see `body_variant`), so a mire holds a peat-green mere, a
+/// tannin-stained purple-brown one, a dark blue one and a near-black one — the colours
+/// standing water actually takes when it is full of rotting vegetation, iron and shade.
+///
+/// The stops are mixed rather than snapped so that neighbouring bodies differ without the set
+/// looking like four presets. Each BODY is one colour, though: a mere shading through three
+/// hues across its own width reads as a rendering fault, not as depth.
+fn fresh_tint_of(bi: i32, v: f32) -> vec3<f32> {
+    if (bi == 4) {
+        // Mire: green -> tannin purple -> peat black -> bog blue.
+        let a = vec3<f32>(0.09, 0.24, 0.13);
+        let b = vec3<f32>(0.19, 0.11, 0.23);
+        let c = vec3<f32>(0.05, 0.07, 0.06);
+        let d = vec3<f32>(0.07, 0.14, 0.21);
+        let t = v * 3.0;
+        if (t < 1.0) { return mix(a, b, t); }
+        if (t < 2.0) { return mix(b, c, t - 1.0); }
+        return mix(c, d, t - 2.0);
+    }
+    if (bi == 3) { return mix(vec3<f32>(0.58, 0.70, 0.79), vec3<f32>(0.68, 0.78, 0.84), v); }
+    if (bi == 2) { return mix(vec3<f32>(0.15, 0.15, 0.19), vec3<f32>(0.24, 0.20, 0.20), v); }
+    if (bi == 1) { return mix(vec3<f32>(0.16, 0.34, 0.40), vec3<f32>(0.22, 0.42, 0.44), v); }
+    // Field/forest: a woodland lake is tea-brown to weed-green, not sea blue.
+    return mix(vec3<f32>(0.11, 0.26, 0.24), vec3<f32>(0.16, 0.30, 0.19), v);
+}
+
+/// How much sky a biome's water mirrors. **This is the other half of "a swamp is not blue":**
+/// the reflection is `mix(water, sky, fres * 0.30 * openness)` and this shader's own note
+/// records that the camera's fixed pitch keeps `fres` around 0.5-0.6 — so a strongly blue sky
+/// was being laid over every pool at 15-18%, whatever colour the depth tint had just
+/// computed. Turbid water does not do that: a bog is full of suspended peat, it absorbs and
+/// scatters rather than mirroring, and it usually sits under canopy shade as well.
+fn sky_reflect_of(bi: i32) -> f32 {
+    if (bi == 4) { return 0.20; }   // mire — turbid and shaded; almost no sky in it
+    if (bi == 2) { return 0.55; }   // ashfall — slick, but under an ash haze
+    if (bi == 3) { return 0.80; }   // tundra — ice does mirror, but it is not water
+    return 1.0;                     // open sea and woodland lakes
+}
+
 fn water_color(bi: i32, uv: vec2<f32>) -> vec4<f32> {
     if (bi == 3) { return textureSample(t_water_ice, samp, uv); }   // tundra
     if (bi == 4) { return textureSample(t_water_bog, samp, uv); }   // mire
@@ -188,8 +228,19 @@ fn strait_depth_at(wxz: vec2<f32>, k: i32) -> f32 {
 // the ground toward the sea floor over, and sea level is globally zero — a basin sits at its
 // OWN elevation and its hollow is already in the heightmap, which is what makes it a basin.
 // Folding this in would excavate every lake a second time, below its own bed.
-fn inland_depth_at(wxz: vec2<f32>) -> f32 {
+// A stable 0..1 key for one body of water, hashed from its own centre. Deterministic, so a
+// mere keeps its colour from frame to frame and between sessions — a lake that changed hue as
+// you walked would read as a bug, not as variety.
+fn body_variant(centre: vec2<f32>) -> f32 {
+    return fract(sin(dot(centre, vec2<f32>(12.9898, 78.233))) * 43758.5453);
+}
+
+// `(depth, variant)` — how far inside inland water this point is, and WHICH body it belongs
+// to. The variant is what lets a swamp hold a black mere, a tannin-purple one and a green one
+// instead of one flat green everywhere: colour is per-BODY, not per-biome.
+fn inland_water_at(wxz: vec2<f32>) -> vec2<f32> {
     var d = -1000.0;
+    var v = 0.0;
     // Standing water: inside the radius bound AND below the surface level. The vertical
     // margin is divided by a nominal shore slope so it shares world units with the radial
     // one — `coast::BASIN_SHORE_SLOPE`, and it must match.
@@ -202,7 +253,8 @@ fn inland_depth_at(wxz: vec2<f32>) -> f32 {
         // The divisor is `coast::BASIN_SHORE_SLOPE`, held against this file by
         // `the_basin_shore_slope_matches_the_shader`.
         let below = (b.w - terrain_height_wgsl(wxz + params.terrain_off)) / 0.12;
-        d = max(d, min(within, below));
+        let dd = min(within, below);
+        if (dd > d) { d = dd; v = body_variant(b.xy); }
     }
     // Flowing water: distance to each chain segment, minus its half-width.
     let nr = i32(params.river_count);
@@ -217,9 +269,10 @@ fn inland_depth_at(wxz: vec2<f32>) -> f32 {
         let len2 = dot(s, s);
         var t = 0.0;
         if (len2 > 1e-6) { t = clamp(dot(p, s) / len2, 0.0, 1.0); }
-        d = max(d, half - length(p - s * t));
+        let dd = half - length(p - s * t);
+        if (dd > d) { d = dd; v = body_variant(a.xy); }
     }
-    return d;
+    return vec2<f32>(d, v);
 }
 
 // How far INTO the sea a point is, in world units (negative on land). Mirrors
@@ -509,7 +562,13 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     // game existed in the world model, blocked movement, and drew absolutely nothing. The
     // mirror test could not catch it either, because it compares the two shaders to EACH
     // OTHER and both were equally unwired. `every_coast_helper_is_actually_called` does now.
-    let sea = max(sea_depth_at(in.world_position.xz), inland_depth_at(in.world_position.xz));
+    let salt = sea_depth_at(in.world_position.xz);
+    let fresh_wv = inland_water_at(in.world_position.xz);
+    let sea = max(salt, fresh_wv.x);
+    // Which one is painting this fragment: 1.0 where an inland body won. Fresh water takes a
+    // per-BODY colour out of its biome's palette; the sea keeps the biome's own single tint,
+    // because an ocean is one body and has no siblings to differ from.
+    let is_fresh = select(0.0, 1.0, fresh_wv.x > salt);
     // THE STRAND, first — the land side of the shoreline, under the water blend below. It
     // rides the SAME band the ground's beach ramp uses (`smoothstep(-14, 0)` in
     // `total_height`), so the sand appears exactly where the ground starts falling toward
@@ -547,7 +606,12 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         // a desaturated multiplier drags everything toward it. Keeping green well above red
         // holds the sea on the cyan side of the ground it borders, which is what separates
         // water from wet sand at a glance.
-        let deep_tint = mix(vec3<f32>(1.0, 1.0, 1.0), deep_tint_of(here_biome), openness);
+        let body_tint = mix(
+            deep_tint_of(here_biome),
+            fresh_tint_of(here_biome, fresh_wv.y),
+            is_fresh,
+        );
+        let deep_tint = mix(vec3<f32>(1.0, 1.0, 1.0), body_tint, openness);
         water = vec4<f32>(water.rgb * deep_tint, 1.0);
 
         // The surface: a wave normal, steeper out in open water than in the shallows where
@@ -591,7 +655,10 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         // tell a bad surface from bad lighting on a good one; every probe that measured the
         // lit frame was measuring the two multiplied together.
         let sky = mix(vec3<f32>(0.30, 0.48, 0.70), vec3<f32>(0.62, 0.76, 0.92), fres);
-        water = vec4<f32>(mix(water.rgb, sky, fres * 0.30 * openness), 1.0);
+        water = vec4<f32>(
+            mix(water.rgb, sky, fres * 0.30 * openness * sky_reflect_of(here_biome)),
+            1.0,
+        );
 
         // Hand the wave normal to the PBR pass so the SUN does the specular. A hand-rolled
         // glint would not track the day/night cycle; this one is lit by the same light
