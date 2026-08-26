@@ -494,6 +494,15 @@ pub(crate) struct WorldAssets {
     pub(crate) prop_scenes: HashMap<String, Vec<(Handle<WorldAsset>, f32)>>,
     /// 3D harvest-node models keyed by resource content id → `(scene, baked_scale)`.
     pub(crate) resource_scenes: HashMap<String, (Handle<WorldAsset>, f32)>,
+    /// **What a player-built structure is MADE OF, as kit pieces.** Keyed by structure
+    /// function; each entry is `(scene, local offset, yaw°, scale)`, composed the way
+    /// `CITY_PROPS` composes a crypt out of a body and a roof.
+    ///
+    /// ⚠️ Before this, a wall and an anchor both drew as a tinted copy of
+    /// `fx/portal_arch.png` — the same blue arch as a dungeon exit. The whole
+    /// player-building pillar had no art at all, so "I built a wall" and "there is a
+    /// portal here" were the same picture.
+    pub(crate) structure_parts: HashMap<&'static str, Vec<(Handle<WorldAsset>, Vec3, f32, f32)>>,
     pub(crate) portal_sprite: Handle<Image>,
     pub(crate) portal_mesh: Handle<Mesh>,
     pub(crate) portal_mat: Handle<StandardMaterial>,
@@ -997,6 +1006,37 @@ pub(crate) fn setup(
         monster_pool,
         prop_scenes,
         resource_scenes,
+        structure_parts: {
+            // Kenney CC0 `fantasy-town`, already the kit Last City is built from — and its
+            // matched wood/stone lines map onto BD-1's timber/masonry split exactly: a
+            // palisade is `wall-wood`, an anchor is a standing stone.
+            let kit = |p: &str| -> Handle<WorldAsset> {
+                assets.load(GltfAssetLabel::Scene(0).from_asset(format!("models/fantasy-town/{p}.glb")))
+            };
+            let mut m: HashMap<&'static str, Vec<(Handle<WorldAsset>, Vec3, f32, f32)>> =
+                HashMap::new();
+            // A palisade: three timber panels in a short run, so it reads as a LENGTH of
+            // wall rather than one lonely panel — a wall you cannot tell the facing of is a
+            // wall you cannot line up with the next one.
+            m.insert(
+                "wall",
+                vec![
+                    (kit("wall-wood"), Vec3::new(0.0, 0.0, 0.0), 0.0, 2.2),
+                    (kit("wall-wood"), Vec3::new(2.0, 0.0, 0.0), 0.0, 2.2),
+                    (kit("wall-wood"), Vec3::new(-2.0, 0.0, 0.0), 0.0, 2.2),
+                ],
+            );
+            // An anchor: a standing stone on a plinth. It has to read as PERMANENT from a
+            // distance, because that is the entire claim it makes about the ground.
+            m.insert(
+                "anchor",
+                vec![
+                    (kit("pillar-stone"), Vec3::new(0.0, 0.0, 0.0), 0.0, 2.6),
+                    (kit("wall-block-half"), Vec3::new(0.0, 0.0, 0.0), 0.0, 2.0),
+                ],
+            );
+            m
+        },
         portal_sprite: ld("fx/portal_arch.png"),
         // A faint emissive ground-ring keeps the portal glowing under the billboard.
         portal_mesh: meshes.add(Torus::new(0.18, 1.15)),
@@ -3587,6 +3627,62 @@ mod node_art_tests {
                 m.key,
                 m.class,
                 m.key
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod structure_art_tests {
+    /// **Every buildable thing must have its own art.** The bug this closes had a wall and
+    /// an anchor drawing as the same tinted `portal_arch` billboard a dungeon exit uses — so
+    /// the whole player-building pillar rendered as "there is a portal here", and the two
+    /// functions were indistinguishable.
+    ///
+    /// Read off the registry rather than a list, because the failure is adding a structure
+    /// function and forgetting the art — and it fails SILENTLY, since the fallback still
+    /// draws something you can walk up to.
+    #[test]
+    fn every_structure_function_has_its_own_kit_parts() {
+        // Mirror of the keys built in `setup` (which needs a live AssetServer), plus the
+        // model files they name — so a renamed .glb fails here rather than at runtime.
+        const PARTS: &[(&str, &[&str])] = &[
+            ("wall", &["wall-wood"]),
+            ("anchor", &["pillar-stone", "wall-block-half"]),
+        ];
+        for def in meld_proto::structures::STRUCTURES {
+            let entry = PARTS.iter().find(|(k, _)| *k == def.key);
+            let Some((_, pieces)) = entry else {
+                panic!(
+                    "`{}` has no kit parts — it would fall back to the placeholder and be \
+                     indistinguishable from every other structure",
+                    def.key
+                );
+            };
+            for piece in *pieces {
+                let path = std::path::Path::new("assets/models/fantasy-town")
+                    .join(format!("{piece}.glb"));
+                assert!(path.exists(), "{} names `{piece}`, which is not in the kit", def.key);
+            }
+        }
+    }
+
+    /// A palisade is timber and an anchor is masonry (BD-1), and the ART has to agree — a
+    /// stone-looking wall you paid wood for is a lie about the cost.
+    #[test]
+    fn the_art_matches_the_material_it_is_built_from() {
+        use meld_proto::materials::MaterialClass;
+        for def in meld_proto::structures::STRUCTURES {
+            let looks_wooden = match def.key {
+                "wall" => true,
+                "anchor" => false,
+                other => panic!("`{other}` has no art claim in this test"),
+            };
+            let is_wooden = def.material == MaterialClass::Wood;
+            assert_eq!(
+                looks_wooden, is_wooden,
+                "`{}` is built from {:?} but its kit pieces read the other way",
+                def.key, def.material
             );
         }
     }

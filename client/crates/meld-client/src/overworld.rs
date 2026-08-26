@@ -1825,27 +1825,65 @@ pub(crate) fn sync_overworld_sprites(
                 add_ground_ring(&mut commands, &wa, root);
             }
             EntityKind::Structure => {
-                // A player-built structure. Cool steel against the warm field bench, so
-                // "somebody built this to LAST" reads differently at a glance from
-                // "somebody set this up for a minute" — and dim while it is still going
-                // up, because a half-built wall is not yet a wall.
+                // A player-built structure, out of the same Kenney kit Last City is built
+                // from: a timber palisade for a wall, a standing stone for an anchor.
+                //
+                // ⚠️ IT USED TO BE A TINTED PORTAL ARCH — the identical billboard a dungeon
+                // exit uses. So the entire player-building pillar drew as "there is a portal
+                // here", and a wall and an anchor were the same picture in two shades of
+                // blue. A building is GEOMETRY rather than a billboard on purpose: you walk
+                // around it and it has to occlude and cast shadow from any angle, and a
+                // billboard's shading normals swing with the camera (fixed earlier, but a
+                // flat quad would still read as paper when you orbit).
                 let going_up = e.opened;
-                let tint = if going_up {
-                    Color::srgb(0.55, 0.62, 0.72)
-                } else {
-                    Color::srgb(0.85, 1.05, 1.45)
-                };
-                let root = spawn_billboard_entity(
-                    &mut commands,
-                    &mut mats,
-                    &wa,
-                    id,
-                    e,
-                    wa.portal_sprite.clone(),
-                    2.4,
-                    tint,
-                    if going_up { 0.10 } else { 0.28 },
-                );
+                let function = e.name.as_deref().unwrap_or("wall");
+                let root = commands
+                    .spawn((
+                        WorldEntity(id.clone()),
+                        Transform::from_translation(world_pos(e.x, e.y, 0.0)),
+                        Visibility::default(),
+                    ))
+                    .id();
+                match wa.structure_parts.get(function) {
+                    Some(parts) => {
+                        for (scene, off, yaw, scale) in parts {
+                            // While it is still going up it stands PART WAY out of the
+                            // ground, rather than being drawn dimmer: a half-built wall is
+                            // legible as half-built from any distance, and sinking it avoids
+                            // reaching into a GLB's materials to tint them.
+                            let grow = if going_up { 0.45 } else { 1.0 };
+                            let child = commands
+                                .spawn((
+                                    WorldAssetRoot(scene.clone()),
+                                    Transform::from_translation(Vec3::new(
+                                        off.x,
+                                        off.y - (1.0 - grow) * 1.6,
+                                        off.z,
+                                    ))
+                                    .with_scale(Vec3::splat(scale * grow))
+                                    .with_rotation(Quat::from_rotation_y(yaw.to_radians())),
+                                ))
+                                .id();
+                            commands.entity(root).add_child(child);
+                        }
+                    }
+                    // A function with no art is a bug, not a case to design around — but it
+                    // must still be visible enough to walk up to and demolish.
+                    None => {
+                        let child = commands
+                            .spawn((
+                                Mesh3d(wa.sprite_quad.clone()),
+                                MeshMaterial3d(mats.add(hd2d::sprite_material(
+                                    Color::srgb(1.0, 0.2, 0.8),
+                                    wa.portal_sprite.clone(),
+                                ))),
+                                Transform::from_xyz(0.0, 1.2, 0.0),
+                                hd2d::Billboard,
+                            ))
+                            .id();
+                        commands.entity(root).add_child(child);
+                    }
+                }
                 add_ground_ring(&mut commands, &wa, root);
             }
             EntityKind::Stair => {
