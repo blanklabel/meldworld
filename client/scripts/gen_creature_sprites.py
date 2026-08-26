@@ -311,17 +311,17 @@ def main():
     # Leader before minion, species by species, shallowest biome first - the manifest is
     # already in the order a player meets them, so an interrupted run still leaves the
     # shallow end (which is what almost everyone actually sees) finished first.
+    # A species is a POOL of variants now, not a leader/ordinary pair. `<key>` is the
+    # ordinary creature, `<key>_pack_leader` leads a pack, and the rest are its siblings —
+    # so five of a species draws five different bodies rather than one sprite at five
+    # sizes. Order within a species is the manifest's, so an interrupted run leaves whole
+    # species finished rather than a scatter.
     plan = []
     for c in man["creatures"]:
         if a.only and c["key"] != a.only:
             continue
-        for rank in ("leader", "minion"):
-            # THE BASE NAME IS THE ORDINARY CREATURE, and the leader is the marked one.
-            # Most spawns are ordinary — a lone creature or a pack's rank and file — so
-            # the unsuffixed key is the common case, and `<kind>_pack_leader` is the
-            # variant that has to earn its own art.
-            asset = f"{c['key']}_pack_leader" if rank == "leader" else c["key"]
-            plan.append({"asset": asset, "desc": c[rank], "walk": c["walk"],
+        for asset, desc in c["variants"].items():
+            plan.append({"asset": asset, "desc": desc, "walk": c["walk"],
                          "attack": c["attack"], "gate": c["gate"]})
 
     log(f"{len(plan)} characters, ~{len(plan) * 12} generations "
