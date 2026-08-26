@@ -2596,9 +2596,29 @@ same always-running-when-unwatched spatial workload as the ecology).
   are entities the ecology LOD/interest-index/freeze model covers and the siege step
   fits the existing per-tick ceiling with **no new budget**. Build with `CR-4`/`E0` as
   one budget effort.
-- [ ] **BD-1 — Harvest wood & stone.** Wood from ecology `Flora` trees (CR); new
-  `MineralNode`s (stone/ore/clay) + timed `MS-2` harvest + structural-material tables.
-  *Ships as gathering on the precursor.*
+- [x] **BD-1 — Harvest wood & stone.** ✅ Two new material classes (`Wood`, `Stone`) with
+  `MaterialClass::is_structural`, seven new gatherable nodes, and the structural-material
+  table living on `StructureDef::material` — so a **palisade is timber and an anchor is
+  masonry**, and holding ground takes both.
+  - **Wood does not exist in every biome, and that is the content.** There is no timber in
+    the desert, the ashfall or the tundra, because those bands grow `cactus`, `cinder_rock`
+    and `ice_spire` rather than trees — so a builder out there hauls wood in or builds in
+    stone. It is the first thing in the game that makes one biome's *ground* worth more to
+    you than another's, and `resources_for_biome` and `obstacles_for_biome` now tell the
+    same story.
+  - **One material per structure**, because a `Structure` records the kind it was built
+    from so packing it down returns the same stock (D21). A two-material recipe would make
+    a refund a judgement about proportions instead of a fact; the decision lives one level
+    up, in needing both to raise a town.
+  - **Repair is paid in the structure's own stock**, so an anchor deep in the ash is a
+    logistics problem rather than a chore. Both the build and repair handlers read
+    `def.material` — "everything is built from ore" had been hardcoded in two functions
+    while `balance.toml`'s own comment called it a placeholder.
+  - ⚠️ *Gathered from deadfall nodes, not from felling the standing trees you can see.*
+    Standing timber belongs to the ecology's `Flora` (CR, unbuilt); building a parallel
+    harvestable-obstacle system beside it is how you get two answers to "what is a tree".
+    When CR lands, wood should move onto the trees. `clay` is also deferred — a third
+    material with no consumer is paper.
 - [x] **BD-2 — The `Structure` primitive: place → build → HP → repair → demolish.**
   One entity, one `function` tag, one lifecycle — the discipline D21 mandates rather than
   a convenience. [`meld_proto::structures`](../shared/meld-proto/src/structures.rs) is the

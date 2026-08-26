@@ -754,15 +754,15 @@ pub struct Shift {
 /// [`meld_proto::structures`]; only the numbers are here.
 #[derive(Debug, Clone, Deserialize)]
 pub struct Building {
-    pub anchor_ore_cost: i32,
-    pub wall_ore_cost: i32,
+    pub anchor_stone_cost: i32,
+    pub wall_wood_cost: i32,
     pub anchor_max_hp: i32,
     pub wall_max_hp: i32,
     pub anchor_build_ms: u64,
     pub wall_build_ms: u64,
     pub build_start_fraction: f64,
     pub anchor_pin_radius: f64,
-    pub repair_hp_per_ore: i32,
+    pub repair_hp_per_material: i32,
     pub demolish_refund_fraction: f64,
     pub min_spacing: f64,
     pub no_build_near_player: f64,
@@ -776,8 +776,8 @@ impl Building {
     /// cannot be half-priced by being added to only some of the three.
     pub fn spec(&self, key: &str) -> Option<(i32, i32, u64)> {
         match key {
-            "anchor" => Some((self.anchor_ore_cost, self.anchor_max_hp, self.anchor_build_ms)),
-            "wall" => Some((self.wall_ore_cost, self.wall_max_hp, self.wall_build_ms)),
+            "anchor" => Some((self.anchor_stone_cost, self.anchor_max_hp, self.anchor_build_ms)),
+            "wall" => Some((self.wall_wood_cost, self.wall_max_hp, self.wall_build_ms)),
             _ => None,
         }
     }
@@ -1430,6 +1430,10 @@ pub struct Harvest {
     pub reagent_tick_ms: u64,
     pub ore_stock: i32,
     pub ore_tick_ms: u64,
+    pub wood_stock: i32,
+    pub wood_tick_ms: u64,
+    pub stone_stock: i32,
+    pub stone_tick_ms: u64,
     pub default_stock: i32,
     pub default_tick_ms: u64,
 }
@@ -1443,6 +1447,8 @@ impl Harvest {
         match class {
             "reagent" => (self.reagent_stock, self.reagent_tick_ms),
             "ore" => (self.ore_stock, self.ore_tick_ms),
+            "wood" => (self.wood_stock, self.wood_tick_ms),
+            "stone" => (self.stone_stock, self.stone_tick_ms),
             _ => (self.default_stock, self.default_tick_ms),
         }
     }

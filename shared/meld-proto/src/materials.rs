@@ -30,15 +30,33 @@ pub enum MaterialClass {
     Ore,
     Refined,
     Trophy,
+    /// Timber. **Only exists where trees do** — the forest bands and the mire's bog roots —
+    /// which is what makes a biome an economy rather than a palette. A builder in the
+    /// desert has to haul wood in or build in stone.
+    Wood,
+    /// Masonry. Every biome has some, because every biome has ground.
+    Stone,
 }
 
 impl MaterialClass {
+    /// Can you BUILD with it? (BD-1.) Wood and stone are what structures are made of;
+    /// reagents, ore, refined stock and trophies are the crafting economy.
+    ///
+    /// This is the question `[building]` costs and the repair path ask, rather than each
+    /// site naming the two classes — a third structural material (clay is next) then
+    /// becomes one row here instead of a hunt through every call site.
+    pub fn is_structural(&self) -> bool {
+        matches!(self, MaterialClass::Wood | MaterialClass::Stone)
+    }
+
     pub fn wire(&self) -> &'static str {
         match self {
             MaterialClass::Reagent => "reagent",
             MaterialClass::Ore => "ore",
             MaterialClass::Refined => "refined",
             MaterialClass::Trophy => "trophy",
+            MaterialClass::Wood => "wood",
+            MaterialClass::Stone => "stone",
         }
     }
 }
@@ -203,6 +221,74 @@ pub const MATERIALS: &[MaterialDef] = &[
         tier: 4,
         description: "Black iron with the drowning boiled off. Holds an edge like a grudge.",
     },
+    // --- BD-1: STRUCTURAL MATERIALS -----------------------------------------------------
+    //
+    // What a town is made of. Deliberately NOT one generic "wood" and one "stone": a
+    // structural material carries its band like every other material does, so hauling
+    // deep stone home means something and the Broker prices it accordingly.
+    //
+    // ⚠️ WOOD IS NOT IN EVERY BIOME, AND THAT IS THE POINT. There is no timber in the
+    // desert, the ashfall or the tundra, because there are no trees there — those bands
+    // grow `cactus`, `cinder_rock` and `ice_spire`. So the material tables and the
+    // obstacle tables tell the same story, and a builder out on the ash either carries
+    // timber with them or builds in stone. It is the first thing in the game that makes
+    // one biome's ground worth more to you than another's.
+    //
+    // Wood comes from deadfall nodes rather than from felling the standing trees you can
+    // see. Standing timber wants the ecology's `Flora` (CR), which is unbuilt — and
+    // inventing a parallel harvestable-obstacle system beside it is how you end up with
+    // two answers to "what is a tree". When CR lands, wood should move onto the trees.
+    MaterialDef {
+        key: "heartoak_log",
+        name: "Heartoak Log",
+        class: MaterialClass::Wood,
+        tier: 0,
+        description: "Deadfall from the old wood. Heavy, straight, and it does not rot in a season.",
+    },
+    MaterialDef {
+        key: "bog_root_timber",
+        name: "Bog-Root Timber",
+        class: MaterialClass::Wood,
+        tier: 4,
+        description: "Hauled black and dripping from the peat. The water has been in it so long \
+                      that nothing else will get in.",
+    },
+    MaterialDef {
+        key: "river_granite",
+        name: "River Granite",
+        class: MaterialClass::Stone,
+        tier: 0,
+        description: "Rounded by water long before anyone came to pick it up.",
+    },
+    MaterialDef {
+        key: "sun_sandstone",
+        name: "Sun Sandstone",
+        class: MaterialClass::Stone,
+        tier: 1,
+        description: "Cuts like cheese and sets like iron. Every wall in the dune country is this.",
+    },
+    MaterialDef {
+        key: "basalt_slab",
+        name: "Basalt Slab",
+        class: MaterialClass::Stone,
+        tier: 2,
+        description: "Cooled where it stopped. Still the shape the flow left it.",
+    },
+    MaterialDef {
+        key: "rime_stone",
+        name: "Rime Stone",
+        class: MaterialClass::Stone,
+        tier: 3,
+        description: "Frost-split off the spires. It comes away in courses, already squared.",
+    },
+    MaterialDef {
+        key: "peat_shale",
+        name: "Peat Shale",
+        class: MaterialClass::Stone,
+        tier: 4,
+        description: "Layered flat under the bog. Lift one sheet and the next is waiting.",
+    },
+
 ];
 
 /// The **refined** form of a raw ore, or `None` for anything that isn't smeltable.

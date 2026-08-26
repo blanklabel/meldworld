@@ -1548,35 +1548,17 @@ fn restore_world(balance: &Balance, save: &meld_db::WorldSave) -> Arena {
 /// One KIND, though, not a mix: a structure records what it was built from so packing it
 /// down hands back the same stock, and a refund cannot be split across materials the player
 /// no longer has a record of. So the deepest-tier kind whose TOTAL covers the cost wins.
+/// Spend `need` units of `class` from the run's backpack. **Delegates to
+/// [`crate::building::spend`]** — the same function the build, mend and pack-down paths use,
+/// so "sum across stacks, deepest tier first" exists exactly once. It used to be written out
+/// here and the field-station path called it, which is fine; what was not fine is that the
+/// building handlers each had their own copy of the *selection* half.
 fn spend_material(
     run: &mut meld_run::PlayerRun,
     class: meld_proto::materials::MaterialClass,
     need: i32,
 ) -> Option<String> {
-    let mut totals: HashMap<String, (i32, i32)> = HashMap::new();
-    for item in run.backpack.iter().filter(|i| {
-        i.quantity > 0 && meld_proto::materials::is_class(&i.item_kind, class)
-    }) {
-        let tier = meld_proto::materials::material(&item.item_kind).map(|m| m.tier).unwrap_or(0);
-        let e = totals.entry(item.item_kind.clone()).or_insert((0, tier));
-        e.0 += item.quantity;
-    }
-    let kind = totals
-        .into_iter()
-        .filter(|(_, (have, _))| *have >= need)
-        .max_by_key(|(_, (_, tier))| *tier)
-        .map(|(k, _)| k)?;
-    let mut left = need;
-    for item in run.backpack.iter_mut().filter(|i| i.item_kind == kind) {
-        let take = left.min(item.quantity);
-        item.quantity -= take;
-        left -= take;
-        if left == 0 {
-            break;
-        }
-    }
-    run.backpack.retain(|i| i.quantity > 0);
-    Some(kind)
+    crate::building::spend(run, class, need)
 }
 
 
@@ -7909,9 +7891,6 @@ impl WorldActor {
             Ok(v) => v,
             Err(_) => return reject(ErrorCode::ValidationError, "bad build_structure"),
         };
-        let Some(def) = meld_proto::structures::structure(&req.function) else {
-            return reject(ErrorCode::ValidationError, "No such structure.");
-        };
         if self.battle_of_player(player_id).is_some() {
             return reject(ErrorCode::InvalidState, "Resolve the battle first.");
         }
@@ -7919,76 +7898,42 @@ impl WorldActor {
             return reject(ErrorCode::InvalidState, "Not down here.");
         }
         let balance = self.balance.clone();
-        let Some((cost, _, _)) = balance.building.spec(&req.function) else {
-            return reject(ErrorCode::ValidationError, "No such structure.");
-        };
-        // What ore we WOULD spend, deepest tier first and summed ACROSS stacks — a harvest
-        // banks one unit per tick as its own stack, so ore you just dug up is never one
-        // stack big enough to pay for anything. Chosen here but not spent until placement
-        // has been validated.
-        let Some(run) = self.run.runs.iter().find(|r| r.player_id == player_id) else {
+        let tick = self.tick_count;
+        let Some(run) = self.run.runs.iter_mut().find(|r| r.player_id == player_id) else {
             return reject(ErrorCode::InvalidState, "Not in a run.");
         };
-        let mut have: HashMap<String, (i32, i32)> = HashMap::new();
-        for item in run.backpack.iter().filter(|i| {
-            i.quantity > 0
-                && meld_proto::materials::is_class(
-                    &i.item_kind,
-                    meld_proto::materials::MaterialClass::Ore,
-                )
-        }) {
-            let tier =
-                meld_proto::materials::material(&item.item_kind).map(|m| m.tier).unwrap_or(0);
-            have.entry(item.item_kind.clone()).or_insert((0, tier)).0 += item.quantity;
-        }
-        let Some(ore_kind) = have
-            .into_iter()
-            .filter(|(_, (n, _))| *n >= cost)
-            .max_by_key(|(_, (_, tier))| *tier)
-            .map(|(k, _)| k)
-        else {
-            return reject(ErrorCode::InvalidState, &format!("{} takes {cost} ore.", def.name));
-        };
-        // Validated BEFORE the stock is spent: a refusal that also charged you is the
-        // worst kind, and the arena is the only thing that knows the ground.
-        let tick = self.tick_count;
-        if let Err(why) =
-            self.arena.place_structure(&balance, player_id, &req.function, &ore_kind, tick)
-        {
-            return reject(ErrorCode::InvalidState, why.message());
-        }
-        let run = self
-            .run
-            .runs
-            .iter_mut()
-            .find(|r| r.player_id == player_id)
-            .expect("checked above");
-        spend_material(run, meld_proto::materials::MaterialClass::Ore, cost);
-        vec![out_msg(
+        // Everything that DECIDES anything lives in `crate::building` — validated placement
+        // before the stock is spent, the material read off the registry, the cost summed
+        // across stacks. This handler is left with what is genuinely about the wire.
+        match crate::building::raise(
+            &mut self.arena,
+            run,
+            &balance,
+            &req.function,
             player_id,
-            &wr::BackpackUpdate {
-                changes: vec![wr::BackpackChange {
-                    item: ItemStack {
-                        item_id: Uuid::now_v7().to_string(),
-                        item_kind: ore_kind,
-                        quantity: cost,
-                        insurance: None,
-                    },
-                    delta: "removed".to_string(),
-                    cause: "build".to_string(),
-                }],
-                chits_delta: 0,
-                gear_added: Vec::new(),
-            },
-        )]
+            tick,
+        ) {
+            Err(why) => reject(ErrorCode::InvalidState, &why),
+            Ok(charged) => vec![out_msg(
+                player_id,
+                &wr::BackpackUpdate {
+                    changes: vec![wr::BackpackChange {
+                        item: ItemStack {
+                            item_id: Uuid::now_v7().to_string(),
+                            item_kind: charged.kind,
+                            quantity: charged.qty,
+                            insurance: None,
+                        },
+                        delta: "removed".to_string(),
+                        cause: "build".to_string(),
+                    }],
+                    chits_delta: 0,
+                    gear_added: Vec::new(),
+                },
+            )],
+        }
     }
 
-    /// Spend one unit of ore mending a structure you are standing at.
-    ///
-    /// **Anyone may repair; only the owner may demolish.** Holding ground is a thing a
-    /// party does together — a teammate hauling ore out to your anchor is the co-op verb
-    /// this whole epic is for — while taking something down is a decision about somebody
-    /// else's work.
     fn handle_repair_structure(&mut self, player_id: &str, raw: RawEnvelope) -> Vec<Outgoing> {
         let seq = raw.seq;
         let reject = |code: ErrorCode, msg: &str| vec![error(player_id, code, msg, Some(seq))];
@@ -8000,39 +7945,29 @@ impl WorldActor {
             return reject(ErrorCode::InvalidState, "Resolve the battle first.");
         }
         let balance = self.balance.clone();
-        let reach = balance.world.interaction_radius_tiles;
-        let Some(target) = self.arena.structure_at(player_id, &req.entity_id, reach) else {
-            return reject(ErrorCode::InvalidState, "Nothing in reach.");
-        };
-        if target.hp >= target.max_hp {
-            let name = target.def().map(|d| d.name).unwrap_or("It");
-            return reject(ErrorCode::InvalidState, &format!("The {name} is sound."));
-        }
         let Some(run) = self.run.runs.iter_mut().find(|r| r.player_id == player_id) else {
             return reject(ErrorCode::InvalidState, "Not in a run.");
         };
-        let Some(ore_kind) = spend_material(run, meld_proto::materials::MaterialClass::Ore, 1)
-        else {
-            return reject(ErrorCode::InvalidState, "No ore to mend it with.");
-        };
-        self.arena.repair_structure(&balance, &req.entity_id);
-        vec![out_msg(
-            player_id,
-            &wr::BackpackUpdate {
-                changes: vec![wr::BackpackChange {
-                    item: ItemStack {
-                        item_id: Uuid::now_v7().to_string(),
-                        item_kind: ore_kind,
-                        quantity: 1,
-                        insurance: None,
-                    },
-                    delta: "removed".to_string(),
-                    cause: "repair".to_string(),
-                }],
-                chits_delta: 0,
-                gear_added: Vec::new(),
-            },
-        )]
+        match crate::building::mend(&mut self.arena, run, &balance, &req.entity_id, player_id) {
+            Err(why) => reject(ErrorCode::InvalidState, &why),
+            Ok(charged) => vec![out_msg(
+                player_id,
+                &wr::BackpackUpdate {
+                    changes: vec![wr::BackpackChange {
+                        item: ItemStack {
+                            item_id: Uuid::now_v7().to_string(),
+                            item_kind: charged.kind,
+                            quantity: charged.qty,
+                            insurance: None,
+                        },
+                        delta: "removed".to_string(),
+                        cause: "repair".to_string(),
+                    }],
+                    chits_delta: 0,
+                    gear_added: Vec::new(),
+                },
+            )],
+        }
     }
 
     /// Pack a structure you own back down, for part of its materials.
@@ -8047,40 +7982,37 @@ impl WorldActor {
             return reject(ErrorCode::InvalidState, "Resolve the battle first.");
         }
         let balance = self.balance.clone();
-        let reach = balance.world.interaction_radius_tiles;
-        let Some(target) = self.arena.structure_at(player_id, &req.entity_id, reach) else {
-            return reject(ErrorCode::InvalidState, "Nothing in reach.");
+        let Some(run) = self.run.runs.iter_mut().find(|r| r.player_id == player_id) else {
+            return reject(ErrorCode::InvalidState, "Not in a run.");
         };
-        if target.owner_player_id != player_id {
-            return reject(ErrorCode::InvalidState, "That is not yours to take down.");
-        }
-        let Some((ore_kind, back)) = self.arena.demolish_structure(&balance, &req.entity_id) else {
-            return reject(ErrorCode::InvalidState, "Nothing in reach.");
-        };
-        if back <= 0 {
-            return Vec::new();
-        }
-        let item = ItemStack {
-            item_id: Uuid::now_v7().to_string(),
-            item_kind: ore_kind,
-            quantity: back,
-            insurance: None,
-        };
-        if let Some(run) = self.run.runs.iter_mut().find(|r| r.player_id == player_id) {
-            run.backpack.push(item.clone());
-        }
-        vec![out_msg(
+        match crate::building::pack_down(
+            &mut self.arena,
+            run,
+            &balance,
+            &req.entity_id,
             player_id,
-            &wr::BackpackUpdate {
-                changes: vec![wr::BackpackChange {
-                    item,
-                    delta: "added".to_string(),
-                    cause: "demolish".to_string(),
-                }],
-                chits_delta: 0,
-                gear_added: Vec::new(),
-            },
-        )]
+        ) {
+            Err(why) => reject(ErrorCode::InvalidState, &why),
+            // A refund of nothing is not worth a message about your bag.
+            Ok(charged) if charged.qty <= 0 => Vec::new(),
+            Ok(charged) => vec![out_msg(
+                player_id,
+                &wr::BackpackUpdate {
+                    changes: vec![wr::BackpackChange {
+                        item: ItemStack {
+                            item_id: Uuid::now_v7().to_string(),
+                            item_kind: charged.kind,
+                            quantity: charged.qty,
+                            insurance: None,
+                        },
+                        delta: "added".to_string(),
+                        cause: "demolish".to_string(),
+                    }],
+                    chits_delta: 0,
+                    gear_added: Vec::new(),
+                },
+            )],
+        }
     }
 
     /// How many OTHER pairs of the right hands are in the party. A Smithwright helps at a
