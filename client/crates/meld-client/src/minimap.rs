@@ -258,7 +258,18 @@ fn sample(
 
     // Sea next: the coastline is analytic and owns the answer everywhere, including over
     // ground a section nominally covers.
-    if meld_proto::coast::is_ocean(wx, wz, arc_half) {
+    //
+    // ⚠️ INCLUDING THE STRAITS (WG-7 continents), and the map is where that matters most.
+    // A strait's whole point is a lateral decision — cross at the isthmus you can see, or
+    // follow the shore to one you cannot — and a coastline you cannot see on the map makes
+    // the second option undiscoverable, which collapses the decision back to the wall the
+    // retired `Seam` was.
+    if meld_proto::coast::is_ocean_with(
+        wx,
+        wz,
+        arc_half,
+        &crate::world_render::straits_snapshot(),
+    ) {
         return Some((water_tile(&sec.biome), 1.0));
     }
 
@@ -505,6 +516,10 @@ mod tests {
             radial_half: half,
             corridor_lateral: 20.0,
             peaks: vec![],
+            // No inland seas in the fixture: these tests are about the BIOME/terrace
+            // shading, and a strait here would put water over the cells they assert on.
+            // The straits' own map behaviour is covered by `coast`'s geometry tests.
+            straits: vec![],
         }
     }
 

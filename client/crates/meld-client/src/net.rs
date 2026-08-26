@@ -654,6 +654,10 @@ pub enum ServerMsg {
         peaks: Vec<[f32; 4]>,
         /// **CONTINENTS (WG-7):** this world's straits ([`meld_proto::coast::Strait`]).
         straits: Vec<meld_proto::coast::Strait>,
+        /// **This WORLD's seed — its public name** (CANON D19). The world's own fact, never
+        /// what we asked for: a client that shows the seed it requested rather than the one
+        /// it got is the exact bug `tutorial` beside it exists to prevent.
+        world_seed: u64,
         tutorial: bool,
     },
     /// The caller's hero roster (name/class/level/stats) for the party panel.
@@ -2364,8 +2368,17 @@ impl Inner {
                             .collect()
                     })
                     .unwrap_or_default();
-                self.out
-                    .push_back(ServerMsg::RunStarted { terrain_off, peaks, straits, tutorial });
+                // This world's NAME (CANON D19). `as_u64` rather than `as_f64`: a seed is a
+                // full u64 and f64 loses every bit past 2^53, which would quietly hand the
+                // player a seed that regenerates a DIFFERENT world than the one they are in.
+                let world_seed = raw.payload["world_seed"].as_u64().unwrap_or(0);
+                self.out.push_back(ServerMsg::RunStarted {
+                    terrain_off,
+                    peaks,
+                    straits,
+                    world_seed,
+                    tutorial,
+                });
                 self.emit_backpack();
                 if let Some(pts) = raw.payload["path"].as_array() {
                     let points: Vec<(f64, f64)> = pts

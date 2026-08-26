@@ -5295,6 +5295,10 @@ impl GameState {
                     // asks the same predicate — a shoreline it has not been told about is
                     // walkable ground drawn over open water.
                     straits: inst.arena.straits.clone(),
+                    // This world's NAME (CANON D19). Sent so a player can see and share
+                    // which world they are in — and read off the world rather than echoed
+                    // back from whatever they asked for, for the same reason `tutorial` is.
+                    world_seed: inst.arena.seed(),
                     // The world's own fact, not the caller's request: a joiner who asked
                     // for a normal dive still lands in a live tutorial world.
                     tutorial: inst.tutorial,

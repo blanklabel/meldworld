@@ -3697,6 +3697,54 @@ Directly underpins CR-4 (sim budget), MON-2 (persistent camps/instances), and LC
     (single-owner/no-locks invariant intact). **Remaining:** the b1-B boundary (spawn
     `WorldActor` as its own task so it never calls `GameState` methods), then multi-world
     + hub handoff + Postgres hibernation, and the two-world isolation QA test.
+  - 🔴 *Design settled, not built: **a dormant world catches up in CLOSED FORM, never by
+    replaying ticks**.* Asked for directly — a world asleep for a while should wake to
+    "now", with its Shifts, regrowth, conflicts and (later) fields and raids having
+    happened. Replaying the sim cannot do it, and the arithmetic is not close: the tick is
+    100 ms and the measured creature step at d1300 (11,836 creatures) is **15.8 ms**, so
+    | dormant | ticks | CPU to replay |
+    |---|---|---|
+    | 1 hour | 36,000 | **~9.5 min** |
+    | 1 day | 864,000 | ~3.8 h |
+    | 1 week | 6,048,000 | **~26 h** |
+    — on a single-owner task that ticks nothing else meanwhile. An HOUR of dormancy is
+    already an unacceptable login cost, so catch-up-by-stepping is dead at any dormancy
+    worth having.
+    - *Almost nothing needs stepping, which is what makes it tractable.* **Shifts** are
+      already closed-form and already EXACT: `shift::land_tick(seed, g)` is pure in
+      `(seed, g)` with no running state (its own doc notes a world left up for a *year*
+      folds ~100k `u64` adds), so you enumerate the generations landing in
+      `(last_tick, now]` and apply each — ~504 for a dormant week, each a section re-roll
+      rather than a tick. This is the one subsystem you genuinely iterate, and you MUST:
+      `shift_region` picks least-recently-disturbed half the time, so order is history and
+      cannot be collapsed. **Regrowth / node re-stock / creature mending** are rate ×
+      elapsed, clamped — and they SATURATE (`creature_regen_fraction_per_sec = 0.01` is a
+      full heal in 100 s), so past ~2 minutes the answer is not an approximation, it is a
+      fixed point. **Structures** fall out of the Shift enumeration for free: an anchor pays
+      `shift_hold_damage_fraction` per Shift held, so ~4 held Shifts (~80 min) kills an
+      untended one, deterministically.
+    - *So the contract is a per-subsystem `advance_to(tick)`, and anything that cannot
+      supply a closed form must declare a **saturation horizon** past which its state is a
+      fixed point.* That is also what makes CAPPING the catch-up honest rather than a
+      cheat — past a few days every rate has clamped and every untended structure has
+      already fallen, so more dormancy changes nothing.
+    - *And CANON §W2 survives it.* Wall-clock enters at exactly ONE place — converting
+      elapsed real time into a target tick, at the world boundary, the same discipline that
+      confines `MELD_*` reads there and keeps `meld-world` pure. Everything inside stays a
+      pure function of `(seed, tick)`, so the same wake-time reproduces the same world and
+      §W5 persistence stays two integers.
+    - *Ecology (food, fields, population diffs) and raids do not exist yet* — Epic E is
+      itself gated on this item — so what to build now is the HOOK, not the contents.
+  - 🔴 *And "let the player change the seed in town" needs this item, not a button.* Asked
+    for as "it would cause a game reload"; in today's build it is heavier than that. A world
+    **outlives its divers** by design (§W1) and holds player-built structures (BD-2
+    buildings, BD-3 anchors, forward towns), and there is exactly one live world
+    (`WORLD_KEY = "default"`, `world: Option<WorldActor>`) — so a seed-change button today
+    does not reload *your* world, it destroys *everyone's*. The non-destructive shape is
+    `world_key = seed` plus hibernate-and-restore (which already works), i.e. this item's
+    multi-world slice. What ships ahead of it is the seed as a **readable name**: on the
+    wire as the world's own fact and shown on the menu's Map column, so "come to world
+    12345" is a thing a player can say.
 - [ ] **SC-4 — Cross-process sim + gateways (only when one box can't hold it).**
   Keep the sim central/authoritative; push per-client fan-out to horizontally-scaled
   gateway processes next to the sockets. Determinism makes live instance migration

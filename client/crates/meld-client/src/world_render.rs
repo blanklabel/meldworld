@@ -1799,6 +1799,25 @@ pub(crate) fn straits_snapshot() -> Vec<meld_proto::coast::Strait> {
     STRAITS.read().map(|s| s.clone()).unwrap_or_default()
 }
 
+/// **The seed of the world we are in — its public NAME** (CANON D19: the target overworld
+/// is a *player-seeded* World, and §W5 stores this number rather than a map because the
+/// baseline is a pure function of it).
+///
+/// Held here beside the terrain offset and the straits because it is the same kind of
+/// thing: a per-world fact the server hands down once and several surfaces read. Never
+/// derived from what the client asked for — see `RunStarted::world_seed`.
+static WORLD_SEED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Record this world's seed (call on `run.started`).
+pub(crate) fn set_world_seed(seed: u64) {
+    WORLD_SEED.store(seed, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// This world's seed, or `0` before a run has started.
+pub(crate) fn world_seed() -> u64 {
+    WORLD_SEED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// The coast + flatten state the ground shader is currently drawing with, so
 /// [`terrain_height`] can answer for the SAME surface. Three atomics beside
 /// `TERRAIN_OFF_*`, written by the one system that fills the shader uniform — because the
@@ -2913,6 +2932,22 @@ mod ground_uniform_tests {
             Some("sea_anim"),
             "the last field is what the 16-byte tail rounds to: {order:?}"
         );
+
+        // ⚠️ AND THE ARRAY LENGTHS, which nothing checked. `min_size()` is computed from
+        // the RUST struct alone, so it cannot notice the shader declaring a shorter array —
+        // the names would all match, the size assertion would pass, and the uniform would
+        // be silently truncated at whatever the shader believes. That was already true of
+        // `peaks` before straits existed; it is checked for both now, because an array
+        // length is a duplicated number and this repo only tolerates duplication that is
+        // held by a test.
+        for (field, slots) in [("peaks", PEAK_SLOTS), ("straits", STRAIT_SLOTS)] {
+            let decl = format!("{field}: array<vec4<f32>, {slots}>");
+            assert!(
+                body.contains(&decl),
+                "the shader must declare `{decl}` — Rust reserves {slots} vec4 slots for \
+                 `{field}`, and a shorter array there truncates the uniform silently"
+            );
+        }
     }
 }
 

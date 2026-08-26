@@ -707,6 +707,16 @@ pub mod run {
         /// the client has not been told about is walkable ground drawn over open water.
         #[serde(default)]
         pub straits: Vec<crate::coast::Strait>,
+    /// **The WORLD's seed — its public name** (CANON D19: the overworld is a
+        /// *player-seeded* World, and §W5 stores this number instead of a map because the
+        /// baseline is a pure function of it).
+        ///
+        /// It rides here because it is **the world's own fact, not the caller's request** —
+        /// the same rule `tutorial` above exists to enforce. A diver who asks for seed X and
+        /// is placed in a live world seeded Y must be TOLD Y; a client that displays what it
+        /// asked for is the bug that pattern was added to prevent.
+        #[serde(default)]
+        pub world_seed: u64,
     }
     /// Walkable extent of the instance (world-generation.md corridor bounds).
     #[derive(Debug, Clone, Serialize, Deserialize)]

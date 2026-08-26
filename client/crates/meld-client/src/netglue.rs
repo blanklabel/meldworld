@@ -217,7 +217,7 @@ pub(crate) fn pump_net(
                     next.set(Screen::City);
                 }
             }
-            ServerMsg::RunStarted { terrain_off, peaks, straits, tutorial } => {
+            ServerMsg::RunStarted { terrain_off, peaks, straits, world_seed, tutorial } => {
                 // Seed this run's terrain BEFORE the ground/entities render, so the shader
                 // + every entity Y grow the same per-run-varied hills (no "same hill by the
                 // hub every run").
@@ -229,6 +229,10 @@ pub(crate) fn pump_net(
                 // beach over and its prop placement culls against. The initial chain's all
                 // ride here, as the peaks do.
                 crate::world_render::set_straits(straits);
+                // …and remember which WORLD this is, so the player can read and share its
+                // name (CANON D19). Taken from the server rather than from whatever we
+                // asked for — see `RunStarted::world_seed`.
+                crate::world_render::set_world_seed(world_seed);
                 // Fresh dive: drop any terrain from the previous run before the new
                 // section stream arrives (server sends them right after this).
                 terrain.sections.clear();

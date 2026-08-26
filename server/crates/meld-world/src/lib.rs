@@ -4442,6 +4442,17 @@ impl Arena {
     /// WG-4: half the fan arc in radians (0 ⇒ flat corridor). Exposed so the wire can
     /// carry it to the client, which bends terrace/cliff/connector geometry by the same
     /// arc the server used to fan entity positions.
+    /// **The seed this world was generated from** — its public NAME.
+    ///
+    /// CANON D19's target overworld is a *player-seeded* World, and §W5's whole claim is
+    /// that the baseline is a pure function of this number: it is what `worlds` stores
+    /// alongside four integers instead of storing a map. Exposed so the world can TELL a
+    /// player which world they are in, rather than the client guessing — the same lesson
+    /// `run.started.tutorial` already paid for.
+    pub fn seed(&self) -> u64 {
+        self.seed_base
+    }
+
     pub fn radial_half(&self) -> f64 {
         self.radial_half
     }
