@@ -1,0 +1,201 @@
+{
+  "group_id": "e6e5e2eb-1de3-4f88-83ca-d8de07112ff8",
+  "states": [
+    {
+      "character": {
+        "id": "b6eb1eeb-1fc1-4590-9841-7499f0884b37",
+        "name": "Out of the shadows steps",
+        "prompt": "Out of the shadows steps a figure wearing a battered, bright crimson ringmaster's coat with long tails. Though the fabric is torn and fraying, it catches the light with a sickly, iridescent sheen, like oil resting on water. Beneath the frayed cuffs, his hands and feet are tightly bound in strips of heavy parchment covered in dense, frantic handwriting. Where the bandages part around his collar, his skin isn't flesh\u2014it looks like highly polished, shiny mahogany leather, embossed with gold-leaf filigree. He flashes a too-wide smile. His eyes are completely flooded with black ink, save for a single, piercing pupil that glows a warm spotlight-gold. He raises his bandaged hands, and a deep, booming echo of a massive gong vibrates through your teeth.\"\n",
+        "size": {
+          "width": 248,
+          "height": 248
+        },
+        "template_id": "mannequin",
+        "directions": 8,
+        "view": "low top-down",
+        "created_at": "2026-07-26T17:27:14.950898+00:00"
+      },
+      "folder": "Out_of_the_shadows_steps",
+      "frames": {
+        "rotations": {
+          "south": "Out_of_the_shadows_steps/rotations/south.png",
+          "south-east": "Out_of_the_shadows_steps/rotations/south-east.png",
+          "east": "Out_of_the_shadows_steps/rotations/east.png",
+          "north-east": "Out_of_the_shadows_steps/rotations/north-east.png",
+          "north": "Out_of_the_shadows_steps/rotations/north.png",
+          "north-west": "Out_of_the_shadows_steps/rotations/north-west.png",
+          "west": "Out_of_the_shadows_steps/rotations/west.png",
+          "south-west": "Out_of_the_shadows_steps/rotations/south-west.png"
+        },
+        "animations": {
+          "walk": {
+            "north": [
+              "Out_of_the_shadows_steps/animations/walk/north/frame_000.png",
+              "Out_of_the_shadows_steps/animations/walk/north/frame_001.png",
+              "Out_of_the_shadows_steps/animations/walk/north/frame_002.png",
+              "Out_of_the_shadows_steps/animations/walk/north/frame_003.png",
+              "Out_of_the_shadows_steps/animations/walk/north/frame_004.png",
+              "Out_of_the_shadows_steps/animations/walk/north/frame_005.png",
+              "Out_of_the_shadows_steps/animations/walk/north/frame_006.png",
+              "Out_of_the_shadows_steps/animations/walk/north/frame_007.png"
+            ],
+            "north-east": [
+              "Out_of_the_shadows_steps/animations/walk/north-east/frame_000.png",
+              "Out_of_the_shadows_steps/animations/walk/north-east/frame_001.png",
+              "Out_of_the_shadows_steps/animations/walk/north-east/frame_002.png",
+              "Out_of_the_shadows_steps/animations/walk/north-east/frame_003.png",
+              "Out_of_the_shadows_steps/animations/walk/north-east/frame_004.png",
+              "Out_of_the_shadows_steps/animations/walk/north-east/frame_005.png",
+              "Out_of_the_shadows_steps/animations/walk/north-east/frame_006.png",
+              "Out_of_the_shadows_steps/animations/walk/north-east/frame_007.png"
+            ],
+            "north-west": [
+              "Out_of_the_shadows_steps/animations/walk/north-west/frame_000.png",
+              "Out_of_the_shadows_steps/animations/walk/north-west/frame_001.png",
+              "Out_of_the_shadows_steps/animations/walk/north-west/frame_002.png",
+              "Out_of_the_shadows_steps/animations/walk/north-west/frame_003.png",
+              "Out_of_the_shadows_steps/animations/walk/north-west/frame_004.png",
+              "Out_of_the_shadows_steps/animations/walk/north-west/frame_005.png",
+              "Out_of_the_shadows_steps/animations/walk/north-west/frame_006.png",
+              "Out_of_the_shadows_steps/animations/walk/north-west/frame_007.png"
+            ],
+            "south-east": [
+              "Out_of_the_shadows_steps/animations/walk/south-east/frame_000.png",
+              "Out_of_the_shadows_steps/animations/walk/south-east/frame_001.png",
+              "Out_of_the_shadows_steps/animations/walk/south-east/frame_002.png",
+              "Out_of_the_shadows_steps/animations/walk/south-east/frame_003.png",
+              "Out_of_the_shadows_steps/animations/walk/south-east/frame_004.png",
+              "Out_of_the_shadows_steps/animations/walk/south-east/frame_005.png",
+              "Out_of_the_shadows_steps/animations/walk/south-east/frame_006.png",
+              "Out_of_the_shadows_steps/animations/walk/south-east/frame_007.png"
+            ],
+            "south": [
+              "Out_of_the_shadows_steps/animations/walk/south/frame_000.png",
+              "Out_of_the_shadows_steps/animations/walk/south/frame_001.png",
+              "Out_of_the_shadows_steps/animations/walk/south/frame_002.png",
+              "Out_of_the_shadows_steps/animations/walk/south/frame_003.png",
+              "Out_of_the_shadows_steps/animations/walk/south/frame_004.png",
+              "Out_of_the_shadows_steps/animations/walk/south/frame_005.png",
+              "Out_of_the_shadows_steps/animations/walk/south/frame_006.png",
+              "Out_of_the_shadows_steps/animations/walk/south/frame_007.png"
+            ],
+            "south-west": [
+              "Out_of_the_shadows_steps/animations/walk/south-west/frame_000.png",
+              "Out_of_the_shadows_steps/animations/walk/south-west/frame_001.png",
+              "Out_of_the_shadows_steps/animations/walk/south-west/frame_002.png",
+              "Out_of_the_shadows_steps/animations/walk/south-west/frame_003.png",
+              "Out_of_the_shadows_steps/animations/walk/south-west/frame_004.png",
+              "Out_of_the_shadows_steps/animations/walk/south-west/frame_005.png",
+              "Out_of_the_shadows_steps/animations/walk/south-west/frame_006.png",
+              "Out_of_the_shadows_steps/animations/walk/south-west/frame_007.png"
+            ],
+            "west": [
+              "Out_of_the_shadows_steps/animations/walk/west/frame_000.png",
+              "Out_of_the_shadows_steps/animations/walk/west/frame_001.png",
+              "Out_of_the_shadows_steps/animations/walk/west/frame_002.png",
+              "Out_of_the_shadows_steps/animations/walk/west/frame_003.png",
+              "Out_of_the_shadows_steps/animations/walk/west/frame_004.png",
+              "Out_of_the_shadows_steps/animations/walk/west/frame_005.png",
+              "Out_of_the_shadows_steps/animations/walk/west/frame_006.png",
+              "Out_of_the_shadows_steps/animations/walk/west/frame_007.png"
+            ],
+            "east": [
+              "Out_of_the_shadows_steps/animations/walk/east/frame_000.png",
+              "Out_of_the_shadows_steps/animations/walk/east/frame_001.png",
+              "Out_of_the_shadows_steps/animations/walk/east/frame_002.png",
+              "Out_of_the_shadows_steps/animations/walk/east/frame_003.png",
+              "Out_of_the_shadows_steps/animations/walk/east/frame_004.png",
+              "Out_of_the_shadows_steps/animations/walk/east/frame_005.png",
+              "Out_of_the_shadows_steps/animations/walk/east/frame_006.png",
+              "Out_of_the_shadows_steps/animations/walk/east/frame_007.png"
+            ]
+          },
+          "attack": {
+            "north-west": [
+              "Out_of_the_shadows_steps/animations/attack/north-west/frame_000.png",
+              "Out_of_the_shadows_steps/animations/attack/north-west/frame_001.png",
+              "Out_of_the_shadows_steps/animations/attack/north-west/frame_002.png",
+              "Out_of_the_shadows_steps/animations/attack/north-west/frame_003.png",
+              "Out_of_the_shadows_steps/animations/attack/north-west/frame_004.png",
+              "Out_of_the_shadows_steps/animations/attack/north-west/frame_005.png",
+              "Out_of_the_shadows_steps/animations/attack/north-west/frame_006.png",
+              "Out_of_the_shadows_steps/animations/attack/north-west/frame_007.png"
+            ],
+            "south-west": [
+              "Out_of_the_shadows_steps/animations/attack/south-west/frame_000.png",
+              "Out_of_the_shadows_steps/animations/attack/south-west/frame_001.png",
+              "Out_of_the_shadows_steps/animations/attack/south-west/frame_002.png",
+              "Out_of_the_shadows_steps/animations/attack/south-west/frame_003.png",
+              "Out_of_the_shadows_steps/animations/attack/south-west/frame_004.png",
+              "Out_of_the_shadows_steps/animations/attack/south-west/frame_005.png",
+              "Out_of_the_shadows_steps/animations/attack/south-west/frame_006.png",
+              "Out_of_the_shadows_steps/animations/attack/south-west/frame_007.png"
+            ],
+            "east": [
+              "Out_of_the_shadows_steps/animations/attack/east/frame_000.png",
+              "Out_of_the_shadows_steps/animations/attack/east/frame_001.png",
+              "Out_of_the_shadows_steps/animations/attack/east/frame_002.png",
+              "Out_of_the_shadows_steps/animations/attack/east/frame_003.png",
+              "Out_of_the_shadows_steps/animations/attack/east/frame_004.png",
+              "Out_of_the_shadows_steps/animations/attack/east/frame_005.png",
+              "Out_of_the_shadows_steps/animations/attack/east/frame_006.png",
+              "Out_of_the_shadows_steps/animations/attack/east/frame_007.png"
+            ],
+            "north-east": [
+              "Out_of_the_shadows_steps/animations/attack/north-east/frame_000.png",
+              "Out_of_the_shadows_steps/animations/attack/north-east/frame_001.png",
+              "Out_of_the_shadows_steps/animations/attack/north-east/frame_002.png",
+              "Out_of_the_shadows_steps/animations/attack/north-east/frame_003.png",
+              "Out_of_the_shadows_steps/animations/attack/north-east/frame_004.png",
+              "Out_of_the_shadows_steps/animations/attack/north-east/frame_005.png",
+              "Out_of_the_shadows_steps/animations/attack/north-east/frame_006.png",
+              "Out_of_the_shadows_steps/animations/attack/north-east/frame_007.png"
+            ],
+            "west": [
+              "Out_of_the_shadows_steps/animations/attack/west/frame_000.png",
+              "Out_of_the_shadows_steps/animations/attack/west/frame_001.png",
+              "Out_of_the_shadows_steps/animations/attack/west/frame_002.png",
+              "Out_of_the_shadows_steps/animations/attack/west/frame_003.png",
+              "Out_of_the_shadows_steps/animations/attack/west/frame_004.png",
+              "Out_of_the_shadows_steps/animations/attack/west/frame_005.png",
+              "Out_of_the_shadows_steps/animations/attack/west/frame_006.png",
+              "Out_of_the_shadows_steps/animations/attack/west/frame_007.png"
+            ],
+            "north": [
+              "Out_of_the_shadows_steps/animations/attack/north/frame_000.png",
+              "Out_of_the_shadows_steps/animations/attack/north/frame_001.png",
+              "Out_of_the_shadows_steps/animations/attack/north/frame_002.png",
+              "Out_of_the_shadows_steps/animations/attack/north/frame_003.png",
+              "Out_of_the_shadows_steps/animations/attack/north/frame_004.png",
+              "Out_of_the_shadows_steps/animations/attack/north/frame_005.png",
+              "Out_of_the_shadows_steps/animations/attack/north/frame_006.png",
+              "Out_of_the_shadows_steps/animations/attack/north/frame_007.png"
+            ],
+            "south": [
+              "Out_of_the_shadows_steps/animations/attack/south/frame_000.png",
+              "Out_of_the_shadows_steps/animations/attack/south/frame_001.png",
+              "Out_of_the_shadows_steps/animations/attack/south/frame_002.png",
+              "Out_of_the_shadows_steps/animations/attack/south/frame_003.png",
+              "Out_of_the_shadows_steps/animations/attack/south/frame_004.png",
+              "Out_of_the_shadows_steps/animations/attack/south/frame_005.png",
+              "Out_of_the_shadows_steps/animations/attack/south/frame_006.png",
+              "Out_of_the_shadows_steps/animations/attack/south/frame_007.png"
+            ],
+            "south-east": [
+              "Out_of_the_shadows_steps/animations/attack/south-east/frame_000.png",
+              "Out_of_the_shadows_steps/animations/attack/south-east/frame_001.png",
+              "Out_of_the_shadows_steps/animations/attack/south-east/frame_002.png",
+              "Out_of_the_shadows_steps/animations/attack/south-east/frame_003.png",
+              "Out_of_the_shadows_steps/animations/attack/south-east/frame_004.png",
+              "Out_of_the_shadows_steps/animations/attack/south-east/frame_005.png",
+              "Out_of_the_shadows_steps/animations/attack/south-east/frame_006.png",
+              "Out_of_the_shadows_steps/animations/attack/south-east/frame_007.png"
+            ]
+          }
+        }
+      }
+    }
+  ],
+  "export_version": "3.1",
+  "export_date": "2026-08-26T13:21:18.007177"
+}
