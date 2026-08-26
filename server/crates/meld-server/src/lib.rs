@@ -2,6 +2,7 @@
 //! [`build`] wires everything into an axum router and the game loop; the binary
 //! and the QA integration tests both build on it.
 
+pub(crate) mod building;
 pub mod config;
 pub mod game;
 pub mod gateway;
