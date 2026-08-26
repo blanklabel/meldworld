@@ -57,7 +57,17 @@ ALL_DIRS = ["south", "south-east", "east", "north-east", "north", "north-west", 
 # because "rearing up and slamming down" is the thing that makes a creature read as
 # itself and no template knows it.
 WALK_TEMPLATE = "walking"
-CLIP_DIRS = {"walk": ALL_DIRS, "attack": ["south"]}
+
+# AND ONLY THE EASTERN HALF IS DRAWN. The eight facings are symmetric about the
+# north-south axis: `south` and `north` sit ON it, and the other six are three mirrored
+# pairs, so five generated directions give all eight once `mirror_sprites.py` flips them
+# at install. That is 37% off every walk cycle.
+#
+# The template and the mirroring are INDEPENDENT choices and compose — which is worth
+# saying because this script had the mirroring, then lost it when it moved to the
+# template, and quietly went back to paying for eight directions.
+MIRRORED_DIRS = ["south", "north", "south-east", "east", "north-east"]
+CLIP_DIRS = {"walk": MIRRORED_DIRS, "attack": ["south"]}
 TOKEN = os.environ.get("PIXELLAB_TOKEN", "")
 
 
@@ -400,8 +410,8 @@ def main():
             plan.append({"asset": asset, "desc": desc, "walk": c["walk"],
                          "attack": c.get("attack"), "gate": c.get("gate", 0)})
 
-    log(f"{len(plan)} characters, ~{len(plan) * 12} generations "
-        f"(8-dir rotations + templated 8-dir walk + south-only attack)")
+    log(f"{len(plan)} characters, ~{len(plan) * 9} generations "
+        f"(8-dir rotations + templated 5-dir walk mirrored to 8 + south-only attack)")
     if a.dry_run:
         for p in plan:
             print(f"  d{p['gate']:<4} {p['asset']}")
