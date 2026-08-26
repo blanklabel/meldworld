@@ -37,7 +37,8 @@
     "thornback_boar": "a wild boar with a short ridge of dark thorns along its spine, curved yellow tusks and coarse brown bristles",
     "thornback_boar_pack_leader": "an enormous scarred wild boar with a tall ridge of long black thorns down its spine, huge curved yellow tusks, matted brown bristles and a torn ear",
     "thornback_boar_beta": "a small young wild boar with a stubble of dark thorns along its spine, little tusks and soft brown bristles",
-    "thornback_boar_charger": "a lean muscular wild boar lowered into a charge, a hard ridge of black thorns down its spine and long forward-swept tusks"
+    "thornback_boar_charger": "a lean muscular wild boar lowered into a charge, a hard ridge of black thorns down its spine and long forward-swept tusks",
+    "thornback_boar_goarer": "a heavy scarred wild boar with enormous curved goring tusks, thick matted bristles and a torn ear"
    }
   },
   {
@@ -50,7 +51,8 @@
     "sporeling": "a walking mushroom creature, a mottled cream-and-ochre cap over a stumpy fibrous body with two short root-like arms",
     "sporeling_pack_leader": "a bloated walking mushroom, a thick dark mottled cap over a heavy fibrous body with two knotted root arms, venting green spore clouds",
     "sporeling_baby": "a tiny walking mushroom sprout, a small pale button cap over a thin stalk body with two little root arms",
-    "sporeling_sprout": "a young walking mushroom, a bright speckled cap over a slender pale stalk body with two root arms and a green leaf sprouting at its base"
+    "sporeling_sprout": "a young walking mushroom, a bright speckled cap over a slender pale stalk body with two root arms and a green leaf sprouting at its base",
+    "sporeling_healer": "a walking mushroom with a wide pale cap trailing soft green spores, cradling a glowing seed pod in its root-like hands"
    }
   },
   {
@@ -63,7 +65,8 @@
     "verdant_ooze": "a translucent green slime, a rounded blob of jelly with a darker acidic core and half-dissolved leaves suspended inside it, two glowing eye-spots",
     "verdant_ooze_pack_leader": "a large dark emerald slime, a heavy rounded blob of jelly with a bright acidic core and bones and branches suspended inside it, two glowing eye-spots",
     "verdant_ooze_blob": "a small translucent green slime droplet, a little rounded blob of jelly with a faint core and one glowing eye-spot",
-    "verdant_ooze_blopper": "a wide flattened green slime spread low across the ground, rippling, with twigs and bark suspended inside it"
+    "verdant_ooze_blopper": "a wide flattened green slime spread low across the ground, rippling, with twigs and bark suspended inside it",
+    "verdant_ooze_healer": "a pale mint-green slime with a soft glowing core, faint motes of light drifting up out of its surface"
    }
   },
   {
@@ -76,7 +79,8 @@
     "bog_serpent": "a swamp serpent, moss-green scales slick with algae, a flat viper head with amber eyes and dripping fangs",
     "bog_serpent_pack_leader": "a huge coiled swamp serpent, thick moss-green scales slick with algae, a broad flat viper head with burning amber eyes and long dripping fangs, a ragged fin along its back",
     "bog_serpent_slither": "a slender young swamp snake, thin moss-green scales, a narrow viper head with small amber eyes",
-    "bog_serpent_female": "a thick swamp serpent with a broad patterned hood, deep olive scales and pale belly bands, amber eyes"
+    "bog_serpent_female": "a thick swamp serpent with a broad patterned hood, deep olive scales and pale belly bands, amber eyes",
+    "bog_serpent_twin_tail": "a swamp serpent with a forked twin tail, mottled bog-green scales and a wide flat head with amber eyes"
    }
   },
   {
@@ -89,7 +93,8 @@
     "myconid_brute": "a hulking fungus brute, a broad humanoid body of dense grey fibrous flesh with a dark bruise-purple cap for a head and thick knotted arms",
     "myconid_brute_minion": "a small stooped fungus thrall, a wiry humanoid body of pale grey fibre with a small drooping purple cap for a head and thin arms",
     "myconid_brute_mage": "a tall gaunt fungus mystic, a slender grey fibrous body under a wide domed violet cap, glowing spore-motes circling its raised hands",
-    "myconid_brute_pack_leader": "an immense elder fungus brute, its grey fibrous body armoured in shelf-fungus plates, a towering dark cap ringed with pale gills, huge knotted arms"
+    "myconid_brute_pack_leader": "an immense elder fungus brute, its grey fibrous body armoured in shelf-fungus plates, a towering dark cap ringed with pale gills, huge knotted arms",
+    "myconid_brute_boss": "a massive fungus brute, a broad humanoid body of dense dark fibrous flesh with a huge split bruise-purple cap and enormous knotted arms"
    }
   },
   {
@@ -102,7 +107,8 @@
     "bog_stinger": "a swamp wasp-fiend, an armoured black-and-yellow segmented body, four translucent wings, barbed legs and a dripping venom stinger",
     "bog_stinger_licker": "a swamp wasp-fiend with a long barbed tongue coiled beneath its jaws, sickly yellow segments and ragged wings",
     "bog_stinger_pack_leader": "a giant swamp wasp-fiend, a heavily armoured black-and-sickly-yellow segmented body, four ragged translucent wings, barbed legs and a long dripping venom stinger",
-    "bog_stinger_buzz": "a small swamp wasp drone, a slight black-and-yellow segmented body, two thin translucent wings and a short venom stinger"
+    "bog_stinger_buzz": "a small swamp wasp drone, a slight black-and-yellow segmented body, two thin translucent wings and a short venom stinger",
+    "bog_stinger_piercer": "a lean swamp wasp with an extremely long needle stinger, narrow black-and-amber segments and swept-back wings"
    }
   },
   {
@@ -115,7 +121,8 @@
     "bog_ooze": "a murky brown swamp slime, a sagging blob of silt-thick jelly dripping mud, with reeds suspended inside it and two dull glowing eye-spots",
     "bog_ooze_pack_leader": "a large murky swamp slime, a heavy sagging blob of silt-thick jelly dripping mud, with bones and reeds suspended inside it and two glowing eye-spots",
     "bog_ooze_baby": "a small murky brown swamp slime, a little sagging blob of muddy jelly with one dull glowing eye-spot",
-    "bog_ooze_belcher": "a bloated brown swamp slime venting swamp gas bubbles from its surface, silt-thick and sagging"
+    "bog_ooze_belcher": "a bloated brown swamp slime venting swamp gas bubbles from its surface, silt-thick and sagging",
+    "bog_ooze_grump": "a dark heavy swamp slime with a sour downturned fold across its front, thick with silt and grit"
    }
   },
   {
@@ -141,7 +148,8 @@
     "cinder_imp": "a horned fire imp, cracked charcoal-black skin glowing molten orange in the fissures, ember wings, curved horns and clawed hands",
     "cinder_imp_pack_leader": "a large horned fire imp, deeply cracked charcoal skin blazing molten orange, broad ember wings, long curved horns and clawed hands wreathed in flame",
     "cinder_imp_wolf": "a four-legged fire imp hound, cracked charcoal hide with molten orange seams, a mane of flame and burning eyes",
-    "cinder_imp_dog": "a small squat fire imp hound, dull charcoal hide with faint orange cracks, stubby snout and a smouldering tail"
+    "cinder_imp_dog": "a small squat fire imp hound, dull charcoal hide with faint orange cracks, stubby snout and a smouldering tail",
+    "cinder_imp_fire_mage": "a slender horned fire imp with long curling horns, holding a spinning ball of flame above one clawed hand, ember wings"
    }
   },
   {
