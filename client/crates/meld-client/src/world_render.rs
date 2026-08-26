@@ -849,6 +849,26 @@ pub(crate) fn setup(
         ("rime_ore", sc("stone_smallC", 7.337)),
         ("bog_myrrh", sc("mushroom_redGroup", 4.791)),
         ("peat_iron", sc("rock_smallB", 5.656)),
+        // ⚠️ BD-1's STRUCTURAL NODES, AND THEY MUST BE HERE OR THEY ARE INVISIBLE.
+        //
+        // The node spawn tries `resource_<kind>.png` first and falls through to this map —
+        // and if BOTH miss, it spawns NOTHING AT ALL. So shipping seven new materials
+        // without a row here put seven kinds of gatherable stock into the world that no
+        // player could see: the server knew they were there, `[E]` would even harvest one
+        // you happened to stand on, and the ground looked empty. A material you cannot see
+        // is a material that does not exist, the same way a token nothing renders does not.
+        //
+        // Timber reads as a stack of cut logs (deadfall you can carry off, not a standing
+        // tree — that is CR's `Flora`); masonry as loose stone, sized and shaped to its
+        // band. Bespoke billboards should replace these the moment the art exists, which is
+        // what the `resource_<kind>.png` branch above is for.
+        ("heartoak_log", sc("log_stack", 3.4)),
+        ("bog_root_timber", sc("log", 4.041)),
+        ("river_granite", sc("stone_smallFlatA", 6.2)),
+        ("sun_sandstone", sc("stone_smallC", 7.337)),
+        ("basalt_slab", sc("stone_smallFlatB", 6.2)),
+        ("rime_stone", sc("stone_tallC", 5.4)),
+        ("peat_shale", sc("stone_largeA", 4.6)),
     ]
     .into_iter()
     .map(|(k, v)| (k.to_string(), v))
@@ -3523,5 +3543,51 @@ mod creature_sprite_tests {
             creature_art_key("glacier_maw", true, only_leader).as_deref(),
             Some("glacier_maw_pack_leader")
         );
+    }
+
+mod node_art_tests {
+    /// **Every gatherable material must have something to draw.** The node spawn tries a
+    /// bespoke `resource_<kind>.png` billboard, falls back to a 3D scene, and if BOTH miss
+    /// it spawns nothing at all — so a material with neither is invisible stock. BD-1
+    /// shipped seven of them that way for one commit.
+    ///
+    /// Checked against the material REGISTRY rather than a list, because the failure mode is
+    /// adding a material and forgetting the art, and a hand-written list is a list the new
+    /// material gets left off.
+    #[test]
+    fn every_gatherable_material_has_something_to_render() {
+        // The scene map is built inside `setup` against a live `AssetServer`, so mirror just
+        // its KEYS here — the same discipline as the shader-mirror tests.
+        const SCENE_KEYS: &[&str] = &[
+            "bloom_herb", "heartoak_bark", "sun_salts", "dune_iron", "ember_ash", "cinder_ore",
+            "frost_lichen", "rime_ore", "bog_myrrh", "peat_iron", "heartoak_log",
+            "bog_root_timber", "river_granite", "sun_sandstone", "basalt_slab", "rime_stone",
+            "peat_shale",
+        ];
+        for m in meld_proto::materials::MATERIALS {
+            // Only the ones the world actually scatters as nodes: refined stock is smelted
+            // and a trophy comes off a carcass, so neither is ever a thing standing in a
+            // field waiting to be harvested.
+            if !matches!(
+                m.class,
+                meld_proto::materials::MaterialClass::Reagent
+                    | meld_proto::materials::MaterialClass::Ore
+                    | meld_proto::materials::MaterialClass::Wood
+                    | meld_proto::materials::MaterialClass::Stone
+            ) {
+                continue;
+            }
+            let art = std::path::Path::new("assets/props")
+                .join(format!("resource_{}.png", m.key))
+                .exists();
+            assert!(
+                art || SCENE_KEYS.contains(&m.key),
+                "`{}` ({:?}) has neither a resource_{}.png billboard nor a scene — it would \
+                 spawn NOTHING and be invisible in the world",
+                m.key,
+                m.class,
+                m.key
+            );
+        }
     }
 }

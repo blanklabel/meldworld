@@ -1115,17 +1115,13 @@ fn map_actions(
     }
     // The structures, from the registry rather than a list here: a new function is a row in
     // `meld_proto::structures`, and a hand-written list is a list a function gets left off.
-    let ore = carried_for(backpack, "smith");
     for (i, def) in meld_proto::structures::STRUCTURES.iter().enumerate() {
         let focused = depth == 1 && menu.cursor == 3 + i;
+        // Per structure, not once for the lot: a palisade is timber and an anchor is
+        // masonry (BD-1), so each row asks about its OWN material.
+        let (label, tint) = build_row(def, backpack);
         col.spawn((Button, glass::inset(focused), BuildStructureButton { function: def.key }))
             .with_children(|row| {
-                let (label, tint) = match &ore {
-                    Some((k, qty)) => {
-                        (format!("Raise a {}   ({qty} {k})", def.name), glass::TEXT)
-                    }
-                    None => (format!("Raise a {}   (no ore carried)", def.name), glass::DIM),
-                };
                 row.spawn(glass::text(label, 19.0, tint));
             });
         col.spawn(glass::text(def.description, 14.0, glass::DIM));
@@ -1531,6 +1527,22 @@ pub(crate) fn carried_for(backpack: &RunBackpack, station: &str) -> Option<(Stri
     } else {
         meld_proto::materials::MaterialClass::Ore
     };
+    carried_of_class(backpack, class)
+}
+
+/// The deepest carried stack of one material class, as `(kind, quantity)`.
+///
+/// ⚠️ THE BUILD MENU USED TO ASK FOR ORE, WHATEVER IT WAS OFFERING TO BUILD. It called
+/// `carried_for(.., "smith")` for every structure in the registry, which was true only while
+/// everything was built out of ore — and BD-1 ended that. Afterwards the menu was wrong in
+/// BOTH directions: a player carrying six stone saw "Raise an Anchor (no ore carried)",
+/// greyed out, on a build the server would have accepted; and a player carrying ore saw it
+/// lit up and got refused. Ask the REGISTRY what a structure is made of
+/// (`StructureDef::material`), the way the server does.
+pub(crate) fn carried_of_class(
+    backpack: &RunBackpack,
+    class: meld_proto::materials::MaterialClass,
+) -> Option<(String, i32)> {
     backpack
         .items
         .iter()
@@ -1539,6 +1551,28 @@ pub(crate) fn carried_for(backpack: &RunBackpack, station: &str) -> Option<(Stri
             meld_proto::materials::material(kind).map(|m| m.tier).unwrap_or(0)
         })
         .map(|(kind, qty)| (kind.clone(), *qty))
+}
+
+/// One build row's label and tint: what it raises, and what you are carrying toward it.
+///
+/// Pulled out of the UI closure so it can be TESTED. The bug it was written to close is not
+/// hypothetical — the row used to ask `carried_for(.., "smith")`, i.e. ORE, for every
+/// structure in the registry, which was true only while everything was built out of ore.
+/// After BD-1 it was wrong in both directions at once, and nothing could catch that because
+/// the logic lived inside a `with_children` closure that only a running game exercises.
+pub(crate) fn build_row(
+    def: &meld_proto::structures::StructureDef,
+    backpack: &RunBackpack,
+) -> (String, Color) {
+    match carried_of_class(backpack, def.material) {
+        Some((kind, qty)) => (format!("Raise a {}   ({qty} {kind})", def.name), glass::TEXT),
+        // Name the material it WANTS. "No ore carried" on a timber palisade sent a player
+        // looking for entirely the wrong thing.
+        None => (
+            format!("Raise a {}   (no {} carried)", def.name, def.material.wire()),
+            glass::DIM,
+        ),
+    }
 }
 
 /// Tapping the Map column's "Set up a smith station" row raises one — the touch twin of
@@ -1832,5 +1866,70 @@ mod tests {
         );
         assert_eq!(len, 0);
         assert_eq!(len.max(1), 1, "the guard the cursor relies on");
+    }
+}
+
+#[cfg(test)]
+mod build_row_tests {
+    use super::*;
+
+    fn bag(items: &[(&str, i32)]) -> RunBackpack {
+        RunBackpack {
+            items: items.iter().map(|(k, q)| ((*k).to_string(), *q)).collect(),
+            ..Default::default()
+        }
+    }
+
+    /// **Each row asks about its OWN material.** A bag of masonry lights up the anchor and
+    /// dims the palisade, and a bag of timber does the opposite. The old code asked for ore
+    /// on every row, so after BD-1 it was wrong in BOTH directions: stone in the bag showed
+    /// "no ore carried" on a build the server would have accepted, and ore in the bag lit up
+    /// a row the server would refuse.
+    #[test]
+    fn a_build_row_asks_for_the_material_it_is_made_of() {
+        let stone_only = bag(&[("river_granite", 9)]);
+        let wood_only = bag(&[("heartoak_log", 9)]);
+        for def in meld_proto::structures::STRUCTURES {
+            let (with_stone, tint_stone) = build_row(def, &stone_only);
+            let (with_wood, tint_wood) = build_row(def, &wood_only);
+            match def.material {
+                meld_proto::materials::MaterialClass::Stone => {
+                    assert!(with_stone.contains("river_granite"), "{}: {with_stone}", def.key);
+                    assert_eq!(tint_stone, glass::TEXT, "{} should be live on stone", def.key);
+                    assert!(with_wood.contains("no stone carried"), "{}: {with_wood}", def.key);
+                    assert_eq!(tint_wood, glass::DIM, "{} should be dim on wood", def.key);
+                }
+                meld_proto::materials::MaterialClass::Wood => {
+                    assert!(with_wood.contains("heartoak_log"), "{}: {with_wood}", def.key);
+                    assert_eq!(tint_wood, glass::TEXT, "{} should be live on wood", def.key);
+                    assert!(with_stone.contains("no wood carried"), "{}: {with_stone}", def.key);
+                    assert_eq!(tint_stone, glass::DIM, "{} should be dim on stone", def.key);
+                }
+                other => panic!("{} is built from {other:?}, which is not structural", def.key),
+            }
+        }
+    }
+
+    /// ORE never pays for a building any more, and the row must say so. This is the exact
+    /// regression: `carried_for(.., "smith")` would have found this bag and lit every row.
+    #[test]
+    fn a_bag_of_ore_does_not_light_up_a_single_build_row() {
+        let ore = bag(&[("heartoak_bark", 40), ("dune_iron", 40)]);
+        for def in meld_proto::structures::STRUCTURES {
+            let (label, tint) = build_row(def, &ore);
+            assert_eq!(tint, glass::DIM, "{} lit up for a bag of ore: {label}", def.key);
+            assert!(label.contains("carried"), "{}: {label}", def.key);
+        }
+    }
+
+    /// The DEEPEST stack is what a row reports, matching what the server will actually
+    /// spend (`building::affordable_kind`). A menu naming the shallow stock while the
+    /// server spends the deep stock is a menu that lies about your bag.
+    #[test]
+    fn a_row_names_the_stock_the_server_will_spend() {
+        let both = bag(&[("heartoak_log", 9), ("bog_root_timber", 9)]);
+        let wall = meld_proto::structures::structure("wall").unwrap();
+        let (label, _) = build_row(wall, &both);
+        assert!(label.contains("bog_root_timber"), "should name the deeper stock: {label}");
     }
 }

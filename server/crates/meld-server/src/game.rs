@@ -614,6 +614,19 @@ fn dev_town_portals() -> Option<i32> {
         .filter(|n| *n > 0)
 }
 
+/// `MELD_STOCK` — DEV/QA: start the dive carrying this many units of every STRUCTURAL
+/// material (BD-1 wood and stone), so the build loop can be exercised without first walking
+/// out to a deadfall and working a channel.
+///
+/// The same argument as `MELD_POTIONS` and `MELD_GEAR_TIER`: the thing worth measuring is
+/// what happens once you HAVE the stock — whether the build menu names the right material,
+/// whether the row lights up, whether the structure goes up where you are standing — and
+/// gathering first is a ten-minute detour that measures the harvest channel instead. It is
+/// also the only way to screenshot the build menu in a useful state.
+fn dev_stock() -> Option<i32> {
+    std::env::var("MELD_STOCK").ok().and_then(|v| v.trim().parse::<i32>().ok()).filter(|n| *n > 0)
+}
+
 /// The guided [T]-dive's own, more patient turn timeout (vs. `balance.toml`'s
 /// normal 15s auto-Defend) — see the comment at its one use site in `form_run`.
 const TUTORIAL_TURN_TIMEOUT_MS: u64 = 60_000;
@@ -5014,7 +5027,19 @@ impl GameState {
             ("bloom_salve", dev_potions().unwrap_or(self.balance.runs.starting_salves)),
             ("elixir", dev_potions().unwrap_or(self.balance.runs.starting_elixirs)),
         ];
-        for (kind, qty) in starting_stock {
+        // `MELD_STOCK=<n>`: every structural material, n units each. Deliberately ALL of
+        // them rather than one — the interesting question is whether each structure's row
+        // finds its OWN material, and a bag holding only wood cannot tell a menu that asks
+        // correctly from one that asks for wood every time.
+        let dev_structural: Vec<(&str, i32)> = match dev_stock() {
+            None => Vec::new(),
+            Some(n) => meld_proto::materials::MATERIALS
+                .iter()
+                .filter(|m| m.class.is_structural())
+                .map(|m| (m.key, n))
+                .collect(),
+        };
+        for (kind, qty) in starting_stock.into_iter().chain(dev_structural) {
             if qty <= 0 {
                 continue;
             }
