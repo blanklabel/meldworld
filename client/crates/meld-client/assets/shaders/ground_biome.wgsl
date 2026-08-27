@@ -514,13 +514,47 @@ fn vnoise(p: vec2<f32>) -> f32 {
 // no lattice, and because both samples are the same art at the same angle nothing points
 // anywhere new. The weight is deliberately low — this is meant to read as variation, and
 // pushed further it just reads as blur.
+// ---------------------------------------------------------------------------------------
+// SIXTEEN VARIATIONS, BLENDED
+//
+// Each ground texture is a 4x4 ATLAS: sixteen variations of one material, which is what
+// `create_tiles_pro` actually produces and what it is for. Picking one and shipping it
+// threw away fifteen and left the world a single 64px stamp repeated to the horizon —
+// the monotony we then tried to paper over by sampling the same stamp twice.
+//
+// They are BLENDED, not switched per cell. A hard switch would only trade a repeating
+// grid for a mosaic of visible borders, because these variations are independent and do
+// not share edges. Cross-fading two of them over a smooth low-frequency field gives
+// ground that changes character across a hillside with no boundary anywhere in it.
+
+const ATLAS_GRID: f32 = 4.0;
+const ATLAS_TEXELS: f32 = 256.0;
+
+// One variation of the material, addressed inside the atlas.
+fn atlas_sample(t: texture_2d<f32>, uv: vec2<f32>, variant: f32) -> vec4<f32> {
+    // ⚠️ INSET BY HALF A TEXEL. Sub-rects of an atlas cannot use a repeat sampler to keep
+    // their own edges clean: filtering at a cell boundary reaches into the NEIGHBOURING
+    // variation and drags its colour in as a bright fringe along every tile.
+    let inset = 0.5 / ATLAS_TEXELS;
+    let f = clamp(fract(uv), vec2<f32>(inset, inset), vec2<f32>(1.0 - inset, 1.0 - inset));
+    let g = vec2<f32>(floor(variant % ATLAS_GRID), floor(variant / ATLAS_GRID));
+    return textureSample(t, samp, (g + f) / ATLAS_GRID);
+}
+
+// Which variation a stretch of ground is made of. Quantised from a smooth field so a
+// patch keeps one identity over several tiles instead of flickering per tile, and hashed
+// off world position so it is the same every time you walk back.
+fn variant_at(uv: vec2<f32>, seed: f32) -> f32 {
+    return floor(vnoise(uv * 0.037 + vec2<f32>(seed, seed * 1.7)) * 15.999);
+}
+
 fn ground_sample(t: texture_2d<f32>, uv: vec2<f32>) -> vec4<f32> {
-    let a = textureSample(t, samp, uv);
-    // 0.61 is irrational-ish against 1.0 on purpose: an integer ratio would put the two
-    // samples back in lockstep and rebuild exactly the grid this is here to break.
-    let b = textureSample(t, samp, uv * 0.61 + vec2<f32>(0.37, 0.71));
-    let n = vnoise(uv * 0.11);
-    return mix(a, b, n * 0.35);
+    let a = atlas_sample(t, uv, variant_at(uv, 0.0));
+    let b = atlas_sample(t, uv, variant_at(uv, 11.3));
+    // The cross-fade field is coarser than the variation fields, so the two rarely change
+    // at the same place and no edge in the result lines up with an edge in either input.
+    let k = smoothstep(0.35, 0.65, vnoise(uv * 0.021 + vec2<f32>(4.2, 9.1)));
+    return mix(a, b, k);
 }
 
 // Whole-stretch light and shade, at a scale much larger than one tile.

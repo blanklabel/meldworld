@@ -738,11 +738,11 @@ pub(crate) fn setup(
     // (seamless "full lower" terrain tile per biome); the `GroundBiome` shader still
     // applies each biome's colour tint on top.
     let ground_tex: Vec<Handle<Image>> = [
-        "ground/tile_forest.png",  // Forest
-        "ground/tile_desert.png",  // Desert
-        "ground/tile_ashfall.png", // Ashfall
-        "ground/tile_tundra.png",  // Tundra
-        "ground/tile_mire.png",    // Mire
+        "ground/atlas/forest.png",  // Forest
+        "ground/atlas/desert.png",  // Desert
+        "ground/atlas/ashfall.png", // Ashfall
+        "ground/atlas/tundra.png",  // Tundra
+        "ground/atlas/mire.png",    // Mire
     ]
     .iter()
     .map(|p| load_tiled(&assets, p))
@@ -778,7 +778,7 @@ pub(crate) fn setup(
             cliff_ashfall: load_tiled(&assets, "ground/cliff_ashfall.png"),
             cliff_tundra: load_tiled(&assets, "ground/cliff_tundra.png"),
             cliff_mire: load_tiled(&assets, "ground/cliff_mire.png"),
-            dungeon_floor: load_tiled(&assets, "ground/tile_dungeon.png"),
+            dungeon_floor: load_tiled(&assets, "ground/atlas/dungeon.png"),
             // Rings start empty; `update_ground_biome_rings` fills them from the
             // streamed sections each frame (count 0 ⇒ shader falls back to forest).
             params: BiomeParams::default(),
