@@ -8146,13 +8146,15 @@ impl WorldActor {
         // Everything that DECIDES anything lives in `crate::building` — validated placement
         // before the stock is spent, the material read off the registry, the cost summed
         // across stacks. This handler is left with what is genuinely about the wire.
-        match crate::building::raise(
+        match crate::building::raise_at(
             &mut self.arena,
             run,
             &balance,
             &req.function,
             player_id,
             tick,
+            req.at,
+            req.yaw,
         ) {
             Err(why) => reject(ErrorCode::InvalidState, &why),
             Ok(charged) => vec![out_msg(
