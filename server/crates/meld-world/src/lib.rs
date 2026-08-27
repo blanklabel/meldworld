@@ -4657,10 +4657,18 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
         // second time yields a position nowhere near the creature — so the check passed and
         // water landed on it anyway. That is the fourth corridor/world bug in this feature.
         let bent_already = self.bent;
+        // ⚠️ EVERYTHING already placed, not just the creatures. A chest or a harvest node under
+        // water is an unreachable reward, and since nothing relocates them any more there is no
+        // second chance — `nudge_to_walkable` runs when a section is bent, long before a LATER
+        // section's downhill walk can reach back and flood it. `chest-21 at sea` was exactly
+        // that. Water yields to what is already there; the list has to be all of it.
+        let frame = |p: Position| if bent_already { p } else { radial_tf(p, half, lat) };
         let standing: Vec<Position> = self
             .monsters
             .iter()
-            .map(|m| if bent_already { m.position } else { radial_tf(m.position, half, lat) })
+            .map(|m| frame(m.position))
+            .chain(self.chests.iter().map(|c| frame(c.position)))
+            .chain(self.resources.iter().map(|r| frame(r.position)))
             .collect();
         let off_creatures = |p: Position, pad: f64| {
             standing.iter().all(|q| q.distance_to(&p) > pad + 4.0)
