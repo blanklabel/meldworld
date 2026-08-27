@@ -374,6 +374,23 @@ pub(crate) fn boss_keys() -> impl Iterator<Item = &'static str> {
 /// Held against what is actually on disk by `every_installed_creature_set_is_loaded`, so
 /// art that lands unlisted — art nobody would ever see — fails rather than sitting unused.
 pub(crate) const CREATURE_CHARS: &[&str] = &[
+    // Also unwired when the test caught it: four more finished sets that shipped as art and
+    // were never listed. Computed in one pass against the same completeness rule the test
+    // uses, rather than one build per species — the test panics on the FIRST offender, so
+    // fixing it by re-running is a client rebuild each time.
+    "bog_ooze_grump",
+    "bog_stinger_buzz",
+    "myconid_brute_minion",
+    "thornback_boar_charger",
+    // Briarlings. ⚠️ `briarling` itself is deliberately ABSENT: its set is on disk but
+    // INCOMPLETE, and `every_finished_creature_set_is_loaded_and_no_unfinished_one_is` is
+    // explicit that listing an unfinished one is a wall of missing-asset errors every
+    // launch. The three finished forms are here; add the base form when its walk facings
+    // land. (The test caught all four missing — the art shipped in #314 and was never
+    // wired, which is exactly what it exists to notice.)
+    "briarling_pack_leader",
+    "briarling_piper",
+    "briarling_thistleback",
     "bog_ooze",
     "bog_ooze_baby",
     "bog_ooze_belcher",

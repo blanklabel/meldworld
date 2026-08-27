@@ -1648,7 +1648,21 @@ pub(crate) fn build_structure_click(
     net: NonSend<NetRes>,
 ) {
     for (interaction, btn) in &rows {
-        if *interaction == Interaction::Pressed && carried_for(&backpack, "smith").is_some() {
+        if *interaction != Interaction::Pressed {
+            continue;
+        }
+        // ⚠️ THIS GATE ASKED FOR ORE, AND THAT IS WHY NOTHING WAS CLICKABLE. The row's
+        // LABEL was fixed to ask the registry and this handler was not — so a player
+        // carrying eight timber saw "Raise a Wall (8 Heartoak Log)" lit up, clicked it, and
+        // nothing happened at all. One rule in two places, in the same file as the comment
+        // warning about it.
+        //
+        // The affordability question belongs to `map_rows` (which decides `live`), so ask
+        // the same question the same way: the structure's OWN material.
+        let Some(def) = meld_proto::structures::structure(btn.function) else {
+            continue;
+        };
+        if carried_of_class(&backpack, def.material).is_some() {
             net.0.send(ClientCmd::BuildStructure { function: btn.function.into() });
             overlay.kind = None;
         }

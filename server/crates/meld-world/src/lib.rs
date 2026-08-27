@@ -12365,6 +12365,49 @@ impl Arena {
     }
 
     /// The structure `player_id` is standing at, within `radius` and on their level.
+    /// **Move `player_id` to somewhere a structure may legally go**, probing outward at
+    /// `radius`. Returns false if nowhere at that radius works.
+    ///
+    /// DEV/QA and test scaffolding: the world REFUSES most ground on purpose — the clear
+    /// path, another structure's spacing, a tree, another player — and a run starts you at
+    /// the origin, which is ON the trail. So "I pressed build and nothing happened" is the
+    /// expected experience of a fresh dive, and any harness or sandbox that wants to
+    /// exercise building has to move first.
+    ///
+    /// It probes with the REAL placement rule and cleans up after itself, rather than
+    /// reimplementing "is this legal" — which is the only way it stays correct as the rules
+    /// grow. `meld-server`'s `MELD_BUILD` sandbox and its `BuildHarness` both call this, so
+    /// there is one answer to where you can stand.
+    pub fn stand_somewhere_buildable(
+        &mut self,
+        balance: &Balance,
+        player_id: &str,
+        radius: f64,
+    ) -> bool {
+        let lat = self.corridor_lateral();
+        let half = self.radial_half();
+        for k in 0..400 {
+            let frac = -0.9 + 1.8 * (k as f64 / 400.0);
+            let p = Position::new(radius, lat * frac);
+            // Corridor -> world: corridor `y` is an ANGLE once the fan bends (WG-4), so a
+            // raw corridor point lands somewhere else entirely.
+            let bent = if half <= 0.0 {
+                p
+            } else {
+                let theta = (p.y / lat.max(1.0)).clamp(-1.0, 1.0) * half;
+                Position::new(p.x.max(0.0) * theta.cos(), p.x.max(0.0) * theta.sin())
+            };
+            let Some(av) = self.avatar_mut(player_id) else { return false };
+            av.position = bent;
+            if self.place_structure(balance, player_id, "wall", "probe", 0).is_ok() {
+                let id = self.structures.last().unwrap().entity_id.clone();
+                self.demolish_structure(balance, &id);
+                return true;
+            }
+        }
+        false
+    }
+
     pub fn structure_at(&self, player_id: &str, entity_id: &str, radius: f64) -> Option<&Structure> {
         let av = self.avatar(player_id)?;
         self.structures.iter().find(|s| {
