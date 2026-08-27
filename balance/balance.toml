@@ -2432,6 +2432,16 @@ wll_per_level = 2
 # lead with armoured bruisers. Gating the harsher themes outward is what makes the
 # first ring an on-ramp without flattening the creatures themselves. Keyed by biome
 # id; a biome missing here is available from the hub. [TUNABLE]
+# THE REGION DECOMPOSITION (`meld_proto::regions`): the world is a partition of the
+# WG-4 fan into cells with adjacency — the substrate the biome label, the Shift's blast
+# radius, an anchor's hold and the maze's routes all read. The STRUCTURE is code; these
+# are its coefficients. [TUNABLE]
+[region]
+ring_step = 250.0        # radial thickness of one ring of cells. With `cell_width` this is a cell's size: ~250 units on a side is a region you cross in well under a minute but never mistake for the one next door. Deliberately CONSTANT, unlike a section's length (20 + 7i), so a region means the same thing at the hub and at the frontier.
+cell_width = 250.0       # target arc width of one cell. The sector COUNT rides the radius to hold this roughly fixed — 8 cells around the arc at r=400, 65 at r=3000 — which is what stops a cell being a sliver near the hub and a province deep.
+boundary_warp = 88.0     # how far a ring boundary wanders with bearing. Its whole job is to stop the boundary reading as an ARC; it depends on bearing alone, which is what keeps the ring index monotone along every ray and the partition well-defined at any magnitude.
+blend_width = 26.0       # world units the ground cross-fades across a cell boundary. A boundary is 2D now, so this is a distance rather than the old per-ring band — and the fade is symmetric from both sides, or a boundary seams.
+
 [biome_gate]
 field = 0
 forest = 0

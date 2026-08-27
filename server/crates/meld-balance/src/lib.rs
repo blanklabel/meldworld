@@ -49,6 +49,7 @@ pub struct Balance {
     pub resource: Resources,
     pub perks: Perks,
     pub biome_gate: BiomeGate,
+    pub region: Region,
     pub armor_resist: ArmorResist,
     pub affliction: Affliction,
     pub shift: Shift,
@@ -735,6 +736,17 @@ pub struct Affliction {
 
 /// The Shifting Lands (CANON D20 / §W2). Cadence, region size and Force damage are
 /// the game's translation of the tabletop tables; the *structure* — that the schedule
+/// **THE REGION DECOMPOSITION** — the size and shape of one cell of the world
+/// ([`meld_proto::regions`]). The decomposition's STRUCTURE is code; these are the
+/// coefficients, so a world can be made of provinces or of parishes without touching it.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Region {
+    pub ring_step: f64,
+    pub cell_width: f64,
+    pub boundary_warp: f64,
+    pub blend_width: f64,
+}
+
 /// is a pure function of `(world_seed, shift_generation)` driven by the tick counter —
 /// is code, and lives in [`meld_world::shift`].
 #[derive(Debug, Clone, Deserialize)]

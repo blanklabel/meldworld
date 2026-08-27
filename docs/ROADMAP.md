@@ -1691,6 +1691,17 @@ design for this epic: [`proposals/worldgen-wg.md`](proposals/worldgen-wg.md).
   *is* difficulty, is load-bearing and does not move — and make the REGIONS shaped and the
   ROUTES obstructed, so you walk around rivers and mountain ranges to reach the end of the
   world.**
+  - ✅ *The REGIONS half ships.* [`meld_proto::regions`] partitions the fan into cells with
+    adjacency, and a biome is a property of a CELL rather than of a radius band — so "every
+    angle is the same content" is no longer true: measured over eight seeds, a full circle at
+    fixed radius crosses 2-4 biomes at r=400 and 6 with 51-61 boundaries at r=3000, against
+    1 and 1 before. Cell area is held roughly constant as the fan widens (8 cells around the
+    arc at r=400, 65 at r=3000), so a biome is a region you are *in* rather than a stripe you
+    cross, which is what the per-biome density contrast `WG-6` protects needed to land. The
+    same decomposition is the substrate the Shift's blast radius, an anchor's hold and the
+    carved routes will read. **Still open, and why this stays unchecked: the ROUTES half** —
+    ranges and ravines drawn along cell boundaries, with passes and through-dungeons, so you
+    walk *around* terrain instead of over it.
   - ⚠️ *The finding that reframes it: every source of impassable large-scale terrain is set
     to zero.* `terrain::CLIFF_HEIGHT = 0.0`, `[worldgen] terraces_per_area = 0.0`,
     `max_level = 0`. Nothing in the world can stop you or make you turn, and the authored

@@ -39,10 +39,22 @@ fn terrain_height_wgsl(p: vec2<f32>) -> f32 {
 }
 
 struct BiomeParams {
-    rings: array<vec4<f32>, 32>,
-    count: u32,
+    // THE REGION DECOMPOSITION (`meld_proto::regions`): (arc_half, ring_step, cell_width,
+    // boundary_warp). A biome is a property of a CELL, not of a radius ring — so the ground
+    // asks which cell a fragment stands in rather than which band, and the world paints as a
+    // patchwork. This replaces the 32-slot radial biome LUT that used to head this struct.
+    region: vec4<f32>,
+    // `[biome_gate]` in `BIOMES` order: gate.xyzw = field, forest, desert, ashfall and
+    // gate_hi.xy = tundra, mire. In the uniform because the gate decides WHICH themes a
+    // cell may draw, and a shader that does not know it paints a biome the server does not
+    // spawn — the same failure the coast constants are passed in to avoid.
+    gate: vec4<f32>,
+    gate_hi: vec4<f32>,
+    // World units the ground cross-fades across a cell boundary. A boundary is 2D now, so
+    // this is a distance from the nearest edge rather than a radial band.
+    region_blend: f32,
+    region_seed: u32,
     uv_scale: f32,
-    blend_half: f32,
     // Displacement amplitude: 1.0 in the Overworld (rolling hills + cliffs), 0.0 in the
     // City/menus (flat ground — those scenes are hand-placed for a level plaza, and the
     // rolling heightmap would tilt every prop and shade the troughs into blue ribbons).
@@ -502,47 +514,170 @@ fn biome_color(bi: i32, uv: vec2<f32>) -> vec4<f32> {
 // evaluated at the fragment, so ripple density is independent of how finely the ground
 // plane happens to be tessellated.
 
+// ═══ THE REGION DECOMPOSITION ═══
+// A hand-mirror of `meld_proto::regions`, function for function. It has to be a mirror
+// rather than a lookup table sent per frame: a cell is derivable from a position in
+// constant time at any radius, so the shader can just ask — no windowing, no re-send as the
+// player moves, nothing to go stale. The price is that the arithmetic is written twice, and
+// that is why every hash here is 32-bit: WGSL has no 64-bit integer, so the Rust side uses
+// u32 throughout for exactly this mirror to be possible.
+
+fn rg_hash32(seed: u32) -> u32 {
+    var h = seed;
+    h = h ^ (h >> 16u);
+    h = h * 0x7feb352du;
+    h = h ^ (h >> 15u);
+    h = h * 0x846ca68bu;
+    return h ^ (h >> 16u);
+}
+
+fn rg_sectors(ring: u32) -> u32 {
+    let r_mid = (f32(ring) + 0.5) * params.region.y;
+    let arc = 2.0 * params.region.x * r_mid;
+    let n = round(arc / max(params.region.z, 1.0));
+    return min(u32(max(n, 1.0)), 128u);
+}
+
+fn rg_ring_offset(ring: u32) -> f32 {
+    return f32(rg_hash32(params.region_seed ^ (ring * 0x9E3779B9u)) & 0xffffu) / 65536.0;
+}
+
+// Depends on BEARING alone, which is what keeps the ring index monotone along every ray —
+// the partition stays well-defined at any warp magnitude.
+fn rg_warp_at(bearing: f32) -> f32 {
+    let phase =
+        f32(rg_hash32(params.region_seed ^ 0x5F356495u) & 0xffffu) / 65536.0 * 6.28318531;
+    return params.region.w
+        * (0.62 * sin(bearing * 3.0 + phase) + 0.38 * cos(bearing * 7.0 - phase * 2.0));
+}
+
+fn rg_ring_at(r: f32, bearing: f32) -> u32 {
+    return u32(floor(max(r + rg_warp_at(bearing), 0.0) / max(params.region.y, 1.0)));
+}
+
+fn rg_fan_t(bearing: f32) -> f32 {
+    return clamp((bearing + params.region.x) / (2.0 * params.region.x), 0.0, 1.0);
+}
+
+fn rg_sector_in(ring: u32, bearing: f32) -> u32 {
+    let n = max(rg_sectors(ring), 1u);
+    let idx = floor(rg_fan_t(bearing) * f32(n) + rg_ring_offset(ring));
+    return min(u32(max(idx, 0.0)), n - 1u);
+}
+
+// A cell's biome as an index into `BIOMES`. Gated on the cell's INNER radius, so a cell
+// straddling a gate is held until it is wholly past — matching `regions::biome_of`.
+fn rg_biome_of(ring: u32, sector: u32) -> i32 {
+    let inner = f32(ring) * params.region.y;
+    let gates = array<f32, 6>(
+        params.gate.x, params.gate.y, params.gate.z, params.gate.w,
+        params.gate_hi.x, params.gate_hi.y);
+    var open = array<i32, 6>(0, 0, 0, 0, 0, 0);
+    var count = 0u;
+    for (var i = 0u; i < 6u; i = i + 1u) {
+        if (gates[i] <= inner) {
+            open[count] = i32(i);
+            count = count + 1u;
+        }
+    }
+    if (count == 0u) {
+        return 0;
+    }
+    let key = (ring << 7u) | (sector & 127u);
+    return open[rg_hash32(params.region_seed ^ rg_hash32(key ^ 0x2545F491u)) % count];
+}
+
+fn rg_biome_at(wxz: vec2<f32>) -> i32 {
+    let r = length(wxz);
+    let bearing = atan2(wxz.y, wxz.x);
+    let ring = rg_ring_at(r, bearing);
+    return rg_biome_of(ring, rg_sector_in(ring, bearing));
+}
+
+// (distance to the nearest cell boundary in world units, the biome across it). A negative
+// second component means the nearest boundary is the fan's own rim — open sea, not a
+// boundary between cells, so nothing to fade toward.
+fn rg_edge(wxz: vec2<f32>) -> vec2<f32> {
+    let r = length(wxz);
+    let bearing = atan2(wxz.y, wxz.x);
+    let ring = rg_ring_at(r, bearing);
+    let n = max(rg_sectors(ring), 1u);
+    let step = max(params.region.y, 1.0);
+    let r_eff = max(r + rg_warp_at(bearing), 0.0);
+
+    var best = 1.0e9;
+    var across = -1.0;
+    if (ring > 0u) {
+        let d = r_eff - f32(ring) * step;
+        if (d < best) {
+            best = d;
+            across = f32(rg_biome_of(ring - 1u, rg_sector_in(ring - 1u, bearing)));
+        }
+    }
+    let d_out = f32(ring + 1u) * step - r_eff;
+    if (d_out < best) {
+        best = d_out;
+        across = f32(rg_biome_of(ring + 1u, rg_sector_in(ring + 1u, bearing)));
+    }
+    // An angular gap costs `r` world units per radian, so the same wedge is a short step
+    // near the hub and a long walk at the frontier.
+    let sector = rg_sector_in(ring, bearing);
+    let to_bearing = 2.0 * params.region.x / f32(n);
+    let frac = rg_fan_t(bearing) * f32(n) + rg_ring_offset(ring);
+    let within = frac - floor(frac);
+    if (sector > 0u) {
+        let d = within * to_bearing * r;
+        if (d < best) {
+            best = d;
+            across = f32(rg_biome_of(ring, sector - 1u));
+        }
+    }
+    if (sector + 1u < n) {
+        let d = (1.0 - within) * to_bearing * r;
+        if (d < best) {
+            best = d;
+            across = f32(rg_biome_of(ring, sector + 1u));
+        }
+    }
+    return vec2<f32>(max(best, 0.0), across);
+}
+
+// `BIOMES` index → ground TEXTURE index. Field and forest share grass: a meadow and a wood
+// stand on the same ground and the only difference is how many trees are in the way.
+// Mirrors `world_render::biome_ring_index`.
+fn rg_tex_of(bi: i32) -> i32 {
+    if (bi <= 1) {
+        return 0;
+    }
+    return bi - 1;
+}
+
 @fragment
 fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> FragmentOutput {
     var pbr_input = pbr_input_from_standard_material(in, is_front);
 
     let uv = in.world_position.xz * params.uv_scale;
     let r = length(in.world_position.xz);
-    let hw = max(params.blend_half, 0.001);
 
     var blended: vec4<f32>;
     // Hoisted: the SEA needs the biome it borders too, to pick its tile (ice off a tundra
-    // shore, bog off a mire one), and `here` is otherwise scoped to the ring branch.
+    // shore, bog off a mire one), and it is otherwise scoped to the branch below.
     var here_biome: i32 = 0;
-    if (params.count == 0u) {
-        // No sections yet (menus): plain forest floor.
+    if (params.region.y <= 0.0) {
+        // No world (menus / city): plain forest floor.
         blended = biome_color(0, uv);
     } else {
-        // Find the ring containing r: the first whose OUTER radius exceeds r, else the
-        // last (deepest known) ring.
-        var idx = params.count - 1u;
-        for (var i = 0u; i < params.count; i = i + 1u) {
-            if (r < params.rings[i].x) {
-                idx = i;
-                break;
-            }
+        here_biome = rg_tex_of(rg_biome_at(in.world_position.xz));
+        blended = biome_color(here_biome, uv);
+        // Fade toward whatever is across the nearest cell boundary. Weight peaks at HALF on
+        // the boundary itself, so both cells reach the same colour there and the edge is a
+        // gradient from either side rather than a seam — which the old asymmetric
+        // fade-to-prev-then-to-next could only manage in one dimension.
+        let e = rg_edge(in.world_position.xz);
+        if (e.y >= 0.0) {
+            let w = 0.5 * (1.0 - smoothstep(0.0, max(params.region_blend, 0.001), e.x));
+            blended = mix(blended, biome_color(rg_tex_of(i32(e.y)), uv), w);
         }
-        let prev_i = max(idx, 1u) - 1u;
-        let next_i = min(idx + 1u, params.count - 1u);
-        let here = i32(params.rings[idx].y);
-        here_biome = here;
-        let prev = i32(params.rings[prev_i].y);
-        let next = i32(params.rings[next_i].y);
-        let inner = select(0.0, params.rings[prev_i].x, idx > 0u); // this ring's inner edge
-        let outer = params.rings[idx].x;                           // this ring's outer edge
-        // Cross-fade toward the previous biome across the inner edge, and toward the
-        // next biome across the outer edge (each neighbour ring paints the other half,
-        // so transitions are seamless and gradual — a forest fades into desert ahead).
-        let s_in = smoothstep(inner - hw, inner + hw, r);
-        let s_out = smoothstep(outer - hw, outer + hw, r);
-        var c = mix(biome_color(prev, uv), biome_color(here, uv), s_in);
-        c = mix(c, biome_color(next, uv), s_out);
-        blended = c;
     }
 
     // THE SEA. Painted over whatever biome the ring says, because the coast is a fact

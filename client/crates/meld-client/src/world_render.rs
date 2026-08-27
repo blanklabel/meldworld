@@ -25,11 +25,6 @@ use meld_client::hd2d::{self, CharacterFrames};
 
 use super::*;
 
-/// Max radial biome rings the ground shader blends across (near the player). A
-/// section = one concentric ring, so this bounds how many nearby sections colour the
-/// visible ground; deeper/closer sections beyond the window clamp to the ends.
-pub(crate) const MAX_BIOME_RINGS: usize = 32;
-
 /// The sliding ground plane's size + tessellation. The plane follows the player so
 /// there's always ground underfoot, and its vertices are displaced into hills by
 /// `terrain_height`. Bevy's `Plane3d` emits `subdivisions + 2` vertices per side, so
@@ -71,17 +66,30 @@ const RIVER_SLOTS: usize = meld_proto::coast::MAX_RIVER_NODES;
 mod biome_params {
     #![allow(dead_code)]
     use super::{
-        BASIN_SLOTS, LOBE_SLOTS, MAX_BIOME_RINGS, PEAK_SLOTS, RIVER_SLOTS, STRAIT_SLOTS,
+        BASIN_SLOTS, LOBE_SLOTS, PEAK_SLOTS, RIVER_SLOTS, STRAIT_SLOTS,
     };
     use bevy::prelude::*;
     use bevy::render::render_resource::ShaderType;
 
     #[derive(Clone, Copy, ShaderType, Debug)]
     pub(crate) struct BiomeParams {
-        pub(crate) rings: [Vec4; MAX_BIOME_RINGS],
-        pub(crate) count: u32,
+        /// **THE REGION DECOMPOSITION** ([`meld_proto::regions`]):
+        /// `(arc_half, ring_step, cell_width, boundary_warp)`. A biome is a property of a
+        /// CELL, so the shader derives the cell a fragment stands in rather than reading a
+        /// radius band out of a LUT. `ring_step <= 0` is the "no world here" state the menus
+        /// and the city render against, which is what the shader tests.
+        pub(crate) region: Vec4,
+        /// `[biome_gate]` in `BIOMES` order — `gate.xyzw` = field, forest, desert, ashfall
+        /// and `gate_hi.xy` = tundra, mire. In the uniform for the same reason the coast
+        /// constants are: the shader picks a cell's biome itself, and a shader that has not
+        /// been told the gate paints a theme the server does not spawn.
+        pub(crate) gate: Vec4,
+        pub(crate) gate_hi: Vec4,
+        /// World units the ground cross-fades across a cell boundary. A distance from the
+        /// nearest edge, because a boundary is 2D now rather than a radial band.
+        pub(crate) region_blend: f32,
+        pub(crate) region_seed: u32,
         pub(crate) uv_scale: f32,
-        pub(crate) blend_half: f32,
         /// Heightmap displacement amplitude: 1.0 in the Overworld, 0.0 elsewhere (City +
         /// menus stay flat — see `set_ground_terrain_amp`). Also the struct's tail pad.
         pub(crate) terrain_amp: f32,
@@ -163,10 +171,12 @@ mod biome_params {
     impl Default for BiomeParams {
         fn default() -> Self {
             BiomeParams {
-                rings: [Vec4::ZERO; MAX_BIOME_RINGS],
-                count: 0,
+                region: Vec4::ZERO,
+                gate: Vec4::ZERO,
+                gate_hi: Vec4::ZERO,
+                region_blend: 26.0,
+                region_seed: 0,
                 uv_scale: 1.0 / 3.0,
-                blend_half: 18.0,
                 // Default flat: menus/join/city render level ground. The Overworld flips it
                 // to 1.0 on entry (`set_ground_terrain_amp`).
                 terrain_amp: 0.0,
@@ -2373,13 +2383,12 @@ pub(crate) fn biome_ring_index(name: &str) -> usize {
     }
 }
 
-/// Rebuild the ground shader's radial biome LUT from the streamed sections, so the
-/// floor is coloured by each section's ACTUAL biome (its concentric radius ring)
-/// instead of fixed distance bands — the fix for the ground/creature biome mismatch.
-/// A window of `MAX_BIOME_RINGS` rings centred on the player covers the visible fan;
-/// deeper dives clamp the far/near ends (out in the haze / behind you anyway).
+/// Feed the ground shader this world's coast, water, mountains and REGION DECOMPOSITION.
+///
+/// The biome half needs no window and no LUT any more: the shader derives a fragment's own
+/// cell from five numbers, so there is nothing to centre on the player and nothing to run
+/// out of at depth. The coast and water tables are still windowed, because those are lists.
 pub(crate) fn update_ground_biome_rings(
-    terrain: Res<Terrain>,
     world: Res<Overworld>,
     session: Res<Session>,
     state: Res<State<Screen>>,
@@ -2544,30 +2553,54 @@ pub(crate) fn update_ground_biome_rings(
         };
     }
     mat.extension.params.river_count = window.len() as u32;
-    // (outer_radius, biome_index) per section, sorted by radius (= corridor end_x).
-    let mut rings: Vec<(f32, f32)> = terrain
-        .sections
-        .values()
-        .map(|s| (s.end_x as f32, biome_ring_index(&s.biome) as f32))
-        .collect();
-    rings.sort_by(|a, b| a.0.total_cmp(&b.0));
 
-    // Window the rings around the player's radius (`pr`, above) when there are more than fit.
-    let start = if rings.len() <= MAX_BIOME_RINGS {
-        0
-    } else {
-        let center = rings.iter().position(|(r, _)| *r >= pr).unwrap_or(rings.len() - 1);
-        center
-            .saturating_sub(MAX_BIOME_RINGS / 2)
-            .min(rings.len() - MAX_BIOME_RINGS)
-    };
-    let window = &rings[start..(start + MAX_BIOME_RINGS).min(rings.len())];
-
+    // THE REGION DECOMPOSITION. Not a window and not a LUT: the shader derives a fragment's
+    // own cell from these five numbers, so there is nothing to centre on the player and
+    // nothing to run out of at depth — which is what the ring window had to keep managing.
+    let rg = regions();
     let p = &mut mat.extension.params;
-    p.count = window.len() as u32;
-    for (i, (radius, biome)) in window.iter().enumerate() {
-        p.rings[i] = Vec4::new(*radius, *biome, 0.0, 0.0);
+    p.region = Vec4::new(rg.grid.arc_half, rg.grid.ring_step, rg.grid.cell_width, rg.grid.warp);
+    p.region_blend = rg.blend;
+    p.region_seed = rg.grid.seed;
+    // `BIOMES` order, four then two — the split is only that a uniform wants `vec4`s.
+    let g = |i: usize| rg.gate.get(i).copied().unwrap_or(0.0);
+    p.gate = Vec4::new(g(0), g(1), g(2), g(3));
+    p.gate_hi = Vec4::new(g(4), g(5), 0.0, 0.0);
+}
+
+/// **THIS WORLD'S REGION DECOMPOSITION**, as the server sent it on `run.started`.
+///
+/// Held beside the terrain offset, the straits and the world seed because it is the same
+/// kind of thing: a per-world fact handed down once that several surfaces read. Never
+/// derived client-side — the gate and the cell size are balance, and a client that guessed
+/// them would paint a world the server does not hold.
+static REGIONS: std::sync::RwLock<Option<meld_proto::regions::Regions>> =
+    std::sync::RwLock::new(None);
+
+/// Record this world's decomposition (call on `run.started`).
+pub(crate) fn set_regions(r: meld_proto::regions::Regions) {
+    *REGIONS.write().unwrap() = Some(r);
+}
+
+/// This world's decomposition, or the empty one (`ring_step == 0`, which every reader
+/// treats as "no world here") before a run has started.
+pub(crate) fn regions() -> meld_proto::regions::Regions {
+    REGIONS.read().unwrap().clone().unwrap_or_default()
+}
+
+/// The biome at a world position, by the same decomposition the ground shader paints with.
+/// The one place a client-side coordinate becomes a theme, so grass placement, the minimap
+/// and the HUD label cannot disagree with the floor they are drawn on.
+pub(crate) fn biome_at_world(x: f32, z: f32) -> &'static str {
+    let rg = regions();
+    if rg.grid.ring_step <= 0.0 {
+        return "forest";
     }
+    let mut gate = [0.0f32; meld_proto::regions::BIOMES.len()];
+    for (i, g) in gate.iter_mut().enumerate() {
+        *g = rg.gate.get(i).copied().unwrap_or(0.0);
+    }
+    meld_proto::regions::BIOMES[rg.grid.biome_at(x, z, &gate)]
 }
 
 /// Bob the atmosphere motes and keep them anchored around the PLAYER (in the
@@ -3453,6 +3486,69 @@ mod ground_uniform_tests {
         }
     }
 
+    /// ⚠️ **THE REGION DECOMPOSITION IS WRITTEN TWICE**, in `meld_proto::regions` and again in
+    /// WGSL, because a shader cannot import Rust. The whole module is 32-bit integer and f32
+    /// arithmetic FOR this reason — WGSL has no 64-bit integer — so the two can mirror line
+    /// for line. What they cannot do is notice each other drifting: a changed hash constant
+    /// or sector cap on the Rust side would leave the server spawning one world and the
+    /// ground painting another, with nothing red anywhere.
+    ///
+    /// So derive the numbers from the Rust constants and read them out of the shader.
+    #[test]
+    fn the_region_decomposition_matches_the_shader() {
+        use meld_proto::regions::MAX_SECTORS;
+        let wgsl = include_str!("../assets/shaders/ground_biome.wgsl");
+        let bits = MAX_SECTORS.trailing_zeros();
+
+        // The cap on sectors per ring, and the key packing that depends on it.
+        assert!(
+            wgsl.contains(&format!("{MAX_SECTORS}u)")),
+            "the shader must cap sectors at MAX_SECTORS ({MAX_SECTORS})"
+        );
+        assert!(
+            wgsl.contains(&format!("(ring << {bits}u) | (sector & {}u)", MAX_SECTORS - 1)),
+            "the shader must pack a cell key the same way `Cell::key` does \
+             (<< {bits}, mask {})",
+            MAX_SECTORS - 1
+        );
+        // The biome list length is the gate's length and the loop bound.
+        assert!(
+            wgsl.contains(&format!("i < {}u", meld_proto::regions::BIOMES.len())),
+            "the shader must walk all {} biomes when filtering the gate",
+            meld_proto::regions::BIOMES.len()
+        );
+        // Every salt. A changed one silently repartitions the world on one side only.
+        for salt in ["0x7feb352du", "0x846ca68bu", "0x9E3779B9u", "0x5F356495u", "0x2545F491u"] {
+            assert!(wgsl.contains(salt), "the shader is missing the salt `{salt}`");
+        }
+        // The warp's two harmonics — its whole job is to stop a ring boundary reading as an
+        // arc, and a shader that wobbles it differently draws a boundary the server does not
+        // have.
+        for term in ["0.62 * sin(bearing * 3.0 + phase)", "0.38 * cos(bearing * 7.0 - phase * 2.0)"] {
+            assert!(wgsl.contains(term), "the shader's ring warp is missing `{term}`");
+        }
+    }
+
+    /// **Every region helper the ground shader defines must actually be CALLED** — the same
+    /// rule as the coast helpers below, for the same reason: inland water shipped completely
+    /// invisible because `inland_depth_at` was defined, mirrored, carried through the uniform
+    /// and never called from a fragment, and WGSL does not complain about an unused function.
+    #[test]
+    fn every_region_helper_is_actually_called() {
+        let wgsl = include_str!("../assets/shaders/ground_biome.wgsl");
+        for f in [
+            "rg_hash32", "rg_sectors", "rg_ring_offset", "rg_warp_at", "rg_ring_at",
+            "rg_fan_t", "rg_sector_in", "rg_biome_of", "rg_biome_at", "rg_edge", "rg_tex_of",
+        ] {
+            assert!(wgsl.contains(&format!("fn {f}(")), "ground_biome.wgsl should define `{f}`");
+            assert!(
+                wgsl.matches(&format!("{f}(")).count() >= 2,
+                "`{f}` is defined in ground_biome.wgsl and never called — a shader helper \
+                 with no call site renders nothing, and nothing else in this suite notices"
+            );
+        }
+    }
+
     #[test]
     fn the_basin_shore_slope_matches_the_shader() {
         let want = format!("/ {:?};", meld_proto::coast::BASIN_SHORE_SLOPE);
@@ -3489,7 +3585,8 @@ mod ground_uniform_tests {
             .expect("…and closes it")
             .0;
         for field in [
-            "rings", "count", "uv_scale", "blend_half", "terrain_amp", "terrain_off",
+            "region", "gate", "gate_hi", "region_blend", "region_seed", "uv_scale",
+            "terrain_amp", "terrain_off",
             "_pad_peaks", "peaks", "peak_count", "straits", "strait_count", "lobes",
             "lobe_count", "basins", "rivers", "basin_count", "river_count", "shift",
             "sea_anim",
@@ -3505,7 +3602,7 @@ mod ground_uniform_tests {
             .collect();
         assert_eq!(
             order.first().copied(),
-            Some("rings"),
+            Some("region"),
             "the shader's first field moved: {order:?}"
         );
         assert_eq!(
