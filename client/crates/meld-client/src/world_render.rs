@@ -710,6 +710,10 @@ pub(crate) fn setup(
         // The oozes, until their animated sets land (`CREATURE_CHARS`).
         ("verdant_ooze", "monsters/jelly.png"),
         ("bog_ooze", "monsters/acid_blob.png"),
+        // The frog tribes, until their animated set lands. Without an entry here a kind
+        // HASHES to an arbitrary sprite, so a brand-new species renders as whatever the
+        // hash lands on — which reads as a bug rather than as missing art.
+        ("frog_tribesman", "monsters/kobold.png"),
     ]
     .into_iter()
     .map(|(k, p)| (k.to_string(), ld(p)))
