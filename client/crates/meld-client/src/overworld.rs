@@ -1869,21 +1869,36 @@ pub(crate) fn sync_overworld_sprites(
                 add_ground_ring(&mut commands, &wa, root);
             }
             EntityKind::Trap => {
-                // A trap the party's Shifter has read. Drawn low and hot-red so it
-                // reads as "do not stand here" without hiding the floor — the server
-                // only ever sends the armed ones inside the Runner's sense.
+                // A trap the party's Shifter has read. Drawn low so it reads as "do not
+                // stand here" without hiding the floor — the server only ever sends the
+                // armed ones inside the Runner's sense.
+                //
+                // It draws its OWN KIND now. The kind has always been on the wire
+                // (`trap:<kind>`) and every trap alike rendered as the target marker
+                // tinted red, so the one thing the warning could have told you — what it
+                // is you are about to stand on — was the one thing it did not. Anything
+                // without art keeps the marker, tinted, rather than vanishing.
+                let art = e
+                    .name
+                    .as_deref()
+                    .and_then(|k| wa.prop_sprites.get(&format!("trap_{k}")).cloned());
+                let known = art.is_some();
                 spawn_billboard_entity(
                     &mut commands,
                     &mut mats,
                     &wa,
                     id,
                     e,
-                    wa.prop_sprites
-                        .get("marker_target_marker")
-                        .cloned()
+                    art.or_else(|| wa.prop_sprites.get("marker_target_marker").cloned())
                         .unwrap_or_default(),
                     0.9,
-                    Color::srgb(1.4, 0.35, 0.3),
+                    // Bespoke art carries its own colour; the fallback marker still needs
+                    // the red to mean anything at all.
+                    if known {
+                        Color::srgb(1.25, 1.0, 1.0)
+                    } else {
+                        Color::srgb(1.4, 0.35, 0.3)
+                    },
                     0.2,
                 );
             }

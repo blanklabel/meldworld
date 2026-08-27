@@ -356,8 +356,21 @@ pub(crate) type GroundMat = ExtendedMaterial<StandardMaterial, GroundBiome>;
 /// client titles them from — a hand-copied list here is a list that goes stale against
 /// the `boss:<key>` tags actually arriving on the wire.
 pub(crate) fn boss_keys() -> impl Iterator<Item = &'static str> {
-    meld_proto::bosses::keys()
+    meld_proto::bosses::keys().chain(DUNGEON_SPRITES.iter().copied())
 }
+
+/// Bespoke dungeon sprites that get an animated set but are NOT named bosses.
+///
+/// A dungeon can name any `sprite` for its `[boss.B1]`, and that is not the same thing
+/// as being one of the FS-4 named bosses: `meld_proto::bosses::display_name` returns
+/// `None` for these, so they draw no name plate — deliberately, since a plate reading
+/// `Unknown Horror` over a set piece is worse than no plate.
+///
+/// They still need loading, though, and the two lists are separate for exactly that
+/// reason. `twingolem` guarded the Ocean Palace for a long time with no art anywhere,
+/// which meant `creature_sprite` HASHED its kind into the fallback pool and it drew as
+/// a random 32px billboard — a boss rendering as a bat, and nothing anywhere saying so.
+pub(crate) const DUNGEON_SPRITES: &[&str] = &["twingolem"];
 
 /// Creature species whose animated sprite set is INSTALLED under `assets/creatures/`.
 /// A species listed here stops being a single frozen 32px billboard and starts turning,
@@ -948,6 +961,11 @@ pub(crate) fn setup(
             // The barrow's fae court: walk + attack, no ability art yet, so its kit
             // falls through to the attack clip.
             "briarlord" => &[("walk", 8), ("attack", 8)],
+            // The Ocean Palace's guardian. A dungeon `sprite`, deliberately NOT one of
+            // the named bosses (`meld_proto::bosses`) — it draws no name plate. Its walk
+            // is still to be made, so it declares the attack only: naming a clip with no
+            // frames behind it is asset errors on every launch.
+            "twingolem" => &[("attack", 8)],
             _ => &[("walk", 8), ("attack", 8)],
         }
     }
@@ -2253,7 +2271,7 @@ pub(crate) fn title_case(s: &str) -> String {
 /// A const rather than a literal inside `setup`, because the menus reach for the same
 /// sprites (`icons`) and a name that only exists at the call site cannot be checked — a
 /// menu asking for art nobody loads draws a hole where the icon should be.
-pub(crate) const PROP_KEYS: [&str; 39] = [
+pub(crate) const PROP_KEYS: [&str; 41] = [
     "obstacle_tree", "obstacle_tree_pine", "obstacle_tree_birch", "obstacle_tree_dead",
     "obstacle_tree_willow", "obstacle_tree_bushy",
     "obstacle_boulder", "obstacle_pond", "obstacle_dune",
@@ -2266,6 +2284,10 @@ pub(crate) const PROP_KEYS: [&str; 39] = [
     "connector_ladder", "connector_rope", "connector_ramp",
     "item_chest_common", "item_chest_rare", "item_chest_open", "item_gold_pile", "item_loot_gem",
     "marker_target_marker",
+    // Dungeon traps. A trap rides the wire as `trap:<kind>` and used to draw as the
+    // target marker tinted red for every kind alike — so the thing you were being warned
+    // about was never actually shown, only that there was one.
+    "trap_thorns", "trap_dart",
 ];
 
 /// Biome theme name → ground-texture / ring index (matches `BIOMES` order in
