@@ -790,6 +790,10 @@ struct OwEntity {
     level: u8,
     /// For chests: whether it's been opened.
     opened: bool,
+    /// For chests: the treasure tier, which decides how good the loot is and therefore
+    /// what the chest should look like. It rode the wire from the day chests existed and
+    /// was thrown away here, so every chest drew as the common brown box.
+    chest_tier: i32,
     /// Overworld mob intel (monsters only; `None` otherwise). Rendered as a
     /// nameplate only when the viewer's Explorer/Psyker perk unlocks each field.
     mob_level: Option<i32>,
@@ -815,7 +819,7 @@ struct OwEntity {
 
 impl OwEntity {
     fn player(x: f32, y: f32) -> Self {
-        Self { x, y, kind: EntityKind::Player, name: None, faction: None, radius: 0.0, battling: false, clashing: false, level: 0, opened: false, mob_level: None, hp: None, max_hp: None, encounter_class: None, aggression: None, quarry: false, held: false, boss: None, bodies_required: 1, expects_parties: 0 }
+        Self { x, y, kind: EntityKind::Player, name: None, faction: None, radius: 0.0, battling: false, clashing: false, level: 0, opened: false, chest_tier: 0, mob_level: None, hp: None, max_hp: None, encounter_class: None, aggression: None, quarry: false, held: false, boss: None, bodies_required: 1, expects_parties: 0 }
     }
     fn monster(x: f32, y: f32, name: &str, faction: &str) -> Self {
         Self {
@@ -830,6 +834,7 @@ impl OwEntity {
             clashing: false,
             level: 0,
             opened: false,
+            chest_tier: 0,
             mob_level: None,
             hp: None,
             max_hp: None,
@@ -842,7 +847,7 @@ impl OwEntity {
         }
     }
     fn portal(x: f32, y: f32) -> Self {
-        Self { x, y, kind: EntityKind::Portal, name: None, faction: None, radius: 0.0, battling: false, clashing: false, level: 0, opened: false, mob_level: None, hp: None, max_hp: None, encounter_class: None, aggression: None, quarry: false, held: false, boss: None, bodies_required: 1, expects_parties: 0 }
+        Self { x, y, kind: EntityKind::Portal, name: None, faction: None, radius: 0.0, battling: false, clashing: false, level: 0, opened: false, chest_tier: 0, mob_level: None, hp: None, max_hp: None, encounter_class: None, aggression: None, quarry: false, held: false, boss: None, bodies_required: 1, expects_parties: 0 }
     }
 }
 

@@ -1878,10 +1878,13 @@ pub(crate) fn sync_overworld_sprites(
                 // tinted red, so the one thing the warning could have told you — what it
                 // is you are about to stand on — was the one thing it did not. Anything
                 // without art keeps the marker, tinted, rather than vanishing.
-                let art = e
-                    .name
-                    .as_deref()
-                    .and_then(|k| wa.prop_sprites.get(&format!("trap_{k}")).cloned());
+                // Four sprites per kind, picked by the trap's own id so a given trap
+                // looks the same every time you walk past it while a corridor of them
+                // does not read as one sprite stamped six times.
+                let art = e.name.as_deref().and_then(|k| {
+                    let n = hash_pick(id, TRAP_VARIANTS);
+                    wa.prop_sprites.get(&format!("trap_{k}_{n}")).cloned()
+                });
                 let known = art.is_some();
                 spawn_billboard_entity(
                     &mut commands,
@@ -2135,9 +2138,20 @@ pub(crate) fn sync_chests(
         // gold trim + latch. Closed → gold trim glows to catch the eye; opened →
         // the lid is thrown back and the glow dies.
         let opened = e.opened;
-        // Bespoke HD-2D chest billboard (PixelLab): closed vs. overflowing-open art.
-        let key = if opened { "item_chest_open" } else { "item_chest_common" };
+        // Bespoke HD-2D chest billboard (PixelLab): closed vs. overflowing-open art,
+        // and CLOSED ART VARIES BY TIER. `chest:<tier>` has ridden the wire since chests
+        // existed and every one of them drew as the common brown box — so the blue art
+        // shipped in `PROP_KEYS` was never once rendered, and a deep chest looked exactly
+        // like the one on the on-ramp. The tier is the whole promise of walking further.
+        let key = if opened {
+            "item_chest_open"
+        } else {
+            chest_art(e.chest_tier)
+        };
         let tex = wa.prop_sprites.get(key).cloned().unwrap_or_default();
+        // A red chest is the best loot in the game and is drawn to say so — its size is
+        // the only thing that reads from across a room, before any tooltip or colour.
+        let chest_h = if !opened && key == "item_chest_red" { 2.6 } else { 1.5 };
         let mat = mats.add(hd2d::sprite_material(Color::WHITE, tex));
         commands
             .spawn((
@@ -2151,7 +2165,8 @@ pub(crate) fn sync_chests(
                 p.spawn((
                     Mesh3d(wa.sprite_quad.clone()),
                     MeshMaterial3d(mat),
-                    Transform::from_xyz(0.0, 0.7, 0.0).with_scale(Vec3::splat(1.5 / 2.2)),
+                    Transform::from_xyz(0.0, chest_h * 0.47, 0.0)
+                        .with_scale(Vec3::splat(chest_h / 2.2)),
                     hd2d::Billboard,
                 ));
             });
@@ -2861,6 +2876,23 @@ pub(crate) fn update_minimap_distance(
 
 /// Deterministically pick an index in `0..n` from an entity id (FNV-1a). Lets a
 /// grove of identical-kind obstacles show varied art without any per-entity state.
+/// How many sprites each trap kind has. Four, and the pick is by the trap's own id.
+pub(crate) const TRAP_VARIANTS: usize = 4;
+
+/// Which chest art a tier gets. `tier(d) = floor(d/100)`, and `red_chest_floor_distance`
+/// (d=300, CANON §B: no gear drops shallower) is where the gear game starts — so the RED
+/// chest marks the band that can hold real gear, and the blue one the shallow-but-not-
+/// starter middle. Every chest drew as the common brown box before this, which meant the
+/// blue art already in `PROP_KEYS` had never once been shown and depth looked identical
+/// from the on-ramp to the frontier.
+pub(crate) fn chest_art(tier: i32) -> &'static str {
+    match tier {
+        t if t >= 3 => "item_chest_red",
+        t if t >= 1 => "item_chest_rare",
+        _ => "item_chest_common",
+    }
+}
+
 pub(crate) fn hash_pick(id: &str, n: usize) -> usize {
     if n == 0 {
         return 0;
@@ -3776,6 +3808,7 @@ mod tests {
             clashing: false,
             level: 0,
             opened: false,
+            chest_tier: 0,
             mob_level: None,
             hp: None,
             max_hp: None,
@@ -4204,6 +4237,7 @@ mod explored_map_tests {
             clashing: false,
             level: 0,
             opened: false,
+            chest_tier: 0,
             mob_level: None,
             hp: None,
             max_hp: None,
@@ -4610,6 +4644,7 @@ mod station_tests {
             clashing: false,
             level: 0,
             opened: false,
+            chest_tier: 0,
             mob_level: None,
             hp: None,
             max_hp: None,

@@ -326,6 +326,7 @@ pub(crate) fn pump_net(
                             clashing: e.clashing,
                             level: e.level,
                             opened: e.opened,
+                            chest_tier: e.chest_tier,
                             mob_level: e.mob_level,
                             hp: e.hp,
                             max_hp: e.max_hp,

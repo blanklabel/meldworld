@@ -2284,7 +2284,7 @@ pub(crate) fn title_case(s: &str) -> String {
 /// A const rather than a literal inside `setup`, because the menus reach for the same
 /// sprites (`icons`) and a name that only exists at the call site cannot be checked — a
 /// menu asking for art nobody loads draws a hole where the icon should be.
-pub(crate) const PROP_KEYS: [&str; 41] = [
+pub(crate) const PROP_KEYS: [&str; 64] = [
     "obstacle_tree", "obstacle_tree_pine", "obstacle_tree_birch", "obstacle_tree_dead",
     "obstacle_tree_willow", "obstacle_tree_bushy",
     "obstacle_boulder", "obstacle_pond", "obstacle_dune",
@@ -2297,10 +2297,22 @@ pub(crate) const PROP_KEYS: [&str; 41] = [
     "connector_ladder", "connector_rope", "connector_ramp",
     "item_chest_common", "item_chest_rare", "item_chest_open", "item_gold_pile", "item_loot_gem",
     "marker_target_marker",
-    // Dungeon traps. A trap rides the wire as `trap:<kind>` and used to draw as the
-    // target marker tinted red for every kind alike — so the thing you were being warned
-    // about was never actually shown, only that there was one.
-    "trap_thorns", "trap_dart",
+    // The best chest in the game. `chest:<tier>` has always been on the wire and the
+    // client drew every chest as the common one, so the blue art already in this list
+    // was never once shown and the tier meant nothing to look at.
+    "item_chest_red",
+    // Dungeon traps, FOUR SPRITES PER KIND. A trap rides the wire as `trap:<kind>` and
+    // used to draw as the target marker tinted red for every kind alike — so the one
+    // thing the warning could have told you, which is what you are about to step on, was
+    // the one thing it did not. Variants for the same reason creatures have them: a
+    // corridor of identical thorn traps reads as copy-paste, and the pick is by entity
+    // id so a given trap looks the same every time you walk past it.
+    "trap_thorns_0", "trap_thorns_1", "trap_thorns_2", "trap_thorns_3",
+    "trap_dart_0", "trap_dart_1", "trap_dart_2", "trap_dart_3",
+    "trap_snare_0", "trap_snare_1", "trap_snare_2", "trap_snare_3",
+    "trap_rune_0", "trap_rune_1", "trap_rune_2", "trap_rune_3",
+    "trap_acid_0", "trap_acid_1", "trap_acid_2", "trap_acid_3",
+    "trap_pit_0", "trap_pit_1", "trap_pit_2", "trap_pit_3",
 ];
 
 /// Biome theme name → ground-texture / ring index (matches `BIOMES` order in
