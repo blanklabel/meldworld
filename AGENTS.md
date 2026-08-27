@@ -1011,6 +1011,16 @@ pure) let you load a SPECIFIC world on demand instead of random-walking into it:
 - **`MELD_BIOME=<forest|desert|ashfall|tundra|mire>`** pins *every* section to that
   biome (and forces the tutorial off), so you can inspect one biome's maze directly.
 - **`MELD_SEED=<u64>`** fixes the world layout for reproducible screenshots/repros.
+- **`MELD_BUILD=1`** is the **building sandbox**, and it is the only way to examine the
+  build loop by hand. One flag implies effectively unlimited structural stock (999 of every
+  wood and stone), no wildlife, no tutorial, and — the part nobody guesses — it **stands you
+  off the clear path**. A run starts every avatar at the ORIGIN, the origin is on the trail,
+  and `nothing_may_be_built_on_the_clear_path` refuses every build there: so a fresh dive's
+  build row does nothing, and it looks exactly like a broken button rather than a rule.
+  Combine with `MELD_PARTY` for the crew — `MELD_BUILD=1
+  MELD_PARTY=smithwright,keeper,explorer,resonant` is the whole crafting bench in one line
+  (a Smithwright and a Keeper are what the FIELD BENCH rows need; raising a wall or an
+  anchor is not class-gated at all).
 - **`MELD_BARREN=1`** strips every creature from the world, every tick. Art and shader
   work does not want wildlife: a boar standing in front of the water is the frame you were
   trying to take, and a capture retried until the fauna wanders off is a capture taken
