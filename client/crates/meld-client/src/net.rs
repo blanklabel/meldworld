@@ -670,6 +670,11 @@ pub enum ServerMsg {
         /// Inland water: this world's standing bodies and river chains.
         basins: Vec<meld_proto::coast::Basin>,
         rivers: Vec<meld_proto::coast::RiverNode>,
+        /// **THE REGION DECOMPOSITION** ([`meld_proto::regions`]) — how this world is
+        /// partitioned into cells, plus the `[biome_gate]` that decides which biome each may
+        /// wear. The ground shader derives every fragment's cell from it, so a client that
+        /// guessed instead would paint a world the server does not hold.
+        regions: meld_proto::regions::Regions,
         tutorial: bool,
     },
     /// The caller's hero roster (name/class/level/stats) for the party panel.
@@ -2427,6 +2432,10 @@ impl Inner {
                         .unwrap_or_default()
                 };
                 let (basins, rivers) = (quads("basins"), quads("rivers"));
+                // Absent on an older server: `Regions::default()` reads `ring_step == 0`,
+                // which every reader — the shader included — treats as "no world here".
+                let regions: meld_proto::regions::Regions =
+                    serde_json::from_value(raw.payload["regions"].clone()).unwrap_or_default();
                 self.out.push_back(ServerMsg::RunStarted {
                     terrain_off,
                     peaks,
@@ -2435,6 +2444,7 @@ impl Inner {
                     lobes,
                     basins,
                     rivers,
+                    regions,
                     tutorial,
                 });
                 self.emit_backpack();

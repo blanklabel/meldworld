@@ -524,19 +524,6 @@ pub(crate) fn touch_action_buttons(
     }
 }
 
-/// Display name of the biome band at a floored distance (client-side mirror of
-/// the server's structural biome table — display only; the server stays
-/// authoritative for what actually spawns).
-pub(crate) fn biome_display(d: i64) -> &'static str {
-    match d {
-        0..=99 => "Forest",
-        100..=299 => "Desert",
-        300..=499 => "Ashfall",
-        500..=999 => "Tundra",
-        _ => "Mire",
-    }
-}
-
 /// Server (x, y) → HD-2D world space: x east, **z = server y** (south, +Z toward
 /// the camera parked behind the player). Y is up: `height` above the rolling ground,
 /// which sits at `terrain_height(x, z)` — so everything placed through here rides the
@@ -823,7 +810,6 @@ pub(crate) fn channel_fill_pct(phase: f32, fill_ms: u64) -> f32 {
 pub(crate) fn update_run_stats(
     world: Res<Overworld>,
     session: Res<Session>,
-    terrain: Res<Terrain>,
     mut stats: ResMut<RunStats>,
 ) {
     let Some(me) = world.entities.get(&session.player_id) else {
@@ -831,15 +817,10 @@ pub(crate) fn update_run_stats(
     };
     let d = (me.x * me.x + me.y * me.y).sqrt().floor() as i64;
     let tier = d / 100; // tier(d) = floor(d/100) — the CANON distance axis.
-    // The biome label reads the ACTUAL section the player stands in (its radius ring),
-    // so it agrees with the ground + the creatures — not the fixed distance bands.
-    let r = d as f64;
-    let biome = terrain
-        .sections
-        .values()
-        .find(|s| r >= s.start_x && r < s.end_x)
-        .map(|s| title_case(&s.biome))
-        .unwrap_or_else(|| biome_display(d).to_string());
+    // The label reads the CELL the player is standing in, through the same decomposition
+    // the ground shader paints with — so it names the ground under your feet rather than a
+    // whole ring's representative theme, which is now only a summary of many cells.
+    let biome = title_case(crate::world_render::biome_at_world(me.x, me.y));
     if stats.distance != d {
         stats.distance = d;
     }

@@ -13,8 +13,7 @@
 use bevy::prelude::*;
 
 use crate::hd2d;
-use crate::overworld::biome_display;
-use crate::{Session, Terrain, WorldEntity};
+use crate::{Session, WorldEntity};
 
 const SPACING: f32 = 3.0;
 const GRID: i32 = 15;
@@ -55,14 +54,13 @@ fn cell_hash(cx: i32, cz: i32, salt: u32) -> u32 {
     hash(((cx as u32 as u64) << 32) ^ (cz as u32 as u64) ^ ((salt as u64) << 20))
 }
 
-fn biome_at(terrain: &Terrain, x: f32, z: f32) -> String {
-    let r = ((x * x + z * z).sqrt()) as f64;
-    terrain
-        .sections
-        .values()
-        .find(|s| r >= s.start_x && r < s.end_x)
-        .map(|s| s.biome.clone())
-        .unwrap_or_else(|| biome_display(r.floor() as i64).to_string())
+/// Which biome this ground is, by the SAME decomposition the ground shader paints with.
+///
+/// A section's `biome` is only its representative theme now — a section spans many cells —
+/// so asking the section would scatter grass by one answer onto a floor painted by another,
+/// and the disagreement is visible as tufts standing on sand.
+fn biome_at(x: f32, z: f32) -> &'static str {
+    crate::world_render::biome_at_world(x, z)
 }
 fn grassy(biome: &str) -> bool {
     matches!(biome, "field" | "forest" | "mire")
@@ -102,7 +100,6 @@ fn player_pos(
 
 pub(crate) fn update_ambient_scatter(
     session: Res<Session>,
-    terrain: Res<Terrain>,
     grass: Res<AmbientGrass>,
     time: Res<Time>,
     sky: Option<Res<crate::world_render::Sky>>,
@@ -157,7 +154,7 @@ pub(crate) fn update_ambient_scatter(
         // two kinds of scatter cannot disagree about where the shoreline is.
         if crate::world_render::on_open_water(&frame, state.get(), wx, wz)
             || (h % 100) < 55
-            || !grassy(&biome_at(&terrain, wx, wz))
+            || !grassy(biome_at(wx, wz))
         {
             *vis = Visibility::Hidden;
             continue;

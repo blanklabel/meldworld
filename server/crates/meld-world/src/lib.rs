@@ -154,10 +154,14 @@ pub fn biome_for_distance(d: i64) -> &'static str {
 
 /// The base biome set. Difficulty is carried entirely by `distance` (creature
 /// stats scale via `stat_mult` at spawn), so a biome is a difficulty-neutral
-/// **skin** — which is exactly what lets us vary the theme order per run without
+/// **skin** — which is exactly what lets us vary the theme per cell without
 /// touching fairness. This is the Hades / Risk-of-Rain-2 model: fixed difficulty
 /// axis, shuffled theme. See docs/proposals/worldgen-wg.md and roadmap WG-2/WG-3.
-pub const BIOMES: [&str; 6] = ["field", "forest", "desert", "ashfall", "tundra", "mire"];
+///
+/// Re-exported from [`meld_proto::regions`] rather than declared here: the ORDER is a
+/// wire contract, since a cell's biome crosses the wire as an index into it and the ground
+/// shader indexes its textures the same way.
+pub const BIOMES: [&str; 6] = meld_proto::regions::BIOMES;
 
 /// Independent per-section biome stream, salted off the section seed so the theme
 /// choice is stable even if unrelated placement draws change.
@@ -209,6 +213,21 @@ fn section_biome(
     };
     let mut rng = Rng(biome_pick_seed(run_seed, i));
     cands[rng.below(cands.len())]
+}
+
+/// `[biome_gate]` as an array in [`BIOMES`] order — the shape [`meld_proto::regions`]
+/// takes, since a cell's biome is resolved per placed prop and a `HashMap<String, _>` lookup
+/// per prop is not the price to pay for it.
+pub fn biome_gate_slice(balance: &Balance) -> Vec<f32> {
+    biome_gate_array(balance).to_vec()
+}
+
+fn biome_gate_array(balance: &Balance) -> [f32; 6] {
+    let mut out = [0.0f32; 6];
+    for (i, b) in BIOMES.iter().enumerate() {
+        out[i] = balance.biome_gate.get(*b).copied().unwrap_or(0) as f32;
+    }
+    out
 }
 
 /// Creature content ids that spawn in a biome. Structural (content-extensible);
@@ -2502,6 +2521,14 @@ pub struct Arena {
     /// [`meld_proto::coast::RiverNode`]. A node marked `chain_start` begins a new chain, and
     /// the gap before it is a FORD.
     pub rivers: Vec<meld_proto::coast::RiverNode>,
+    /// **THE REGION DECOMPOSITION** ([`meld_proto::regions`]) — this world's cells. A
+    /// biome is a property of a CELL, not of a section, so the world is a patchwork rather
+    /// than a set of concentric rings. Derived from the seed and `[region]`, so it costs
+    /// nothing to persist and nothing to stream.
+    regions: meld_proto::regions::Grid,
+    /// `[biome_gate]` flattened into `BIOMES` order, so a cell's biome can be resolved
+    /// without reaching for `Balance` — the lookup runs per placed prop.
+    biome_gate: [f32; 6],
     terrain_cell: f64,
     terraces_per_area: f64,
     max_level: u8,
@@ -2700,6 +2727,62 @@ impl Arena {
     /// `(x, z, arc_half)` to `+ straits` to `+ lobes`, and every addition meant revisiting
     /// all of them. Asking `shore().is_land(..)` means the next thing the coastline learns
     /// costs one field in [`meld_proto::coast::Shore`] and nothing here.
+    /// This world's cell decomposition.
+    pub fn regions(&self) -> meld_proto::regions::Grid {
+        self.regions
+    }
+
+    /// The biome at a **world** position — the one place a coordinate becomes a theme.
+    ///
+    /// `force_biome` (the `MELD_BIOME` harness flag) still wins, so a single biome's maze
+    /// can be loaded whole for inspection.
+    pub fn biome_at(&self, p: Position) -> &'static str {
+        if let Some(b) = self.force_biome {
+            return b;
+        }
+        BIOMES[self.regions.biome_at(p.x as f32, p.y as f32, &self.biome_gate)]
+    }
+
+    /// The biome at a **corridor** position, for the generation passes — which run before
+    /// the bend and would otherwise be asking the region grid about coordinates that mean
+    /// something else entirely (see `bent`).
+    fn biome_in_corridor(&self, p: Position) -> &'static str {
+        self.biome_at(self.to_world(p))
+    }
+
+    /// A corridor coordinate in world terms. Identity when there is no fan to bend into.
+    fn to_world(&self, p: Position) -> Position {
+        if self.radial_half > 0.0 {
+            radial_tf(p, self.radial_half, self.corridor_lateral.max(1.0))
+        } else {
+            p
+        }
+    }
+
+    /// The largest value `f` takes over any cell this section's radius band touches.
+    ///
+    /// Density is authored per biome, and a section now spans many biomes — so a count for
+    /// the section has to be drawn for its DENSEST cell and thinned back per cell on
+    /// acceptance. Sizing to the section's representative biome instead would cap a forest
+    /// cell inside a desert band at desert density, which is the ring world wearing a
+    /// patchwork's clothes.
+    fn max_over_cells(&self, start_x: f64, end_x: f64, f: impl Fn(&str) -> f64) -> f64 {
+        if let Some(b) = self.force_biome {
+            return f(b);
+        }
+        let g = self.regions;
+        let mut out = 0.0f64;
+        let lo = g.ring_at(start_x as f32, 0.0).saturating_sub(1);
+        let hi = g.ring_at(end_x as f32, 0.0) + 1;
+        for ring in lo..=hi {
+            for sector in 0..g.sectors(ring) {
+                let cell = meld_proto::regions::Cell::new(ring, sector);
+                out = out.max(f(BIOMES[g.biome_of(cell, &self.biome_gate)]));
+            }
+        }
+        out
+    }
+
     pub fn shore(&self) -> meld_proto::coast::Shore<'_> {
         meld_proto::coast::Shore {
             arc_half: self.radial_half as f32,
@@ -2831,6 +2914,14 @@ impl Arena {
             bent: false,
             basins: Vec::new(),
             rivers: Vec::new(),
+            regions: meld_proto::regions::Grid {
+                arc_half: (wg.radial_arc_degrees.to_radians() * 0.5) as f32,
+                ring_step: balance.region.ring_step as f32,
+                cell_width: balance.region.cell_width as f32,
+                warp: balance.region.boundary_warp as f32,
+                seed: seed as u32,
+            },
+            biome_gate: biome_gate_array(balance),
             terrain_cell: wg.terrain_cell,
             terraces_per_area: wg.terraces_per_area,
             max_level: wg.max_level,
@@ -3206,9 +3297,21 @@ impl Arena {
         let start_x = self.cursor;
         // Theme rides the run (WG-2/WG-3) but difficulty rides `distance` as always.
         let prev_biome = self.areas.last().map(|a| a.biome);
-        let biome = self.force_biome.unwrap_or_else(|| {
-            section_biome(balance, self.seed_base, i, start_x.floor() as i64, prev_biome, self.tutorial)
-        });
+        // A biome is a property of a CELL now, not of a section — a section spans many, so
+        // this one is only its REPRESENTATIVE: the theme at the section's own mid-radius on
+        // the clear path, which is what the HUD names and what the tutorial's authored
+        // progression still needs to be a single answer. Everything the section SCATTERS
+        // asks the cell under its own feet instead.
+        let biome = if self.tutorial || self.force_biome.is_some() {
+            self.force_biome.unwrap_or_else(|| {
+                section_biome(balance, self.seed_base, i, start_x.floor() as i64, prev_biome, self.tutorial)
+            })
+        } else {
+            self.biome_in_corridor(Position::new(
+                0.5 * (start_x + self.cursor.max(start_x + 1.0)),
+                self.corridor_path.last().map(|p| p.y).unwrap_or(0.0),
+            ))
+        };
         let kinds = creatures_for_biome(biome);
 
         // Area 0 of the TUTORIAL run is a small, deterministic onboarding section
@@ -3298,7 +3401,7 @@ impl Arena {
         // …and its inland water: a river that runs downhill and the lakes it pools into.
         // Also before the route, for the same reason — and it matters more here, because a
         // river is the one water body that can genuinely sever the world.
-        self.push_water(balance, i, start_x, end_x, biome);
+        self.push_water(balance, i, start_x, end_x);
 
         // WG-1: every Nth procedural section is a DUNGEON — rooms divided by walls
         // with a door on the clear path (connectivity guaranteed like a biome seam),
@@ -3379,14 +3482,16 @@ impl Arena {
             .is_ocean(w.x as f32, w.y as f32)
         };
 
-        // Scatter harvestable resource nodes through the section (2D, biome kinds).
-        let rkinds = resources_for_biome(biome);
+        // Scatter harvestable resource nodes through the section (2D). What a node YIELDS
+        // is the biome of the ground it stands on, so an ore vein and a reagent bed can sit
+        // in the same band — which is what makes a crafter's node-sense worth having.
         let n_nodes = wg.resources_per_area.max(0.0).round() as usize;
         let mut section_resources: Vec<usize> = Vec::new();
         for _ in 0..n_nodes {
-            let rk = rkinds[rng.below(rkinds.len())];
             let rx = start_x + 2.0 + rng.unit() * (length - 4.0).max(1.0);
             let ry = wg.resource_lateral_spread * rng.signed();
+            let rkinds = resources_for_biome(self.biome_in_corridor(Position::new(rx, ry)));
+            let rk = rkinds[rng.below(rkinds.len())];
             let nid = self.resources.len();
             self.resources.push(ResourceNode {
                 spent_tick: 0,
@@ -3626,7 +3731,6 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
             // there guarantees a calm spawn. Deeper sections start at their western edge.
             let mut x = start_x + if i == 0 { wg.hub_safe_radius.max(2.0) } else { 2.0 };
             while x < inner_end {
-                let kind = kinds[rng.below(kinds.len())];
                 // A few tries at a fresh lateral before giving the station up: skipping on
                 // the first clash loses the spawn outright, and at this density a clash is
                 // common enough that the world would thin back out through the side door.
@@ -3644,6 +3748,12 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
                     continue;
                 };
                 taken.insert(world);
+                // WHAT lives here is decided by the ground it stands on, after the ground is
+                // known — a creature is native to its cell, not to the band it happens to
+                // share with sixty others. Difficulty is untouched: that rides `distance`
+                // (CANON §B) and a biome is a difficulty-neutral skin.
+                let local = creatures_for_biome(self.biome_at(world));
+                let kind = local[rng.below(local.len())];
                 let idx = self.monsters.len();
                 let mseed = rng.next_u64();
                 self.monsters
@@ -3851,7 +3961,7 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
                             // Mixed groups: past the duo band, some of the littles are a
                             // different species than what they follow.
                             let mkind = if erng.unit() < band.mixed_chance {
-                                kinds[erng.below(kinds.len())]
+                                local[erng.below(local.len())]
                             } else {
                                 kind
                             };
@@ -3902,13 +4012,13 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
         // Scatter impassable biome terrain, rejecting anything that would block the
         // clear path tube or bury a creature/resource. Rejection-sampled so the
         // path (and the exit) is always feasible by construction.
-        let okinds = obstacles_for_biome(biome);
         let n_obs = wg.obstacles_per_area.max(0.0).round() as usize;
         let (mut placed, mut attempts) = (0usize, 0usize);
         while placed < n_obs && attempts < n_obs * 10 {
             attempts += 1;
             let ox = start_x + rng.unit() * length;
             let oy = rng.signed() * (self.corridor_lateral - 1.0);
+            let okinds = obstacles_for_biome(self.biome_in_corridor(Position::new(ox, oy)));
             let okind = okinds[rng.below(okinds.len())];
             let radius = obstacle_radius_for(wg, okind, rng.unit());
             let pos = Position::new(ox, oy);
@@ -4125,7 +4235,13 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
         // chest/seam draws stay byte-identical and every determinism test still holds.
         // Ground level only (nothing floating on a terrace/plateau), and never buries
         // the path/creatures/nodes/chests.
-        let maze_mult = biome_obstacle_mult(wg, biome);
+        // Density is authored per biome and a section now spans many, so the count is drawn
+        // for the section's DENSEST cell and thinned back per cell on acceptance. That is
+        // what makes a sparse desert cell inside a thick forest band actually read as
+        // desert: the thinning IS the transition, in every direction, so the old
+        // taper-toward-the-next-RING is gone rather than adapted — a cell's neighbour is
+        // not ahead of it and behind it, it is all around it.
+        let maze_mult = self.max_over_cells(start_x, end_x, |b| biome_obstacle_mult(wg, b));
         // A DUNGEON SECTION IS STILL A BIOME SECTION. Its divider walls used to be laid
         // INSTEAD of the maze fill ("rooms-and-corridors instead of the scattered fill"),
         // which was true when a section was a 20-tile corridor with three rooms in it.
@@ -4149,32 +4265,6 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
             let radial_scale =
                 maze_fill_scale(wg, self.radial_half, self.corridor_lateral, start_x, end_x);
             let extra = (maze_mult * wg.obstacles_per_area * radial_scale).round().max(0.0) as usize;
-            let fill_kind = fill_kind_for_biome(biome);
-            // Density taper: near each edge, blend toward the NEIGHBOUR section's
-            // density so a dense biome visibly THINS as it gives way to a sparser one
-            // (trees scarce into desert) and thickens into a denser one (rock into
-            // Ashfall) — matching the ground cross-fade. Only ever thins (a section
-            // never exceeds its own count), and the neighbour ramps up from its side.
-            let tw = wg.biome_transition_width.max(0.0);
-            let next_biome = self.force_biome.unwrap_or_else(|| {
-                section_biome(balance, self.seed_base, i + 1, end_x.floor() as i64, Some(biome), self.tutorial)
-            });
-            let prev_ratio = (biome_obstacle_mult(wg, prev_biome.unwrap_or(biome)) / maze_mult).min(1.0);
-            let next_ratio = (biome_obstacle_mult(wg, next_biome) / maze_mult).min(1.0);
-            let keep_prob = |ox: f64| -> f64 {
-                let mut p = 1.0_f64;
-                if tw > 0.0 {
-                    if ox < start_x + tw {
-                        let t = ((ox - start_x) / tw).clamp(0.0, 1.0);
-                        p = p.min(prev_ratio + (1.0 - prev_ratio) * t);
-                    }
-                    if ox > end_x - tw {
-                        let t = ((end_x - ox) / tw).clamp(0.0, 1.0);
-                        p = p.min(next_ratio + (1.0 - next_ratio) * t);
-                    }
-                }
-                p
-            };
             // How close is too close, asked in the frame the player stands in. Corridor y
             // is an ANGLE: at r=355 a tangential gap is worth 37× what it measures here.
             // Comparing raw corridor distance therefore threw out trees that would end up
@@ -4191,10 +4281,15 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
                 fa += 1;
                 let ox = start_x + frng.unit() * length;
                 let oy = frng.signed() * (self.corridor_lateral - 1.0);
-                // Taper toward the neighbouring biome near the section edges.
-                if frng.unit() > keep_prob(ox) {
+                // Thin to this CELL's own share of the section's densest. A forest cell
+                // keeps nearly everything, a desert cell keeps about a ninth, and the
+                // boundary between them is where that changes — no transition width, no
+                // neighbour lookup, no direction.
+                let here = self.biome_in_corridor(Position::new(ox, oy));
+                if frng.unit() * maze_mult > biome_obstacle_mult(wg, here) {
                     continue;
                 }
+                let fill_kind = fill_kind_for_biome(here);
                 let radius = obstacle_radius_for(wg, fill_kind, frng.unit());
                 let pos = Position::new(ox, oy);
                 if dist_to_path(&pos, &self.corridor_path) < self.path_clear_radius + radius
@@ -4253,7 +4348,8 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
                     if !in_door && terrain.level_at(&pos) == 0 && !occupied {
                         self.obstacles.push(Obstacle {
                             entity_id: format!("obs-{}", self.obstacles.len()),
-                            kind: okinds[0].to_string(),
+                            kind: obstacles_for_biome(self.biome_in_corridor(pos))[0]
+                                .to_string(),
                             position: pos,
                             radius: r,
                         });
@@ -4584,7 +4680,7 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
     /// Fords are placed on a fixed cadence, not rolled: connectedness is what a river IS,
     /// and a connected impassable line is exactly the thing that disconnects a world. Same
     /// contract as a strait's isthmus — a guarantee, never a repair.
-    fn push_water(&mut self, balance: &Balance, i: usize, start_x: f64, end_x: f64, biome: &str) {
+    fn push_water(&mut self, balance: &Balance, i: usize, start_x: f64, end_x: f64) {
         let wg = &balance.worldgen;
         if self.tutorial
             || self.radial_half <= 0.0
@@ -4694,7 +4790,10 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
         // --- the RIVER ----------------------------------------------------------------
         // A biome's own wetness. The Mire is a swamp because of this line, now that its fill
         // is roots rather than pools.
-        let wet_mult = biome_water_mult(biome);
+        // Drawn for the section's WETTEST cell and thinned back per body, the same way the
+        // maze fill is: a mire cell sitting in an otherwise dry band has to be able to flood,
+        // and a dry cell in a mire band has to stay dry.
+        let wet_mult = self.max_over_cells(start_x, end_x, biome_water_mult);
         if rng.unit() < wg.river_chance * wet_mult {
             // A SPRING is the highest of a few candidates: water starts high, so choosing
             // the highest is what makes the source read as a spring rather than a puddle
@@ -4705,6 +4804,10 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
                 if h(c.x, c.y) > h(src.x, src.y) {
                     src = c;
                 }
+            }
+            // A spring belongs to the ground it rises from.
+            if rng.unit() * wet_mult > biome_water_mult(self.biome_at(src)) {
+                return;
             }
             let mut nodes: Vec<meld_proto::coast::RiverNode> = Vec::new();
             let width = wg.river_half_width_min
@@ -4825,6 +4928,7 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
             }
             if self.shore().sea(x as f32, z as f32) < 0.0
                 && radius >= MIN_BODY
+                && rng.unit() * wet_mult <= biome_water_mult(self.biome_at(p))
                 && off_drawn(p, radius)
                 && off_peaks(p, radius)
             {
@@ -7171,13 +7275,41 @@ mod tests {
             false
         }
 
+        /// Stand somewhere genuinely OPEN — clear ground for `clearance` units around.
+        ///
+        /// [`stand_somewhere_legal`] only asks whether ONE piece fits where you stand, and
+        /// two of these tests then assume the ground AROUND it is clear as well: a run of
+        /// four extending east, and a bystander beside you who is not already fenced in by
+        /// trees. Those are different questions, and a single legal spot inside a thicket
+        /// answers the first while failing the second — `would_enclose_someone` reads
+        /// `blocking_field`, so terrain closes a pocket exactly as a wall does.
+        fn stand_somewhere_open(b: &Balance, a: &mut Arena, radius: f64, clearance: f64) -> bool {
+            let lat = a.corridor_lateral();
+            for k in 0..400 {
+                let frac = -0.9 + 1.8 * (k as f64 / 400.0);
+                let p = bend_for_test(a, Position::new(radius, lat * frac));
+                if a.obstacles.iter().any(|o| o.position.distance_to(&p) < clearance + o.radius) {
+                    continue;
+                }
+                a.avatar_mut("p1").unwrap().position = p;
+                if a.place_structure(b, "p1", "wall", "probe", 0).is_ok() {
+                    let id = a.structures.last().unwrap().entity_id.clone();
+                    a.demolish_structure(b, &id);
+                    return true;
+                }
+            }
+            false
+        }
+
         /// **A wall RUN abuts** — which every piece after the first used to be
         /// refused for, as `TooClose`. That is why drag-to-stretch was impossible
         /// rather than merely unbuilt.
         #[test]
         fn a_wall_run_abuts_but_still_cannot_cage_a_player() {
             let (b, mut a) = built();
-            assert!(stand_somewhere_legal(&b, &mut a, 200.0), "no legal ground at d200");
+            // 16 units of clearance: the run reaches 4 x `abut_spacing` east and every piece
+            // of it has to land.
+            assert!(stand_somewhere_open(&b, &mut a, 200.0, 16.0), "no open ground at d200");
             let here = a.avatar("p1").unwrap().position;
 
             // BD-9: a RUN. Pieces at `abut_spacing` would each have been refused as
@@ -7213,7 +7345,9 @@ mod tests {
         #[test]
         fn a_second_player_cannot_be_walled_in_by_a_run() {
             let (b, mut a) = built();
-            assert!(stand_somewhere_legal(&b, &mut a, 200.0), "no legal ground at d200");
+            // The victim stands 8 units east and the "not a cage" half of this test puts a
+            // single wall beside them, so the pocket has to be open to begin with.
+            assert!(stand_somewhere_open(&b, &mut a, 200.0, 16.0), "no open ground at d200");
             let here = a.avatar("p1").unwrap().position;
 
             // A victim standing just off the builder's spot, and the builder ringing them.
@@ -9605,6 +9739,74 @@ mod tests {
             .collect()
     }
 
+    /// ⚠️ **A GREEN SUITE IS NOT EVIDENCE THAT A GENERATOR GENERATES ANYTHING** — the lesson
+    /// the inland-water census already cost us once. The region decomposition's whole claim is
+    /// that what a section SCATTERS varies with the cell rather than with the band, so measure
+    /// it: count how many distinct biome rosters and prop kinds a single section actually
+    /// produces. A ring world reads exactly one of each, per section, by construction.
+    ///
+    /// Measured across five seeds out to d900: **20 of 20** deep sections hold props from more
+    /// than one biome. The floor stays at half, because a single-biome section is LEGAL —
+    /// neighbouring cells drawing the same theme is how a region larger than one cell exists —
+    /// and pinning a measurement that happens to be total would fail on the first retune.
+    #[test]
+    fn one_section_holds_several_biomes_worth_of_content() {
+        let b = Balance::load_default().unwrap();
+        let mut worst_creatures = usize::MAX;
+        let mut mixed_sections = 0;
+        let mut total_sections = 0;
+        for seed in [1u64, 7, 424242, 99, 1_000_003] {
+            let mut a = Arena::generate_with(&b, seed, false, None);
+            // Out past the on-ramp, where the gate has opened and the arc is wide enough to
+            // hold a real handful of cells.
+            a.ensure_frontier(&b, 900.0);
+            for area in a.areas.iter().filter(|ar| ar.start_x > 300.0) {
+                total_sections += 1;
+                let inside = |x: f64| x >= area.start_x && x < area.end_x;
+                // Prop kinds standing in this band, and creature species living in it. Both
+                // are drawn per position now, so both should show a mix.
+                let mut kinds: Vec<&str> = Vec::new();
+                for o in a.obstacles.iter().filter(|o| inside(o.position.distance_floor() as f64)) {
+                    if !kinds.contains(&o.kind.as_str()) {
+                        kinds.push(&o.kind);
+                    }
+                }
+                let mut species: Vec<&str> = Vec::new();
+                for m in a.monsters.iter().filter(|m| inside(m.position.distance_floor() as f64)) {
+                    if !species.contains(&m.monster_kind.as_str()) {
+                        species.push(&m.monster_kind);
+                    }
+                }
+                // A biome's own roster is several kinds wide, so counting kinds alone cannot
+                // separate "one biome" from "many". Count the BIOMES those kinds belong to.
+                let biomes_present = BIOMES
+                    .iter()
+                    .filter(|bi| {
+                        let scatter = obstacles_for_biome(bi);
+                        kinds.iter().any(|k| scatter.contains(k) || *k == fill_kind_for_biome(bi))
+                    })
+                    .count();
+                if biomes_present > 1 {
+                    mixed_sections += 1;
+                }
+                if !species.is_empty() {
+                    worst_creatures = worst_creatures.min(species.len());
+                }
+            }
+        }
+        assert!(total_sections >= 10, "only measured {total_sections} deep sections");
+        // The claim is about the DISTRIBUTION, not about every section: a section CAN legally
+        // hold one biome (neighbouring cells that drew the same theme are how a region larger
+        // than one cell exists at all). What cannot happen in a ring world is a mixed section.
+        let share = mixed_sections as f64 / total_sections as f64;
+        assert!(
+            share > 0.5,
+            "only {mixed_sections}/{total_sections} deep sections hold more than one biome's \
+             props ({share:.2}) — the scatter is still reading the band, not the cell"
+        );
+        assert!(worst_creatures >= 1, "a deep section with no creature species at all");
+    }
+
     #[test]
     fn the_wood_is_thick_where_you_are_standing() {
         // Reported from play: "the forest biome feels more like a field with trees in it."
@@ -9954,16 +10156,40 @@ mod tests {
         assert_ne!(order(1), order(2), "different seeds vary the biome order");
     }
 
+    /// **A SECTION IS NOT A BIOME ANY MORE, AND THIS IS THE TEST THAT SAYS SO.**
+    ///
+    /// It replaces `no_two_adjacent_sections_share_a_biome`, which held the ring world's
+    /// no-adjacent-repeat rule — and that rule had to go rather than be ported: two
+    /// neighbours drawing the same theme is the ONLY way a region bigger than one cell
+    /// exists, and any such rule needs an ordering, which would make the decomposition a
+    /// traversal instead of a pure function of position (CANON §W5 wants the second).
+    ///
+    /// What is asserted instead is the thing that was false before: walk ACROSS a section,
+    /// at its own radius, and you cross several themes.
     #[test]
-    fn no_two_adjacent_sections_share_a_biome() {
-        // The no-adjacent-repeat rule: you never walk from one theme into the same one.
+    fn one_section_spans_several_biomes() {
         let b = Balance::load_default().unwrap();
         let mut a = Arena::generate(&b, 31_337, false);
-        a.ensure_frontier(&b, 800.0);
-        assert!(a.areas.len() >= 3, "need a few sections to check adjacency");
-        for w in a.areas.windows(2) {
-            assert_ne!(w[0].biome, w[1].biome, "adjacent sections must differ in biome");
+        a.ensure_frontier(&b, 900.0);
+        assert!(a.areas.len() >= 4, "need a few sections to sweep");
+        let mut widest = 0usize;
+        for area in a.areas.iter().skip(2) {
+            let r = 0.5 * (area.start_x + area.end_x);
+            let mut seen: Vec<&str> = Vec::new();
+            for k in 0..200 {
+                let bearing = (k as f64 / 200.0 * 2.0 - 1.0) * a.radial_half * 0.99;
+                let biome = a.biome_at(Position::new(r * bearing.cos(), r * bearing.sin()));
+                if !seen.contains(&biome) {
+                    seen.push(biome);
+                }
+            }
+            widest = widest.max(seen.len());
         }
+        assert!(
+            widest >= 3,
+            "the widest section holds only {widest} biomes across its whole arc — that is \
+             still a ring world"
+        );
     }
 
     // ---- WG-1: dungeons (BSP-ish rooms via divider walls + guaranteed loot) ----

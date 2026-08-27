@@ -5529,6 +5529,15 @@ impl GameState {
                     // The world's own fact, not the caller's request: a joiner who asked
                     // for a normal dive still lands in a live tutorial world.
                     tutorial: inst.tutorial,
+                    // HOW THIS WORLD IS PARTITIONED. The client's ground shader derives a
+                    // fragment's cell from these numbers and colours it from the same gate
+                    // the server spawns against — a shader told a different decomposition
+                    // paints biomes the world does not hold.
+                    regions: meld_proto::regions::Regions {
+                        grid: inst.arena.regions(),
+                        gate: meld_world::biome_gate_slice(&balance),
+                        blend: balance.region.blend_width as f32,
+                    },
                 },
             ));
             if !backpack_gear.is_empty() {

@@ -657,6 +657,21 @@ pub mod run {
     /// S2C — authoritative run/instance state at entry.
     #[derive(Debug, Clone, Serialize, Deserialize)]
     pub struct Started {
+        /// **THE REGION DECOMPOSITION** ([`crate::regions`]) — how this world is partitioned
+        /// into cells, and the gate that decides which biome each may wear.
+        ///
+        /// A biome is a property of a CELL, not of a radius ring, so the client cannot infer
+        /// the ground's theme from a section's band any more: it derives the cell itself, in
+        /// its ground shader, from these numbers. They are balance (`[region]`,
+        /// `[biome_gate]`) and the client has no `balance.toml`, which is why they cross the
+        /// wire rather than being mirrored.
+        ///
+        /// It rides ENTRY rather than each `world.terrain_section`, because the decomposition
+        /// is a property of the world and fixed for its lifetime: copying it onto every one of
+        /// thirty-odd streamed sections is thirty chances for the copies to disagree about
+        /// what the world is.
+        #[serde(default)]
+        pub regions: crate::regions::Regions,
         pub client_seq: Option<u32>,
         pub run_id: Id,
         pub instance_id: Id,

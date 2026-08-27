@@ -231,6 +231,7 @@ pub(crate) fn pump_net(
                 lobes,
                 basins,
                 rivers,
+                regions,
                 tutorial,
             } => {
                 // Seed this run's terrain BEFORE the ground/entities render, so the shader
@@ -248,6 +249,9 @@ pub(crate) fn pump_net(
                 // name (CANON D19). Taken from the server rather than from whatever we
                 // asked for — see `RunStarted::world_seed`.
                 crate::world_render::set_world_seed(world_seed);
+                // …and HOW this world is partitioned. The ground shader derives every
+                // fragment's cell from this, so it has to land before the first frame.
+                crate::world_render::set_regions(regions);
                 crate::world_render::set_lobes(lobes);
                 crate::world_render::set_water(basins, rivers);
                 // Fresh dive: drop any terrain from the previous run before the new
