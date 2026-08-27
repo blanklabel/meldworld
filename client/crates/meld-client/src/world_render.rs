@@ -99,7 +99,15 @@ mod biome_params {
         pub(crate) peak_count: u32,
         // Three SCALAR pads (not a `[u32; 3]` — a u32 array needs a 16-byte stride in a
         // uniform, which fails validation) to round the struct out to a 16-byte multiple.
-        pub(crate) _pad_pc0: u32,
+        /// 1 while the player is inside a DUNGEON, so the ground draws flagstones instead
+        /// of the biome's outdoor tile.
+        ///
+        /// Underground used to be the overworld ground dimmed — a stopgap from when there
+        /// was no dungeon floor art, which `docs/asset-pipeline.md` wrote up as if it were
+        /// a design ("a desert dungeon already stands on sand with no extra work"). There
+        /// is art now, so a built dungeon stands on a floor. It takes one of the three
+        /// pads that were already here, so the uniform layout is byte-for-byte unchanged.
+        pub(crate) dungeon: u32,
         pub(crate) _pad_pc1: u32,
         pub(crate) _pad_pc2: u32,
         /// The COASTLINE, straight from [`meld_proto::coast`]:
@@ -199,7 +207,7 @@ mod biome_params {
                 sea_anim: Vec4::ZERO,
                 peaks: [Vec4::ZERO; PEAK_SLOTS],
                 peak_count: 0,
-                _pad_pc0: 0,
+                dungeon: 0,
                 _pad_pc1: 0,
                 _pad_pc2: 0,
             }
@@ -254,6 +262,10 @@ pub(crate) struct GroundBiome {
     cliff_tundra: Handle<Image>,
     #[texture(114)]
     cliff_mire: Handle<Image>,
+    /// The floor underground. One tile, tinted by the theme lighting a dungeon already
+    /// applies, rather than five near-identical flagstones.
+    #[texture(115)]
+    dungeon_floor: Handle<Image>,
     #[uniform(106)]
     params: BiomeParams,
 }
@@ -766,6 +778,7 @@ pub(crate) fn setup(
             cliff_ashfall: load_tiled(&assets, "ground/cliff_ashfall.png"),
             cliff_tundra: load_tiled(&assets, "ground/cliff_tundra.png"),
             cliff_mire: load_tiled(&assets, "ground/cliff_mire.png"),
+            dungeon_floor: load_tiled(&assets, "ground/tile_dungeon.png"),
             // Rings start empty; `update_ground_biome_rings` fills them from the
             // streamed sections each frame (count 0 ⇒ shader falls back to forest).
             params: BiomeParams::default(),
@@ -2440,6 +2453,7 @@ pub(crate) fn update_ground_biome_rings(
     tell: Res<crate::ShiftTell>,
     clock: Res<Time>,
     frame: Res<crate::WorldFrame>,
+    dungeon: Res<DungeonSceneRes>,
     ground_q: Query<&MeshMaterial3d<GroundMat>, With<WorldGround>>,
     mut mats: ResMut<Assets<GroundMat>>,
 ) {
@@ -2489,6 +2503,10 @@ pub(crate) fn update_ground_biome_rings(
     // prop and shades the troughs into blue "corridor" ribbons — flatten it (amp 0).
     mat.extension.params.terrain_amp =
         if *state.get() == Screen::Overworld { 1.0 } else { 0.0 };
+    // Underground stands on a floor. Set beside `terrain_amp` because they answer the
+    // same question — what KIND of place is this — and splitting them is how one of the
+    // two ends up stale in a scene the other already knows about.
+    mat.extension.params.dungeon = u32::from(dungeon.active);
     // Publish the SAME coast + flatten state to the placement side, right here, so
     // `terrain_height` answers for the surface this uniform is about to draw. Everything
     // in the world floated over every shoreline for as long as these were two answers.

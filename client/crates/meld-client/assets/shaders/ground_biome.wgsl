@@ -53,7 +53,8 @@ struct BiomeParams {
     _pad_peaks: vec2<f32>,                 // align `peaks` to 16 (matches the Rust struct)
     peaks: array<vec4<f32>, 24>,           // authored mountains [cx, cz, radius, height]
     peak_count: u32,
-    _pad_pc0: u32, _pad_pc1: u32, _pad_pc2: u32,
+    // 1 underground: the ground draws flagstones instead of the biome's outdoor tile.
+    dungeon: u32, _pad_pc1: u32, _pad_pc2: u32,
     // The COASTLINE (`meld_proto::coast`): (arc_half_rad, neck_reach, peninsula_length,
     // channel_land_share). Passed in rather than baked, so the sea the player SEES is the
     // sea the server collides with — the shoreline is authored in two scenes that cannot
@@ -114,6 +115,7 @@ struct BiomeParams {
 @group(#{MATERIAL_BIND_GROUP}) @binding(112) var t_cliff_ashfall: texture_2d<f32>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(113) var t_cliff_tundra: texture_2d<f32>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(114) var t_cliff_mire: texture_2d<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(115) var t_dungeon_floor: texture_2d<f32>;
 
 // The sea's tile for the biome it borders — the same mapping the pond/bog-pool/
 // frozen-pond props use (`WorldAssets::water_mats`), so a tundra shore is ice and a mire
@@ -579,6 +581,13 @@ fn cliff_weight(n: vec3<f32>) -> f32 {
 }
 
 fn biome_color(bi: i32, uv: vec2<f32>) -> vec4<f32> {
+    // UNDERGROUND IS A FLOOR, not the outdoors dimmed. Checked here, in the one place
+    // every ground sample already passes through, so the shore/cliff/water paths inherit
+    // it without each remembering to ask. The theme lighting a dungeon already applies
+    // does the per-biome colouring, which is why one flagstone serves all five.
+    if (params.dungeon != 0u) {
+        return ground_sample(t_dungeon_floor, uv);
+    }
     // One place, so no biome can be left reading as wallpaper because its arm was missed.
     if (bi <= 0) {
         return ground_sample(t_forest, uv);
