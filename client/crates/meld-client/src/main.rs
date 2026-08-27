@@ -427,9 +427,9 @@ fn main() {
                 hd2d_follow,
                 hd2d::place_billboards,
                 hd2d::billboard,
-                animate_sway,
-                // Grass leans by composing onto the yaw `billboard` writes, so it has to
-                // read a yaw that is already there.
+                // Both wind leans compose onto the yaw `hd2d::billboard` writes, so both
+                // have to read a yaw that is already there.
+                animate_sway.after(hd2d::billboard),
                 ambient::update_ambient_scatter.after(hd2d::billboard),
                 (update_overworld_hud, update_run_stats, update_action_hud),
                 render_overlay,

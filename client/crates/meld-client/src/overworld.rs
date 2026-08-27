@@ -1720,7 +1720,7 @@ pub(crate) fn sync_overworld_sprites(
                     Some("elite") => (1.6 * 1.4, Color::srgb(1.5, 0.8, 0.55)),
                     _ => (1.6, tint),
                 };
-                spawn_billboard_entity(&mut commands, &mut mats, &wa, id, e, tex, size, tint, 0.55);
+                spawn_billboard_entity(&mut commands, &mut mats, &wa, id, e, tex, size, tint, 0.55, None);
             }
             EntityKind::Portal => {
                 // The stone-gateway billboard, plus a faint emissive ground ring so
@@ -1735,6 +1735,7 @@ pub(crate) fn sync_overworld_sprites(
                     3.0,
                     Color::srgb(1.2, 1.2, 1.3),
                     0.0,
+                    None,
                 );
                 add_ground_ring(&mut commands, &wa, root);
             }
@@ -1821,6 +1822,7 @@ pub(crate) fn sync_overworld_sprites(
                     1.8,
                     Color::srgb(1.5, 1.0, 0.55),
                     0.25,
+                    None,
                 );
                 add_ground_ring(&mut commands, &wa, root);
             }
@@ -1903,6 +1905,7 @@ pub(crate) fn sync_overworld_sprites(
                     2.8,
                     Color::srgb(0.75, 1.15, 1.5),
                     0.3,
+                    None,
                 );
                 add_ground_ring(&mut commands, &wa, root);
             }
@@ -1923,6 +1926,7 @@ pub(crate) fn sync_overworld_sprites(
                     0.9,
                     Color::srgb(1.4, 0.35, 0.3),
                     0.2,
+                    None,
                 );
             }
             EntityKind::Entrance => {
@@ -1939,6 +1943,7 @@ pub(crate) fn sync_overworld_sprites(
                     3.2,
                     Color::srgb(0.85, 0.45, 1.25),
                     0.45,
+                    None,
                 );
             }
         }
@@ -3291,6 +3296,11 @@ pub(crate) fn spawn_connector(
         });
 }
 
+/// `sway` is the wind-lean amplitude from [`sway_amp`], or `None` for anything rigid. It
+/// lands on the QUAD rather than the root because a billboard owns its own world rotation
+/// (see [`animate_sway`]); the root stays translation-only, which is the invariant
+/// `hd2d::billboard` depends on.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn spawn_billboard_entity(
     commands: &mut Commands,
     mats: &mut Assets<StandardMaterial>,
@@ -3301,6 +3311,7 @@ pub(crate) fn spawn_billboard_entity(
     height: f32,
     tint: Color,
     shadow: f32,
+    sway: Option<f32>,
 ) -> Entity {
     // The shared quad mesh is 2.2 world-units tall; scale to the wanted height and
     // lift it so the sprite's feet sit on the ground plane.
@@ -3313,12 +3324,22 @@ pub(crate) fn spawn_billboard_entity(
             Visibility::default(),
         ))
         .with_children(|p| {
-            p.spawn((
+            let mut quad = p.spawn((
                 Mesh3d(wa.sprite_quad.clone()),
                 MeshMaterial3d(mat),
                 Transform::from_xyz(0.0, height * 0.5, 0.0).with_scale(Vec3::splat(scale)),
                 hd2d::Billboard,
             ));
+            if let Some(amp) = sway {
+                // Phase and speed off the id, so neighbouring trees never toss in lockstep.
+                let h = hash_pick(id, 10000);
+                quad.insert(Sway {
+                    pivot_y: height * 0.5,
+                    phase: (h % 628) as f32 / 100.0,
+                    amp,
+                    speed: 0.7 + ((h / 628) % 60) as f32 / 100.0,
+                });
+            }
             if shadow > 0.0 {
                 p.spawn((
                     Mesh3d(wa.shadow_mesh.clone()),
@@ -3453,13 +3474,19 @@ pub(crate) fn spawn_obstacle(
                 // canopy line varies. (Bumped up — they read too small/low before.)
                 let vf = 0.85 + (hash_pick(id, 100) as f32 / 100.0) * 0.9; // 0.85..1.75
                 let height = ((3.6 + r * 1.4) * vf).clamp(3.4, 9.5);
-                spawn_billboard_entity(commands, mats, wa, id, e, tex, height, Color::WHITE, height * 0.28);
+                spawn_billboard_entity(
+                    commands, mats, wa, id, e, tex, height, Color::WHITE, height * 0.28,
+                    sway_amp(name),
+                );
                 return;
             }
         }
         if let Some(tex) = wa.prop_sprites.get(&format!("obstacle_{name}")) {
             let height = (1.8 + r * 0.8).clamp(1.8, 4.5);
-            spawn_billboard_entity(commands, mats, wa, id, e, tex.clone(), height, Color::WHITE, 0.55);
+            spawn_billboard_entity(
+                commands, mats, wa, id, e, tex.clone(), height, Color::WHITE, 0.55,
+                sway_amp(name),
+            );
             return;
         }
     }
@@ -3471,23 +3498,21 @@ pub(crate) fn spawn_obstacle(
             // obstacles read bigger, without drifting far from the tuned size.
             let scale = base * (0.85 + r * 0.15).clamp(0.85, 1.5);
             let yaw = (hash_pick(id, 360) as f32).to_radians();
-            let mut ent = commands.spawn((
+            commands.spawn((
                 WorldEntity(id.to_string()),
                 WorldAssetRoot(scene.clone()),
                 Transform::from_translation(world_pos(e.x, e.y, 0.0))
                     .with_scale(Vec3::splat(scale))
                     .with_rotation(Quat::from_rotation_y(yaw)),
             ));
-            // Foliage sways in the wind (see `animate_sway`); rock/cliff stays rigid.
-            if let Some(amp) = sway_amp(name) {
-                let h = hash_pick(id, 10000);
-                ent.insert(Sway {
-                    base_yaw: yaw,
-                    phase: (h % 628) as f32 / 100.0,
-                    amp,
-                    speed: 0.7 + ((h / 628) % 60) as f32 / 100.0,
-                });
-            }
+            // ⚠️ NO SWAY ON THE 3D-MODEL PATH, AND THAT IS WHY TREES NEVER SWAYED. Every
+            // kind `sway_amp` answers for — tree, cactus, fungal_wall — has a prop sprite in
+            // `PROP_KEYS`, and the sprite branch above returns before reaching here. So this
+            // was the ONLY place `Sway` was ever inserted, on a path nothing takes: the
+            // feature had no live entities at all. It belongs on the billboard quad, where
+            // `spawn_billboard_entity` now puts it. A swaying 3D model would need its own
+            // path, since rotating a mesh root and rotating a billboard are different
+            // problems.
             return;
         }
     }

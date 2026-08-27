@@ -1678,19 +1678,25 @@ pub(crate) struct Backdrop {
     off: Vec2,
 }
 
-/// Wind sway for foliage: the prop leans back and forth around its base (which sits
-/// on the ground) so the top travels most — reading as leaves moving in the wind.
-/// `base_yaw` preserves the spawn-time variety rotation the sway composes onto; the
-/// sway strengthens in rain (see [`animate_sway`]). Applied to trees/mushrooms/cacti.
+/// Wind sway for foliage: the sprite leans back and forth around its BASE, so the canopy
+/// travels and the trunk stays planted. Lives on the billboard QUAD (not its root), because
+/// a billboard owns its own world rotation — see [`animate_sway`] for why that decides
+/// everything about how this is applied.
+///
+/// `pivot_y` is the quad's local height above the ground it stands on; the lean is a
+/// rotation about that point rather than about the quad's centre, which is the difference
+/// between a tree bending and a tree see-sawing at its waist.
 #[derive(Component)]
 pub(crate) struct Sway {
-    pub(crate) base_yaw: f32,
+    pub(crate) pivot_y: f32,
     pub(crate) phase: f32,
     pub(crate) amp: f32,
     pub(crate) speed: f32,
 }
 
-/// Per-obstacle-kind wind-sway amplitude (radians of lean); `None` = rigid (rock/etc).
+/// Per-obstacle-kind wind-sway amplitude (radians of lean at full storm); `None` = rigid
+/// (rock/cliff/etc). Read together with [`gust_response`], which is shaped so these numbers
+/// land on the degrees the comments below claim.
 pub(crate) fn sway_amp(kind: &str) -> Option<f32> {
     // ⚠️ THESE WERE A THIRD OF WHAT YOU CAN SEE. `animate_sway` multiplies them by
     // `0.06 + wind * 2.4`, which is 0.42 in fair weather — so a tree at 0.05 leaned ONE
@@ -1720,14 +1726,37 @@ pub(crate) fn animate_sway(time: Res<Time>, sky: Option<Res<Sky>>, mut q: Query<
     // rises before a storm and hardest in the downpour. A hair of idle sway keeps a
     // calm forest from looking frozen.
     let wind = sky.map(|s| s.wind).unwrap_or(0.0);
-    let gust = 0.06 + wind * 2.4;
+    let gust = gust_response(wind);
     for (s, mut tf) in &mut q {
         // Faster, choppier motion the harder it blows.
         let a = (t * s.speed * (1.0 + wind) + s.phase).sin() * s.amp * gust;
-        tf.rotation = Quat::from_rotation_y(s.base_yaw)
-            * Quat::from_rotation_z(a)
-            * Quat::from_rotation_x(a * 0.35);
+        // ⚠️ COMPOSE ONTO THE BILLBOARD'S YAW, NEVER REPLACE IT — the same rule the grass
+        // lean follows, for the same reason: `hd2d::billboard` wrote this rotation, and
+        // assigning over it drops the sprite's facing and turns it edge-on. Ordered
+        // `.after(hd2d::billboard)` at the registration, so the yaw is already here.
+        //
+        // Leaning about Z in the billboard's OWN frame is what makes the lean read as a lean
+        // from every camera bearing. Rotating the ROOT instead would pivot at the base for
+        // free, but the root is a billboard's ancestor, and a lean applied there tips the
+        // sprite toward the camera rather than across the screen whenever the camera looks
+        // down the world Z axis.
+        let q = tf.rotation * Quat::from_rotation_z(a);
+        tf.rotation = q;
+        // Which leaves the pivot to rebuild by hand: a quad's own origin is its CENTRE, so
+        // rotating there swings the trunk out as far as the canopy. Carrying the quad's
+        // offset through the same rotation pivots the whole sprite about the ground instead.
+        tf.translation = q * Vec3::new(0.0, s.pivot_y, 0.0);
     }
+}
+
+/// How hard the wind leans things, per unit of `sky.wind`.
+///
+/// Shaped rather than arbitrary: [`sway_amp`] is multiplied by this, so the two together
+/// decide the actual angle, and an amplitude table nobody can read in degrees is what let a
+/// tree ship leaning one and a half degrees. These coefficients put a tree (`0.17`) at **4°
+/// in fair weather and 15° in a super storm** — the design the table's own comments state.
+pub(crate) fn gust_response(wind: f32) -> f32 {
+    0.213 + wind * 1.327
 }
 
 /// Keep the [`Backdrop`] cliffs parked around the camera (they never get closer, like
@@ -3757,6 +3786,93 @@ mod weather_tests {
         assert_eq!(wind_and_rain_targets(1, false).1, 0.0, "the gust is dry — it only announces");
         assert_eq!(wind_and_rain_targets(2, false).1, 1.0, "the storm rains");
         assert_eq!(wind_and_rain_targets(3, false).1, 0.0, "clearing stops raining");
+    }
+
+    /// The amplitude table is multiplied by [`gust_response`], so neither number is the angle
+    /// on its own — which is exactly how a tree shipped leaning one and a half degrees while
+    /// its table entry looked reasonable. Assert the DEGREES, so what the comments promise is
+    /// what the wind does.
+    #[test]
+    fn a_tree_leans_the_degrees_the_table_claims() {
+        let tree = sway_amp("tree").expect("a tree sways");
+        let fair = (tree * gust_response(wind_and_rain_targets(0, false).0)).to_degrees();
+        let storm = (tree * gust_response(wind_and_rain_targets(2, true).0)).to_degrees();
+        assert!(
+            (3.5..4.5).contains(&fair),
+            "fair weather should stir a tree about 4 degrees, got {fair:.1}"
+        );
+        assert!(
+            (14.0..16.0).contains(&storm),
+            "a super storm should toss a tree about 15 degrees, got {storm:.1}"
+        );
+        // And a cactus is a water tank on a stalk: it moves, barely.
+        let cactus = sway_amp("cactus").expect("a cactus sways");
+        assert!(cactus * 3.0 < tree, "a cactus should stay far stiffer than a tree");
+        assert!(sway_amp("boulder").is_none(), "rock is rigid");
+    }
+
+    /// ⚠️ **A SPRITE'S OWN ORIGIN IS ITS CENTRE, SO A LEAN ABOUT IT SEE-SAWS.** The trunk
+    /// swings out as far as the canopy and the tree stops touching the ground. `animate_sway`
+    /// carries the quad's offset through the same rotation to pivot about the base instead;
+    /// this is that arithmetic, checked rather than asserted in a comment.
+    #[test]
+    fn a_leaning_sprite_pivots_at_its_base_not_its_middle() {
+        let pivot_y = 3.5_f32; // a 7-unit tree
+        for lean in [0.07_f32, 0.26] {
+            // `hd2d::billboard` has already put the camera-facing yaw here; take it as
+            // identity (camera dead ahead) so the lean is the only thing moving anything.
+            let q = Quat::IDENTITY * Quat::from_rotation_z(lean);
+            let centre = q * Vec3::new(0.0, pivot_y, 0.0);
+            // The quad's bottom edge sits `pivot_y` below its centre in its own frame.
+            let base = centre + q * Vec3::new(0.0, -pivot_y, 0.0);
+            assert!(
+                base.length() < 1e-5,
+                "the trunk left the ground at lean {lean}: {base:?}"
+            );
+        }
+        // And the canopy genuinely travels, or the whole exercise renders as a still frame.
+        let q = Quat::from_rotation_z(0.26);
+        let travel = (q * Vec3::new(0.0, pivot_y, 0.0)).x.abs();
+        assert!(travel > 0.8, "a full storm moved the canopy {travel:.2} units");
+    }
+
+    /// ⚠️ **A SWAYING KIND WITH NO SPRITE SILENTLY LOSES ITS SWAY.** `Sway` now lives on the
+    /// billboard quad, so a kind that falls through to the 3D-model path gets none — which is
+    /// the bug this replaces, where every swaying kind took the sprite path and the only
+    /// `Sway` insertion sat on the model path nothing reached.
+    #[test]
+    fn every_swaying_kind_draws_as_a_sprite() {
+        for (kind, sprite) in [
+            ("tree", "obstacle_tree_pine"),
+            ("cactus", "obstacle_cactus"),
+            ("fungal_wall", "obstacle_fungal_wall"),
+        ] {
+            assert!(sway_amp(kind).is_some(), "{kind} should sway");
+            assert!(
+                PROP_KEYS.contains(&sprite),
+                "`{kind}` sways, so it must draw as a sprite — `{sprite}` is missing from \
+                 PROP_KEYS, which drops it onto the 3D-model path where nothing sways"
+            );
+        }
+    }
+
+    /// Both wind leans compose onto the yaw rather than assigning over it, and both are
+    /// ordered so there is a yaw to compose onto. One rule, two call sites, held in one place.
+    #[test]
+    fn both_wind_leans_compose_after_the_billboard() {
+        let here = include_str!("world_render.rs");
+        assert!(
+            here.contains("let q = tf.rotation * Quat::from_rotation_z(a);"),
+            "the prop lean must post-multiply onto the billboard yaw"
+        );
+        assert!(
+            here.contains("tf.translation = q * Vec3::new(0.0, s.pivot_y, 0.0);"),
+            "the prop lean must carry the quad's offset through the rotation, or it see-saws"
+        );
+        let main = include_str!("main.rs");
+        for sys in ["animate_sway.after(hd2d::billboard)", "ambient::update_ambient_scatter.after(hd2d::billboard)"] {
+            assert!(main.contains(sys), "`{sys}` must be ordered after the billboard pass");
+        }
     }
 
     /// ⚠️ **A GRASS BLADE IS A BILLBOARD, AND TWO SYSTEMS WANT ITS ROTATION.**
