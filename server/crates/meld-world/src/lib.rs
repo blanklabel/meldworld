@@ -243,7 +243,7 @@ fn creatures_for_biome(biome: &str) -> &'static [&'static str] {
         "desert" => &["dune_wyrm", "sand_shade", "dune_colossus"],
         "ashfall" => &["cinder_imp", "magma_golem", "ember_wisp"],
         "tundra" => &["frost_lurker", "ice_revenant", "glacier_maw"],
-        _ => &["bog_serpent", "myconid_brute", "bog_stinger", "bog_ooze", "frog_tribesman"],
+        _ => &["bog_serpent", "myconid", "bog_stinger", "bog_ooze", "frog_tribesman"],
     }
 }
 

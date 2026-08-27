@@ -84,18 +84,18 @@
    }
   },
   {
-   "key": "myconid_brute",
+   "key": "myconid",
    "biome": "mire",
    "gate": 0,
    "walk": "lumbering forward with heavy steps",
    "attack": "swinging a heavy knotted fist downward",
    "variants": {
     "myconid_brute": "a hulking fungus brute, a broad humanoid body of dense grey fibrous flesh with a dark bruise-purple cap for a head and thick knotted arms",
-    "myconid_brute_minion": "a small stooped fungus thrall, a wiry humanoid body of pale grey fibre with a small drooping purple cap for a head and thin arms",
-    "myconid_brute_mage": "a tall gaunt fungus mystic, a slender grey fibrous body under a wide domed violet cap, glowing spore-motes circling its raised hands",
-    "myconid_brute_pack_leader": "an immense elder fungus brute, its grey fibrous body armoured in shelf-fungus plates, a towering dark cap ringed with pale gills, huge knotted arms",
-    "myconid_brute_boss": "a massive fungus brute, a broad humanoid body of dense dark fibrous flesh with a huge split bruise-purple cap and enormous knotted arms",
-    "myconid_brute_warrior": "a lean fungus warrior, a wiry grey fibrous body under a small dark cap, gripping a splintered wooden haft"
+    "myconid_minion": "a small stooped fungus thrall, a wiry humanoid body of pale grey fibre with a small drooping purple cap for a head and thin arms",
+    "myconid_mage": "a tall gaunt fungus mystic, a slender grey fibrous body under a wide domed violet cap, glowing spore-motes circling its raised hands",
+    "myconid_pack_leader": "an immense elder fungus brute, its grey fibrous body armoured in shelf-fungus plates, a towering dark cap ringed with pale gills, huge knotted arms",
+    "myconid_boss": "a massive fungus brute, a broad humanoid body of dense dark fibrous flesh with a huge split bruise-purple cap and enormous knotted arms",
+    "myconid_warrior": "a lean fungus warrior, a wiry grey fibrous body under a small dark cap, gripping a splintered wooden haft"
    }
   },
   {

@@ -51,10 +51,10 @@ const HOSTILE_PAIRS: &[(&str, &str)] = &[
     ("beast", "undead"),    // tundra: frost_lurker vs ice_revenant
     ("beast", "fungal"),    // forest: thornback_boar vs forest_bloom_stalker
     ("construct", "fungal"),
-    ("draconic", "fungal"), // mire: bog_serpent vs myconid_brute
+    ("draconic", "fungal"), // mire: bog_serpent vs myconid
     ("draconic", "undead"), // desert: dune_wyrm vs sand_shade
     ("fiend", "construct"), // ashfall: cinder_imp vs magma_golem
-    ("fiend", "fungal"),    // mire: bog_stinger vs myconid_brute
+    ("fiend", "fungal"),    // mire: bog_stinger vs myconid
     // THE BRIAR COURT hates what is made of appetite, what is made of rot, and what
     // refuses to stay buried. It does NOT hate beasts: a fae court and the animals of
     // its wood are the same side, which is what lets it hold a barrow without its own

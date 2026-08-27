@@ -2024,7 +2024,7 @@ aggression = "aggressive"
 flees = false
 loot_kind = "serpent_fang"
 
-[creature.myconid_brute]      # mire BRUISER — a huge, armoured fungal wall
+[creature.myconid]      # mire BRUISER — a huge, armoured fungal wall
 base_hp = 160
 base_atk = 13
 base_def = 3

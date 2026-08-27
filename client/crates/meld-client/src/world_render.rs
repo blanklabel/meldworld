@@ -436,12 +436,12 @@ pub(crate) const CREATURE_CHARS: &[&str] = &[
     "magma_golem_cinderling",
     "magma_golem_pack_leader",
     "magma_golem_slagfist",
+    "myconid_boss",
     "myconid_brute",
-    "myconid_brute_boss",
-    "myconid_brute_mage",
-    "myconid_brute_minion",
-    "myconid_brute_pack_leader",
-    "myconid_brute_warrior",
+    "myconid_mage",
+    "myconid_minion",
+    "myconid_pack_leader",
+    "myconid_warrior",
     "sand_shade",
     "sand_shade_pack_leader",
     "sporeling",
@@ -461,26 +461,39 @@ pub(crate) const CREATURE_CHARS: &[&str] = &[
     "verdant_ooze_pack_leader",
 ];
 
-/// Which installed set a creature draws from: a pack leader's own art when it has some,
-/// the ordinary creature's otherwise, and nothing at all if the species has no art yet.
+/// Which installed set a creature draws from, out of its species' whole POOL.
 ///
-/// The FALLBACK is the point — art lands in batches, so a species can have its ordinary
-/// form drawn and its leader not, and a leader rendering as nothing is far worse than a
-/// leader that merely looks like a big one of its own kind. Split out from
-/// [`WorldAssets::creature_frames`] so the rule can be tested without standing up the
-/// whole asset resource.
-pub(crate) fn creature_art_key(
-    kind: &str,
-    leader: bool,
-    installed: impl Fn(&str) -> bool,
-) -> Option<String> {
-    if leader {
-        let boss_of_the_pack = format!("{kind}_pack_leader");
-        if installed(&boss_of_the_pack) {
-            return Some(boss_of_the_pack);
+/// A species is a set of variants sharing a name prefix — `myconid_brute`,
+/// `myconid_mage`, `myconid_warrior`, `myconid_pack_leader` — and NONE of them need be
+/// named exactly after the species. That is not a detail: renaming the species key from
+/// `myconid_brute` to `myconid` (because the brute is one myconid among several, not the
+/// species) instantly left the species with no art at all under a lookup that only knew
+/// `<kind>` and `<kind>_pack_leader`.
+///
+/// So: take the pool, prefer the half that matches what this spawn IS — a pack leader
+/// draws from `_pack_leader` variants, everything else from the rest — and fall back to
+/// the other half rather than to nothing, because a leader rendering as an ordinary one
+/// of its kind is far better than a leader rendering as nothing.
+///
+/// The exact species name wins inside its half when it exists, so a species that does
+/// have a canonical ordinary form keeps using it.
+pub(crate) fn creature_art_key(kind: &str, leader: bool, installed: &[&str]) -> Option<String> {
+    let mine = |k: &str| k == kind || k.strip_prefix(kind).is_some_and(|r| r.starts_with('_'));
+    let is_leader = |k: &str| k.ends_with("_pack_leader");
+    let (want, rest): (Vec<&str>, Vec<&str>) = installed
+        .iter()
+        .copied()
+        .filter(|k| mine(k))
+        .partition(|k| is_leader(k) == leader);
+    let pick = |v: &[&str]| -> Option<String> {
+        if v.contains(&kind) {
+            return Some(kind.to_string());
         }
-    }
-    installed(kind).then(|| kind.to_string())
+        // Sorted rather than first-seen: the list's order is whatever the sync wrote, and
+        // a creature must not change appearance because a file landed in a new order.
+        v.iter().min().map(|k| k.to_string())
+    };
+    pick(&want).or_else(|| pick(&rest))
 }
 
 /// Shared meshes/materials + the psyker sprite set, built once at startup so the
@@ -581,7 +594,7 @@ impl WorldAssets {
     /// species' — a species may get its leader art before its minion art, and half a pack
     /// rendering as nothing at all is worse than half a pack sharing one sprite.
     pub(crate) fn creature_frames(&self, kind: &str, leader: bool) -> Option<&CharacterFrames> {
-        let key = creature_art_key(kind, leader, |k| self.creature_chars.contains_key(k))?;
+        let key = creature_art_key(kind, leader, CREATURE_CHARS)?;
         self.creature_chars.get(&key)
     }
 
@@ -728,7 +741,7 @@ pub(crate) fn setup(
         ("frost_lurker", "monsters/wolf.png"),
         ("ice_revenant", "monsters/skeletal_warrior.png"),
         ("bog_serpent", "monsters/adder.png"),
-        ("myconid_brute", "monsters/troll.png"),
+        ("myconid", "monsters/troll.png"),
         // The oozes, until their animated sets land (`CREATURE_CHARS`).
         ("verdant_ooze", "monsters/jelly.png"),
         ("bog_ooze", "monsters/acid_blob.png"),
@@ -3533,39 +3546,45 @@ mod creature_sprite_tests {
         }
     }
 
-    /// A leader falls back to the ordinary creature's art, never to nothing — art lands
-    /// in batches, so a species can have its ordinary form drawn and its leader not.
+    /// A species draws from its POOL, and no variant need carry the species' own name.
     #[test]
-    fn a_pack_leader_without_its_own_art_borrows_the_ordinary_creature() {
-        let installed =
-            |k: &str| matches!(k, "thornback_boar" | "bog_serpent" | "bog_serpent_pack_leader");
-        // A leader's own art wins when it exists.
+    fn a_species_draws_from_its_whole_pool() {
+        // The case that forced this: six myconids, not one of them called `myconid`.
+        const MYCONID: &[&str] = &["myconid_brute", "myconid_mage", "myconid_minion",
+                                   "myconid_pack_leader", "myconid_warrior"];
         assert_eq!(
-            creature_art_key("bog_serpent", true, installed).as_deref(),
-            Some("bog_serpent_pack_leader")
+            creature_art_key("myconid", true, MYCONID).as_deref(),
+            Some("myconid_pack_leader"),
+            "a leader must find the leader art"
         );
-        // …and falls back to the ordinary creature when it does not.
+        let ordinary = creature_art_key("myconid", false, MYCONID);
+        assert!(
+            ordinary.as_deref().is_some_and(|k| !k.ends_with("_pack_leader")),
+            "an ordinary myconid drew its own leader's art"
+        );
+        // Stable across list order: a creature must not change appearance because the
+        // sync happened to write the folders in a different sequence.
+        let shuffled: Vec<&str> = MYCONID.iter().rev().copied().collect();
+        assert_eq!(ordinary, creature_art_key("myconid", false, &shuffled));
+
+        // The species' own name still wins when a species does have one.
+        const BOAR: &[&str] = &["thornback_boar", "thornback_boar_beta",
+                                "thornback_boar_pack_leader"];
         assert_eq!(
-            creature_art_key("thornback_boar", true, installed).as_deref(),
-            Some("thornback_boar"),
-            "a leader fell back to no art at all"
+            creature_art_key("thornback_boar", false, BOAR).as_deref(),
+            Some("thornback_boar")
         );
-        // An ordinary creature never reaches for the leader's art, which is what keeps a
-        // pack's rank and file from all drawing as their own leader.
+
+        // A leader with no leader art borrows an ordinary one rather than drawing nothing.
+        const NO_LEADER: &[&str] = &["sporeling_baby"];
         assert_eq!(
-            creature_art_key("bog_serpent", false, installed).as_deref(),
-            Some("bog_serpent")
+            creature_art_key("sporeling", true, NO_LEADER).as_deref(),
+            Some("sporeling_baby")
         );
-        // A species with no art stays a static billboard rather than drawing nothing.
-        assert_eq!(creature_art_key("sporeling", true, installed), None);
-        assert_eq!(creature_art_key("sporeling", false, installed), None);
-        // Leader art alone is not enough: the ordinary form is the common case, so a
-        // species with only a leader set stays on billboards for everything else.
-        let only_leader = |k: &str| k == "glacier_maw_pack_leader";
-        assert_eq!(creature_art_key("glacier_maw", false, only_leader), None);
-        assert_eq!(
-            creature_art_key("glacier_maw", true, only_leader).as_deref(),
-            Some("glacier_maw_pack_leader")
-        );
+        // And a species with no art at all stays on its billboard.
+        assert_eq!(creature_art_key("glacier_maw", false, NO_LEADER), None);
+        // A prefix must not bleed across species: `bog_ooze` is not a `bog` variant.
+        const BOG: &[&str] = &["bog_ooze_baby"];
+        assert_eq!(creature_art_key("bog_serpent", false, BOG), None);
     }
 }
