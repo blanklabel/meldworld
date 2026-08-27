@@ -1,0 +1,5 @@
+These frames could not be downloaded and are NOT in this zip:
+
+Idle/animations/Walking/north/frame_003.png
+
+The generation itself succeeded — the frames are listed by get_character/the API. Re-download to retry; if a frame is still missing, contact support with this file.

@@ -23,6 +23,7 @@
           "east": "Idle/rotations/east.png",
           "north-east": "Idle/rotations/north-east.png",
           "north": "Idle/rotations/north.png",
+          "north-west": "Idle/rotations/north-west.png",
           "west": "Idle/rotations/west.png",
           "south-west": "Idle/rotations/south-west.png"
         },
@@ -126,5 +127,5 @@
     }
   ],
   "export_version": "3.1",
-  "export_date": "2026-08-26T20:24:45.590933"
+  "export_date": "2026-08-27T20:22:17.284348"
 }

@@ -408,7 +408,6 @@ pub(crate) const CREATURE_CHARS: &[&str] = &[
     "bog_ooze_baby",
     "bog_ooze_belcher",
     "bog_ooze_grump",
-    "bog_ooze_pack_leader",
     "bog_serpent",
     "bog_serpent_female",
     "bog_serpent_pack_leader",
@@ -417,7 +416,6 @@ pub(crate) const CREATURE_CHARS: &[&str] = &[
     "bog_stinger",
     "bog_stinger_buzz",
     "bog_stinger_licker",
-    "bog_stinger_pack_leader",
     "bog_stinger_piercer",
     "cinder_imp",
     "cinder_imp_dog",
@@ -426,6 +424,7 @@ pub(crate) const CREATURE_CHARS: &[&str] = &[
     "cinder_imp_wolf",
     "dune_colossus",
     "dune_colossus_pack_leader",
+    "dune_colossus_shardling",
     "dune_wyrm",
     "dune_wyrm_glassback",
     "dune_wyrm_hatchling",
@@ -437,22 +436,34 @@ pub(crate) const CREATURE_CHARS: &[&str] = &[
     "forest_bloom_stalker_adult",
     "forest_bloom_stalker_baby",
     "forest_bloom_stalker_pack_leader",
+    "frog_tribesman",
     "frog_tribesman_elder",
+    "frog_tribesman_pack_leader",
+    "frog_tribesman_spearfisher",
     "frost_lurker",
     "frost_lurker_pack_leader",
+    "frost_lurker_pup",
+    "frost_lurker_rimefang",
     "glacier_maw",
+    "glacier_maw_cub",
+    "glacier_maw_frostjaw",
     "glacier_maw_pack_leader",
     "ice_revenant",
     "ice_revenant_pack_leader",
+    "ice_revenant_shieldbound",
+    "ice_revenant_thrall",
     "magma_golem",
     "magma_golem_pack_leader",
     "myconid_boss",
     "myconid_brute",
+    "myconid_brute_boss",
     "myconid_mage",
     "myconid_minion",
     "myconid_pack_leader",
     "sand_shade",
+    "sand_shade_gravebound",
     "sand_shade_pack_leader",
+    "sand_shade_wisp",
     "sporeling",
     "sporeling_baby",
     "sporeling_healer",
@@ -463,11 +474,44 @@ pub(crate) const CREATURE_CHARS: &[&str] = &[
     "thornback_boar_charger",
     "thornback_boar_goarer",
     "thornback_boar_pack_leader",
+    "twingolem",
     "verdant_ooze",
     "verdant_ooze_blob",
     "verdant_ooze_blopper",
     "verdant_ooze_healer",
     "verdant_ooze_pack_leader",
+];
+
+/// The Last City's townsfolk (`assets/npcs/<key>/`). Loaded exactly like a creature —
+/// eight walk facings and, for the armed ones, a south attack — and looked up by key
+/// rather than pooled, because an NPC is one person rather than one of a species.
+///
+/// They replace three Kenney GRAVEYARD models (a keeper, a ghost and a skeleton) that
+/// stood in the friendly hub as "a hint of the crowd to come".
+pub(crate) const NPC_CHARS: &[&str] = &[
+    "npc_alembic_keeper",
+    "npc_apothecary_keeper",
+    "npc_beggar",
+    "npc_bounty_clerk",
+    "npc_broker",
+    "npc_cartographer",
+    "npc_child",
+    "npc_innkeeper",
+    "npc_master_smith",
+    "npc_phoenix_guard_sentry",
+    "npc_quartermaster",
+    "npc_soldier_bow",
+    "npc_soldier_captain",
+    "npc_soldier_spear",
+    "npc_soldier_sword",
+    "npc_townsfolk_dwarf",
+    "npc_townsfolk_elf",
+    "npc_townsfolk_gnome",
+    "npc_townsfolk_halfling",
+    "npc_townsfolk_harefolk",
+    "npc_townsfolk_hobgoblin",
+    "npc_townsfolk_human",
+    "npc_vault_clerk",
 ];
 
 /// Which installed set a creature draws from, out of its species' whole POOL.
@@ -540,6 +584,8 @@ pub(crate) struct WorldAssets {
     /// not landed, which keeps it
     /// on the old single-png billboard rather than on missing-asset errors.
     pub(crate) creature_chars: HashMap<String, CharacterFrames>,
+    /// Townsfolk sprite sets (`assets/npcs/<key>/`), keyed by [`NPC_CHARS`] entry.
+    pub(crate) npc_chars: HashMap<String, CharacterFrames>,
     pub(crate) monster_pool: Vec<Handle<Image>>,
     /// Real 3D prop models (Kenney Nature Kit, CC0) keyed by terrain-obstacle kind →
     /// several `(scene, baked_scale)` variants (picked per-entity by id hash), so the
@@ -605,6 +651,13 @@ impl WorldAssets {
     pub(crate) fn creature_frames(&self, kind: &str, leader: bool) -> Option<&CharacterFrames> {
         let key = creature_art_key(kind, leader, CREATURE_CHARS)?;
         self.creature_chars.get(&key)
+    }
+
+    /// A townsfolk's sprite set. Keyed by name, not pooled by prefix like a creature:
+    /// an NPC is one PERSON, and the innkeeper standing at the inn has to be the
+    /// innkeeper every time rather than whichever townsfolk the hash landed on.
+    pub(crate) fn npc_frames(&self, key: &str) -> Option<&CharacterFrames> {
+        self.npc_chars.get(key)
     }
 
     pub(crate) fn class_frames(&self, class: &str) -> &CharacterFrames {
@@ -974,34 +1027,38 @@ pub(crate) fn setup(
     // per-clip: template `walk` cycles are 6f for humanoids / 8f for quadrupeds; the
     // v3 attack + ability clips are 8f. miredrowned's two abilities + ashenleviathan's
     // `eruption` weren't generated (PixelLab credit cap) — they're simply absent.
-    fn boss_clips(key: &str) -> &'static [(&'static str, usize)] {
+    // `(clip, frames, drawn-for-all-eight-facings)`. The flag exists because a dungeon
+    // sprite may be drawn only from the south — declaring such a clip as directional asks
+    // the loader for seven folders nobody made, which is 56 missing-asset errors a launch.
+    fn boss_clips(key: &str) -> &'static [(&'static str, usize, bool)] {
         match key {
-            "gloamhound" => &[("walk", 8), ("attack", 8), ("howl", 8), ("pounce", 8)],
-            "rustfang" => &[("walk", 8), ("attack", 8), ("slam", 8), ("overcharge", 8)],
-            "choirmother" => &[("walk", 6), ("attack", 8), ("wail", 8), ("grasp", 8)],
-            "pyrewarden" => &[("walk", 6), ("attack", 8), ("furnace_slam", 8), ("ember_burst", 8)],
-            "sepulcher" => &[("walk", 8), ("attack", 8), ("rend", 8), ("phantom", 8)],
-            "hollowbishop" => &[("walk", 6), ("attack", 8), ("soulfire", 8), ("bone_nova", 8)],
-            "ironmaw" => &[("walk", 8), ("attack", 8), ("devour", 8), ("reactor_roar", 8)],
-            "weepingcolossus" => &[("walk", 6), ("attack", 8), ("chain_sweep", 8), ("sorrow_quake", 8)],
-            "miredrowned" => &[("walk", 6), ("attack", 8)],
-            "ashenleviathan" => &[("walk", 8), ("attack", 8), ("cinder_charge", 8)],
+            "gloamhound" => &[("walk", 8, true), ("attack", 8, true), ("howl", 8, true), ("pounce", 8, true)],
+            "rustfang" => &[("walk", 8, true), ("attack", 8, true), ("slam", 8, true), ("overcharge", 8, true)],
+            "choirmother" => &[("walk", 6, true), ("attack", 8, true), ("wail", 8, true), ("grasp", 8, true)],
+            "pyrewarden" => &[("walk", 6, true), ("attack", 8, true), ("furnace_slam", 8, true), ("ember_burst", 8, true)],
+            "sepulcher" => &[("walk", 8, true), ("attack", 8, true), ("rend", 8, true), ("phantom", 8, true)],
+            "hollowbishop" => &[("walk", 6, true), ("attack", 8, true), ("soulfire", 8, true), ("bone_nova", 8, true)],
+            "ironmaw" => &[("walk", 8, true), ("attack", 8, true), ("devour", 8, true), ("reactor_roar", 8, true)],
+            "weepingcolossus" => &[("walk", 6, true), ("attack", 8, true), ("chain_sweep", 8, true), ("sorrow_quake", 8, true)],
+            "miredrowned" => &[("walk", 6, true), ("attack", 8, true)],
+            "ashenleviathan" => &[("walk", 8, true), ("attack", 8, true), ("cinder_charge", 8, true)],
             // The barrow's fae court: walk + attack, no ability art yet, so its kit
             // falls through to the attack clip.
-            "briarlord" => &[("walk", 8), ("attack", 8)],
+            "briarlord" => &[("walk", 8, true), ("attack", 8, true)],
             // The Ocean Palace's guardian. A dungeon `sprite`, deliberately NOT one of
             // the named bosses (`meld_proto::bosses`) — it draws no name plate. Its walk
             // is still to be made, so it declares the attack only: naming a clip with no
             // frames behind it is asset errors on every launch.
-            "twingolem" => &[("attack", 8)],
-            _ => &[("walk", 8), ("attack", 8)],
+            // Its attack is drawn SOUTH-ONLY; its walk is not drawn at all yet.
+            "twingolem" => &[("attack", 8, false)],
+            _ => &[("walk", 8, true), ("attack", 8, true)],
         }
     }
     let boss_chars: HashMap<String, CharacterFrames> = boss_keys()
         .map(|key| {
             (
                 key.to_string(),
-                hd2d::load_character_clips(&assets, &format!("bosses/{key}"), boss_clips(key)),
+                hd2d::load_creature_clips(&assets, &format!("bosses/{key}"), boss_clips(key)),
             )
         })
         .collect();
@@ -1025,6 +1082,28 @@ pub(crate) fn setup(
         })
         .collect();
 
+    // Townsfolk. Eighteen of the twenty-three never fight, so only the armed ones have
+    // an attack — `load_creature_clips` is told which clips exist rather than assuming.
+    let npc_chars: HashMap<String, CharacterFrames> = NPC_CHARS
+        .iter()
+        .map(|&key| {
+            let armed = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("assets/npcs")
+                .join(key)
+                .join("animations/attack")
+                .is_dir();
+            let clips: &[(&str, usize, bool)] = if armed {
+                &[("walk", 8, true), ("attack", 8, false)]
+            } else {
+                &[("walk", 8, true)]
+            };
+            (
+                key.to_string(),
+                hd2d::load_creature_clips(&assets, &format!("npcs/{key}"), clips),
+            )
+        })
+        .collect();
+
     let prop_sprites: HashMap<String, Handle<Image>> = PROP_KEYS
         .iter()
         .map(|&k| (k.to_string(), assets.load(format!("props/{k}.png"))))
@@ -1033,6 +1112,7 @@ pub(crate) fn setup(
     commands.insert_resource(WorldAssets {
         class_chars,
         creature_chars,
+        npc_chars,
         boss_chars,
         prop_sprites,
         // Cylindrical normals so the sun models the flat sprite (HD-2D depth).

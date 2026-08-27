@@ -61,8 +61,8 @@ def call(tool, args):
     return text
 
 
-def complete(name):
-    d = ASSETS / name
+def complete(name, kind="creatures"):
+    d = ASSETS.parent / kind / name
     return (d / "rotations/south.png").is_file() and \
         all((d / "animations/walk" / x / "frame_000.png").is_file() for x in DIRS)
 
@@ -109,11 +109,23 @@ def main():
                 print(f"      {cid}")
         sys.exit("\nrename or delete one of each, then run again")
 
-    # The hero classes are 96px characters too, and they belong in `characters/`, not
-    # here — pulling `explorer` into the bestiary would file a playable class as
-    # wildlife. Read the exclusion off the repo rather than hardcoding a roster that
-    # would go stale the next time a class is added.
-    CLASSES = {d.name for d in (ASSETS.parent / "characters").iterdir() if d.is_dir()}
+    # ⚠️ WHERE A CHARACTER BELONGS IS ALREADY WRITTEN DOWN — in which asset folder it is
+    # sitting in. Everything at 96px used to be assumed to be a creature, with the hero
+    # classes carved out by name; that carve-out silently did not cover the townsfolk, so
+    # a `--all` run filed all 23 NPCs into the BESTIARY, duplicating every one of them and
+    # listing five as loadable creatures.
+    #
+    # Asking the repo instead of maintaining a list of exceptions is both correct and
+    # smaller: a name that already lives somewhere goes back there, and only a genuinely
+    # new character falls through to the default.
+    HOME = {}
+    for kind in ("characters", "creatures", "npcs", "bosses"):
+        d = ASSETS.parent / kind
+        if d.is_dir():
+            for x in d.iterdir():
+                if x.is_dir():
+                    HOME[x.name] = kind
+    CLASSES = {n for n, k in HOME.items() if k == "characters"}
     CLASSES |= {"iron_hull_monk"}  # its folder here is `iron_hull`
     todo, skip, not_ours = [], [], []
     for cid, name in chars:
@@ -121,12 +133,15 @@ def main():
         if want in CLASSES:
             not_ours.append(want)
             continue
-        (todo if a.all else (skip if complete(want) else todo)).append((cid, want))
+        # Its existing home wins; a character this repo has never seen defaults to the
+        # bestiary, which is what almost every new 96px character is.
+        kind = HOME.get(want, "creatures")
+        (todo if a.all else (skip if complete(want, kind) else todo)).append((cid, want, kind))
 
     print(f"{len(chars)} 96px characters on the account; {len(not_ours)} are hero "
           f"classes, {len(skip)} creatures already complete here, {len(todo)} to pull")
-    for cid, want in todo:
-        print(f"  {want}")
+    for cid, want, kind in todo:
+        print(f"  {kind}/{want}")
     if a.dry_run:
         return
 
@@ -143,14 +158,14 @@ def main():
     # written down here even for a variant this run skipped, because skipping means "you
     # already have it", never "it does not exist".
     state = json.loads(STATE.read_text()) if STATE.exists() else {}
-    for cid, want in skip + todo:
+    for cid, want, _kind in skip + todo:
         state.setdefault(want, {})["id"] = cid
     STATE.write_text(json.dumps(state, indent=1, sort_keys=True))
     print(f"recorded {len(skip) + len(todo)} character ids in the ledger")
 
-    for cid, want in todo:
+    for cid, want, kind in todo:
         subprocess.run([str(ROOT / "client/scripts/install_class_sprite.sh"), cid, want,
-                        "creatures"], env={**os.environ, "PIXELLAB_TOKEN": TOKEN})
+                        kind], env={**os.environ, "PIXELLAB_TOKEN": TOKEN})
 
 
 if __name__ == "__main__":
