@@ -100,14 +100,24 @@ pub(crate) fn held(run: &meld_run::PlayerRun, class: MaterialClass) -> i32 {
 /// The order is the rule. Placement is checked BEFORE the stock is spent, because a refusal
 /// that also charged you is the worst kind — and the arena is the only thing that knows the
 /// ground (spacing, the clear path, another player standing too close).
-pub(crate) fn raise(
+/// **Raise one at a chosen spot** (BD-9). `at` absent means the player's feet.
+///
+/// `yaw` is carried but not yet stored on the `Structure` — the client uses it to lay a run
+/// along its drag, and the server accepts it so the wire does not have to change again when
+/// the structure starts remembering which way it faces. Storing it is the next step, and
+/// pretending it is stored would be worse than saying so.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn raise_at(
     arena: &mut meld_world::Arena,
     run: &mut meld_run::PlayerRun,
     balance: &Balance,
     function: &str,
     player_id: &str,
     tick: u64,
+    at: Option<meld_proto::common::Position>,
+    yaw: Option<f64>,
 ) -> Result<Charged, String> {
+    let _ = yaw;
     let def = meld_proto::structures::structure(function).ok_or("No such structure.")?;
     let (cost, _, _) = balance.building.spec(function).ok_or("No such structure.")?;
     // BD-1: what it is made of comes from the REGISTRY, never from here.
@@ -115,7 +125,7 @@ pub(crate) fn raise(
     let kind = affordable_kind(run, class, cost)
         .ok_or_else(|| format!("{} takes {cost} {}.", def.name, class.wire()))?;
     arena
-        .place_structure(balance, player_id, function, &kind, tick)
+        .place_structure_at(balance, player_id, function, &kind, tick, at)
         .map_err(|why| why.message().to_string())?;
     spend(run, class, cost).expect("affordability was just checked");
     Ok(Charged { kind, qty: cost })
@@ -268,7 +278,7 @@ impl BuildHarness {
         let (p, tick) = (self.player.clone(), self.tick);
         let arena = &mut self.arena;
         let run = self.inst.runs.iter_mut().find(|r| r.player_id == p).unwrap();
-        raise(arena, run, &b, function, &p, tick)
+        raise_at(arena, run, &b, function, &p, tick, None, None)
     }
 
     pub(crate) fn mend(&mut self, entity_id: &str) -> Result<Charged, String> {

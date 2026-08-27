@@ -1257,6 +1257,17 @@ pub mod run {
     #[derive(Debug, Clone, Serialize, Deserialize)]
     pub struct BuildStructure {
         pub function: String,
+        /// **Where** to put it (BD-9's aimed placement). Absent means the player's own
+        /// feet, which is what the keyboard row still means and what every pre-BD-9 client
+        /// sends — so this stayed optional rather than becoming a required field.
+        ///
+        /// Server-bounded by `[building] build_reach`: the client asking for a position is
+        /// not the client choosing one, or you could build across the map.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub at: Option<crate::common::Position>,
+        /// Facing, in degrees. A wall run has to be able to lie along its drag.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub yaw: Option<f64>,
     }
     impl Message for BuildStructure {
         const TYPE: &'static str = "run.build_structure";

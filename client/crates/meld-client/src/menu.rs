@@ -1645,7 +1645,7 @@ pub(crate) fn build_structure_click(
     rows: Query<(&Interaction, &BuildStructureButton), Changed<Interaction>>,
     mut overlay: ResMut<Overlay>,
     backpack: Res<RunBackpack>,
-    net: NonSend<NetRes>,
+    mut build: ResMut<crate::builder::BuildMode>,
 ) {
     for (interaction, btn) in &rows {
         if *interaction != Interaction::Pressed {
@@ -1663,7 +1663,10 @@ pub(crate) fn build_structure_click(
             continue;
         };
         if carried_of_class(&backpack, def.material).is_some() {
-            net.0.send(ClientCmd::BuildStructure { function: btn.function.into() });
+            // BD-9: clicking a row ARMS the tool rather than dropping a structure at your
+            // feet. You then aim it, turn it with `R`, and drag to lay a run — which is what
+            // "click and stretch" needs, and what a single click-to-place could never be.
+            build.arm(btn.function);
             overlay.kind = None;
         }
     }

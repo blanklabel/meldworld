@@ -7171,6 +7171,95 @@ mod tests {
             false
         }
 
+        /// **A wall RUN abuts** — which every piece after the first used to be
+        /// refused for, as `TooClose`. That is why drag-to-stretch was impossible
+        /// rather than merely unbuilt.
+        #[test]
+        fn a_wall_run_abuts_but_still_cannot_cage_a_player() {
+            let (b, mut a) = built();
+            assert!(stand_somewhere_legal(&b, &mut a, 200.0), "no legal ground at d200");
+            let here = a.avatar("p1").unwrap().position;
+
+            // BD-9: a RUN. Pieces at `abut_spacing` would each have been refused as
+            // `TooClose` before — which is why drag-to-stretch was impossible rather than
+            // merely unimplemented.
+            let step = b.building.abut_spacing;
+            let mut placed = 0;
+            let mut why: Vec<String> = Vec::new();
+            for k in 1..=4 {
+                let at = Position::new(here.x + step * k as f64, here.y);
+                match a.place_structure_at(&b, "p1", "wall", "dune_iron", 100, Some(at)) {
+                    Ok(_) => placed += 1,
+                    Err(e) => why.push(format!("{k}:{e:?}")),
+                }
+            }
+            assert!(placed >= 3, "a wall run should abut, only {placed} of 4 went up: {why:?}");
+
+            // …and the pieces really are touching, not merely near.
+            let xs: Vec<f64> = a.structures.iter().map(|s| s.position.x).collect();
+            let mut gaps: Vec<f64> = xs.windows(2).map(|w| (w[1] - w[0]).abs()).collect();
+            gaps.sort_by(f64::total_cmp);
+            if let Some(g) = gaps.first() {
+                assert!(
+                    *g < b.building.min_spacing,
+                    "the run is spaced like separate structures ({g}), not a wall"
+                );
+            }
+        }
+
+        /// **The trade: abutment is allowed, caging is not.** The old guarantee was
+        /// geometric — no two structures within `min_spacing`, so a ring always had a gap.
+        /// A wall run retires that, so placement must refuse the cage directly.
+        #[test]
+        fn a_second_player_cannot_be_walled_in_by_a_run() {
+            let (b, mut a) = built();
+            assert!(stand_somewhere_legal(&b, &mut a, 200.0), "no legal ground at d200");
+            let here = a.avatar("p1").unwrap().position;
+
+            // A victim standing just off the builder's spot, and the builder ringing them.
+            a.add_avatar("victim".into(), 5.0);
+            a.avatar_mut("victim").unwrap().position =
+                Position::new(here.x + 8.0, here.y);
+            let victim = a.avatar("victim").unwrap().position;
+
+            // Ask the rule directly with a tight ring of hypothetical pieces: it must see
+            // the cage. Built from `abut_spacing` so the ring has no walkable gap.
+            let step = b.building.abut_spacing * 0.9;
+            let r = 2.2_f64;
+            let mut ring = Vec::new();
+            let mut t = 0.0_f64;
+            while t < std::f64::consts::TAU {
+                ring.push(Position::new(victim.x + r * t.cos(), victim.y + r * t.sin()));
+                t += step / r;
+            }
+            assert_eq!(
+                a.would_enclose_someone(&b, "p1", &ring).as_deref(),
+                Some("victim"),
+                "a closed ring around another player must read as enclosing them"
+            );
+
+            // And open ground does NOT read as a cage, or every build in a field is refused.
+            assert_eq!(
+                a.would_enclose_someone(&b, "p1", &[Position::new(victim.x + 3.0, victim.y)]),
+                None,
+                "a single wall beside someone is not a cage"
+            );
+        }
+
+        /// You cannot build across the map now that the client asks for a position.
+        #[test]
+        fn an_aimed_placement_has_to_be_within_reach() {
+            let (b, mut a) = built();
+            assert!(stand_somewhere_legal(&b, &mut a, 200.0), "no legal ground at d200");
+            let here = a.avatar("p1").unwrap().position;
+            let far = Position::new(here.x + b.building.build_reach * 3.0, here.y);
+            assert_eq!(
+                a.place_structure_at(&b, "p1", "wall", "dune_iron", 100, Some(far)).err(),
+                Some(PlaceRefusal::OutOfReach)
+            );
+        }
+
+
         /// Corridor → world, so a corridor-space probe lands where the arena expects it.
         fn bend_for_test(a: &Arena, p: Position) -> Position {
             let half = a.radial_half();
@@ -12168,6 +12257,8 @@ pub enum PlaceRefusal {
     Blocked,
     AtYourLimit,
     SomeoneStanding,
+    OutOfReach,
+    WouldEncloseSomeone,
 }
 
 impl PlaceRefusal {
@@ -12180,6 +12271,8 @@ impl PlaceRefusal {
             PlaceRefusal::Blocked => "There is no room here.",
             PlaceRefusal::AtYourLimit => "You are holding as much ground as you can.",
             PlaceRefusal::SomeoneStanding => "Someone is standing there.",
+            PlaceRefusal::OutOfReach => "Too far away to build there.",
+            PlaceRefusal::WouldEncloseSomeone => "That would wall somebody in.",
         }
     }
 }
@@ -12219,6 +12312,9 @@ impl Arena {
     /// construction and the Shift's re-scatter honours the same tube; a player-built wall
     /// across the trail would be the one thing in the world that could seal the exit, and
     /// it would do it on purpose.
+    /// Place one at your own feet — the pre-BD-9 behaviour, kept because eighteen call
+    /// sites and every existing test mean it, and because it is still what a keyboard
+    /// "raise this here" does.
     pub fn place_structure(
         &mut self,
         balance: &Balance,
@@ -12226,6 +12322,31 @@ impl Arena {
         function: &str,
         ore: &str,
         tick: u64,
+    ) -> Result<&Structure, PlaceRefusal> {
+        self.place_structure_at(balance, player_id, function, ore, tick, None)
+    }
+
+    /// **Place one at `at`** (BD-9: aimed placement, and the unit a drag repeats). `None`
+    /// means the player's own position.
+    ///
+    /// Two rules differ from the feet-only version, and both exist because a wall you can
+    /// CONTINUE is a different object from a wall you can only dot around:
+    ///
+    /// * **Blockers may ABUT.** `min_spacing` would refuse the second piece of every wall
+    ///   run, so a pair of blocking structures answers to `abut_spacing` instead — touching
+    ///   but not overlapping. Anything else still answers to `min_spacing`, so a run of
+    ///   walls cannot conceal a forge inside it.
+    /// * **And nothing may wall a player in.** Allowing abutment retires the geometric
+    ///   promise that a ring of walls always has a gap, so placement asks the question
+    ///   directly (`would_enclose_someone`). That check is the price of the drag.
+    pub fn place_structure_at(
+        &mut self,
+        balance: &Balance,
+        player_id: &str,
+        function: &str,
+        ore: &str,
+        tick: u64,
+        at: Option<Position>,
     ) -> Result<&Structure, PlaceRefusal> {
         let b = &balance.building;
         let Some((cost, max_hp, build_ms)) = b.spec(function) else {
@@ -12237,7 +12358,11 @@ impl Arena {
         let Some(av) = self.avatar(player_id) else {
             return Err(PlaceRefusal::NotInWorld);
         };
-        let (position, elevation) = (av.position, av.elevation);
+        let (feet, elevation) = (av.position, av.elevation);
+        let position = at.unwrap_or(feet);
+        if at.is_some() && position.distance_to(&feet) > b.build_reach {
+            return Err(PlaceRefusal::OutOfReach);
+        }
         if self.structures.iter().filter(|s| s.owner_player_id == player_id).count()
             >= b.max_per_player
         {
@@ -12249,12 +12374,25 @@ impl Arena {
         {
             return Err(PlaceRefusal::OnTheTrail);
         }
-        if self
-            .structures
+        // Two BLOCKING structures may abut — that is what makes a wall RUN possible — while
+        // every other pair keeps `min_spacing`, so a line of walls cannot hide a forge or a
+        // second anchor inside it.
+        let mine_blocks = meld_proto::structures::structure(function).is_some_and(|d| d.blocks);
+        // ⚠️ THE COMPARISON NEEDS A TOLERANCE, and abutment is exactly why. A grid-snapped
+        // drag places pieces EXACTLY `abut_spacing` apart, and out at world coordinates in
+        // the hundreds the subtraction loses the low bits: `(x + 3.2) - (x + 1.6)` came out
+        // as 1.5999999999999943 against a 1.6 limit, so every OTHER piece of a wall run was
+        // refused as `TooClose`. Alternating gaps in a dragged wall would have read as a
+        // physics quirk rather than arithmetic.
+        const SPACING_EPS: f64 = 1e-3;
+        let too_close = self.structures.iter().any(|s| {
+            let limit = if mine_blocks && s.blocks() { b.abut_spacing } else { b.min_spacing };
+            s.position.distance_to(&position) < limit - SPACING_EPS
+        }) || self
+            .stations
             .iter()
-            .any(|s| s.position.distance_to(&position) < b.min_spacing)
-            || self.stations.iter().any(|s| s.position.distance_to(&position) < b.min_spacing)
-        {
+            .any(|s| s.position.distance_to(&position) < b.min_spacing);
+        if too_close {
             return Err(PlaceRefusal::TooClose);
         }
         if self
@@ -12278,6 +12416,10 @@ impl Arena {
                 .any(|a| a.player_id != player_id && a.position.distance_to(&position) < keep_clear)
             {
                 return Err(PlaceRefusal::SomeoneStanding);
+            }
+            // The replacement for the escapability guarantee that abutment retired.
+            if self.would_enclose_someone(balance, player_id, &[position]).is_some() {
+                return Err(PlaceRefusal::WouldEncloseSomeone);
             }
         }
         let tick_ms = balance.battle.tick_ms.max(1);
@@ -12407,6 +12549,119 @@ impl Arena {
     ///
     /// A structure still going up already blocks: a half-built wall you can walk through
     /// is a wall nobody would bother finishing.
+    /// **Can whoever stands at `from` still get away from there?** A bounded flood fill
+    /// over `field`, looking for any reachable spot further than `escape` from the start.
+    ///
+    /// ⚠️ THIS IS WHAT REPLACED THE SPACING RULE'S ESCAPABILITY GUARANTEE. While no two
+    /// structures could stand within `min_spacing`, a ring of walls ALWAYS had a gap wide
+    /// enough to walk through — the geometry promised it, and
+    /// `a_ring_of_walls_always_leaves_a_way_out` proved it. Drag-to-stretch (BD-9) needs
+    /// pieces that abut, which retires that promise: a continuous wall run is exactly the
+    /// thing the old rule made impossible. So placement has to ask the question directly
+    /// rather than inherit the answer from a radius.
+    ///
+    /// **Bounded on purpose.** The world streams outward without limit, so a flood fill
+    /// over open country is unbounded work on the single task that owns the game loop.
+    /// Running out of budget means the ground is OPEN — the safe direction: a false
+    /// "enclosed" would refuse legitimate builds out in a field, while a false "open" only
+    /// permits a cage that has to be enormous to reach the cap in the first place.
+    fn can_get_away(
+        &self,
+        field: &BlockField,
+        from: &Position,
+        escape: f64,
+        cell: f64,
+        budget: usize,
+    ) -> bool {
+        let cell = cell.max(0.1);
+        let key = |p: &Position| ((p.x / cell).floor() as i64, (p.y / cell).floor() as i64);
+        let centre = |k: (i64, i64)| {
+            Position::new((k.0 as f64 + 0.5) * cell, (k.1 as f64 + 0.5) * cell)
+        };
+        let start = key(from);
+        let mut seen: std::collections::HashSet<(i64, i64)> = std::collections::HashSet::new();
+        let mut queue: std::collections::VecDeque<(i64, i64)> =
+            std::collections::VecDeque::new();
+        seen.insert(start);
+        queue.push_back(start);
+        while let Some(k) = queue.pop_front() {
+            if seen.len() > budget {
+                return true; // open country: the cage would have to be vast
+            }
+            let here = centre(k);
+            if here.distance_to(from) > escape {
+                return true;
+            }
+            // Four-way, so a diagonal gap narrower than a player is not a way out.
+            for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+                let n = (k.0 + dx, k.1 + dy);
+                if seen.contains(&n) {
+                    continue;
+                }
+                let c = centre(n);
+                // Beyond the escape ring in one hop still counts as getting away, so a
+                // player standing right at the edge is not judged enclosed by the grid.
+                if field.blocks(&c, self.player_radius) {
+                    continue;
+                }
+                seen.insert(n);
+                queue.push_back(n);
+            }
+        }
+        false
+    }
+
+    /// **Would blocking structures at `pieces` leave somebody else unable to get away?**
+    /// Returns the first such player, or `None` if everyone can still move.
+    ///
+    /// Only OTHER players are checked. Walling yourself in is self-inflicted and you own
+    /// the walls, so you can pack them back down — and only the owner may
+    /// (`only_the_owner_may_pack_a_structure_down`), which is exactly why somebody ELSE
+    /// caging you has no answer and must be refused up front.
+    pub fn would_enclose_someone(
+        &self,
+        balance: &Balance,
+        placer: &str,
+        pieces: &[Position],
+    ) -> Option<String> {
+        let b = &balance.building;
+        if pieces.is_empty() {
+            return None;
+        }
+        let mut items: Vec<(Position, f64)> =
+            self.obstacles.iter().map(|o| (o.position, o.radius)).collect();
+        items.extend(
+            self.structures
+                .iter()
+                .filter(|s| s.blocks())
+                .map(|s| (s.position, self.structure_radius)),
+        );
+        // The hypothetical pieces, so the question is about the world AFTER this build.
+        items.extend(pieces.iter().map(|p| (*p, self.structure_radius)));
+        let field = BlockField::new(items);
+        let reach = b.enclosure_escape_radius;
+        for av in &self.avatars {
+            if av.player_id == placer {
+                continue;
+            }
+            // Nobody far from the new pieces can have been enclosed BY them, and checking
+            // every avatar in a streamed world would be a flood fill per player per build.
+            if pieces.iter().all(|p| p.distance_to(&av.position) > reach * 2.0) {
+                continue;
+            }
+            if !self.can_get_away(
+                &field,
+                &av.position,
+                reach,
+                b.enclosure_cell,
+                b.enclosure_cell_budget,
+            ) {
+                return Some(av.player_id.clone());
+            }
+        }
+        None
+    }
+
     fn blocking_field(&self) -> BlockField {
         let mut out: Vec<(Position, f64)> =
             self.obstacles.iter().map(|o| (o.position, o.radius)).collect();

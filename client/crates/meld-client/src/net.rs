@@ -68,6 +68,8 @@ pub enum ClientCmd {
     /// Raise a `Structure` (CANON D21/§W3). One command for every function, because there
     /// is one primitive — the key comes from `meld_proto::structures`.
     BuildStructure { function: String },
+    /// BD-9: build at a chosen spot with a facing — what one piece of a dragged run is.
+    BuildStructureAt { function: String, at: (f64, f64), yaw: f64 },
     RepairStructure { entity_id: String },
     DemolishStructure { entity_id: String },
     /// Ask whoever raised this station to do a piece of work for you: the smith's
@@ -2216,6 +2218,14 @@ impl Inner {
             ClientCmd::BuildStation { kind } => {
                 self.send_env(wr::BuildStation::TYPE, json!({ "kind": kind }))
             }
+            ClientCmd::BuildStructureAt { function, at, yaw } => self.send_env(
+                wr::BuildStructure::TYPE,
+                json!({
+                    "function": function,
+                    "at": { "x": at.0, "y": at.1 },
+                    "yaw": yaw,
+                }),
+            ),
             ClientCmd::BuildStructure { function } => {
                 self.send_env(wr::BuildStructure::TYPE, json!({ "function": function }))
             }

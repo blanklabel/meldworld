@@ -34,6 +34,7 @@ use net::{ClientCmd, CombatantView, EntityKind, GearLine, Net, SkillLine};
 // one slice of behavior. They re-export into the crate root so a system in one
 // module can call a sibling's via `use super::*`.
 mod ambient; // client-side decorative life: world-snapped grass scatter + biome motes
+mod builder;
 mod battle; // ATB command panel, party HUD, 3D arena + camera, per-class kits
 mod city; // The Last City hub: districts, plaza, HUD
 mod feel; // battle-feel timings/magnitudes, in one runtime-tunable place
@@ -134,6 +135,7 @@ fn main() {
         .add_plugins(bevy_ecs_tilemap::TilemapPlugin)
         // Daytime sky blue behind the diorama (the fog fades the ground into it).
         .insert_resource(ClearColor(Color::srgb(0.53, 0.72, 0.93)))
+        .init_resource::<builder::BuildMode>()
         .init_resource::<hd2d::Look>()
         .init_resource::<hd2d::LookWatch>()
         .init_resource::<overworld::CamLift>()
@@ -473,6 +475,10 @@ fn main() {
                     return_to_town_click,
                     build_station_click,
                     menu::build_structure_click,
+                    // BD-9 builder mode: the armed tool's own input and its ghost. Beside
+                    // the row that arms it, so "click the row, then aim" is one place.
+                    builder::builder_input,
+                    builder::draw_ghosts,
                     menu::equip_best_click,
                 ),
                 build_world_walls,

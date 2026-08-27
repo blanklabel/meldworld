@@ -2622,7 +2622,32 @@ repair_hp_per_material = 120
 demolish_refund_fraction = 0.5
 # No two structures inside this of each other, so a wall is a wall and not a hedge of
 # three hundred overlapping ones.
+#
+# ⚠️ TWO BLOCKING STRUCTURES ARE EXEMPT, because a wall you cannot continue is not a wall.
+# Drag-to-stretch (BD-9) needs pieces that ABUT, so a pair of blockers is held to
+# `abut_spacing` instead — touching but not overlapping. Everything else still answers to
+# this, so a run of walls cannot hide a forge inside it.
 min_spacing = 6.0
+# How far from your avatar you may place a piece (BD-9's aimed placement). Bounded because
+# the client asks for a POSITION now: without this you could build across the map, or into
+# ground you cannot see.
+build_reach = 14.0
+# The closest two BLOCKING structures may stand: touching, not overlapping. Below the
+# footprint and pieces interpenetrate; far above it and a "continuous" wall has gaps a
+# creature walks through.
+abut_spacing = 1.6
+# How far a player must be able to get from where they stand for the ground not to count as
+# ENCLOSED. This is what replaced the spacing rule's escapability guarantee once walls were
+# allowed to abut: geometry no longer promises a gap, so placement asks the question
+# directly.
+enclosure_escape_radius = 22.0
+# Grid pitch of that reachability walk. Finer costs more cells; coarser can step through a
+# gap narrower than a player.
+enclosure_cell = 0.9
+# Cap on cells the walk will visit before it gives up and calls the ground OPEN. A bound is
+# required rather than nice: the world streams outward without limit, so an unbounded flood
+# fill over open country is unbounded work on the one task that owns the game loop.
+enclosure_cell_budget = 6000
 # No blocking structure may go up this close to ANOTHER player. The spacing rule above
 # already guarantees a ring of walls has a gap you can walk through, but that is a promise
 # about geometry — it says nothing about penning somebody in one block at a time while
