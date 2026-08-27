@@ -458,7 +458,67 @@ fn shore_color(bi: i32, uv: vec2<f32>) -> vec4<f32> {
     return vec4<f32>(vec3<f32>(0.84, 0.76, 0.56) * lum, g.a);
 }
 
-fn biome_color(bi: i32, uv: vec2<f32>) -> vec4<f32> {
+// ---------------------------------------------------------------------------------------
+// BREAKING THE TILE GRID
+//
+// Every biome is ONE 64px tile sampled at `world.xz * uv_scale`, so the same square
+// repeated to the horizon and the eye locked onto the grid immediately — the ground read
+// as wallpaper rather than terrain. Two cheap fixes, both pure shader:
+//
+//   1. Per-cell ROTATION. Each large cell picks one of four 90-degree turns from a hash of
+//      its own coordinate, which destroys the lattice without touching the art. It is
+//      hashed rather than random so a patch of ground looks the same every time you walk
+//      back over it — ground that reshuffled itself would read as a bug.
+//   2. Macro TONE variation. Low-frequency noise over a much larger scale than the tile,
+//      lightening and darkening whole stretches, which is what makes real ground read as
+//      having history instead of being a flat swatch.
+//
+// Deliberately NOT a second texture blend: that needs another five bindings and muddies
+// the palette, and it turns out the grid itself was most of the problem.
+
+fn hash2(c: vec2<f32>) -> f32 {
+    return fract(sin(dot(floor(c), vec2<f32>(127.1, 311.7))) * 43758.5453);
+}
+
+// Smooth value noise, used at a scale far below the tile so it varies ACROSS tiles rather
+// than inside one.
+fn vnoise(p: vec2<f32>) -> f32 {
+    let i = floor(p);
+    let f = fract(p);
+    let u = f * f * (3.0 - 2.0 * f);
+    let a = hash2(i);
+    let b = hash2(i + vec2<f32>(1.0, 0.0));
+    let c = hash2(i + vec2<f32>(0.0, 1.0));
+    let d = hash2(i + vec2<f32>(1.0, 1.0));
+    return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+}
+
+// The uv to actually sample the ground with: the tile turned a quarter at a time per cell.
+// Rotation happens about the cell centre so the tile still lands inside its own cell and
+// neighbours stay flush.
+fn scattered_uv(uv: vec2<f32>) -> vec2<f32> {
+    let cell = floor(uv);
+    let f = uv - cell;
+    let turns = floor(hash2(cell) * 4.0);
+    var r = f - vec2<f32>(0.5, 0.5);
+    // Four 90-degree cases, written out rather than built from a matrix: a rotation by an
+    // arbitrary angle would resample the pixel art off its own grid, which is the one
+    // thing pixel art must never do.
+    if (turns == 1.0) { r = vec2<f32>(-r.y, r.x); }
+    else if (turns == 2.0) { r = vec2<f32>(-r.x, -r.y); }
+    else if (turns == 3.0) { r = vec2<f32>(r.y, -r.x); }
+    return cell + r + vec2<f32>(0.5, 0.5);
+}
+
+// Whole-stretch light and shade, at a scale much larger than one tile.
+fn macro_tone(world_xz: vec2<f32>) -> f32 {
+    let n = vnoise(world_xz * 0.012) * 0.65 + vnoise(world_xz * 0.043) * 0.35;
+    return mix(0.86, 1.14, n);
+}
+
+fn biome_color(bi: i32, raw_uv: vec2<f32>) -> vec4<f32> {
+    // One place, so no biome can be left reading as wallpaper because its arm was missed.
+    let uv = scattered_uv(raw_uv);
     if (bi <= 0) {
         return textureSample(t_forest, samp, uv);
     }
@@ -695,6 +755,12 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         let k = clamp(params.shift.z * (0.30 + 0.70 * lip), 0.0, 0.92);
         blended = mix(blended, vec4<f32>(1.0, 0.40, 0.10, blended.a), k);
     }
+
+    // Whole-stretch light and shade over the LAND only — applied here, after the shore and
+    // the water have had their say, because tinting open sea by a ground-noise field is
+    // how an ocean ends up looking like a badly-lit field. Under water the factor is 1.
+    let tone = mix(macro_tone(in.world_position.xz), 1.0, clamp(smoothstep(-1.0, 2.0, sea), 0.0, 1.0));
+    blended = vec4<f32>(blended.rgb * tone, blended.a);
 
     pbr_input.material.base_color = pbr_input.material.base_color * blended;
 

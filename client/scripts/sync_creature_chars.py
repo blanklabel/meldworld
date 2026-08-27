@@ -15,12 +15,22 @@ DIRS = ["south", "south-east", "east", "north-east", "north", "north-west", "wes
         "south-west"]
 
 
+# The loader asks every walk for exactly this many frames, so a shorter one is not
+# "slightly off" — it is a missing-asset error per absent frame, per direction, on every
+# single launch. `myconid_warrior` shipped a 6-frame walk and produced 184 of them.
+WALK_FRAMES = 8
+
+
 def complete(d):
     if not (d / "rotations" / "south.png").is_file():
         return False
     if not (d / "animations" / "attack" / "south" / "frame_000.png").is_file():
         return False
-    return all((d / "animations" / "walk" / x / "frame_000.png").is_file() for x in DIRS)
+    for x in DIRS:
+        w = d / "animations" / "walk" / x
+        if not w.is_dir() or len(list(w.glob("frame_*.png"))) != WALK_FRAMES:
+            return False
+    return True
 
 
 def main():
