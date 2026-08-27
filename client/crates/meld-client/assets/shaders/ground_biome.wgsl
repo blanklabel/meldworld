@@ -493,21 +493,26 @@ fn vnoise(p: vec2<f32>) -> f32 {
     return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
 }
 
-// The uv to actually sample the ground with: the tile turned a quarter at a time per cell.
-// Rotation happens about the cell centre so the tile still lands inside its own cell and
-// neighbours stay flush.
-fn scattered_uv(uv: vec2<f32>) -> vec2<f32> {
-    let cell = floor(uv);
-    let f = uv - cell;
-    let turns = floor(hash2(cell) * 4.0);
-    var r = f - vec2<f32>(0.5, 0.5);
-    // Four 90-degree cases, written out rather than built from a matrix: a rotation by an
-    // arbitrary angle would resample the pixel art off its own grid, which is the one
-    // thing pixel art must never do.
-    if (turns == 1.0) { r = vec2<f32>(-r.y, r.x); }
-    else if (turns == 2.0) { r = vec2<f32>(-r.x, -r.y); }
-    else if (turns == 3.0) { r = vec2<f32>(r.y, -r.x); }
-    return cell + r + vec2<f32>(0.5, 0.5);
+// ⚠️ PER-CELL ROTATION WAS TRIED HERE AND IS WRONG FOR THIS ART.
+//
+// Turning each cell's tile by a hashed quarter did destroy the lattice — and replaced it
+// with something worse, because these tiles have DIRECTIONAL detail: grass leans, strata
+// band, sand ripples. Rotated, the ground read as patches "pointing in different
+// directions", which is a louder artifact than the grid it was hiding. A texture can only
+// be rotated invisibly if it has no orientation, and almost none of ours qualify.
+//
+// So the repeat is broken WITHOUT touching orientation: the same tile is sampled a second
+// time at an unrelated scale and mixed in gently. The two never line up, so the eye finds
+// no lattice, and because both samples are the same art at the same angle nothing points
+// anywhere new. The weight is deliberately low — this is meant to read as variation, and
+// pushed further it just reads as blur.
+fn ground_sample(t: texture_2d<f32>, uv: vec2<f32>) -> vec4<f32> {
+    let a = textureSample(t, samp, uv);
+    // 0.61 is irrational-ish against 1.0 on purpose: an integer ratio would put the two
+    // samples back in lockstep and rebuild exactly the grid this is here to break.
+    let b = textureSample(t, samp, uv * 0.61 + vec2<f32>(0.37, 0.71));
+    let n = vnoise(uv * 0.11);
+    return mix(a, b, n * 0.35);
 }
 
 // Whole-stretch light and shade, at a scale much larger than one tile.
@@ -516,29 +521,28 @@ fn macro_tone(world_xz: vec2<f32>) -> f32 {
     return mix(0.86, 1.14, n);
 }
 
-fn biome_color(bi: i32, raw_uv: vec2<f32>) -> vec4<f32> {
+fn biome_color(bi: i32, uv: vec2<f32>) -> vec4<f32> {
     // One place, so no biome can be left reading as wallpaper because its arm was missed.
-    let uv = scattered_uv(raw_uv);
     if (bi <= 0) {
-        return textureSample(t_forest, samp, uv);
+        return ground_sample(t_forest, uv);
     }
     if (bi == 1) {
-        return textureSample(t_desert, samp, uv);
+        return ground_sample(t_desert, uv);
     }
     if (bi == 2) {
-        let ash = textureSample(t_ashfall, samp, uv);
+        let ash = ground_sample(t_ashfall, uv);
         let ember = (1.0 - ash.r) * 0.5; // darkest cracks glow hottest
         return vec4<f32>(ash.rgb * vec3<f32>(0.95, 0.24, 0.18) + vec3<f32>(ember, ember * 0.18, 0.02), ash.a);
     }
     if (bi == 3) {
-        return textureSample(t_tundra, samp, uv) * vec4<f32>(0.72, 0.86, 1.15, 1.0);
+        return ground_sample(t_tundra, uv) * vec4<f32>(0.72, 0.86, 1.15, 1.0);
     }
     // The mire's sour green, left as AUTHORED. This was briefly raised to (1.0, 1.35, 0.85)
     // to compensate for the swamp reading as permanent dusk — but the dusk was the GROUND
     // SHADOWING ITSELF (see `NotShadowCaster` on `WorldGround`), not the tint. Lifting a
     // tint to pay for a lighting bug is how a biome ends up looking like a sunny meadow the
     // moment the real bug is fixed.
-    return textureSample(t_mire, samp, uv) * vec4<f32>(0.75, 0.95, 0.7, 1.0);
+    return ground_sample(t_mire, uv) * vec4<f32>(0.75, 0.95, 0.7, 1.0);
 }
 
 // ---------------------------------------------------------------------------------------
