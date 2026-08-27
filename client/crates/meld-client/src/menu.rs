@@ -1608,16 +1608,34 @@ pub(crate) fn carried_of_class(
 /// structure in the registry, which was true only while everything was built out of ore.
 /// After BD-1 it was wrong in both directions at once, and nothing could catch that because
 /// the logic lived inside a `with_children` closure that only a running game exercises.
+/// "a Wall" but "an Anchor". A registry of nouns will keep growing and someone will add an
+/// Inn, an Outpost, an Alembic — so this is one function rather than a hand-written article
+/// on each row.
+fn article_for(name: &str) -> &'static str {
+    match name.chars().next().map(|c| c.to_ascii_lowercase()) {
+        Some('a' | 'e' | 'i' | 'o' | 'u') => "an",
+        _ => "a",
+    }
+}
+
 pub(crate) fn build_row(
     def: &meld_proto::structures::StructureDef,
     backpack: &RunBackpack,
 ) -> (String, Color) {
     match carried_of_class(backpack, def.material) {
-        Some((kind, qty)) => (format!("Raise a {}   ({qty} {kind})", def.name), glass::TEXT),
+        Some((kind, qty)) => (
+            format!("Raise {} {}   ({qty} {kind})", article_for(def.name), def.name),
+            glass::TEXT,
+        ),
         // Name the material it WANTS. "No ore carried" on a timber palisade sent a player
         // looking for entirely the wrong thing.
         None => (
-            format!("Raise a {}   (no {} carried)", def.name, def.material.wire()),
+            format!(
+                "Raise {} {}   (no {} carried)",
+                article_for(def.name),
+                def.name,
+                def.material.wire()
+            ),
             glass::DIM,
         ),
     }

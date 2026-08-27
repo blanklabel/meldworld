@@ -1,0 +1,29 @@
+{
+  "group_id": null,
+  "objects": [
+    {
+      "id": "a63225ea-2e0c-4e7d-a8a2-b87a356638f9",
+      "name": "Regenerate to be mor",
+      "prompt": "a wooden treasure chest with iron bands and a gold lock, closed lid, weird HD-2D fantasy style",
+      "size": {
+        "width": 97,
+        "height": 97
+      },
+      "directions": 8,
+      "view": "low top-down",
+      "rotations": {
+        "south": "rotations/south.png",
+        "south-east": "rotations/south-east.png",
+        "east": "rotations/east.png",
+        "north-east": "rotations/north-east.png",
+        "north": "rotations/north.png",
+        "north-west": "rotations/north-west.png",
+        "west": "rotations/west.png",
+        "south-west": "rotations/south-west.png"
+      },
+      "animations": {}
+    }
+  ],
+  "export_version": "1.0",
+  "export_date": "2026-07-29T14:57:13.289408"
+}
