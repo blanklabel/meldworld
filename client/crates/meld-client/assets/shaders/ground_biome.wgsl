@@ -108,6 +108,12 @@ struct BiomeParams {
 @group(#{MATERIAL_BIND_GROUP}) @binding(107) var t_water_clear: texture_2d<f32>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(108) var t_water_bog: texture_2d<f32>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(109) var t_water_ice: texture_2d<f32>;
+// Side-view rock for the steep parts of the same plane. See `cliff_color`.
+@group(#{MATERIAL_BIND_GROUP}) @binding(110) var t_cliff_forest: texture_2d<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(111) var t_cliff_desert: texture_2d<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(112) var t_cliff_ashfall: texture_2d<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(113) var t_cliff_tundra: texture_2d<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(114) var t_cliff_mire: texture_2d<f32>;
 
 // The sea's tile for the biome it borders — the same mapping the pond/bog-pool/
 // frozen-pond props use (`WorldAssets::water_mats`), so a tundra shore is ice and a mire
@@ -521,6 +527,57 @@ fn macro_tone(world_xz: vec2<f32>) -> f32 {
     return mix(0.86, 1.14, n);
 }
 
+// ---------------------------------------------------------------------------------------
+// CLIFFS: THE STEEP PART OF THE SAME PLANE
+//
+// The overworld is one displaced grid — `total_height` pushes it into hills, peaks and
+// the dip toward the sea floor — so a cliff is not a separate mesh, it is simply a patch
+// where the surface is steep. And because the ground's uv is the fragment's world XZ, a
+// near-vertical face was sampling a TOP-DOWN texture stretched down its entire length:
+// the grass smeared, the strata impossible.
+//
+// Triplanar fixes it without a single new triangle. Project along each axis, weight by
+// the surface normal, and a face is always textured along an axis it actually faces:
+//
+//   - a flat surface is nearly all Y-weight  -> the ground tile, exactly as before
+//   - a steep surface is nearly all X/Z      -> the cliff tile, at true scale, no stretch
+//
+// The vertical projections use world Y as one coordinate, so rock is the same size on a
+// two-unit step and a sixty-unit sea cliff. Nothing about the mesh changes; this is only
+// where the colour is READ.
+
+// The biome's side-view rock. Sampled through `ground_sample` like the ground is, because
+// these tiles are NOT seamless — they are the least-mismatched of a batch of independent
+// variations — and the same dual-scale mix that hides the ground's grid also softens a
+// cliff's wrap.
+fn cliff_tex(bi: i32, uv: vec2<f32>) -> vec4<f32> {
+    if (bi <= 0) { return ground_sample(t_cliff_forest, uv); }
+    if (bi == 1) { return ground_sample(t_cliff_desert, uv); }
+    if (bi == 2) { return ground_sample(t_cliff_ashfall, uv); }
+    if (bi == 3) { return ground_sample(t_cliff_tundra, uv); }
+    return ground_sample(t_cliff_mire, uv);
+}
+
+// Rock projected from the two SIDE axes and mixed by which one the face points along, so
+// there is no seam where a cliff turns a corner.
+fn cliff_color(bi: i32, wp: vec3<f32>, n: vec3<f32>, scale: f32) -> vec4<f32> {
+    let ax = abs(n);
+    // Guard the divide: a normal with no horizontal component never reaches here, but a
+    // NaN would spread across the whole surface if one ever did.
+    let wsum = max(ax.x + ax.z, 0.0001);
+    let zx = cliff_tex(bi, vec2<f32>(wp.x, -wp.y) * scale);
+    let xz = cliff_tex(bi, vec2<f32>(wp.z, -wp.y) * scale);
+    return zx * (ax.z / wsum) + xz * (ax.x / wsum);
+}
+
+// How much of this fragment is CLIFF rather than ground, from the surface normal.
+// `terrain_normal` is already computed per-vertex, so this costs nothing to obtain.
+// The band is deliberately narrow and high: below it the world should look exactly as it
+// did, and a gentle hill wearing rock would be a worse bug than a cliff wearing grass.
+fn cliff_weight(n: vec3<f32>) -> f32 {
+    return smoothstep(0.72, 0.42, n.y);
+}
+
 fn biome_color(bi: i32, uv: vec2<f32>) -> vec4<f32> {
     // One place, so no biome can be left reading as wallpaper because its arm was missed.
     if (bi <= 0) {
@@ -637,6 +694,15 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     // rides the SAME band the ground's beach ramp uses (`smoothstep(-14, 0)` in
     // `total_height`), so the sand appears exactly where the ground starts falling toward
     // the water: the strand IS the beach, not a decal near it.
+    // CLIFFS, before the shore and the water get their say — rock belongs under the
+    // strand and under the waterline, not painted over them. A steep face takes its
+    // biome's side-view rock, projected from whichever horizontal axis it points along.
+    blended = mix(
+        blended,
+        cliff_color(here_biome, in.world_position.xyz, normalize(in.world_normal), params.uv_scale),
+        cliff_weight(normalize(in.world_normal)),
+    );
+
     blended = mix(blended, shore_color(here_biome, uv), smoothstep(-14.0, -1.0, sea));
     if (sea > -0.5) {
         // The real water TILE, not a flat colour — the same art the city's sea and every

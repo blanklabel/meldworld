@@ -237,6 +237,23 @@ pub(crate) struct GroundBiome {
     water_bog: Handle<Image>,
     #[texture(109)]
     water_ice: Handle<Image>,
+    /// SIDE-VIEW rock, one per biome, for the steep parts of the terrain.
+    ///
+    /// The overworld is a single displaced plane, so a cliff is not a separate mesh — it
+    /// is a steep patch of the same ground. And because the ground's uv is the fragment's
+    /// world XZ, a near-vertical face used to smear its top-down grass down its whole
+    /// length. These are sampled by the vertical projection instead (see the shader's
+    /// triplanar blend), so a cliff face is textured along its own axis at its own scale.
+    #[texture(110)]
+    cliff_forest: Handle<Image>,
+    #[texture(111)]
+    cliff_desert: Handle<Image>,
+    #[texture(112)]
+    cliff_ashfall: Handle<Image>,
+    #[texture(113)]
+    cliff_tundra: Handle<Image>,
+    #[texture(114)]
+    cliff_mire: Handle<Image>,
     #[uniform(106)]
     params: BiomeParams,
 }
@@ -690,6 +707,12 @@ pub(crate) fn setup(
             water_clear: load_tiled(&assets, "ground/water_clear.png"),
             water_bog: load_tiled(&assets, "ground/water_bog.png"),
             water_ice: load_tiled(&assets, "ground/water_ice.png"),
+            // Side-view rock per biome, tiled like everything else here.
+            cliff_forest: load_tiled(&assets, "ground/cliff_forest.png"),
+            cliff_desert: load_tiled(&assets, "ground/cliff_desert.png"),
+            cliff_ashfall: load_tiled(&assets, "ground/cliff_ashfall.png"),
+            cliff_tundra: load_tiled(&assets, "ground/cliff_tundra.png"),
+            cliff_mire: load_tiled(&assets, "ground/cliff_mire.png"),
             // Rings start empty; `update_ground_biome_rings` fills them from the
             // streamed sections each frame (count 0 ⇒ shader falls back to forest).
             params: BiomeParams::default(),
@@ -1032,7 +1055,10 @@ pub(crate) fn setup(
         }),
         rock_mesh: meshes.add(Cuboid::new(1.0, 0.7, 1.0)),
         wall_mesh: meshes.add(Cuboid::new(1.0, 1.0, 1.0)), // unit cube for solid dungeon walls
-        wall_tex: load_tiled(&assets, "ground/tile_street.png"), // cobblestone masonry for walls
+        // A dungeon wall is a vertical face, so it wants a SIDE-VIEW texture. It wore
+        // `tile_street.png` — a top-down cobblestone — as the stopgap
+        // docs/asset-pipeline.md has admitted to since it was written.
+        wall_tex: load_tiled(&assets, "ground/wall_dungeon.png"),
         // A BASIN, not a disc: the rim stays proud of the terrain (no z-fighting) while the
         // surface sits below it, so water reads as sunk into the ground rather than floating
         // on it. Worst in the Mire, whose entire maze fill is water.
