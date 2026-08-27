@@ -2778,9 +2778,24 @@ pub(crate) fn advance_sky(
         }
     }
     // Per-phase wind + rain targets (a super storm blows harder).
-    let (wind_target, rain_target) = match sky.phase {
+    let (wind_target, rain_target) = wind_and_rain_targets(sky.phase, sky.super_storm);
+    let wr = 0.35 * dt;
+    sky.wind += (wind_target - sky.wind).clamp(-wr, wr);
+    let rr = 0.25 * dt;
+    sky.weather += (rain_target - sky.weather).clamp(-rr, rr);
+}
+
+/// The weather's shape, as a pure function so the ordering it promises can be tested:
+/// Fair → Gust → Storm → Clearing, with the wind LEADING the rain and peaking in the
+/// downpour.
+pub(crate) fn wind_and_rain_targets(phase: u8, super_storm: bool) -> (f32, f32) {
+    match phase {
         1 => (0.7, 0.0),
-        2 => (if sky.super_storm { 1.0 } else { 0.65 }, 1.0),
+        // ⚠️ A STORM MUST OUTBLOW ITS OWN PRECURSOR. The gust phase targets 0.7, so an
+        // ordinary storm at 0.65 blew SOFTER than the wind that announced it — the weather
+        // peaked and then eased off exactly as the rain arrived, which is backwards from
+        // the shape the phase machine is built to tell.
+        2 => (if super_storm { 1.0 } else { 0.82 }, 1.0),
         3 => (0.3, 0.0),
         // ⚠️ FAIR IS A BREEZE, NOT DEAD CALM — AND THIS IS WHY NOTHING EVER SWAYED.
         //
@@ -2794,11 +2809,7 @@ pub(crate) fn advance_sky(
         // ripples, and the gust before a storm is still four times stronger, so the weather
         // keeps its shape.
         _ => (0.15, 0.0),
-    };
-    let wr = 0.35 * dt;
-    sky.wind += (wind_target - sky.wind).clamp(-wr, wr);
-    let rr = 0.25 * dt;
-    sky.weather += (rain_target - sky.weather).clamp(-rr, rr);
+    }
 }
 
 // -------------------------------------------------------------- dungeon scene ---
@@ -3711,5 +3722,68 @@ mod structure_art_tests {
                 def.key, def.material
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod weather_tests {
+    use super::*;
+
+    /// The phase machine tells a story — a breeze, then a gust announcing a storm, then the
+    /// storm itself, then it eases off. That story is only true if the numbers rise and fall
+    /// in that order, and one of them did not: the gust outblew the storm it was announcing.
+    #[test]
+    fn the_wind_builds_toward_the_downpour_and_eases_after_it() {
+        let fair = wind_and_rain_targets(0, false).0;
+        let gust = wind_and_rain_targets(1, false).0;
+        let storm = wind_and_rain_targets(2, false).0;
+        let super_storm = wind_and_rain_targets(2, true).0;
+        let clearing = wind_and_rain_targets(3, false).0;
+
+        assert!(fair > 0.0, "fair weather still moves leaves — a dead calm world reads as a still frame");
+        assert!(gust > fair, "the gust must rise above the breeze ({gust} vs {fair})");
+        assert!(
+            storm > gust,
+            "an ordinary storm must outblow its own precursor ({storm} vs gust {gust}) — \
+             otherwise the weather peaks before the rain and eases as it lands"
+        );
+        assert!(super_storm >= storm, "a super storm blows at least as hard ({super_storm} vs {storm})");
+        assert!(clearing < storm, "clearing eases off ({clearing} vs {storm})");
+    }
+
+    /// Only the storm phases bring rain, and the wind arrives BEFORE the water.
+    #[test]
+    fn the_wind_leads_the_rain() {
+        assert_eq!(wind_and_rain_targets(1, false).1, 0.0, "the gust is dry — it only announces");
+        assert_eq!(wind_and_rain_targets(2, false).1, 1.0, "the storm rains");
+        assert_eq!(wind_and_rain_targets(3, false).1, 0.0, "clearing stops raining");
+    }
+
+    /// ⚠️ **A GRASS BLADE IS A BILLBOARD, AND TWO SYSTEMS WANT ITS ROTATION.**
+    ///
+    /// `hd2d::billboard` writes the camera-facing yaw; the grass lean in
+    /// `ambient::update_ambient_scatter` writes the bend. Assigning in the second dropped the
+    /// first, and with no ordering between them the winner changed frame to frame — grass
+    /// snapping between flat-on and edge-on across the whole ground plane. The rule is
+    /// COMPOSE, and it is only a comment at the call site, so hold it here.
+    #[test]
+    fn the_grass_lean_composes_onto_the_billboard_yaw() {
+        let src = include_str!("ambient.rs");
+        assert!(
+            src.contains("tf.rotation *= Quat::from_rotation_z(lean)"),
+            "the grass lean must post-multiply onto the yaw `hd2d::billboard` already wrote — \
+             assigning `tf.rotation` there destroys the blade's facing"
+        );
+        assert!(
+            !src.contains("tf.rotation = Quat::from_rotation_z(lean)"),
+            "the grass lean is ASSIGNING its rotation again, which drops the billboard yaw"
+        );
+        // And the compose is only meaningful if the yaw is there to compose onto.
+        let main = include_str!("main.rs");
+        assert!(
+            main.contains("ambient::update_ambient_scatter.after(hd2d::billboard)"),
+            "the grass scatter must be ordered after `hd2d::billboard`, or it composes onto \
+             whatever last frame left behind"
+        );
     }
 }

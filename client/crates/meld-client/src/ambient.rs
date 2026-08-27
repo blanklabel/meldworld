@@ -133,7 +133,15 @@ pub(crate) fn update_ambient_scatter(
             // Grass moves MORE than the canopy, not less: it is lighter, and it is what the
             // eye reads wind from first. ~8 degrees in a breeze, ~30 in a storm.
             let lean = (t * (1.4 + wind * 1.6) + blade.phase).sin() * (0.06 + wind * 0.50);
-            tf.rotation = Quat::from_rotation_z(lean);
+            // ⚠️ COMPOSE ONTO THE BILLBOARD'S YAW, NEVER REPLACE IT. A blade carries both
+            // `GrassBlade` and `hd2d::Billboard`, so `billboard` and this system both write
+            // one `Transform::rotation`. Assigning here dropped the camera-facing yaw
+            // outright, and with no ordering between the two the winner changed frame to
+            // frame — grass snapping between flat-on and edge-on across the whole ground.
+            // Ordered `.after(hd2d::billboard)` at the registration, so the yaw is already
+            // there; post-multiplying puts the lean in the blade's OWN frame, which is a
+            // bend left and right across the screen rather than a pivot out of view.
+            tf.rotation *= Quat::from_rotation_z(lean);
         }
         let dx = (blade.idx as i32 % GRID) - GRID / 2;
         let dz = (blade.idx as i32 / GRID) - GRID / 2;
