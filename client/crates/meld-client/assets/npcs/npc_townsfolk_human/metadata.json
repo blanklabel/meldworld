@@ -1,0 +1,36 @@
+{
+  "group_id": "4cdadcb0-6a63-4599-802d-bffc4a9151b9",
+  "states": [
+    {
+      "character": {
+        "id": "84fd61e2-4672-44a9-8e97-0a8f19c69f54",
+        "name": "Idle",
+        "prompt": "a middle-aged human townswoman in a plain belted dress and headscarf, carrying a covered basket in a weird HD-2D fantasy style. Full body, head to toe, whole creature inside the frame, standing on the ground.",
+        "size": {
+          "width": 96,
+          "height": 96
+        },
+        "template_id": "mannequin",
+        "directions": 8,
+        "view": "low top-down",
+        "created_at": "2026-08-27T14:02:55.491285+00:00"
+      },
+      "folder": "Idle",
+      "frames": {
+        "rotations": {
+          "south": "Idle/rotations/south.png",
+          "south-east": "Idle/rotations/south-east.png",
+          "east": "Idle/rotations/east.png",
+          "north-east": "Idle/rotations/north-east.png",
+          "north": "Idle/rotations/north.png",
+          "north-west": "Idle/rotations/north-west.png",
+          "west": "Idle/rotations/west.png",
+          "south-west": "Idle/rotations/south-west.png"
+        },
+        "animations": {}
+      }
+    }
+  ],
+  "export_version": "3.1",
+  "export_date": "2026-08-27T14:08:25.334495"
+}

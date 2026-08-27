@@ -1,0 +1,36 @@
+{
+  "group_id": "56a8018e-87df-4a22-8f9c-5195afd7f8d1",
+  "states": [
+    {
+      "character": {
+        "id": "880a517e-5a7a-4d62-93a2-e74202df0b65",
+        "name": "Idle",
+        "prompt": "a gaunt stooped human in a threadbare hooded cloak, leaning on a stick, one hand out in a weird HD-2D fantasy style. Full body, head to toe, whole creature inside the frame, standing on the ground.",
+        "size": {
+          "width": 96,
+          "height": 96
+        },
+        "template_id": "mannequin",
+        "directions": 8,
+        "view": "low top-down",
+        "created_at": "2026-08-27T14:16:18.190569+00:00"
+      },
+      "folder": "Idle",
+      "frames": {
+        "rotations": {
+          "south": "Idle/rotations/south.png",
+          "south-east": "Idle/rotations/south-east.png",
+          "east": "Idle/rotations/east.png",
+          "north-east": "Idle/rotations/north-east.png",
+          "north": "Idle/rotations/north.png",
+          "north-west": "Idle/rotations/north-west.png",
+          "west": "Idle/rotations/west.png",
+          "south-west": "Idle/rotations/south-west.png"
+        },
+        "animations": {}
+      }
+    }
+  ],
+  "export_version": "3.1",
+  "export_date": "2026-08-27T14:25:23.489938"
+}

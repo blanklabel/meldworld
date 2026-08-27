@@ -1,0 +1,36 @@
+{
+  "group_id": "04c8a44a-85d8-4eb3-94ab-bd941cc37370",
+  "states": [
+    {
+      "character": {
+        "id": "249350ab-5878-4b6e-82b3-2bc9227faf9a",
+        "name": "Idle",
+        "prompt": "a round cheerful halfling innkeeper in a rolled-sleeve shirt and long apron, a towel over one shoulder and a tankard in hand in a weird HD-2D fantasy style. Full body, head to toe, whole creature inside the frame, standing on the ground.",
+        "size": {
+          "width": 96,
+          "height": 96
+        },
+        "template_id": "mannequin",
+        "directions": 8,
+        "view": "low top-down",
+        "created_at": "2026-08-27T13:48:51.153666+00:00"
+      },
+      "folder": "Idle",
+      "frames": {
+        "rotations": {
+          "south": "Idle/rotations/south.png",
+          "south-east": "Idle/rotations/south-east.png",
+          "east": "Idle/rotations/east.png",
+          "north-east": "Idle/rotations/north-east.png",
+          "north": "Idle/rotations/north.png",
+          "north-west": "Idle/rotations/north-west.png",
+          "west": "Idle/rotations/west.png",
+          "south-west": "Idle/rotations/south-west.png"
+        },
+        "animations": {}
+      }
+    }
+  ],
+  "export_version": "3.1",
+  "export_date": "2026-08-27T13:59:23.371890"
+}

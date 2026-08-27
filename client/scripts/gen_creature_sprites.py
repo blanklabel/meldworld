@@ -56,13 +56,18 @@ ALL_DIRS = ["south", "south-east", "east", "north-east", "north", "north-west", 
 # classes use custom v3 — but a boar has nothing in its hands. The ATTACK stays custom,
 # because "rearing up and slamming down" is the thing that makes a creature read as
 # itself and no template knows it.
-WALK_TEMPLATE = "walking"
-# ⚠️ MODE MUST BE SET EXPLICITLY. `animate_character` auto-detects the mode from the
-# presence of a template id, and what it picks is PLAIN TEMPLATE — whose frame count is
-# the template's own, which for `walking` is SIX. The same template under v3 gives EIGHT,
-# which is what the rest of the bestiary runs at. Leaving the mode to be inferred put a
-# 6-frame walk on five creatures standing beside 8-frame ones: a different gait, in the
-# same pack, from one omitted argument.
+# ⚠️ ASK FOR THE 8-FRAME TEMPLATE BY NAME, and do NOT set `mode`.
+#
+# The stock `walking` template runs at SIX frames in template mode, which put five
+# creatures beside their packmates at a visibly different cadence. The obvious fix —
+# forcing `mode: "v3"` to get eight — is rejected outright: v3 means "custom animation
+# from an action_description" and refuses to take a template id, so every walk in two
+# whole batches failed with `v3 mode requires action_description` and 37 characters came
+# back with no locomotion at all.
+#
+# `walking-8-frames` is its own template and says the frame count in its name. No mode
+# argument, nothing inferred, and the length is not a thing that can drift.
+WALK_TEMPLATE = "walking-8-frames"
 WALK_FRAMES = 8
 
 # AND ONLY THE EASTERN HALF IS DRAWN. The eight facings are symmetric about the
@@ -346,7 +351,7 @@ def animate(cid, clip, action):
         "directions": CLIP_DIRS[clip],
     }
     if clip == "walk":
-        args |= {"template_animation_id": WALK_TEMPLATE, "mode": "v3"}
+        args["template_animation_id"] = WALK_TEMPLATE
     else:
         args |= {"mode": "v3", "action_description": action, "frame_count": 8,
                  "keep_first_frame": False}

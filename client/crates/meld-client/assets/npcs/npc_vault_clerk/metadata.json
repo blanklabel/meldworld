@@ -1,0 +1,36 @@
+{
+  "group_id": "593f5039-8920-4b7b-8e69-f96ce7e7dea6",
+  "states": [
+    {
+      "character": {
+        "id": "567472f9-acf6-4da5-b12f-4e8768a6abc1",
+        "name": "Idle",
+        "prompt": "a fastidious gnome vault clerk in a high-collared coat with brass buttons, a ring of heavy keys and a lantern in a weird HD-2D fantasy style. Full body, head to toe, whole creature inside the frame, standing on the ground.",
+        "size": {
+          "width": 96,
+          "height": 96
+        },
+        "template_id": "mannequin",
+        "directions": 8,
+        "view": "low top-down",
+        "created_at": "2026-08-27T13:48:53.406119+00:00"
+      },
+      "folder": "Idle",
+      "frames": {
+        "rotations": {
+          "south": "Idle/rotations/south.png",
+          "south-east": "Idle/rotations/south-east.png",
+          "east": "Idle/rotations/east.png",
+          "north-east": "Idle/rotations/north-east.png",
+          "north": "Idle/rotations/north.png",
+          "north-west": "Idle/rotations/north-west.png",
+          "west": "Idle/rotations/west.png",
+          "south-west": "Idle/rotations/south-west.png"
+        },
+        "animations": {}
+      }
+    }
+  ],
+  "export_version": "3.1",
+  "export_date": "2026-08-27T14:01:37.274107"
+}

@@ -1,0 +1,36 @@
+{
+  "group_id": "3578d131-83cd-48f4-8fe8-4780b9f7bd63",
+  "states": [
+    {
+      "character": {
+        "id": "9c9e7650-80e5-4cdf-91c5-f81b27d9e637",
+        "name": "Idle",
+        "prompt": "a broad dwarf master smith with a forked iron-grey beard bound in rings, soot-black leather apron over heavy arms, a hammer through the belt in a weird HD-2D fantasy style. Full body, head to toe, whole creature inside the frame, standing on the ground.",
+        "size": {
+          "width": 96,
+          "height": 96
+        },
+        "template_id": "mannequin",
+        "directions": 8,
+        "view": "low top-down",
+        "created_at": "2026-08-27T13:48:48.941918+00:00"
+      },
+      "folder": "Idle",
+      "frames": {
+        "rotations": {
+          "south": "Idle/rotations/south.png",
+          "south-east": "Idle/rotations/south-east.png",
+          "east": "Idle/rotations/east.png",
+          "north-east": "Idle/rotations/north-east.png",
+          "north": "Idle/rotations/north.png",
+          "north-west": "Idle/rotations/north-west.png",
+          "west": "Idle/rotations/west.png",
+          "south-west": "Idle/rotations/south-west.png"
+        },
+        "animations": {}
+      }
+    }
+  ],
+  "export_version": "3.1",
+  "export_date": "2026-08-27T13:57:08.147279"
+}
