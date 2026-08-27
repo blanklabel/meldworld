@@ -413,85 +413,97 @@ pub(crate) const DUNGEON_SPRITES: &[&str] = &["twingolem"];
 /// The BASE key is the ordinary creature — a lone spawn, or a pack's minions — because
 /// that is the common case; the LEADER is the variant that has to earn its own art.
 ///
-/// Held against what is actually on disk by `every_installed_creature_set_is_loaded`, so
-/// art that lands unlisted — art nobody would ever see — fails rather than sitting unused.
-pub(crate) const CREATURE_CHARS: &[&str] = &[
-    "bog_ooze",
-    "bog_ooze_baby",
-    "bog_ooze_belcher",
-    "bog_ooze_grump",
-    "bog_serpent",
-    "bog_serpent_female",
-    "bog_serpent_pack_leader",
-    "bog_serpent_slither",
-    "bog_serpent_twin_tail",
-    "bog_stinger",
-    "bog_stinger_buzz",
-    "bog_stinger_licker",
-    "bog_stinger_piercer",
-    "cinder_imp",
-    "cinder_imp_dog",
-    "cinder_imp_fire_mage",
-    "cinder_imp_pack_leader",
-    "cinder_imp_wolf",
-    "dune_colossus",
-    "dune_colossus_pack_leader",
-    "dune_colossus_shardling",
-    "dune_wyrm",
-    "dune_wyrm_glassback",
-    "dune_wyrm_hatchling",
-    "dune_wyrm_pack_leader",
-    "ember_wisp",
-    "ember_wisp_cinderveil",
-    "ember_wisp_pack_leader",
-    "forest_bloom_stalker",
-    "forest_bloom_stalker_adult",
-    "forest_bloom_stalker_baby",
-    "forest_bloom_stalker_pack_leader",
-    "frog_tribesman",
-    "frog_tribesman_elder",
-    "frog_tribesman_pack_leader",
-    "frog_tribesman_spearfisher",
-    "frost_lurker",
-    "frost_lurker_pack_leader",
-    "frost_lurker_pup",
-    "frost_lurker_rimefang",
-    "glacier_maw",
-    "glacier_maw_cub",
-    "glacier_maw_frostjaw",
-    "glacier_maw_pack_leader",
-    "ice_revenant",
-    "ice_revenant_pack_leader",
-    "ice_revenant_shieldbound",
-    "ice_revenant_thrall",
-    "magma_golem",
-    "magma_golem_pack_leader",
-    "myconid_boss",
-    "myconid_brute",
-    "myconid_brute_boss",
-    "myconid_mage",
-    "myconid_minion",
-    "myconid_pack_leader",
-    "sand_shade",
-    "sand_shade_gravebound",
-    "sand_shade_pack_leader",
-    "sand_shade_wisp",
-    "sporeling",
-    "sporeling_baby",
-    "sporeling_healer",
-    "sporeling_pack_leader",
-    "sporeling_sprout",
-    "thornback_boar",
-    "thornback_boar_beta",
-    "thornback_boar_charger",
-    "thornback_boar_goarer",
-    "thornback_boar_pack_leader",
-    "twingolem",
-    "verdant_ooze",
-    "verdant_ooze_blob",
-    "verdant_ooze_blopper",
-    "verdant_ooze_healer",
-    "verdant_ooze_pack_leader",
+/// Each entry carries its walk's FRAME COUNT, because that is a property of the art and
+/// not a constant: the stock `walking` template yields six frames and a custom v3 clip
+/// eight, and demanding one number made perfectly good sets read as unfinished forever.
+///
+/// Held against what is actually on disk by `every_finished_creature_set_is_loaded_and_no_unfinished_one_is`,
+/// so art that lands unlisted — art nobody would ever see — fails rather than sitting unused.
+pub(crate) const CREATURE_CHARS: &[(&str, usize)] = &[
+    ("bog_ooze", 8),
+    ("bog_ooze_baby", 8),
+    ("bog_ooze_belcher", 8),
+    ("bog_ooze_grump", 8),
+    ("bog_serpent", 8),
+    ("bog_serpent_female", 8),
+    ("bog_serpent_pack_leader", 8),
+    ("bog_serpent_slither", 8),
+    ("bog_serpent_twin_tail", 8),
+    ("bog_stinger", 8),
+    ("bog_stinger_buzz", 8),
+    ("bog_stinger_licker", 8),
+    ("bog_stinger_piercer", 8),
+    ("briarling", 6),
+    ("briarling_pack_leader", 6),
+    ("briarling_piper", 6),
+    ("briarling_thistleback", 6),
+    ("cinder_imp", 8),
+    ("cinder_imp_dog", 8),
+    ("cinder_imp_fire_mage", 8),
+    ("cinder_imp_pack_leader", 8),
+    ("cinder_imp_wolf", 8),
+    ("dune_colossus", 8),
+    ("dune_colossus_pack_leader", 8),
+    ("dune_colossus_shardling", 8),
+    ("dune_wyrm", 8),
+    ("dune_wyrm_glassback", 8),
+    ("dune_wyrm_hatchling", 8),
+    ("dune_wyrm_pack_leader", 8),
+    ("ember_wisp", 8),
+    ("ember_wisp_cinderveil", 8),
+    ("ember_wisp_mote", 6),
+    ("ember_wisp_pack_leader", 8),
+    ("forest_bloom_stalker", 8),
+    ("forest_bloom_stalker_adult", 8),
+    ("forest_bloom_stalker_baby", 8),
+    ("forest_bloom_stalker_pack_leader", 8),
+    ("frog_tribesman", 8),
+    ("frog_tribesman_elder", 8),
+    ("frog_tribesman_pack_leader", 8),
+    ("frog_tribesman_spearfisher", 8),
+    ("frost_lurker", 8),
+    ("frost_lurker_pack_leader", 8),
+    ("frost_lurker_pup", 8),
+    ("frost_lurker_rimefang", 8),
+    ("glacier_maw", 8),
+    ("glacier_maw_cub", 8),
+    ("glacier_maw_frostjaw", 8),
+    ("glacier_maw_pack_leader", 8),
+    ("ice_revenant", 8),
+    ("ice_revenant_pack_leader", 8),
+    ("ice_revenant_shieldbound", 8),
+    ("ice_revenant_thrall", 8),
+    ("magma_golem", 8),
+    ("magma_golem_cinderling", 6),
+    ("magma_golem_pack_leader", 8),
+    ("magma_golem_slagfist", 6),
+    ("myconid_boss", 8),
+    ("myconid_brute", 8),
+    ("myconid_brute_boss", 8),
+    ("myconid_mage", 8),
+    ("myconid_minion", 8),
+    ("myconid_pack_leader", 8),
+    ("myconid_warrior", 6),
+    ("sand_shade", 8),
+    ("sand_shade_gravebound", 8),
+    ("sand_shade_pack_leader", 8),
+    ("sand_shade_wisp", 8),
+    ("sporeling", 8),
+    ("sporeling_baby", 8),
+    ("sporeling_healer", 8),
+    ("sporeling_pack_leader", 8),
+    ("sporeling_sprout", 8),
+    ("thornback_boar", 8),
+    ("thornback_boar_beta", 8),
+    ("thornback_boar_charger", 8),
+    ("thornback_boar_goarer", 8),
+    ("thornback_boar_pack_leader", 8),
+    ("twingolem", 8),
+    ("verdant_ooze", 8),
+    ("verdant_ooze_blob", 8),
+    ("verdant_ooze_blopper", 8),
+    ("verdant_ooze_healer", 8),
+    ("verdant_ooze_pack_leader", 8),
 ];
 
 /// The Last City's townsfolk (`assets/npcs/<key>/`). Loaded exactly like a creature —
@@ -661,7 +673,8 @@ impl WorldAssets {
     /// species' — a species may get its leader art before its minion art, and half a pack
     /// rendering as nothing at all is worse than half a pack sharing one sprite.
     pub(crate) fn creature_frames(&self, kind: &str, leader: bool) -> Option<&CharacterFrames> {
-        let key = creature_art_key(kind, leader, CREATURE_CHARS)?;
+        let installed: Vec<&str> = CREATURE_CHARS.iter().map(|(k, _)| *k).collect();
+        let key = creature_art_key(kind, leader, &installed)?;
         self.creature_chars.get(&key)
     }
 
@@ -1083,13 +1096,15 @@ pub(crate) fn setup(
     // party. See `hd2d::load_creature_clips`.
     let creature_chars: HashMap<String, CharacterFrames> = CREATURE_CHARS
         .iter()
-        .map(|&key| {
+        .map(|&(key, walk_frames)| {
             (
                 key.to_string(),
                 hd2d::load_creature_clips(
                     &assets,
                     &format!("creatures/{key}"),
-                    &[("walk", 8, true), ("attack", 8, false)],
+                    // The walk's length comes from the SET, not a constant — six frames
+                    // from the stock template, eight from a custom clip.
+                    &[("walk", walk_frames, true), ("attack", 8, false)],
                 ),
             )
         })
@@ -3640,17 +3655,34 @@ mod creature_sprite_tests {
         };
         // Exactly what `load_creature_clips` will ask for: eight walk facings by name, a
         // south attack, and the idle rotations.
+        // Must agree with `sync_creature_chars.py`'s definition, because the two decide
+        // the same thing from opposite sides — and when they disagreed, the looser one
+        // (this) called a set finished that the stricter one refused to list, so the test
+        // failed on art that was genuinely broken and pointed at the wrong culprit.
+        //
+        // EVERY FACING MUST AGREE ON ITS FRAME COUNT. `dune_colossus_sunmarked` came back
+        // with seven frames facing north and eight everywhere else — one job of eight
+        // quietly short — which a "does frame_000 exist" check waves straight through.
         let complete = |key: &str| -> bool {
             let d = dir.join(key);
-            d.join("rotations/south.png").is_file()
-                && d.join("animations/attack/south/frame_000.png").is_file()
-                && hd2d::DIRS.iter().all(|f| {
-                    d.join("animations/walk").join(f).join("frame_000.png").is_file()
+            if !d.join("rotations/south.png").is_file()
+                || !d.join("animations/attack/south/frame_000.png").is_file()
+            {
+                return false;
+            }
+            let counts: Vec<usize> = hd2d::DIRS
+                .iter()
+                .map(|f| {
+                    std::fs::read_dir(d.join("animations/walk").join(f))
+                        .map(|r| r.count())
+                        .unwrap_or(0)
                 })
+                .collect();
+            counts[0] >= 4 && counts.iter().all(|n| *n == counts[0])
         };
         for e in entries.filter_map(|e| e.ok()).filter(|e| e.path().is_dir()) {
             let key = e.file_name().to_string_lossy().into_owned();
-            let listed = CREATURE_CHARS.contains(&key.as_str());
+            let listed = CREATURE_CHARS.iter().any(|(k, _)| *k == key);
             if complete(&key) {
                 assert!(
                     listed,
@@ -3666,10 +3698,19 @@ mod creature_sprite_tests {
                 );
             }
         }
-        for key in CREATURE_CHARS {
+        for (key, frames) in CREATURE_CHARS {
             assert!(
                 dir.join(key).is_dir(),
                 "CREATURE_CHARS lists {key} but assets/creatures/{key} does not exist"
+            );
+            // THE DECLARED LENGTH MUST MATCH THE FILES. The loader asks for exactly this
+            // many frames per facing, so a number that drifted from the art is a missing
+            // -asset error per frame per direction, on every launch.
+            let d = dir.join(key).join("animations/walk/south");
+            let on_disk = std::fs::read_dir(&d).map(|r| r.count()).unwrap_or(0);
+            assert_eq!(
+                on_disk, *frames,
+                "creatures/{key} declares a {frames}-frame walk but has {on_disk}"
             );
         }
     }
