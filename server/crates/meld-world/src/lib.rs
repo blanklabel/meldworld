@@ -263,6 +263,15 @@ fn creatures_for_biome(biome: &str) -> &'static [&'static str] {
         "ashfall" => &["cinder_imp", "magma_golem", "ember_wisp"],
         "tundra" => &["frost_lurker", "ice_revenant", "glacier_maw"],
         "mire" => &["bog_serpent", "myconid", "bog_stinger", "bog_ooze", "frog_tribesman"],
+        "amber_wood" => &["amber_stag", "tinder_wolf", "leaf_rook"],
+        "seized_engine" => &["cog_sentry", "rail_hound", "arc_phantom"],
+        "nestiphian_cradle" => &["rot_grub", "bloat_carrier", "spore_midwife"],
+        "hearth_plains" => &["velvet_lure", "thorn_paramour", "gilded_hound"],
+        // ⚠️ NOTHING LIVES IN THE OUBLIETTE. It is a prison built to hold one thing, and
+        // it exists to hold Ometus — the emptiness IS the content, and it is why the
+        // capstone is the one EXCLUSIVE biome. Every caller must cope with an empty
+        // roster rather than indexing blindly; `spawns_wildlife` is how you ask.
+        "seraphic_oubliette" => &[],
         other => creatures_for_biome(stand_in_biome(other)),
     }
 }
@@ -305,18 +314,21 @@ pub fn biomes_of_creature(kind: &str) -> Vec<&'static str> {
 /// argument, so replacing one is a local change rather than a hunt.
 fn stand_in_biome(biome: &str) -> &str {
     match biome {
-        // An autumn wood is a wood.
+        // An autumn wood is a wood, and it shares the forest's band: the same harvest
+        // nodes and the same tier-0 materials. Its BESTIARY is its own.
         "amber_wood" => "forest",
-        // A dead clockwork plane: constructs and fire-spirits are the closest lineage.
-        "seized_engine" => "ashfall",
-        // Rot and rebirth — the fungal and ooze lineages already live here.
-        "nestiphian_cradle" => "mire",
-        // A pastoral plain, however infernal it is underneath.
-        "hearth_plains" => "field",
-        // A sterile prison: revenants and shades, and nothing that grows.
-        "seraphic_oubliette" => "tundra",
         other => other,
     }
+}
+
+/// Does anything live here at all?
+///
+/// ⚠️ ASK THIS BEFORE INDEXING A ROSTER. `creatures_for_biome` can be EMPTY — the
+/// Oubliette holds one thing and it is not wildlife — and the placement and quarry paths
+/// both used to pick with `pool[rng.below(pool.len())]`, which on an empty pool is an
+/// index out of bounds rather than a quiet nothing.
+pub fn spawns_wildlife(biome: &str) -> bool {
+    !creatures_for_biome(biome).is_empty()
 }
 
 /// Harvestable resource node ids that spawn in a biome (one alchemy reagent + one
@@ -333,6 +345,14 @@ fn resources_for_biome(biome: &str) -> &'static [&'static str] {
         "ashfall" => &["ember_ash", "cinder_ore", "basalt_slab"],
         "tundra" => &["frost_lichen", "rime_ore", "rime_stone"],
         "mire" => &["bog_myrrh", "peat_iron", "peat_shale", "bog_root_timber"],
+        // The deep bands each pay all three ways (reagent, ore, trophy) — a band missing
+        // one is a hole in a whole tier of recipes. Stone comes from a neighbour: these
+        // are places, not quarries, and a builder still has to be able to raise a wall.
+        "seized_engine" => &["coolant_bloom", "brass_scrap", "basalt_slab"],
+        "nestiphian_cradle" => &["pale_shoot", "bone_iron", "peat_shale"],
+        "hearth_plains" => &["rose_attar", "gilt_sand", "sun_sandstone"],
+        // Nothing grows in a prison, and nothing is buried under it either.
+        "seraphic_oubliette" => &[],
         other => resources_for_biome(stand_in_biome(other)),
     }
 }
@@ -2087,6 +2107,7 @@ pub fn roll_bounty(
     let distance = ((b.sighting(rank) as f64) * jitter).round().max(1.0) as i32;
     let biome = biome_for_distance(distance as i64);
     let pool = creatures_for_biome(biome);
+    let pool = if pool.is_empty() { creatures_for_biome("forest") } else { pool };
     let creature = pool[rng.below(pool.len())].to_string();
     let venue = if rng.unit() < b.dungeon_chance {
         Venue::Dungeon
@@ -3791,6 +3812,10 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
                 // share with sixty others. Difficulty is untouched: that rides `distance`
                 // (CANON §B) and a biome is a difficulty-neutral skin.
                 let local = creatures_for_biome(self.biome_at(world));
+                // Nothing lives in the Oubliette, so nothing regrows there either.
+                if local.is_empty() {
+                    continue;
+                }
                 let kind = local[rng.below(local.len())];
                 let idx = self.monsters.len();
                 let mseed = rng.next_u64();
@@ -6351,6 +6376,9 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
                 let m = &self.monsters[i];
                 (m.entity_id.clone(), m.position, m.area_min_x, m.area_max_x)
             };
+            if kinds.is_empty() {
+                continue;
+            }
             let kind = kinds[rng.below(kinds.len())];
             let seed = rng.next_u64();
             // Re-seeded IN PLACE rather than re-scattered: placement already proved
@@ -8704,6 +8732,39 @@ mod tests {
                 balance.encounters.end_fight_min_distance
             );
         }
+    }
+
+    /// Every new biome's roster is its OWN, and the Oubliette has none.
+    ///
+    /// "Only in their biomes" is not enforced by a rule somewhere — it IS the placement
+    /// table: a species listed under exactly one biome is placed in exactly one biome, and
+    /// `biomes_of_creature` derives the inverse so the hunt board's advice cannot drift
+    /// from it. This pins that the twelve deep species stayed exclusive, which a careless
+    /// copy-paste into a second roster would quietly undo.
+    #[test]
+    fn the_deep_bestiary_is_exclusive_and_the_oubliette_is_empty() {
+        for (biome, expected) in [
+            ("amber_wood", 3),
+            ("seized_engine", 3),
+            ("nestiphian_cradle", 3),
+            ("hearth_plains", 3),
+        ] {
+            let roster = creatures_for_biome(biome);
+            assert_eq!(roster.len(), expected, "{biome} roster changed size");
+            for kind in roster {
+                assert_eq!(
+                    biomes_of_creature(kind),
+                    vec![biome],
+                    "{kind} is meant to live only in {biome}"
+                );
+            }
+        }
+        assert!(
+            creatures_for_biome("seraphic_oubliette").is_empty(),
+            "the Oubliette holds one thing and it is not wildlife"
+        );
+        assert!(!spawns_wildlife("seraphic_oubliette"));
+        assert!(spawns_wildlife("hearth_plains"));
     }
 
     // AD-4: a hunt that names a creature nothing spawns is a contract that can never
