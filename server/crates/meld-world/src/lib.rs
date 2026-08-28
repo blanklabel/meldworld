@@ -4955,6 +4955,22 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
         let drawn: Vec<Position> =
             self.corridor_path.iter().map(|p| radial_tf(*p, half, lat)).collect();
         let clear = self.path_clear_radius + self.player_radius;
+        // …and it yields to WATER already placed, for the same reason and by the same rule.
+        // Within a section `push_ridges` runs before `push_water`, so water yields to a range
+        // there — but a region ring spans many sections, so a range raised for section N+2 can
+        // land on a lake placed for section N. A mountain swallowing a lake is nonsense either
+        // way round; the difference is only which one was there first, and what is already
+        // there wins.
+        let placed_water: Vec<(Position, f64)> = self
+            .basins
+            .iter()
+            .map(|b| (Position::new(b[0] as f64, b[1] as f64), b[2] as f64))
+            .chain(
+                self.rivers
+                    .iter()
+                    .map(|n| (Position::new(n[0] as f64, n[1] as f64), n[2] as f64)),
+            )
+            .collect();
 
         let mut t = 0.0f64;
         for _ in 0..segs {
@@ -4969,6 +4985,7 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
                 let f = k as f64 / steps as f64;
                 let q = Position::new(p0.x + (p1.x - p0.x) * f, p0.y + (p1.y - p0.y) * f);
                 dist_to_path(&q, &drawn) <= clear + half_width
+                    || placed_water.iter().any(|(c, r)| c.distance_to(&q) <= r + half_width)
             });
             if crosses {
                 continue;
@@ -5079,6 +5096,31 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
                 d > pad + k[2] as f64
             })
         };
+        // …and never inside a RANGE, for the same reason and one more. A lake filling a
+        // mountain is nonsense on its face; worse, water is placed by walking DOWNHILL from a
+        // source, and a range is the steepest ground in the world, so descent runs straight
+        // into one and pools against it. And a range is impassable, so a basin that formed
+        // inside one is water no party can ever reach.
+        //
+        // Ranges are raised before this pass (`push_ridges` runs above `push_water`), which is
+        // what makes yielding possible at all — the same ordering that lets water yield to a
+        // drawn path by becoming a ford.
+        let ridge_list: Vec<meld_proto::terrain::Ridge> = self.ridges.clone();
+        let off_ridges = |p: Position, pad: f64| {
+            ridge_list.iter().all(|r| {
+                let hw = r[4] as f64;
+                hw <= 0.0
+                    || meld_proto::terrain::dist_to_segment(
+                        p.x as f32,
+                        p.y as f32,
+                        r[0],
+                        r[1],
+                        r[2],
+                        r[3],
+                    ) as f64
+                        > pad + hw
+            })
+        };
         // A body smaller than this is not worth placing — it renders as a puddle and reads
         // as an artefact rather than as water.
         const MIN_BODY: f64 = 18.0;
@@ -5111,6 +5153,10 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
             }
             // A spring belongs to the ground it rises from.
             if rng.unit() * wet_mult > biome_water_mult(self.biome_at(src)) {
+                return;
+            }
+            // A spring inside a mountain has nowhere to go but into it.
+            if !off_ridges(src, 0.0) {
                 return;
             }
             let mut nodes: Vec<meld_proto::coast::RiverNode> = Vec::new();
@@ -5183,7 +5229,8 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
                 while radius >= MIN_BODY && !off_creatures(p, radius) {
                     radius -= 12.0;
                 }
-                if radius >= MIN_BODY && off_drawn(p, radius) && off_peaks(p, radius) {
+                if radius >= MIN_BODY && off_drawn(p, radius) && off_peaks(p, radius)
+                && off_ridges(p, radius) {
                     self.basins.push([
                         p.x as f32,
                         p.y as f32,
@@ -5235,6 +5282,7 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
                 && rng.unit() * wet_mult <= biome_water_mult(self.biome_at(p))
                 && off_drawn(p, radius)
                 && off_peaks(p, radius)
+                && off_ridges(p, radius)
             {
                 self.basins.push([x as f32, z as f32, radius as f32, (cur + wg.basin_fill) as f32]);
             }
@@ -5260,27 +5308,20 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
         // A corridor cell is passable iff its BENT (world) position is walkable ground.
         // The RANGES too, so the guaranteed backbone finds a PASS by itself rather than being
         // told where one is — the same way it already finds an isthmus through a strait.
-        let (r_lo, r_hi) = {
-            let (a, b) = (entry.x.min(exit_target.x), entry.x.max(exit_target.x));
-            (a - 120.0, b + 120.0)
-        };
-        let near: Vec<meld_proto::terrain::Ridge> = self
-            .ridges
-            .iter()
-            .copied()
-            .filter(|r| {
-                let (ra, rb) = (
-                    ((r[0] * r[0] + r[1] * r[1]) as f64).sqrt(),
-                    ((r[2] * r[2] + r[3] * r[3]) as f64).sqrt(),
-                );
-                let hw = r[4] as f64;
-                ra.min(rb) - hw <= r_hi && ra.max(rb) + hw >= r_lo
-            })
-            .collect();
-        let ridges = &near;
+        //
+        // ⚠️ **AS A GRID, NOT A SLOPE EVALUATION.** A* samples every node and then every EDGE
+        // at ≤1 world unit, so asking `landform_slope` here cost four height evaluations plus
+        // the capsule distances thousands of times per section: measured, world generation went
+        // 2.31x slower and `make check` went from ~25 minutes to an hour. A range's interior is
+        // impassable throughout (linear falloff ⇒ constant slope), so "am I in a range" is a
+        // disc query, and the same field the movers use answers it in O(1).
+        let ridge_field = BlockField::with_ridges(Vec::new(), self.ridge_discs());
+        // Routing keeps a margin the way `ROUTE_SLOPE` is stricter than `WALKABLE_SLOPE`: the
+        // guaranteed route stays clear of the flank rather than grazing it.
+        let route_pad = self.path_clear_radius + self.player_radius;
         let routable = |x: f32, z: f32| -> bool {
-            meld_proto::terrain::landform_slope(x, z, ox, oz, ridges)
-                < meld_proto::terrain::ROUTE_SLOPE
+            !ridge_field.ridge_blocks(&Position::new(x as f64, z as f64), route_pad)
+                && meld_proto::terrain::routable(x, z, ox, oz)
         };
         let walk = |c: (i64, i64)| -> bool {
             let w = radial_tf(Position::new(c.0 as f64 * CELL, c.1 as f64 * CELL), half, lat);
@@ -13147,12 +13188,28 @@ impl Arena {
 /// scan returned. `blocks` is a predicate, so bucket order cannot change the answer and the
 /// engine stays deterministic (CANON §S).
 pub struct BlockField {
+    props: Buckets,
+    /// **THE RANGES, IN THEIR OWN BUCKET SET.** ⚠️ They cannot share the props' one, and that
+    /// is the water-prop lesson repeating: `Buckets` sizes its cell from the LARGEST radius in
+    /// it, so a range's 26-52 unit half-width would push `cell` from 8 to ~104 — buckets 13x
+    /// wider, holding ~169x the props, swept on every creature's every tick. Water props at
+    /// r=10 already cost "6x the props on the creature tick, everywhere" for exactly this, and
+    /// they were a fifth the size.
+    ///
+    /// Two bucket sets, ONE `blocks()`. The rule this file enforces is that no call site can
+    /// forget what blocks — which is about the API, not about the storage.
+    ridges: Buckets,
+}
+
+/// One spatial hash of blocking discs. Split out of [`BlockField`] so props and ranges can
+/// each size their own cell.
+struct Buckets {
     cell: f64,
     max_radius: f64,
     buckets: HashMap<(i64, i64), Vec<(Position, f64)>>,
 }
 
-impl BlockField {
+impl Buckets {
     fn new(items: Vec<(Position, f64)>) -> Self {
         let max_radius = items.iter().map(|(_, r)| *r).fold(0.0_f64, f64::max);
         // Wide enough that a query sweeps few cells, narrow enough that a cell holds few
@@ -13160,19 +13217,17 @@ impl BlockField {
         let cell = (max_radius * 2.0).max(8.0);
         let mut buckets: HashMap<(i64, i64), Vec<(Position, f64)>> = HashMap::new();
         for it in items {
-            buckets.entry(Self::key(cell, &it.0)).or_default().push(it);
+            buckets.entry(BlockField::key(cell, &it.0)).or_default().push(it);
         }
         Self { cell, max_radius, buckets }
     }
 
-    fn key(cell: f64, p: &Position) -> (i64, i64) {
-        ((p.x / cell).floor() as i64, (p.y / cell).floor() as i64)
-    }
-
-    /// Does anything blocking overlap a disc of `radius` at `p`?
-    pub fn blocks(&self, p: &Position, radius: f64) -> bool {
+    fn blocks(&self, p: &Position, radius: f64) -> bool {
+        if self.buckets.is_empty() {
+            return false;
+        }
         let span = ((self.max_radius + radius) / self.cell).ceil() as i64;
-        let (cx, cy) = Self::key(self.cell, p);
+        let (cx, cy) = BlockField::key(self.cell, p);
         for dx in -span..=span {
             for dy in -span..=span {
                 if let Some(v) = self.buckets.get(&(cx + dx, cy + dy)) {
@@ -13185,9 +13240,44 @@ impl BlockField {
         false
     }
 
+    fn len(&self) -> usize {
+        self.buckets.values().map(|v| v.len()).sum()
+    }
+}
+
+impl BlockField {
+    fn new(items: Vec<(Position, f64)>) -> Self {
+        Self { props: Buckets::new(items), ridges: Buckets::new(Vec::new()) }
+    }
+
+    /// Props (and blocking structures) plus the RANGES, each in its own bucket set.
+    fn with_ridges(items: Vec<(Position, f64)>, ridges: Vec<(Position, f64)>) -> Self {
+        Self { props: Buckets::new(items), ridges: Buckets::new(ridges) }
+    }
+
+    /// Is anything blocking within `radius` of `p`, counting ONLY the ranges?
+    ///
+    /// A* wants this half on its own: it already answers for props through the clear-path
+    /// tube, and what it needs from a range is the O(1) question rather than a slope
+    /// evaluation at every node and every edge sample.
+    pub fn ridge_blocks(&self, p: &Position, radius: f64) -> bool {
+        self.ridges.blocks(p, radius)
+    }
+
+    fn key(cell: f64, p: &Position) -> (i64, i64) {
+        ((p.x / cell).floor() as i64, (p.y / cell).floor() as i64)
+    }
+
+
+    /// Does anything blocking overlap a disc of `radius` at `p`? Props AND ranges — one
+    /// question, so a call site cannot consult half of what blocks.
+    pub fn blocks(&self, p: &Position, radius: f64) -> bool {
+        self.props.blocks(p, radius) || self.ridges.blocks(p, radius)
+    }
+
     /// Everything in the field, for tests that want to reason about the whole set.
     pub fn len(&self) -> usize {
-        self.buckets.values().map(|v| v.len()).sum()
+        self.props.len() + self.ridges.len()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -13329,7 +13419,41 @@ impl Arena {
                 .filter(|s| s.blocks())
                 .map(|s| (s.position, self.structure_radius)),
         );
-        BlockField::new(out)
+        BlockField::with_ridges(out, self.ridge_discs())
+    }
+
+    /// A range as blocking DISCS along its spine.
+    ///
+    /// **A capsule is exactly the union of discs centred on its segment**, and a range's whole
+    /// interior is impassable — its falloff is linear, so the slope is `height / half_width`
+    /// at every point inside, not just near the crest. So this is not an approximation of the
+    /// shape, only of how finely the spine is sampled.
+    fn ridge_discs(&self) -> Vec<(Position, f64)> {
+        let mut out = Vec::new();
+        for r in &self.ridges {
+            let hw = r[4] as f64;
+            if hw <= 0.0 {
+                continue;
+            }
+            let (a, b) = (
+                Position::new(r[0] as f64, r[1] as f64),
+                Position::new(r[2] as f64, r[3] as f64),
+            );
+            // 0.7 of the half-width leaves an uncovered sliver of ~6% of it at the very rim —
+            // a couple of units on a 38-unit flank, where the next step inward is blocked
+            // anyway. Tighter buys nothing a mover can feel; looser starts leaking a gap.
+            let step = (hw * 0.7).max(1.0);
+            let len = a.distance_to(&b);
+            let n = (len / step).ceil().max(1.0) as i32;
+            for k in 0..=n {
+                let t = k as f64 / n as f64;
+                out.push((
+                    Position::new(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t),
+                    hw,
+                ));
+            }
+        }
+        out
     }
 
     /// The structure `player_id` is standing at, within `radius` and on their level.
