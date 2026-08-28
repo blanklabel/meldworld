@@ -340,11 +340,11 @@
       "key": "rot_grub",
       "biome": "nestiphian_cradle",
       "gate": 1800,
-      "walk": "humping forward through the muck",
+      "walk": "inching forward, its whole body rippling",
       "attack": "rearing up and biting with a ring of hooked mouthparts",
       "variants": {
-        "rot_grub": "a pale bloated maggot the size of a dog, segmented and glistening, a ring of small hooked mouthparts, no eyes",
-        "rot_grub_pack_leader": "an enormous pale grub, translucent skin showing dark churning innards, a wide ring of hooked mouthparts, fresh green shoots sprouting along its back"
+        "rot_grub": "a giant legless maggot larva, a fat pale segmented tube of flesh lying on the ground, no legs at all, no arms, no face, just a ring of small hooked mouthparts at the blunt front end, glistening with slime",
+        "rot_grub_pack_leader": "an enormous legless maggot larva, a vast bloated pale segmented grub with no limbs and no face, translucent skin showing dark churning innards, a wide ring of hooked mouthparts at the front, pale shoots sprouting along its back"
       }
     },
     {
@@ -398,8 +398,8 @@
       "walk": "prowling with a smooth low gait",
       "attack": "pouncing and tearing",
       "variants": {
-        "gilded_hound": "a sleek short-haired hound with a coat like polished rose-gold, a heavy jewelled collar, dark wet eyes",
-        "gilded_hound_pack_leader": "a huge sleek hound plated in rose-gold, a broad jewelled collar hung with chains, too many dark eyes, silk streamers knotted into its tail"
+        "gilded_hound": "a demonic hound plated in polished rose-gold metal, its hide replaced by overlapping gold scales, a heavy jewelled collar with hanging chains, glowing red eyes, smoke curling from its jaws",
+        "gilded_hound_pack_leader": "a huge demonic hound armoured in rose-gold plate, gold scales over dark hide, a broad jewelled collar hung with heavy chains, several glowing red eyes, silk streamers knotted into its tail, fire in its throat"
       }
     }
   ]

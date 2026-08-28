@@ -3383,15 +3383,21 @@ impl Arena {
             let pos = Position::new(wg.first_monster_x, 0.0);
             let idx = self.monsters.len();
             let mseed = rng.next_u64();
+            let Some(first) = kinds.first() else {
+                return;
+            };
             self.monsters
-                .push(MonsterSpawn::build(balance, format!("mob-{idx}"), kinds[0], pos, mseed));
+                .push(MonsterSpawn::build(balance, format!("mob-{idx}"), first, pos, mseed));
             let portal_x = wg.first_monster_x + wg.first_area_portal_gap;
             let end_x = portal_x + wg.portal_setback;
             self.monsters[idx].area_min_x = start_x;
             self.monsters[idx].area_max_x = end_x;
             // A guaranteed starter resource node just off the tutorial path, so
             // the first thing a new player can safely do is harvest (no fight).
-            let starter_kind = resources_for_biome(biome)[0].to_string();
+            let Some(starter) = resources_for_biome(biome).first() else {
+                return;
+            };
+            let starter_kind = starter.to_string();
             self.resources.push(ResourceNode {
                 spent_tick: 0,
                 entity_id: format!("res-{}", self.resources.len()),
@@ -3550,6 +3556,11 @@ impl Arena {
             let rx = start_x + 2.0 + rng.unit() * (length - 4.0).max(1.0);
             let ry = wg.resource_lateral_spread * rng.signed();
             let rkinds = resources_for_biome(self.biome_in_corridor(Position::new(rx, ry)));
+            // Nothing grows in the Oubliette and nothing is buried under it, so a node
+            // rolled onto that ground is simply not placed.
+            if rkinds.is_empty() {
+                continue;
+            }
             let rk = rkinds[rng.below(rkinds.len())];
             let nid = self.resources.len();
             self.resources.push(ResourceNode {
@@ -3712,9 +3723,12 @@ impl Arena {
                     .push([summit.x as f32, summit.y as f32, radius as f32, height as f32]);
                 // `hub_safe_radius` alone put a 10x-HP Gatekeeper 14 units from the
                 // hub — a new party's first contact, and the end of the dive.
+                // A biome with no wildlife has nothing to promote into a Gatekeeper, so
+                // the peak simply carries no boss.
                 if summit.x > wg.hub_safe_radius
                     && summit.distance_floor() >= enc.gatekeeper_min_distance
                     && prng.unit() < wg.peak_boss_chance
+                    && !kinds.is_empty()
                 {
                     let gidx = self.monsters.len();
                     let gseed = section_seed(self.seed_base, i) ^ 0x9EA1_B055_0000_0000;
@@ -4023,7 +4037,7 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
                         for k in 0..band.size - 1 {
                             // Mixed groups: past the duo band, some of the littles are a
                             // different species than what they follow.
-                            let mkind = if erng.unit() < band.mixed_chance {
+                            let mkind = if erng.unit() < band.mixed_chance && !local.is_empty() {
                                 local[erng.below(local.len())]
                             } else {
                                 kind
@@ -4082,6 +4096,9 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
             let ox = start_x + rng.unit() * length;
             let oy = rng.signed() * (self.corridor_lateral - 1.0);
             let okinds = obstacles_for_biome(self.biome_in_corridor(Position::new(ox, oy)));
+            if okinds.is_empty() {
+                continue;
+            }
             let okind = okinds[rng.below(okinds.len())];
             let radius = obstacle_radius_for(wg, okind, rng.unit());
             let pos = Position::new(ox, oy);
@@ -6400,6 +6417,9 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
                 continue;
             }
             let slot = old_nodes.iter().position(|k| *k == self.resources[i].kind).unwrap_or(0);
+            if new_nodes.is_empty() {
+                continue;
+            }
             let kind = new_nodes[slot.min(new_nodes.len() - 1)].to_string();
             self.resources[i].remaining = node_stock(balance, &kind);
             self.resources[i].kind = kind;
