@@ -529,23 +529,43 @@ fn vnoise(p: vec2<f32>) -> f32 {
 
 const ATLAS_GRID: f32 = 4.0;
 const ATLAS_TEXELS: f32 = 256.0;
+// Sixteen drawn variations, each usable at four quarter-turns: SIXTY-FOUR.
+const ATLAS_VARIANTS: f32 = 64.0;
 
-// One variation of the material, addressed inside the atlas.
+// One variation of the material, addressed inside the atlas and optionally turned.
+//
+// ROTATION IS FREE VARIETY HERE, and it is worth saying why it works now when it did not
+// before. Turning a SINGLE tile per cell failed badly — the same grass leaning four ways
+// read as patches "pointing in different directions", because the features were
+// identical and only their angle changed. With sixteen distinct variations in play a
+// quarter-turn is no longer recognisable as the same tile turned, so the same trick that
+// was a defect becomes 4x the variety for nothing.
+//
+// Quarter-turns only, and written out rather than built from a rotation matrix: 90
+// degrees maps texel centres onto texel centres exactly, while an arbitrary angle
+// resamples pixel art off its own grid.
 fn atlas_sample(t: texture_2d<f32>, uv: vec2<f32>, variant: f32) -> vec4<f32> {
+    var f = fract(uv) - vec2<f32>(0.5, 0.5);
+    let turns = floor(variant / 16.0);
+    if (turns == 1.0) { f = vec2<f32>(-f.y, f.x); }
+    else if (turns == 2.0) { f = vec2<f32>(-f.x, -f.y); }
+    else if (turns == 3.0) { f = vec2<f32>(f.y, -f.x); }
+    f = f + vec2<f32>(0.5, 0.5);
     // ⚠️ INSET BY HALF A TEXEL. Sub-rects of an atlas cannot use a repeat sampler to keep
     // their own edges clean: filtering at a cell boundary reaches into the NEIGHBOURING
     // variation and drags its colour in as a bright fringe along every tile.
     let inset = 0.5 / ATLAS_TEXELS;
-    let f = clamp(fract(uv), vec2<f32>(inset, inset), vec2<f32>(1.0 - inset, 1.0 - inset));
-    let g = vec2<f32>(floor(variant % ATLAS_GRID), floor(variant / ATLAS_GRID));
+    f = clamp(f, vec2<f32>(inset, inset), vec2<f32>(1.0 - inset, 1.0 - inset));
+    let tile = variant % 16.0;
+    let g = vec2<f32>(floor(tile % ATLAS_GRID), floor(tile / ATLAS_GRID));
     return textureSample(t, samp, (g + f) / ATLAS_GRID);
 }
 
-// Which variation a stretch of ground is made of. Quantised from a smooth field so a
-// patch keeps one identity over several tiles instead of flickering per tile, and hashed
-// off world position so it is the same every time you walk back.
+// Which of the sixty-four a stretch of ground is made of. Quantised from a smooth field
+// so a patch keeps one identity over several tiles instead of flickering per tile, and
+// keyed off world position so it is the same every time you walk back over it.
 fn variant_at(uv: vec2<f32>, seed: f32) -> f32 {
-    return floor(vnoise(uv * 0.037 + vec2<f32>(seed, seed * 1.7)) * 15.999);
+    return floor(vnoise(uv * 0.037 + vec2<f32>(seed, seed * 1.7)) * (ATLAS_VARIANTS - 0.001));
 }
 
 fn ground_sample(t: texture_2d<f32>, uv: vec2<f32>) -> vec4<f32> {
