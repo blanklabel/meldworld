@@ -608,20 +608,76 @@ fn atlas_sample(t: texture_2d<f32>, uv: vec2<f32>, variant: f32) -> vec4<f32> {
     return textureSample(t, samp, (g * ATLAS_STRIDE + ATLAS_PAD + f * ATLAS_CELL) / ATLAS_SIDE);
 }
 
-// Which of the sixty-four a stretch of ground is made of. Quantised from a smooth field
-// so a patch keeps one identity over several tiles instead of flickering per tile, and
-// keyed off world position so it is the same every time you walk back over it.
+// DE-TILING. Three things together, because each one alone was tried and each one alone
+// looked worse than doing nothing:
+//
+//   1. the atlas is ORDERED BY SIMILARITY (`pack_ground_atlas.py`), so index n and n+1
+//      are the two most-alike drawings in the set rather than an arbitrary pair;
+//   2. a cell's variation is the smooth field's index JITTERED BY ONE, which — given (1)
+//      — means neighbouring cells hold tiles that already look alike;
+//   3. and the three cells overlapping any point are blended WIDELY.
+//
+// (3) is only affordable because of (1) and (2). Blending arbitrary variations is how the
+// first attempt turned the ground into a patchwork quilt: these sixteen differ by a mean
+// 25.1 (desert) to 76.1 (tundra) in generator order, and no amount of cross-fading hides
+// a border between two tiles that look nothing alike. Ordering drops that adjacency cost
+// by 20-48% (tundra 1188 -> 621), and jittering by one keeps every blend between near
+// neighbours in that ordering — so the transition has almost nothing to hide.
+//
+// A triangular lattice, not square cells: a square grid of random offsets replaces one
+// visible grid with another, while three overlapping lobes leave no axis-aligned edge.
+const DETILE_CELL: f32 = 0.22;   // hex cells per tile — a cell spans several tiles
+const DETILE_SHARP: f32 = 1.5;   // 1.0 = pure linear blend; higher narrows the seams
+
+struct Detile { n0: vec2<f32>, n1: vec2<f32>, n2: vec2<f32>, w: vec3<f32> }
+
+fn detile_nodes(p: vec2<f32>) -> Detile {
+    let q = vec2<f32>(p.x - p.y * 0.57735027, p.y * 1.15470054);   // skew to triangles
+    let i = floor(q);
+    let f = q - i;
+    var d: Detile;
+    if (f.x + f.y < 1.0) {
+        d.n0 = i;
+        d.n1 = i + vec2<f32>(1.0, 0.0);
+        d.n2 = i + vec2<f32>(0.0, 1.0);
+        d.w = vec3<f32>(1.0 - f.x - f.y, f.x, f.y);
+    } else {
+        d.n0 = i + vec2<f32>(1.0, 1.0);
+        d.n1 = i + vec2<f32>(1.0, 0.0);
+        d.n2 = i + vec2<f32>(0.0, 1.0);
+        d.w = vec3<f32>(f.x + f.y - 1.0, 1.0 - f.y, 1.0 - f.x);
+    }
+    return d;
+}
+
+// Where in the material this cell reads from. Randomising the ORIGIN is what stops one
+// drawing repeating on a lattice; it costs nothing, because a cell is one tile turned and
+// shifted, not a different tile.
+fn node_offset(n: vec2<f32>) -> vec2<f32> {
+    return vec2<f32>(hash2(n * 1.7 + 3.1), hash2(n * 2.3 + 11.9));
+}
+
+// The smooth field's variation, so the ground still reads as broad patches of one ground.
 fn variant_at(uv: vec2<f32>, seed: f32) -> f32 {
-    return floor(vnoise(uv * 0.037 + vec2<f32>(seed, seed * 1.7)) * (ATLAS_VARIANTS - 0.001));
+    return floor(vnoise(uv * 0.037 + vec2<f32>(seed, seed * 1.7)) * 15.999);
+}
+
+// This cell's variation and quarter-turn, packed as `atlas_sample` wants them. The jitter
+// is ±1 IN THE SIMILARITY ORDERING, which is the whole reason the ordering exists.
+fn node_variant(n: vec2<f32>, base: f32) -> f32 {
+    let jitter = floor(hash2(n * 5.9 + 17.3) * 2.999) - 1.0;
+    let turn = floor(hash2(n * 3.3 + 29.7) * 3.999);
+    return clamp(base + jitter, 0.0, 15.0) + turn * 16.0;
 }
 
 fn ground_sample(t: texture_2d<f32>, uv: vec2<f32>) -> vec4<f32> {
-    let a = atlas_sample(t, uv, variant_at(uv, 0.0));
-    let b = atlas_sample(t, uv, variant_at(uv, 11.3));
-    // The cross-fade field is coarser than the variation fields, so the two rarely change
-    // at the same place and no edge in the result lines up with an edge in either input.
-    let k = smoothstep(0.35, 0.65, vnoise(uv * 0.021 + vec2<f32>(4.2, 9.1)));
-    return mix(a, b, k);
+    let base = variant_at(uv, 0.0);
+    let d = detile_nodes(uv * DETILE_CELL);
+    var w = pow(d.w, vec3<f32>(DETILE_SHARP, DETILE_SHARP, DETILE_SHARP));
+    w = w / (w.x + w.y + w.z);
+    return atlas_sample(t, uv + node_offset(d.n0), node_variant(d.n0, base)) * w.x
+         + atlas_sample(t, uv + node_offset(d.n1), node_variant(d.n1, base)) * w.y
+         + atlas_sample(t, uv + node_offset(d.n2), node_variant(d.n2, base)) * w.z;
 }
 
 // Whole-stretch light and shade, at a scale much larger than one tile.
