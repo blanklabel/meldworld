@@ -390,6 +390,21 @@ pub fn billboard_yaw(sprite_world: Vec3, cam_world: Vec3) -> Quat {
     }
 }
 
+/// The set [`billboard`] runs in, and **the only thing anything may order against**.
+///
+/// ⚠️ `billboard` IS REGISTERED ONCE PER SCREEN — City, Overworld and Battle each add it
+/// to `Update` behind their own `run_if`. Bevy turns a bare system into a `SystemTypeSet`
+/// for ordering, and a type registered more than once in one schedule makes that set
+/// AMBIGUOUS: `.after(hd2d::billboard)` then panics at schedule init with "cannot be used
+/// for ordering if ambiguous", taking the whole app down before the first frame.
+///
+/// It shipped that way. `cargo test` never builds the real `App`, so nothing in CI
+/// constructs this schedule — the game simply failed to boot while every check stayed
+/// green. Order against this SET instead; it names one thing however many times the
+/// system is added.
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct BillboardSet;
+
 /// System: rotate every [`Billboard`] to face the camera (yaw only, stays upright).
 ///
 /// Both the sprite and the camera are read in **world** space via [`GlobalTransform`].

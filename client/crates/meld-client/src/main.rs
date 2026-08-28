@@ -323,7 +323,7 @@ fn main() {
                 pulse_magitech,
                 hd2d::animate_chars,
                 hd2d::place_billboards,
-                hd2d::billboard,
+                hd2d::billboard.in_set(hd2d::BillboardSet),
             )
                 .run_if(in_state(Screen::City)),
         )
@@ -426,11 +426,11 @@ fn main() {
                 hd2d::animate_chars,
                 hd2d_follow,
                 hd2d::place_billboards,
-                hd2d::billboard,
+                hd2d::billboard.in_set(hd2d::BillboardSet),
                 // Both wind leans compose onto the yaw `hd2d::billboard` writes, so both
                 // have to read a yaw that is already there.
-                animate_sway.after(hd2d::billboard),
-                ambient::update_ambient_scatter.after(hd2d::billboard),
+                animate_sway.after(hd2d::BillboardSet),
+                ambient::update_ambient_scatter.after(hd2d::BillboardSet),
                 (update_overworld_hud, update_run_stats, update_action_hud),
                 render_overlay,
             )
@@ -604,7 +604,7 @@ fn main() {
                     battle_camera,
                     hd2d::animate_chars,
                     hd2d::place_billboards,
-                    hd2d::billboard,
+                    hd2d::billboard.in_set(hd2d::BillboardSet),
                     render_status_icons,
                     update_condition_rims,
                     // The fight's own results screen — drawn here, over the battle
