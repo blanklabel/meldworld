@@ -321,6 +321,15 @@ fn stand_in_biome(biome: &str) -> &str {
     }
 }
 
+/// The body the END FIGHT wears where nothing lives.
+///
+/// The fight is placed by promoting an existing spawn, and `become_boss` overwrites the
+/// kit and the name anyway — the host only supplies a species for a creature that is
+/// about to stop being one. It is a forest kind on purpose: the shallowest, most ordinary
+/// thing in the game, so if it is ever seen UNPROMOTED it reads as an obvious bug rather
+/// than as deep-world content.
+const END_FIGHT_HOST: &str = "forest_bloom_stalker";
+
 /// Does anything live here at all?
 ///
 /// ⚠️ ASK THIS BEFORE INDEXING A ROSTER. `creatures_for_biome` can be EMPTY — the
@@ -3826,11 +3835,28 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
                 // share with sixty others. Difficulty is untouched: that rides `distance`
                 // (CANON §B) and a biome is a difficulty-neutral skin.
                 let local = creatures_for_biome(self.biome_at(world));
-                // Nothing lives in the Oubliette, so nothing regrows there either.
-                if local.is_empty() {
-                    continue;
-                }
-                let kind = local[rng.below(local.len())];
+                // ⚠️ NOTHING LIVES IN THE OUBLIETTE — EXCEPT THE THING IT WAS BUILT TO HOLD.
+                //
+                // An empty roster means no wildlife, and the scatter simply skips. But the
+                // END FIGHT is placed by PROMOTING a spawn, so with nothing to promote it
+                // would never be placed at all — the capstone would be an empty room and
+                // the walk out would end in nothing, which the suite reports as "no seed
+                // placed the end fight past its floor at all".
+                //
+                // So a barren band still lays down the ONE body the fight needs, and only
+                // while the fight is still owed. It becomes three named bosses on the very
+                // next lines, so the Oubliette still contains nothing but them.
+                let owes_end_fight = !self.tutorial
+                    && !self.end_fight_placed
+                    && world.x >= enc.end_fight_min_distance;
+                let kind = if local.is_empty() {
+                    if !owes_end_fight {
+                        continue;
+                    }
+                    END_FIGHT_HOST
+                } else {
+                    local[rng.below(local.len())]
+                };
                 let idx = self.monsters.len();
                 let mseed = rng.next_u64();
                 self.monsters
@@ -8710,13 +8736,9 @@ mod tests {
         assert!(biomes_of_creature("no_such_creature").is_empty());
         // Field and forest are the same fauna on different tree counts, so a forest
         // creature answers with both — the advice has to name both or it is wrong half
-        // the time. It answers with the biomes that BORROW that roster too
-        // (`stand_in_biome`): a stalker really does stand in the Amber Wood, and a board
-        // that failed to say so would be sending players to the wrong half of the map.
-        assert_eq!(
-            biomes_of_creature("forest_bloom_stalker"),
-            vec!["field", "forest", "amber_wood", "hearth_plains"]
-        );
+        // the time. It is only those two again now that the deep biomes have their own
+        // rosters and no longer borrow this one.
+        assert_eq!(biomes_of_creature("forest_bloom_stalker"), vec!["field", "forest"]);
     }
 
     /// ⚠️ AN EXCLUSIVE BIOME GATED SHALLOW EATS THE ENTIRE WORLD.
@@ -10800,11 +10822,18 @@ mod tests {
         );
         // Index 0 stays the tutorial creature: area 0 is the deterministic first fight.
         assert_eq!(creatures_for_biome("forest")[0], "forest_bloom_stalker");
-        // Every roster is non-empty and holds no duplicates - a repeated kind is a
-        // biome that reads as less varied than its length claims.
+        // Every roster holds no duplicates - a repeated kind is a biome that reads as
+        // less varied than its length claims - and every biome that has wildlife AT ALL
+        // has some. The exception is deliberate and is exactly one: the Oubliette is a
+        // prison built to hold one thing, so its emptiness is the content rather than an
+        // unfilled table. `spawns_wildlife` is the question every caller must ask.
         for biome in BIOMES {
             let pool = creatures_for_biome(biome);
-            assert!(!pool.is_empty(), "{biome} has no creatures");
+            assert_eq!(
+                spawns_wildlife(biome),
+                biome != "seraphic_oubliette",
+                "{biome}: only the capstone may be barren"
+            );
             for (i, k) in pool.iter().enumerate() {
                 assert!(!pool[i + 1..].contains(k), "{biome} lists {k} twice");
             }
