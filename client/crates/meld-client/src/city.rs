@@ -199,29 +199,94 @@ pub(crate) const CITY_PROPS: &[(&str, f32, f32, f32, f32)] = &[
 /// This replaces three Kenney GRAVEYARD models — a keeper, a ghost and a SKELETON —
 /// that have stood in the friendly hub since someone left them as "a hint of the crowd
 /// to come in M1". A skeleton in the safe town was always going to read as a bug.
-pub(crate) const CITY_FOLK: &[(&str, f32, f32, f32)] = &[
+/// A townsperson who wanders near where they live.
+///
+/// Movement is all this needs: `hd2d::animate_chars` derives both the walk cycle and the
+/// facing from the `Transform` itself, so strolling is just moving the entity and the
+/// sprite work is already done. The city sets `CharSprite::facing` at spawn rather than
+/// `locked`, so a stroller turns to its heading while the pinned staff keep theirs.
+#[derive(Component)]
+pub(crate) struct Strolling {
+    home: Vec3,
+    target: Vec3,
+    pause: f32,
+    seed: u32,
+}
+
+/// How far from home a stroller ranges, and how fast. Small on purpose: these people are
+/// meant to read as living in the plaza, not crossing it — and a tight radius is also what
+/// keeps them clear of the fountain and the counters without pathfinding around either.
+const STROLL_RADIUS: f32 = 3.2;
+const STROLL_SPEED: f32 = 1.1;
+
+impl Strolling {
+    fn new(home: Vec3, key: &str) -> Self {
+        // Seeded off the key so each one keeps its own rhythm rather than the whole plaza
+        // stepping off together, and so a given townsperson strolls the same way each run.
+        let seed = key.bytes().fold(0x9e3779b9u32, |a, b| {
+            a.rotate_left(5) ^ u32::from(b).wrapping_mul(0x85eb_ca6b)
+        });
+        Self { home, target: home, pause: 0.0, seed }
+    }
+
+    fn roll(&mut self) -> f32 {
+        self.seed = self.seed.wrapping_mul(1664525).wrapping_add(1013904223);
+        (self.seed >> 8) as f32 / 16_777_216.0
+    }
+}
+
+/// Walk the plaza's residents between idle spots near their homes.
+pub(crate) fn stroll_city_folk(time: Res<Time>, mut q: Query<(&mut Transform, &mut Strolling)>) {
+    let dt = time.delta_secs();
+    for (mut tf, mut s) in &mut q {
+        if s.pause > 0.0 {
+            s.pause -= dt;
+            continue;
+        }
+        let to = s.target - tf.translation;
+        let dist = to.length();
+        if dist < 0.1 {
+            // Arrived: stand a moment, then pick somewhere else nearby. The pause is what
+            // makes it read as someone going about their day rather than pacing.
+            let angle = s.roll() * std::f32::consts::TAU;
+            let reach = STROLL_RADIUS * (0.35 + 0.65 * s.roll());
+            s.target = s.home + Vec3::new(angle.cos() * reach, 0.0, angle.sin() * reach);
+            s.pause = 1.5 + s.roll() * 4.0;
+        } else {
+            tf.translation += to / dist * (STROLL_SPEED * dt).min(dist);
+        }
+    }
+}
+
+/// The people of the Last City: `(key, x, z, yaw_degrees, strolls)`.
+///
+/// `strolls` is who has somewhere to be and who does not. Counter staff and the Wall's
+/// guards stay put — a smith who wanders off his anvil is a counter the player walks up to
+/// and finds empty, and a sentry who strolls is not a sentry. Everyone else lives here, so
+/// they move: a plaza of statues reads as a diorama rather than a town.
+pub(crate) const CITY_FOLK: &[(&str, f32, f32, f32, bool)] = &[
     // At their counters, facing the plaza a player walks in from.
-    ("npc_master_smith", 11.5, -8.0, 200.0),
-    ("npc_alembic_keeper", 13.5, -6.0, 210.0),
-    ("npc_broker", -11.0, -7.5, 150.0),
-    ("npc_apothecary_keeper", -12.5, -5.5, 160.0),
-    ("npc_vault_clerk", -8.0, 11.0, 180.0),
-    ("npc_quartermaster", 8.5, 10.5, 190.0),
-    ("npc_bounty_clerk", 0.5, -13.0, 0.0),
-    ("npc_innkeeper", -5.0, -9.5, 20.0),
+    ("npc_master_smith", 11.5, -8.0, 200.0, false),
+    ("npc_alembic_keeper", 13.5, -6.0, 210.0, false),
+    ("npc_broker", -11.0, -7.5, 150.0, false),
+    ("npc_apothecary_keeper", -12.5, -5.5, 160.0, false),
+    ("npc_vault_clerk", -8.0, 11.0, 180.0, false),
+    ("npc_quartermaster", 8.5, 10.5, 190.0, false),
+    ("npc_bounty_clerk", 0.5, -13.0, 0.0, false),
+    ("npc_innkeeper", -5.0, -9.5, 20.0, false),
     // The Wall is guarded; the plaza is lived in.
-    ("npc_soldier_spear", 3.2, 13.5, 0.0),
-    ("npc_phoenix_guard_sentry", -3.4, 13.5, 0.0),
-    ("npc_soldier_sword", 6.5, 6.5, 225.0),
-    ("npc_townsfolk_human", 2.5, 4.0, 180.0),
-    ("npc_townsfolk_halfling", -3.0, -1.0, 150.0),
-    ("npc_townsfolk_dwarf", 6.0, 2.0, 200.0),
-    ("npc_townsfolk_elf", -6.5, 3.5, 120.0),
-    ("npc_townsfolk_harefolk", 4.0, -4.5, 300.0),
-    ("npc_townsfolk_gnome", -1.5, 6.5, 170.0),
-    ("npc_child", 1.2, 5.2, 200.0),
-    ("npc_beggar", -7.5, -2.0, 90.0),
-    ("npc_cartographer", 7.5, -2.5, 250.0),
+    ("npc_soldier_spear", 3.2, 13.5, 0.0, false),
+    ("npc_phoenix_guard_sentry", -3.4, 13.5, 0.0, false),
+    ("npc_soldier_sword", 6.5, 6.5, 225.0, true),
+    ("npc_townsfolk_human", 2.5, 4.0, 180.0, true),
+    ("npc_townsfolk_halfling", -3.0, -1.0, 150.0, true),
+    ("npc_townsfolk_dwarf", 6.0, 2.0, 200.0, true),
+    ("npc_townsfolk_elf", -6.5, 3.5, 120.0, true),
+    ("npc_townsfolk_harefolk", 4.0, -4.5, 300.0, true),
+    ("npc_townsfolk_gnome", -1.5, 6.5, 170.0, true),
+    ("npc_child", 1.2, 5.2, 200.0, true),
+    ("npc_beggar", -7.5, -2.0, 90.0, true),
+    ("npc_cartographer", 7.5, -2.5, 250.0, true),
 ];
 
 /// The city HUD (2D overlay over the walkable scene): identity + live Vault line
@@ -612,7 +677,7 @@ pub(crate) fn city_scene(
     // --- THE CROWD. Same `CharSprite` the player and every creature use, so
     // `animate_chars` drives them with no new system: each faces a fixed way and idles,
     // because a townsfolk that wandered would walk through the counters it is posted at.
-    for (key, x, z, yaw) in CITY_FOLK {
+    for (key, x, z, yaw, strolls) in CITY_FOLK {
         let Some(frames) = wa.npc_frames(key) else { continue };
         let at = Vec3::new(*x, 0.0, *z);
         let mat = mats.add(hd2d::sprite_material(
@@ -624,8 +689,16 @@ pub(crate) fn city_scene(
         // never move, so without this every one of them would face the same default.
         let r = yaw.to_radians();
         sprite.facing = Vec2::new(r.sin(), r.cos());
-        commands
-            .spawn((CityScene, Transform::from_translation(at), Visibility::default(), sprite))
+        let mut folk = commands.spawn((
+            CityScene,
+            Transform::from_translation(at),
+            Visibility::default(),
+            sprite,
+        ));
+        if *strolls {
+            folk.insert(Strolling::new(at, key));
+        }
+        folk
             .with_children(|p| {
                 p.spawn((
                     Mesh3d(wa.sprite_quad.clone()),
@@ -637,7 +710,15 @@ pub(crate) fn city_scene(
                     // is what the player avatar beside these people uses — inventing a
                     // second one is how the crowd ends up standing at a different height
                     // from the hero walking through it.
-                    Transform::from_xyz(0.0, look.sprite_y, 0.0),
+                    // ⚠️ `sprite_scale` TOO, not just `sprite_y`. The hero's quad gets both
+                    // from `place_billboards`, which queries `HeroBillboard` — a component
+                    // these do not carry — so leaving the scale at its default 1.0 drew
+                    // every townsperson at 62% of the player walking past them. The two
+                    // numbers are ONE setting: `sprite_y` is documented as grounding "the
+                    // padded sprite at sprite_scale ~= 1.6", so taking the offset without
+                    // the scale mis-grounds them as well as shrinking them.
+                    Transform::from_xyz(0.0, look.sprite_y, 0.0)
+                        .with_scale(Vec3::splat(look.sprite_scale)),
                     hd2d::Billboard,
                 ));
                 p.spawn((

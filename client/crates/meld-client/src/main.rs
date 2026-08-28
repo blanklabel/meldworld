@@ -325,6 +325,7 @@ fn main() {
             )
                 .run_if(in_state(Screen::City)),
         )
+        .add_systems(Update, city::stroll_city_folk.run_if(in_state(Screen::City)))
         // Onboarding: the town welcome tour. A separate call rather than folded into
         // the City tuple above, which is already at Bevy's practical flat-tuple ceiling.
         .add_systems(
