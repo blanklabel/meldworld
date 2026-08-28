@@ -4184,13 +4184,46 @@ mod weather_tests {
             "the prop lean must carry the quad's offset through the rotation, or it see-saws"
         );
         let main = include_str!("main.rs");
-        for sys in ["animate_sway.after(hd2d::billboard)", "ambient::update_ambient_scatter.after(hd2d::billboard)"] {
+        for sys in ["animate_sway.after(hd2d::BillboardSet)",
+                    "ambient::update_ambient_scatter.after(hd2d::BillboardSet)"] {
             assert!(main.contains(sys), "`{sys}` must be ordered after the billboard pass");
         }
     }
 
     /// ⚠️ **A GRASS BLADE IS A BILLBOARD, AND TWO SYSTEMS WANT ITS ROTATION.**
     ///
+    /// ⚠️ ORDER AGAINST `hd2d::BillboardSet`, NEVER AGAINST `hd2d::billboard` ITSELF.
+    ///
+    /// `billboard` is registered once per screen (City, Overworld, Battle), and Bevy's
+    /// implicit `SystemTypeSet` for a system added more than once in one schedule is
+    /// AMBIGUOUS — ordering against it panics at schedule init and the app never reaches
+    /// its first frame. It shipped exactly that way and nothing caught it, because
+    /// `cargo test` never builds the real `App`: the two assertions below were both green
+    /// while `make play` died on boot. They check that the ordering EXISTS; they cannot
+    /// check that it RESOLVES. This one checks the shape that made it resolvable.
+    #[test]
+    fn nothing_orders_against_the_billboard_system_itself() {
+        let main = include_str!("main.rs");
+        assert!(
+            !main.contains(".after(hd2d::billboard)") && !main.contains(".before(hd2d::billboard)"),
+            "order against `hd2d::BillboardSet`, not `hd2d::billboard` — the system is added \
+             once per screen, so its implicit set is ambiguous and Bevy panics at schedule init"
+        );
+        // And every registration must actually be IN the set, or the ordering is vacuous:
+        // it resolves against an empty set and silently orders against nothing.
+        for line in main.lines() {
+            let l = line.trim();
+            if !l.contains("hd2d::billboard") || l.starts_with("//") || l.contains("after(") {
+                continue;
+            }
+            assert!(
+                l.contains("hd2d::billboard.in_set(hd2d::BillboardSet)"),
+                "every `hd2d::billboard` registration must be `.in_set(hd2d::BillboardSet)`, \
+                 or the ordering resolves against an empty set: {l}"
+            );
+        }
+    }
+
     /// `hd2d::billboard` writes the camera-facing yaw; the grass lean in
     /// `ambient::update_ambient_scatter` writes the bend. Assigning in the second dropped the
     /// first, and with no ordering between them the winner changed frame to frame — grass
@@ -4211,7 +4244,7 @@ mod weather_tests {
         // And the compose is only meaningful if the yaw is there to compose onto.
         let main = include_str!("main.rs");
         assert!(
-            main.contains("ambient::update_ambient_scatter.after(hd2d::billboard)"),
+            main.contains("ambient::update_ambient_scatter.after(hd2d::BillboardSet)"),
             "the grass scatter must be ordered after `hd2d::billboard`, or it composes onto \
              whatever last frame left behind"
         );
