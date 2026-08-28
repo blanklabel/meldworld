@@ -249,8 +249,6 @@ fn main() {
                 // Player characters carry their own light at night (overworld +
                 // battle) so the game stays readable in the dark.
                 illuminate_players,
-                // Route every UI text through the bundled symbol-capable font.
-                apply_ui_font,
             ),
         )
         // Join
@@ -327,6 +325,7 @@ fn main() {
             )
                 .run_if(in_state(Screen::City)),
         )
+        .add_systems(Update, city::stroll_city_folk.run_if(in_state(Screen::City)))
         // Onboarding: the town welcome tour. A separate call rather than folded into
         // the City tuple above, which is already at Bevy's practical flat-tuple ceiling.
         .add_systems(

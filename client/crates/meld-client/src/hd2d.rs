@@ -133,7 +133,19 @@ impl Default for Look {
             dof_on: true,
             bloom_on: true,
             fog_on: true,
-            sprite_y: 0.72,     // grounds the padded sprite at sprite_scale ≈ 1.6
+            // DERIVED, not eyeballed. The billboard quad is 2.2 units and draws the WHOLE
+            // canvas, of which the art fills the middle ~50% — measured mean bottom
+            // padding 24.8% across every class and NPC sheet. So at `sprite_scale` 1.6 the
+            // quad's bottom edge sits at `y - 1.76` and the art's FEET at
+            // `y - 1.76 + 0.248*3.52`. Grounding the feet on y=0 gives 0.886.
+            //
+            // ⚠️ It was 0.72, which put the feet 0.166 BELOW the ground — everyone walked
+            // shin-deep, the hero included, in town and battle alike. It went unnoticed for
+            // as long as it did because the townsfolk were accidentally drawn at scale 1.0,
+            // where the same offset floats them ABOVE the ground instead: half the crowd
+            // sunk and half hovering reads as neither, until they are all the right size and
+            // the whole plaza is standing in mud together.
+            sprite_y: 0.886,
             sprite_scale: 1.6,  // hero reads prominently in the diorama
             fov: 36.0,
             dof_sensor: 0.05,

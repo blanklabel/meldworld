@@ -291,6 +291,39 @@ mod tests {
         }
     }
 
+    /// ⚠️ THE FONT FAMILY WE ASK FOR MUST BE THE ONE THE FACE ANNOUNCES.
+    ///
+    /// Bevy 0.19 resolves `FontSource::Family` through fontique, which registers a face
+    /// under its TYPOGRAPHIC family (name id 16) when it has one. Ask for any other
+    /// string — including the face's own id-1 family, which differs here — and it matches
+    /// nothing, so every text node falls back to Bevy's default `FiraMono-subset.ttf`.
+    /// The words still render, because that subset has Latin; every icon becomes a tofu
+    /// box, because it has no private-use codepoints at all.
+    ///
+    /// It shipped exactly that way and read as "the icons are broken". The two green
+    /// facts either side of it are why it survived: the codepoints are right (the test
+    /// above proves it) and the system that assigns the font runs every frame. Neither
+    /// asks which family actually resolved.
+    #[test]
+    fn the_ui_font_family_is_the_one_the_face_announces() {
+        let face = ttf_parser::Face::parse(crate::netglue::UI_FONT_BYTES, 0)
+            .expect("the bundled UI font parses");
+        let name_of = |id: u16| {
+            face.names()
+                .into_iter()
+                .find(|n| n.name_id == id && n.is_unicode())
+                .and_then(|n| n.to_string())
+        };
+        // id 16 when present, else id 1 — the order fontique itself prefers.
+        let announced = name_of(16).or_else(|| name_of(1)).expect("the face names itself");
+        assert_eq!(
+            announced,
+            crate::netglue::UI_FONT_FAMILY,
+            "UI_FONT_FAMILY must be the face's typographic family; asking for anything \
+             else resolves to nothing and every icon renders as tofu"
+        );
+    }
+
     /// Every kind anything can hold resolves to an icon: art if we drew it, else a glyph
     /// from the checked table above. Never nothing.
     #[test]

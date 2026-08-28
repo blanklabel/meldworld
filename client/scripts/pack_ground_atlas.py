@@ -80,6 +80,66 @@ def write_png(path, w, h, px):
                      + chunk(b"IDAT", zlib.compress(raw, 9)) + chunk(b"IEND", b""))
 
 
+def tile_distance(a, b):
+    """Mean per-channel difference between two tiles, on a coarse grid.
+
+    Coarse on purpose: this is asking "would these two read as the same ground", not
+    "are these the same image". Comparing at full resolution scores two tiles of identical
+    material with differently-placed pebbles as far apart, which is exactly the pair we
+    most want to call similar.
+    """
+    step, tot, n = 8, 0, 0
+    for y in range(0, CELL, step):
+        for x in range(0, CELL, step):
+            o = (y * CELL + x) * 4
+            tot += sum(abs(a[o + k] - b[o + k]) for k in range(3))
+            n += 3
+    return tot / n
+
+
+def order_by_similarity(tiles):
+    """Lay the sixteen out so NEIGHBOURING INDICES ARE THE MOST ALIKE.
+
+    The shader picks a variation with `floor(noise * 16)` — a smooth field walking the
+    index — so what a player sees at a quantisation step is variation `i` meeting `i+1`.
+    In generator order that pairing is arbitrary, and an arbitrary pair of these differs a
+    lot (measured mean distance 25.1 on desert), so every step in the field is a visible
+    border. Order the atlas by similarity and the same field steps between tiles that
+    already look alike: the borders do not need hiding because they stop existing.
+
+    Nothing in the shader changes. This is the whole fix, and it lives in the ART.
+
+    Greedy nearest-neighbour from the best start, then 2-opt — an open path, not a cycle,
+    because index 15 never neighbours index 0.
+    """
+    n = len(tiles)
+    d = [[tile_distance(tiles[i], tiles[j]) for j in range(n)] for i in range(n)]
+
+    def cost(p):
+        return sum(d[p[i]][p[i + 1]] for i in range(len(p) - 1))
+
+    best = None
+    for start in range(n):                       # every start, keep the cheapest chain
+        left, path = set(range(n)) - {start}, [start]
+        while left:
+            nxt = min(left, key=lambda j: d[path[-1]][j])
+            path.append(nxt); left.discard(nxt)
+        if best is None or cost(path) < cost(best):
+            best = path
+
+    improved = True                              # 2-opt: uncross the chain
+    while improved:
+        improved = False
+        for i in range(1, n - 1):
+            for j in range(i + 1, n):
+                cand = best[:i] + best[i:j + 1][::-1] + best[j + 1:]
+                if cost(cand) < cost(best) - 1e-9:
+                    best, improved = cand, True
+    print(f"    ordered by similarity: adjacent-pair cost {cost(best):.1f}"
+          f" (generator order was {cost(list(range(n))):.1f})")
+    return [tiles[i] for i in best]
+
+
 def place(atlas, tile, gx, gy):
     """Blit one 64px tile into its cell, ringed by a 1px gutter of its own opposite edge.
 
@@ -99,6 +159,8 @@ def main():
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--repack", action="store_true",
                     help="src is an existing unpadded 4x4 atlas, not a directory of tiles")
+    ap.add_argument("--keep-order", action="store_true",
+                    help="skip the similarity ordering and lay tiles out as given")
     ap.add_argument("src", type=pathlib.Path)
     ap.add_argument("dst", type=pathlib.Path)
     a = ap.parse_args()
@@ -125,6 +187,8 @@ def main():
                 sys.exit(f"{f.name}: {w}x{h}, expected {CELL}x{CELL}")
             tiles.append(px)
 
+    if not a.keep_order:
+        tiles = order_by_similarity(tiles)
     atlas = bytearray(SIDE * SIDE * 4)
     for i, t in enumerate(tiles):
         place(atlas, t, i % GRID, i // GRID)

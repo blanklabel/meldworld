@@ -17,37 +17,53 @@ pub(crate) fn despawn<T: Component>(mut commands: Commands, q: Query<Entity, Wit
 /// Font-Awesome / Material-Design icons baked in at private-use codepoints, so the
 /// HUD renders both Latin text and real icons instead of the ASCII-only default
 /// (which drew `⚡`/`◆`/… as tofu boxes). See `assets/fonts/`.
-#[derive(Resource)]
-pub(crate) struct UiFont(Handle<Font>);
-
+///
 /// The bundled symbol-capable UI face, compiled in. Module scope so a test can ask the same
 /// bytes the game installs whether a glyph is really in there — a Nerd Font codepoint the
 /// face happens not to carry draws as a tofu box, and nothing at runtime complains.
 pub(crate) const UI_FONT_BYTES: &[u8] =
     include_bytes!("../assets/fonts/JetBrainsMonoNerdFont-Regular.ttf");
 
-pub(crate) fn load_ui_font(mut commands: Commands, mut fonts: ResMut<Assets<Font>>) {
-    // Embed the Nerd Font bytes at COMPILE time and register it directly as a Font
-    // asset, bypassing the async asset loader. Loading it as a loose/streamed asset was
-    // fragile across build paths (loose-disk vs embedded) — when that load silently failed,
-    // every text node fell back to Bevy's default face, which has the Latin glyphs but
-    // none of the private-use icon codepoints, so all the HUD icons rendered as tofu
-    // boxes. Compiling the bytes in makes the symbol-capable font ALWAYS present.
-    commands.insert_resource(UiFont(fonts.add(Font::from_bytes(UI_FONT_BYTES.to_vec()))));
-}
+/// The family name the bundled face announces itself under (`name` id 16).
+///
+/// Nothing SELECTS by it — the face is installed as Bevy's default asset instead, see
+/// below — but the test beside it pins which face these bytes actually are. That is worth
+/// keeping precisely because selecting by name is the thing that went wrong: this face
+/// carries two names (`JetBrainsMono NF` at id 1, `JetBrainsMono Nerd Font` at id 16) and
+/// asking for the wrong one resolves to nothing at all, silently.
+#[cfg(test)]
+pub(crate) const UI_FONT_FAMILY: &str = "JetBrainsMono Nerd Font";
 
-/// Retro-fit the bundled font onto every text node, so all UI (spawned across many
-/// call sites with `TextFont { ..default() }`) picks it up without threading a handle
-/// through each one. No call site sets its own font, so patching unconditionally is
-/// safe — and it avoids depending on Bevy's internal default-font handle. Idempotent:
-/// the id check means an already-patched node is never written again.
-pub(crate) fn apply_ui_font(ui: Option<Res<UiFont>>, mut q: Query<&mut TextFont>) {
-    let Some(ui) = ui else { return };
-    for mut tf in &mut q {
-        if tf.font != FontSource::Handle(ui.0.clone()) {
-            tf.font = ui.0.clone().into();
-        }
-    }
+/// Install the bundled face AS BEVY'S DEFAULT FONT, by overwriting the default asset.
+///
+/// ⚠️ REPLACE THE DEFAULT; DO NOT RETRO-FIT A DIFFERENT ONE ONTO EVERY NODE. Bevy installs
+/// its own face by inserting at `AssetId::default()` (`TextPlugin::build`), and every
+/// `TextFont::default()` is `FontSource::Handle(Handle::default())` — the same id. So
+/// putting our bytes there means every text node in the game is already pointing at us,
+/// with no per-frame patching system and no call site threading a handle.
+///
+/// Doing it in `Startup` is load-bearing: `load_font_assets_into_font_collection` runs in
+/// `PostUpdate` and registers each asset id ONCE, so replacing the bytes before that first
+/// run is what makes the collection register OURS. Replace them later and the id is already
+/// marked loaded, so the collection keeps serving the old face.
+///
+/// ⚠️ WHAT THIS REPLACES, AND WHY THAT FAILED. The old code added a SECOND font asset and
+/// ran a system every frame rewriting `TextFont::font` to point at it. Neither addressing
+/// mode landed: `FontSource::Handle` resolves through an `asset_id:` alias, and
+/// `FontSource::Family` needs the face's TYPOGRAPHIC name (id 16, `JetBrainsMono Nerd
+/// Font`) rather than its family name (id 1, `JetBrainsMono NF`) — I tried both and both
+/// still fell back. Bevy's fallback is `FiraMono-subset.ttf`, which carries Latin and
+/// nothing else, so the words rendered in a monospace face that looked near enough to ours
+/// while EVERY non-ASCII codepoint drew as tofu — the icons, and an em dash too.
+///
+/// That last detail is the one worth keeping: the bug read as "the icons are broken", so it
+/// looked like an icon-table problem. It was never about icons. The font was simply not the
+/// font, and a plain em dash in the tutorial text was showing it the whole time.
+pub(crate) fn load_ui_font(mut fonts: ResMut<Assets<Font>>) {
+    let _ = fonts.insert(
+        bevy::asset::AssetId::<Font>::default(),
+        Font::from_bytes(UI_FONT_BYTES.to_vec()),
+    );
 }
 
 // --------------------------------------------------------------- net pump --
