@@ -56,8 +56,30 @@ ALL_DIRS = ["south", "south-east", "east", "north-east", "north", "north-west", 
 # classes use custom v3 — but a boar has nothing in its hands. The ATTACK stays custom,
 # because "rearing up and slamming down" is the thing that makes a creature read as
 # itself and no template knows it.
-WALK_TEMPLATE = "walking"
-CLIP_DIRS = {"walk": ALL_DIRS, "attack": ["south"]}
+# ⚠️ ASK FOR THE 8-FRAME TEMPLATE BY NAME, and do NOT set `mode`.
+#
+# The stock `walking` template runs at SIX frames in template mode, which put five
+# creatures beside their packmates at a visibly different cadence. The obvious fix —
+# forcing `mode: "v3"` to get eight — is rejected outright: v3 means "custom animation
+# from an action_description" and refuses to take a template id, so every walk in two
+# whole batches failed with `v3 mode requires action_description` and 37 characters came
+# back with no locomotion at all.
+#
+# `walking-8-frames` is its own template and says the frame count in its name. No mode
+# argument, nothing inferred, and the length is not a thing that can drift.
+WALK_TEMPLATE = "walking-8-frames"
+WALK_FRAMES = 8
+
+# AND ONLY THE EASTERN HALF IS DRAWN. The eight facings are symmetric about the
+# north-south axis: `south` and `north` sit ON it, and the other six are three mirrored
+# pairs, so five generated directions give all eight once `mirror_sprites.py` flips them
+# at install. That is 37% off every walk cycle.
+#
+# The template and the mirroring are INDEPENDENT choices and compose — which is worth
+# saying because this script had the mirroring, then lost it when it moved to the
+# template, and quietly went back to paying for eight directions.
+MIRRORED_DIRS = ["south", "north", "south-east", "east", "north-east"]
+CLIP_DIRS = {"walk": MIRRORED_DIRS, "attack": ["south"]}
 TOKEN = os.environ.get("PIXELLAB_TOKEN", "")
 
 
@@ -169,9 +191,26 @@ def installed_on_disk(asset, clips=("walk", "attack")):
     d = ASSETS / asset
     if not (d / "rotations" / "south.png").is_file():
         return False
-    if "walk" in clips and not set(ALL_DIRS) <= clip_dirs_on_disk(asset, "walk"):
-        return False
+    if "walk" in clips:
+        if not set(ALL_DIRS) <= clip_dirs_on_disk(asset, "walk"):
+            return False
+        # ⚠️ THE COUNT IS THE ART'S, NOT OURS — the same rule `sync_creature_chars.py`
+        # and the client test use. Demanding exactly eight rejected every set made with
+        # the stock template, which produces six, and produced the uniquely useless
+        # message "came back incomplete (walk missing nothing)": nothing WAS missing.
+        #
+        # What must hold is that the facings AGREE. A walk with eight frames east and
+        # seven north steps at two rates depending on which way the creature is going,
+        # and that is a real defect a count-per-facing check catches and a total does not.
+        counts = {clip_frames_on_disk(asset, "walk", d) for d in ALL_DIRS}
+        if len(counts) != 1 or counts.pop() < 4:
+            return False
     return "attack" not in clips or "south" in clip_dirs_on_disk(asset, "attack")
+
+
+def clip_frames_on_disk(asset, clip, facing="south"):
+    d = ASSETS / asset / "animations" / clip / facing
+    return len(list(d.glob("*.png"))) if d.is_dir() else 0
 
 
 def clip_dirs_on_disk(asset, clip):
@@ -318,8 +357,6 @@ def animate(cid, clip, action):
         "directions": CLIP_DIRS[clip],
     }
     if clip == "walk":
-        # Template mode: the frame count is the template's, and `mode` is auto-detected
-        # from the presence of a template id.
         args["template_animation_id"] = WALK_TEMPLATE
     else:
         args |= {"mode": "v3", "action_description": action, "frame_count": 8,
@@ -400,8 +437,8 @@ def main():
             plan.append({"asset": asset, "desc": desc, "walk": c["walk"],
                          "attack": c.get("attack"), "gate": c.get("gate", 0)})
 
-    log(f"{len(plan)} characters, ~{len(plan) * 12} generations "
-        f"(8-dir rotations + templated 8-dir walk + south-only attack)")
+    log(f"{len(plan)} characters, ~{len(plan) * 9} generations "
+        f"(8-dir rotations + templated 5-dir walk mirrored to 8 + south-only attack)")
     if a.dry_run:
         for p in plan:
             print(f"  d{p['gate']:<4} {p['asset']}")

@@ -56,7 +56,8 @@ struct BiomeParams {
     _pad_peaks: vec2<f32>,                 // align `peaks` to 16 (matches the Rust struct)
     peaks: array<vec4<f32>, 24>,           // authored mountains [cx, cz, radius, height]
     peak_count: u32,
-    _pad_pc0: u32, _pad_pc1: u32, _pad_pc2: u32,
+    // 1 underground: the ground draws flagstones instead of the biome's outdoor tile.
+    dungeon: u32, _pad_pc1: u32, _pad_pc2: u32,
     // The COASTLINE (`meld_proto::coast`): (arc_half_rad, neck_reach, peninsula_length,
     // channel_land_share). Passed in rather than baked, so the sea the player SEES is the
     // sea the server collides with — the shoreline is authored in two scenes that cannot

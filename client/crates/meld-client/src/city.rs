@@ -187,10 +187,41 @@ pub(crate) const CITY_PROPS: &[(&str, f32, f32, f32, f32)] = &[
     // Salvage the last city is welded from — a beached wreck + a dock (far corner).
     ("pirate/ship-wreck", 21.0, -19.0, 210.0, 2.2),
     ("pirate/structure-platform-dock", 19.0, -10.0, 0.0, 1.6),
-    // First dwellers (a hint of the crowd to come in M1).
-    ("graveyard/character-keeper", 2.5, 4.0, 180.0, 1.4),
-    ("graveyard/character-ghost", -3.0, -1.0, 150.0, 1.4),
-    ("graveyard/character-skeleton", 6.0, 2.0, 200.0, 1.4),
+];
+
+/// Who stands where, and which way they face. `(npc key, x, z, facing degrees)`.
+///
+/// The counters are posted at their own districts — the Foundry's smith at the forge,
+/// an Open Flower keeper at the alembic, a hobgoblin quartermaster at the Drill Yard —
+/// so the crowd EXPLAINS the town rather than decorating it. The rest fill the plaza,
+/// because a hub with only shopkeepers in it reads as a menu with scenery.
+///
+/// This replaces three Kenney GRAVEYARD models — a keeper, a ghost and a SKELETON —
+/// that have stood in the friendly hub since someone left them as "a hint of the crowd
+/// to come in M1". A skeleton in the safe town was always going to read as a bug.
+pub(crate) const CITY_FOLK: &[(&str, f32, f32, f32)] = &[
+    // At their counters, facing the plaza a player walks in from.
+    ("npc_master_smith", 11.5, -8.0, 200.0),
+    ("npc_alembic_keeper", 13.5, -6.0, 210.0),
+    ("npc_broker", -11.0, -7.5, 150.0),
+    ("npc_apothecary_keeper", -12.5, -5.5, 160.0),
+    ("npc_vault_clerk", -8.0, 11.0, 180.0),
+    ("npc_quartermaster", 8.5, 10.5, 190.0),
+    ("npc_bounty_clerk", 0.5, -13.0, 0.0),
+    ("npc_innkeeper", -5.0, -9.5, 20.0),
+    // The Wall is guarded; the plaza is lived in.
+    ("npc_soldier_spear", 3.2, 13.5, 0.0),
+    ("npc_phoenix_guard_sentry", -3.4, 13.5, 0.0),
+    ("npc_soldier_sword", 6.5, 6.5, 225.0),
+    ("npc_townsfolk_human", 2.5, 4.0, 180.0),
+    ("npc_townsfolk_halfling", -3.0, -1.0, 150.0),
+    ("npc_townsfolk_dwarf", 6.0, 2.0, 200.0),
+    ("npc_townsfolk_elf", -6.5, 3.5, 120.0),
+    ("npc_townsfolk_harefolk", 4.0, -4.5, 300.0),
+    ("npc_townsfolk_gnome", -1.5, 6.5, 170.0),
+    ("npc_child", 1.2, 5.2, 200.0),
+    ("npc_beggar", -7.5, -2.0, 90.0),
+    ("npc_cartographer", 7.5, -2.5, 250.0),
 ];
 
 /// The city HUD (2D overlay over the walkable scene): identity + live Vault line
@@ -576,6 +607,51 @@ pub(crate) fn city_scene(
                 .with_rotation(Quat::from_rotation_y(yaw.to_radians()))
                 .with_scale(Vec3::splat(*scale)),
         ));
+    }
+
+    // --- THE CROWD. Same `CharSprite` the player and every creature use, so
+    // `animate_chars` drives them with no new system: each faces a fixed way and idles,
+    // because a townsfolk that wandered would walk through the counters it is posted at.
+    for (key, x, z, yaw) in CITY_FOLK {
+        let Some(frames) = wa.npc_frames(key) else { continue };
+        let at = Vec3::new(*x, 0.0, *z);
+        let mat = mats.add(hd2d::sprite_material(
+            Color::srgb(1.22, 1.19, 1.12),
+            frames.idle[0].clone(),
+        ));
+        let mut sprite = CharSprite::new(frames.clone(), mat.clone(), at);
+        // Pinned facing: `animate_chars` turns a character by its movement, and these
+        // never move, so without this every one of them would face the same default.
+        let r = yaw.to_radians();
+        sprite.facing = Vec2::new(r.sin(), r.cos());
+        commands
+            .spawn((CityScene, Transform::from_translation(at), Visibility::default(), sprite))
+            .with_children(|p| {
+                p.spawn((
+                    Mesh3d(wa.sprite_quad.clone()),
+                    MeshMaterial3d(mat.clone()),
+                    // `look.sprite_y`, not a number of my own: a class sprite is ~90px of
+                    // art centred on a 184px canvas, so half the quad is transparent and
+                    // grounding the QUAD leaves the FEET in the air. This constant is the
+                    // already-tuned offset that puts the art's feet on the floor, and it
+                    // is what the player avatar beside these people uses — inventing a
+                    // second one is how the crowd ends up standing at a different height
+                    // from the hero walking through it.
+                    Transform::from_xyz(0.0, look.sprite_y, 0.0),
+                    hd2d::Billboard,
+                ));
+                p.spawn((
+                    Mesh3d(wa.shadow_mesh.clone()),
+                    MeshMaterial3d(wa.shadow_mat.clone()),
+                    // ⚠️ A `Circle` mesh lies in the XY plane, i.e. STANDING UP. Without
+                    // this rotation it faces the camera and every townsfolk appears to be
+                    // standing on a bubble. Squashed on Z like every other contact shadow
+                    // so it reads as lying on the ground under a low sun.
+                    Transform::from_xyz(0.0, 0.02, 0.0)
+                        .with_rotation(Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2))
+                        .with_scale(Vec3::new(0.85, 0.85 * 0.55, 0.85)),
+                ));
+            });
     }
 
     // --- MAGITECH LIGHTS: glowing cyan energy lamps (a bespoke sprite that blooms via

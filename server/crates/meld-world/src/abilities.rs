@@ -229,7 +229,7 @@ pub fn creature_abilities(kind: &str) -> Vec<MonsterAbility> {
             ability("miasma", "Miasma!", 1, 200, 20, 30, None,
                 vec![status("poison", 80, AllEnemies)]),
         ],
-        "myconid_brute" => vec![
+        "myconid" => vec![
             ability("fungal_smash", "Fungal Smash!", 3, 40, 0, 1, None,
                 vec![dmg(Attack, 1.25, Blunt, SingleEnemy)]),
             ability("spore_cloud", "Spore Cloud!", 2, 160, 15, 16, None,
@@ -530,7 +530,7 @@ pub fn creature_body(kind: &str) -> Body {
         "sand_shade" | "ember_wisp" | "gloamhound" | "verdant_ooze" | "bog_ooze" => {
             Body::Amorphous
         }
-        "sporeling" | "myconid_brute" | "forest_bloom_stalker" | "bog_stinger"
+        "sporeling" | "myconid" | "forest_bloom_stalker" | "bog_stinger" | "frog_tribesman"
         | "choirmother" | "hollowbishop" | "miredrowned" | "sepulcher" | "briarlord" => {
             Body::Soft
         }
@@ -556,13 +556,16 @@ fn creature_elemental_modifiers(kind: &str) -> Vec<(DamageType, f64)> {
         "ice_revenant" => vec![(Fire, 1.5), (Celestial, 2.0), (Ice, -0.5), (Poison, 0.0), (Shadow, 0.5)],
         "glacier_maw" => vec![(Fire, 2.0), (Ice, 0.0)],
         "bog_serpent" => vec![(Ice, 1.5), (Poison, -0.5), (Earth, 0.75)],
-        "myconid_brute" => vec![(Fire, 2.0), (Poison, 0.0)],
+        "myconid" => vec![(Fire, 2.0), (Poison, 0.0)],
         "bog_stinger" => vec![(Fire, 1.5), (Wind, 1.5), (Poison, 0.0)],
         // The ooze pays for shrugging off steel by having no answer at all to heat or
         // cold — which is the whole point of the archetype: it is the creature that
         // punishes a party carrying only swords, and folds to the one that packed a
         // brand. Its own acid is nothing to it.
         "verdant_ooze" => vec![(Fire, 2.0), (Ice, 1.75), (Poison, 0.0), (Earth, 0.5)],
+        // Wet skin conducts: lightning is what a frog tribe fears, and the swamp's own
+        // water and venom are what it grew up in.
+        "frog_tribesman" => vec![(Lightning, 2.0), (Water, 0.25), (Poison, 0.5), (Fire, 1.25)],
         "bog_ooze" => vec![(Fire, 2.0), (Ice, 1.75), (Poison, 0.0), (Water, 0.25)],
         // -------------------------------------------------- bosses (FS-4) --
         "gloamhound" => vec![(Celestial, 1.5), (Shadow, -0.25), (Fire, 0.75)],
@@ -635,7 +638,7 @@ pub fn creature_target_profile(
         // Things that read minds go for the mind that matters.
         "choirmother" | "hollowbishop" | "sepulcher" | "briarlord" => TargetProfile::Role,
         // Big mindless bodies swing at whatever is in front of them.
-        "dune_colossus" | "magma_golem" | "weepingcolossus" | "myconid_brute" => {
+        "dune_colossus" | "magma_golem" | "weepingcolossus" | "myconid" => {
             TargetProfile::Random
         }
         _ => TargetProfile::Weakest,
@@ -676,11 +679,13 @@ pub fn creature_target_profile(
 
 pub fn creature_basic_attack_type(kind: &str) -> DamageType {
     match kind {
-        "thornback_boar" | "dune_colossus" | "magma_golem" | "glacier_maw" | "myconid_brute" => {
+        "thornback_boar" | "dune_colossus" | "magma_golem" | "glacier_maw" | "myconid" => {
             Blunt
         }
         "forest_bloom_stalker" | "sand_shade" | "cinder_imp" | "ice_revenant" => Slash,
         "ember_wisp" => Fire,
+        // A tribe carries tools: a hafted stone club, not teeth.
+        "frog_tribesman" => Blunt,
         // It engulfs rather than bites: acid, not a point.
         "verdant_ooze" | "bog_ooze" => Poison,
         // Bosses (FS-4): a fang/claw/maw basic, flavored per identity.
@@ -734,7 +739,7 @@ mod tests {
     /// And the other direction: soft things open to a blade and soak a blow.
     #[test]
     fn soft_things_fear_an_edge() {
-        for kind in ["sporeling", "myconid_brute", "forest_bloom_stalker"] {
+        for kind in ["sporeling", "myconid", "forest_bloom_stalker"] {
             let m = creature_damage_modifiers(kind);
             let slash = m.iter().find(|(t, _)| *t == Slash).map(|(_, v)| *v).expect(kind);
             let blunt = m.iter().find(|(t, _)| *t == Blunt).map(|(_, v)| *v).expect(kind);
@@ -830,7 +835,7 @@ mod tests {
             "dune_wyrm", "sand_shade", "dune_colossus",
             "cinder_imp", "magma_golem", "ember_wisp",
             "frost_lurker", "ice_revenant", "glacier_maw",
-            "bog_serpent", "myconid_brute", "bog_stinger",
+            "bog_serpent", "myconid", "bog_stinger",
             "gloamhound", "rustfang", "choirmother", "pyrewarden", "sepulcher",
             "hollowbishop", "ironmaw", "weepingcolossus", "miredrowned", "ashenleviathan",
         ];

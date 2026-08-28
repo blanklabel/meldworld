@@ -84,17 +84,17 @@
    }
   },
   {
-   "key": "myconid_brute",
+   "key": "myconid",
    "biome": "mire",
    "gate": 0,
    "walk": "lumbering forward with heavy steps",
    "attack": "swinging a heavy knotted fist downward",
    "variants": {
-    "myconid_brute": "a hulking fungus brute, a broad humanoid body of dense grey fibrous flesh with a dark bruise-purple cap for a head and thick knotted arms",
-    "myconid_brute_minion": "a small stooped fungus thrall, a wiry humanoid body of pale grey fibre with a small drooping purple cap for a head and thin arms",
-    "myconid_brute_mage": "a tall gaunt fungus mystic, a slender grey fibrous body under a wide domed violet cap, glowing spore-motes circling its raised hands",
-    "myconid_brute_pack_leader": "an immense elder fungus brute, its grey fibrous body armoured in shelf-fungus plates, a towering dark cap ringed with pale gills, huge knotted arms",
-    "myconid_brute_boss": "a massive fungus brute, a broad humanoid body of dense dark fibrous flesh with a huge split bruise-purple cap and enormous knotted arms"
+    "myconid_minion": "a small stooped fungus thrall, a wiry humanoid body of pale grey fibre with a small drooping purple cap for a head and thin arms",
+    "myconid_warrior": "a lean fungus warrior, a wiry grey fibrous body under a small dark cap, gripping a splintered wooden haft",
+    "myconid_mage": "a tall gaunt fungus mystic, a slender grey fibrous body under a wide domed violet cap, glowing spore-motes circling its raised hands",
+    "myconid_brute_boss": "a massive fungus brute, a broad humanoid body of dense dark fibrous flesh with a huge split bruise-purple cap and enormous knotted arms",
+    "myconid_brute_pack_leader": "an immense elder fungus brute, its grey fibrous body armoured in shelf-fungus plates, a towering dark cap ringed with pale gills, huge knotted arms"
    }
   },
   {
@@ -108,7 +108,8 @@
     "bog_stinger_licker": "a swamp wasp-fiend with a long barbed tongue coiled beneath its jaws, sickly yellow segments and ragged wings",
     "bog_stinger_pack_leader": "a giant swamp wasp-fiend, a heavily armoured black-and-sickly-yellow segmented body, four ragged translucent wings, barbed legs and a long dripping venom stinger",
     "bog_stinger_buzz": "a small swamp wasp drone, a slight black-and-yellow segmented body, two thin translucent wings and a short venom stinger",
-    "bog_stinger_piercer": "a lean swamp wasp with an extremely long needle stinger, narrow black-and-amber segments and swept-back wings"
+    "bog_stinger_piercer": "a lean swamp wasp with an extremely long needle stinger, narrow black-and-amber segments and swept-back wings",
+    "bog_stinger_wasp": "a swamp wasp-fiend with a heavy striped black-and-amber abdomen, veined wings and a curved venom stinger"
    }
   },
   {
@@ -254,6 +255,19 @@
     "glacier_maw_pack_leader": "a massive shaggy white beast built like a bear, thick slabs of blue glacial ice fused into its back and shoulders, a huge jaw of jagged ice teeth and small black eyes",
     "glacier_maw_cub": "a small shaggy white beast cub, a few thin shards of blue ice along its back, a short jaw of ice teeth and small black eyes",
     "glacier_maw_frostjaw": "a white bear-like beast with an enormous distended jaw of long blue ice teeth, ice slabs along its shoulders"
+   }
+  },
+  {
+   "key": "frog_tribesman",
+   "biome": "mire",
+   "gate": 0,
+   "walk": "hopping forward in a low crouched gait",
+   "attack": "swinging a hafted stone club down in both hands",
+   "variants": {
+    "frog_tribesman": "a hunched amphibian tribesman with mottled green-and-ochre skin, wide-set yellow eyes and a broad mouth, in a woven reed wrap, gripping a hafted stone club",
+    "frog_tribesman_elder": "a heavy old amphibian tribal elder with warty mottled green skin, deep-set amber eyes and a wide scowling mouth, hung with bone charms and river-stones",
+    "frog_tribesman_spearfisher": "a lean amphibian tribesman with slick olive skin and long webbed fingers, holding a barbed fishing spear, strings of shells at the waist",
+    "frog_tribesman_pack_leader": "a huge amphibian tribal chieftain, dark green skin banded with pale markings, a crown of reeds and heron feathers, gripping a great knotted war-club"
    }
   }
  ]

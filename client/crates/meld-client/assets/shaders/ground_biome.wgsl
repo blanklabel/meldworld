@@ -65,7 +65,8 @@ struct BiomeParams {
     _pad_peaks: vec2<f32>,                 // align `peaks` to 16 (matches the Rust struct)
     peaks: array<vec4<f32>, 24>,           // authored mountains [cx, cz, radius, height]
     peak_count: u32,
-    _pad_pc0: u32, _pad_pc1: u32, _pad_pc2: u32,
+    // 1 underground: the ground draws flagstones instead of the biome's outdoor tile.
+    dungeon: u32, _pad_pc1: u32, _pad_pc2: u32,
     // The COASTLINE (`meld_proto::coast`): (arc_half_rad, neck_reach, peninsula_length,
     // channel_land_share). Passed in rather than baked, so the sea the player SEES is the
     // sea the server collides with — the shoreline is authored in two scenes that cannot
@@ -120,6 +121,13 @@ struct BiomeParams {
 @group(#{MATERIAL_BIND_GROUP}) @binding(107) var t_water_clear: texture_2d<f32>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(108) var t_water_bog: texture_2d<f32>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(109) var t_water_ice: texture_2d<f32>;
+// Side-view rock for the steep parts of the same plane. See `cliff_color`.
+@group(#{MATERIAL_BIND_GROUP}) @binding(110) var t_cliff_forest: texture_2d<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(111) var t_cliff_desert: texture_2d<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(112) var t_cliff_ashfall: texture_2d<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(113) var t_cliff_tundra: texture_2d<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(114) var t_cliff_mire: texture_2d<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(115) var t_dungeon_floor: texture_2d<f32>;
 
 // The sea's tile for the biome it borders — the same mapping the pond/bog-pool/
 // frozen-pond props use (`WorldAssets::water_mats`), so a tundra shore is ice and a mire
@@ -472,27 +480,236 @@ fn shore_color(bi: i32, uv: vec2<f32>) -> vec4<f32> {
     return vec4<f32>(vec3<f32>(0.84, 0.76, 0.56) * lum, g.a);
 }
 
+// ---------------------------------------------------------------------------------------
+// BREAKING THE TILE GRID
+//
+// Every biome is ONE 64px tile sampled at `world.xz * uv_scale`, so the same square
+// repeated to the horizon and the eye locked onto the grid immediately — the ground read
+// as wallpaper rather than terrain. Two cheap fixes, both pure shader:
+//
+//   1. Per-cell ROTATION. Each large cell picks one of four 90-degree turns from a hash of
+//      its own coordinate, which destroys the lattice without touching the art. It is
+//      hashed rather than random so a patch of ground looks the same every time you walk
+//      back over it — ground that reshuffled itself would read as a bug.
+//   2. Macro TONE variation. Low-frequency noise over a much larger scale than the tile,
+//      lightening and darkening whole stretches, which is what makes real ground read as
+//      having history instead of being a flat swatch.
+//
+// Deliberately NOT a second texture blend: that needs another five bindings and muddies
+// the palette, and it turns out the grid itself was most of the problem.
+
+fn hash2(c: vec2<f32>) -> f32 {
+    return fract(sin(dot(floor(c), vec2<f32>(127.1, 311.7))) * 43758.5453);
+}
+
+// Smooth value noise, used at a scale far below the tile so it varies ACROSS tiles rather
+// than inside one.
+fn vnoise(p: vec2<f32>) -> f32 {
+    let i = floor(p);
+    let f = fract(p);
+    let u = f * f * (3.0 - 2.0 * f);
+    let a = hash2(i);
+    let b = hash2(i + vec2<f32>(1.0, 0.0));
+    let c = hash2(i + vec2<f32>(0.0, 1.0));
+    let d = hash2(i + vec2<f32>(1.0, 1.0));
+    return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+}
+
+// ⚠️ PER-CELL ROTATION WAS TRIED HERE AND IS WRONG FOR THIS ART.
+//
+// Turning each cell's tile by a hashed quarter did destroy the lattice — and replaced it
+// with something worse, because these tiles have DIRECTIONAL detail: grass leans, strata
+// band, sand ripples. Rotated, the ground read as patches "pointing in different
+// directions", which is a louder artifact than the grid it was hiding. A texture can only
+// be rotated invisibly if it has no orientation, and almost none of ours qualify.
+//
+// So the repeat is broken WITHOUT touching orientation: the same tile is sampled a second
+// time at an unrelated scale and mixed in gently. The two never line up, so the eye finds
+// no lattice, and because both samples are the same art at the same angle nothing points
+// anywhere new. The weight is deliberately low — this is meant to read as variation, and
+// pushed further it just reads as blur.
+// ---------------------------------------------------------------------------------------
+// SIXTEEN VARIATIONS, BLENDED
+//
+// Each ground texture is a 4x4 ATLAS: sixteen variations of one material, which is what
+// `create_tiles_pro` actually produces and what it is for. Picking one and shipping it
+// threw away fifteen and left the world a single 64px stamp repeated to the horizon —
+// the monotony we then tried to paper over by sampling the same stamp twice.
+//
+// They are BLENDED, not switched per cell. A hard switch would only trade a repeating
+// grid for a mosaic of visible borders, because these variations are independent and do
+// not share edges. Cross-fading two of them over a smooth low-frequency field gives
+// ground that changes character across a hillside with no boundary anywhere in it.
+
+const ATLAS_GRID: f32 = 4.0;
+const ATLAS_CELL: f32 = 64.0;    // the tile itself
+const ATLAS_PAD: f32 = 1.0;      // its wrap gutter (see `pack_ground_atlas.py`)
+const ATLAS_STRIDE: f32 = 66.0;  // ATLAS_CELL + 2 * ATLAS_PAD
+const ATLAS_SIDE: f32 = 264.0;   // ATLAS_STRIDE * ATLAS_GRID
+// Sixteen drawn variations, each usable at four quarter-turns: SIXTY-FOUR.
+const ATLAS_VARIANTS: f32 = 64.0;
+
+// One variation of the material, addressed inside the atlas and optionally turned.
+//
+// ROTATION IS FREE VARIETY HERE, and it is worth saying why it works now when it did not
+// before. Turning a SINGLE tile per cell failed badly — the same grass leaning four ways
+// read as patches "pointing in different directions", because the features were
+// identical and only their angle changed. With sixteen distinct variations in play a
+// quarter-turn is no longer recognisable as the same tile turned, so the same trick that
+// was a defect becomes 4x the variety for nothing.
+//
+// Quarter-turns only, and written out rather than built from a rotation matrix: 90
+// degrees maps texel centres onto texel centres exactly, while an arbitrary angle
+// resamples pixel art off its own grid.
+//
+// ⚠️ A TURN SWAPS WHICH PAIR OF EDGES MEETS AT THE JOIN, so a tile that wraps
+// left-to-right but not top-to-bottom GROWS a seam grid the moment it is turned.
+// Measured per atlas as the edge-wrap difference over ordinary interior variation
+// (`client/scripts/atlas_seams.py`), and it is not uniform:
+//
+//   field 1.4/4.9 and dungeon 2.0/3.1  -- seamless, well under the noise floor
+//   mire 22.9/26.6, forest 22.1/26.8   -- marginal, symmetric: a turn costs nothing
+//   desert 21.4/22.4 (noise 4.6)       -- SEAMY on both axes, so it shows turned or not
+//   tundra 55.8/56.3 (noise 17.3)      -- the worst, and symmetric: rotation is neutral
+//   ashfall 32.3/58.0                  -- ASYMMETRIC 1.8x: this is the one a turn HURTS
+//
+// So rotation is free on six of the seven and ashfall is the exception. The fix is to
+// regenerate that material as tileable rather than to special-case it here -- a per-biome
+// rotation flag is a rule about the ART hidden inside the renderer, where nobody looking
+// at a seamy tile would think to find it. Re-run the script rather than trusting this
+// block: these are numbers about the current drawings, not a law about the shader.
+fn atlas_sample(t: texture_2d<f32>, uv: vec2<f32>, variant: f32) -> vec4<f32> {
+    var f = fract(uv) - vec2<f32>(0.5, 0.5);
+    let turns = floor(variant / 16.0);
+    if (turns == 1.0) { f = vec2<f32>(-f.y, f.x); }
+    else if (turns == 2.0) { f = vec2<f32>(-f.x, -f.y); }
+    else if (turns == 3.0) { f = vec2<f32>(f.y, -f.x); }
+    f = f + vec2<f32>(0.5, 0.5);
+    // A cell is addressed INSIDE its gutter. Sub-rects of an atlas cannot use the hardware
+    // REPEAT wrap — it would wrap the whole ATLAS rather than the cell — so the wrapped
+    // neighbour is baked around each tile as a one-pixel border: the texel REPEAT would
+    // have fetched, sitting where a filter will look for it.
+    //
+    // ⚠️ IT BUYS NOTHING TODAY AND IS STILL THE RIGHT SHAPE. `load_tiled` samples this
+    // atlas NEAREST (pixel art), and a nearest sample takes exactly one texel, so there
+    // is no filtering here to drag a neighbouring variation across the join. The gutter
+    // is what makes the cell correct under a filter, and it is the precondition for ever
+    // turning one on — which distant ground will eventually want, because nearest with no
+    // mips is what makes the far field crawl.
+    //
+    // It replaces a CLAMP, which was the wrong tool twice: it repeated the edge texel
+    // rather than wrapping it (breaking the join on any tile that genuinely was seamless),
+    // and its inset was computed against the atlas width while being applied in cell
+    // space — an eighth of a texel where the comment claimed a half. Under nearest that
+    // only ever guarded an off-by-one exactly on the boundary, which is real but is not
+    // the fringe the comment described.
+    let tile = variant % 16.0;
+    let g = vec2<f32>(floor(tile % ATLAS_GRID), floor(tile / ATLAS_GRID));
+    return textureSample(t, samp, (g * ATLAS_STRIDE + ATLAS_PAD + f * ATLAS_CELL) / ATLAS_SIDE);
+}
+
+// Which of the sixty-four a stretch of ground is made of. Quantised from a smooth field
+// so a patch keeps one identity over several tiles instead of flickering per tile, and
+// keyed off world position so it is the same every time you walk back over it.
+fn variant_at(uv: vec2<f32>, seed: f32) -> f32 {
+    return floor(vnoise(uv * 0.037 + vec2<f32>(seed, seed * 1.7)) * (ATLAS_VARIANTS - 0.001));
+}
+
+fn ground_sample(t: texture_2d<f32>, uv: vec2<f32>) -> vec4<f32> {
+    let a = atlas_sample(t, uv, variant_at(uv, 0.0));
+    let b = atlas_sample(t, uv, variant_at(uv, 11.3));
+    // The cross-fade field is coarser than the variation fields, so the two rarely change
+    // at the same place and no edge in the result lines up with an edge in either input.
+    let k = smoothstep(0.35, 0.65, vnoise(uv * 0.021 + vec2<f32>(4.2, 9.1)));
+    return mix(a, b, k);
+}
+
+// Whole-stretch light and shade, at a scale much larger than one tile.
+fn macro_tone(world_xz: vec2<f32>) -> f32 {
+    let n = vnoise(world_xz * 0.012) * 0.65 + vnoise(world_xz * 0.043) * 0.35;
+    return mix(0.86, 1.14, n);
+}
+
+// ---------------------------------------------------------------------------------------
+// CLIFFS: THE STEEP PART OF THE SAME PLANE
+//
+// The overworld is one displaced grid — `total_height` pushes it into hills, peaks and
+// the dip toward the sea floor — so a cliff is not a separate mesh, it is simply a patch
+// where the surface is steep. And because the ground's uv is the fragment's world XZ, a
+// near-vertical face was sampling a TOP-DOWN texture stretched down its entire length:
+// the grass smeared, the strata impossible.
+//
+// Triplanar fixes it without a single new triangle. Project along each axis, weight by
+// the surface normal, and a face is always textured along an axis it actually faces:
+//
+//   - a flat surface is nearly all Y-weight  -> the ground tile, exactly as before
+//   - a steep surface is nearly all X/Z      -> the cliff tile, at true scale, no stretch
+//
+// The vertical projections use world Y as one coordinate, so rock is the same size on a
+// two-unit step and a sixty-unit sea cliff. Nothing about the mesh changes; this is only
+// where the colour is READ.
+
+// The biome's side-view rock. Sampled through `ground_sample` like the ground is, because
+// these tiles are NOT seamless — they are the least-mismatched of a batch of independent
+// variations — and the same dual-scale mix that hides the ground's grid also softens a
+// cliff's wrap.
+fn cliff_tex(bi: i32, uv: vec2<f32>) -> vec4<f32> {
+    if (bi <= 0) { return ground_sample(t_cliff_forest, uv); }
+    if (bi == 1) { return ground_sample(t_cliff_desert, uv); }
+    if (bi == 2) { return ground_sample(t_cliff_ashfall, uv); }
+    if (bi == 3) { return ground_sample(t_cliff_tundra, uv); }
+    return ground_sample(t_cliff_mire, uv);
+}
+
+// Rock projected from the two SIDE axes and mixed by which one the face points along, so
+// there is no seam where a cliff turns a corner.
+fn cliff_color(bi: i32, wp: vec3<f32>, n: vec3<f32>, scale: f32) -> vec4<f32> {
+    let ax = abs(n);
+    // Guard the divide: a normal with no horizontal component never reaches here, but a
+    // NaN would spread across the whole surface if one ever did.
+    let wsum = max(ax.x + ax.z, 0.0001);
+    let zx = cliff_tex(bi, vec2<f32>(wp.x, -wp.y) * scale);
+    let xz = cliff_tex(bi, vec2<f32>(wp.z, -wp.y) * scale);
+    return zx * (ax.z / wsum) + xz * (ax.x / wsum);
+}
+
+// How much of this fragment is CLIFF rather than ground, from the surface normal.
+// `terrain_normal` is already computed per-vertex, so this costs nothing to obtain.
+// The band is deliberately narrow and high: below it the world should look exactly as it
+// did, and a gentle hill wearing rock would be a worse bug than a cliff wearing grass.
+fn cliff_weight(n: vec3<f32>) -> f32 {
+    return smoothstep(0.72, 0.42, n.y);
+}
+
 fn biome_color(bi: i32, uv: vec2<f32>) -> vec4<f32> {
+    // UNDERGROUND IS A FLOOR, not the outdoors dimmed. Checked here, in the one place
+    // every ground sample already passes through, so the shore/cliff/water paths inherit
+    // it without each remembering to ask. The theme lighting a dungeon already applies
+    // does the per-biome colouring, which is why one flagstone serves all five.
+    if (params.dungeon != 0u) {
+        return ground_sample(t_dungeon_floor, uv);
+    }
+    // One place, so no biome can be left reading as wallpaper because its arm was missed.
     if (bi <= 0) {
-        return textureSample(t_forest, samp, uv);
+        return ground_sample(t_forest, uv);
     }
     if (bi == 1) {
-        return textureSample(t_desert, samp, uv);
+        return ground_sample(t_desert, uv);
     }
     if (bi == 2) {
-        let ash = textureSample(t_ashfall, samp, uv);
+        let ash = ground_sample(t_ashfall, uv);
         let ember = (1.0 - ash.r) * 0.5; // darkest cracks glow hottest
         return vec4<f32>(ash.rgb * vec3<f32>(0.95, 0.24, 0.18) + vec3<f32>(ember, ember * 0.18, 0.02), ash.a);
     }
     if (bi == 3) {
-        return textureSample(t_tundra, samp, uv) * vec4<f32>(0.72, 0.86, 1.15, 1.0);
+        return ground_sample(t_tundra, uv) * vec4<f32>(0.72, 0.86, 1.15, 1.0);
     }
     // The mire's sour green, left as AUTHORED. This was briefly raised to (1.0, 1.35, 0.85)
     // to compensate for the swamp reading as permanent dusk — but the dusk was the GROUND
     // SHADOWING ITSELF (see `NotShadowCaster` on `WorldGround`), not the tint. Lifting a
     // tint to pay for a lighting bug is how a biome ends up looking like a sunny meadow the
     // moment the real bug is fixed.
-    return textureSample(t_mire, samp, uv) * vec4<f32>(0.75, 0.95, 0.7, 1.0);
+    return ground_sample(t_mire, uv) * vec4<f32>(0.75, 0.95, 0.7, 1.0);
 }
 
 // ---------------------------------------------------------------------------------------
@@ -710,6 +927,15 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     // rides the SAME band the ground's beach ramp uses (`smoothstep(-14, 0)` in
     // `total_height`), so the sand appears exactly where the ground starts falling toward
     // the water: the strand IS the beach, not a decal near it.
+    // CLIFFS, before the shore and the water get their say — rock belongs under the
+    // strand and under the waterline, not painted over them. A steep face takes its
+    // biome's side-view rock, projected from whichever horizontal axis it points along.
+    blended = mix(
+        blended,
+        cliff_color(here_biome, in.world_position.xyz, normalize(in.world_normal), params.uv_scale),
+        cliff_weight(normalize(in.world_normal)),
+    );
+
     blended = mix(blended, shore_color(here_biome, uv), smoothstep(-14.0, -1.0, sea));
     if (sea > -0.5) {
         // The real water TILE, not a flat colour — the same art the city's sea and every
@@ -832,6 +1058,12 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         let k = clamp(params.shift.z * (0.30 + 0.70 * lip), 0.0, 0.92);
         blended = mix(blended, vec4<f32>(1.0, 0.40, 0.10, blended.a), k);
     }
+
+    // Whole-stretch light and shade over the LAND only — applied here, after the shore and
+    // the water have had their say, because tinting open sea by a ground-noise field is
+    // how an ocean ends up looking like a badly-lit field. Under water the factor is 1.
+    let tone = mix(macro_tone(in.world_position.xz), 1.0, clamp(smoothstep(-1.0, 2.0, sea), 0.0, 1.0));
+    blended = vec4<f32>(blended.rgb * tone, blended.a);
 
     pbr_input.material.base_color = pbr_input.material.base_color * blended;
 

@@ -107,7 +107,15 @@ mod biome_params {
         pub(crate) peak_count: u32,
         // Three SCALAR pads (not a `[u32; 3]` — a u32 array needs a 16-byte stride in a
         // uniform, which fails validation) to round the struct out to a 16-byte multiple.
-        pub(crate) _pad_pc0: u32,
+        /// 1 while the player is inside a DUNGEON, so the ground draws flagstones instead
+        /// of the biome's outdoor tile.
+        ///
+        /// Underground used to be the overworld ground dimmed — a stopgap from when there
+        /// was no dungeon floor art, which `docs/asset-pipeline.md` wrote up as if it were
+        /// a design ("a desert dungeon already stands on sand with no extra work"). There
+        /// is art now, so a built dungeon stands on a floor. It takes one of the three
+        /// pads that were already here, so the uniform layout is byte-for-byte unchanged.
+        pub(crate) dungeon: u32,
         pub(crate) _pad_pc1: u32,
         pub(crate) _pad_pc2: u32,
         /// The COASTLINE, straight from [`meld_proto::coast`]:
@@ -209,7 +217,7 @@ mod biome_params {
                 sea_anim: Vec4::ZERO,
                 peaks: [Vec4::ZERO; PEAK_SLOTS],
                 peak_count: 0,
-                _pad_pc0: 0,
+                dungeon: 0,
                 _pad_pc1: 0,
                 _pad_pc2: 0,
             }
@@ -247,6 +255,27 @@ pub(crate) struct GroundBiome {
     water_bog: Handle<Image>,
     #[texture(109)]
     water_ice: Handle<Image>,
+    /// SIDE-VIEW rock, one per biome, for the steep parts of the terrain.
+    ///
+    /// The overworld is a single displaced plane, so a cliff is not a separate mesh — it
+    /// is a steep patch of the same ground. And because the ground's uv is the fragment's
+    /// world XZ, a near-vertical face used to smear its top-down grass down its whole
+    /// length. These are sampled by the vertical projection instead (see the shader's
+    /// triplanar blend), so a cliff face is textured along its own axis at its own scale.
+    #[texture(110)]
+    cliff_forest: Handle<Image>,
+    #[texture(111)]
+    cliff_desert: Handle<Image>,
+    #[texture(112)]
+    cliff_ashfall: Handle<Image>,
+    #[texture(113)]
+    cliff_tundra: Handle<Image>,
+    #[texture(114)]
+    cliff_mire: Handle<Image>,
+    /// The floor underground. One tile, tinted by the theme lighting a dungeon already
+    /// applies, rather than five near-identical flagstones.
+    #[texture(115)]
+    dungeon_floor: Handle<Image>,
     #[uniform(106)]
     params: BiomeParams,
 }
@@ -366,8 +395,21 @@ pub(crate) type GroundMat = ExtendedMaterial<StandardMaterial, GroundBiome>;
 /// client titles them from — a hand-copied list here is a list that goes stale against
 /// the `boss:<key>` tags actually arriving on the wire.
 pub(crate) fn boss_keys() -> impl Iterator<Item = &'static str> {
-    meld_proto::bosses::keys()
+    meld_proto::bosses::keys().chain(DUNGEON_SPRITES.iter().copied())
 }
+
+/// Bespoke dungeon sprites that get an animated set but are NOT named bosses.
+///
+/// A dungeon can name any `sprite` for its `[boss.B1]`, and that is not the same thing
+/// as being one of the FS-4 named bosses: `meld_proto::bosses::display_name` returns
+/// `None` for these, so they draw no name plate — deliberately, since a plate reading
+/// `Unknown Horror` over a set piece is worse than no plate.
+///
+/// They still need loading, though, and the two lists are separate for exactly that
+/// reason. `twingolem` guarded the Ocean Palace for a long time with no art anywhere,
+/// which meant `creature_sprite` HASHED its kind into the fallback pool and it drew as
+/// a random 32px billboard — a boss rendering as a bat, and nothing anywhere saying so.
+pub(crate) const DUNGEON_SPRITES: &[&str] = &["twingolem"];
 
 /// Creature species whose animated sprite set is INSTALLED under `assets/creatures/`.
 /// A species listed here stops being a single frozen 32px billboard and starts turning,
@@ -381,102 +423,166 @@ pub(crate) fn boss_keys() -> impl Iterator<Item = &'static str> {
 /// The BASE key is the ordinary creature — a lone spawn, or a pack's minions — because
 /// that is the common case; the LEADER is the variant that has to earn its own art.
 ///
-/// Held against what is actually on disk by `every_installed_creature_set_is_loaded`, so
-/// art that lands unlisted — art nobody would ever see — fails rather than sitting unused.
-pub(crate) const CREATURE_CHARS: &[&str] = &[
-    // Also unwired when the test caught it: four more finished sets that shipped as art and
-    // were never listed. Computed in one pass against the same completeness rule the test
-    // uses, rather than one build per species — the test panics on the FIRST offender, so
-    // fixing it by re-running is a client rebuild each time.
-    "bog_ooze_grump",
-    "bog_stinger_buzz",
-    "myconid_brute_minion",
-    "thornback_boar_charger",
-    // Briarlings. ⚠️ `briarling` itself is deliberately ABSENT: its set is on disk but
-    // INCOMPLETE, and `every_finished_creature_set_is_loaded_and_no_unfinished_one_is` is
-    // explicit that listing an unfinished one is a wall of missing-asset errors every
-    // launch. The three finished forms are here; add the base form when its walk facings
-    // land. (The test caught all four missing — the art shipped in #314 and was never
-    // wired, which is exactly what it exists to notice.)
-    "briarling_pack_leader",
-    "briarling_piper",
-    "briarling_thistleback",
-    "bog_ooze",
-    "bog_ooze_baby",
-    "bog_ooze_belcher",
-    "bog_ooze_pack_leader",
-    "bog_serpent",
-    "bog_serpent_female",
-    "bog_serpent_pack_leader",
-    "bog_serpent_slither",
-    "bog_serpent_twin_tail",
-    "bog_stinger",
-    "bog_stinger_licker",
-    "bog_stinger_pack_leader",
-    "bog_stinger_piercer",
-    "cinder_imp",
-    "cinder_imp_pack_leader",
-    "cinder_imp_wolf",
-    "dune_colossus",
-    "dune_colossus_pack_leader",
-    "dune_wyrm",
-    "dune_wyrm_pack_leader",
-    "ember_wisp",
-    "ember_wisp_pack_leader",
-    "forest_bloom_stalker",
-    "forest_bloom_stalker_adult",
-    "forest_bloom_stalker_baby",
-    "forest_bloom_stalker_pack_leader",
-    "frost_lurker",
-    "frost_lurker_pack_leader",
-    "glacier_maw",
-    "glacier_maw_pack_leader",
-    "ice_revenant",
-    "ice_revenant_pack_leader",
-    "magma_golem",
-    "magma_golem_pack_leader",
-    "myconid_brute",
-    "myconid_brute_boss",
-    "myconid_brute_mage",
-    "myconid_brute_pack_leader",
-    "sand_shade",
-    "sand_shade_pack_leader",
-    "sporeling",
-    "sporeling_baby",
-    "sporeling_healer",
-    "sporeling_pack_leader",
-    "sporeling_sprout",
-    "thornback_boar",
-    "thornback_boar_beta",
-    "thornback_boar_goarer",
-    "thornback_boar_pack_leader",
-    "verdant_ooze",
-    "verdant_ooze_blob",
-    "verdant_ooze_blopper",
-    "verdant_ooze_healer",
-    "verdant_ooze_pack_leader",
+/// Each entry carries its walk's FRAME COUNT, because that is a property of the art and
+/// not a constant: the stock `walking` template yields six frames and a custom v3 clip
+/// eight, and demanding one number made perfectly good sets read as unfinished forever.
+///
+/// Held against what is actually on disk by `every_finished_creature_set_is_loaded_and_no_unfinished_one_is`,
+/// so art that lands unlisted — art nobody would ever see — fails rather than sitting unused.
+pub(crate) const CREATURE_CHARS: &[(&str, usize)] = &[
+    ("bog_ooze", 8),
+    ("bog_ooze_baby", 8),
+    ("bog_ooze_belcher", 8),
+    ("bog_ooze_grump", 8),
+    ("bog_ooze_pack_leader", 8),
+    ("bog_serpent", 8),
+    ("bog_serpent_female", 8),
+    ("bog_serpent_pack_leader", 8),
+    ("bog_serpent_slither", 8),
+    ("bog_serpent_twin_tail", 8),
+    ("bog_stinger", 8),
+    ("bog_stinger_buzz", 8),
+    ("bog_stinger_licker", 8),
+    ("bog_stinger_pack_leader", 8),
+    ("bog_stinger_piercer", 8),
+    ("bog_stinger_wasp", 8),
+    ("briarling", 6),
+    ("briarling_pack_leader", 6),
+    ("briarling_piper", 6),
+    ("briarling_thistleback", 6),
+    ("cinder_imp", 8),
+    ("cinder_imp_dog", 8),
+    ("cinder_imp_fire_mage", 8),
+    ("cinder_imp_pack_leader", 8),
+    ("cinder_imp_wolf", 8),
+    ("dune_colossus", 8),
+    ("dune_colossus_pack_leader", 8),
+    ("dune_colossus_shardling", 8),
+    ("dune_colossus_sunmarked", 8),
+    ("dune_wyrm", 8),
+    ("dune_wyrm_glassback", 8),
+    ("dune_wyrm_hatchling", 8),
+    ("dune_wyrm_pack_leader", 8),
+    ("ember_wisp", 8),
+    ("ember_wisp_cinderveil", 8),
+    ("ember_wisp_mote", 6),
+    ("ember_wisp_pack_leader", 8),
+    ("forest_bloom_stalker", 8),
+    ("forest_bloom_stalker_adult", 8),
+    ("forest_bloom_stalker_baby", 8),
+    ("forest_bloom_stalker_pack_leader", 8),
+    ("frog_tribesman", 8),
+    ("frog_tribesman_elder", 8),
+    ("frog_tribesman_pack_leader", 8),
+    ("frog_tribesman_spearfisher", 8),
+    ("frost_lurker", 8),
+    ("frost_lurker_pack_leader", 8),
+    ("frost_lurker_pup", 8),
+    ("frost_lurker_rimefang", 8),
+    ("glacier_maw", 8),
+    ("glacier_maw_cub", 8),
+    ("glacier_maw_frostjaw", 8),
+    ("glacier_maw_pack_leader", 8),
+    ("ice_revenant", 8),
+    ("ice_revenant_pack_leader", 8),
+    ("ice_revenant_shieldbound", 8),
+    ("ice_revenant_thrall", 8),
+    ("magma_golem", 8),
+    ("magma_golem_cinderling", 6),
+    ("magma_golem_pack_leader", 8),
+    ("magma_golem_slagfist", 6),
+    ("myconid_brute_boss", 8),
+    ("myconid_brute_pack_leader", 8),
+    ("myconid_mage", 8),
+    ("myconid_minion", 8),
+    ("myconid_warrior", 6),
+    ("sand_shade", 8),
+    ("sand_shade_gravebound", 8),
+    ("sand_shade_pack_leader", 8),
+    ("sand_shade_wisp", 8),
+    ("sporeling", 8),
+    ("sporeling_baby", 8),
+    ("sporeling_healer", 8),
+    ("sporeling_pack_leader", 8),
+    ("sporeling_sprout", 8),
+    ("thornback_boar", 8),
+    ("thornback_boar_beta", 8),
+    ("thornback_boar_charger", 8),
+    ("thornback_boar_goarer", 8),
+    ("thornback_boar_pack_leader", 8),
+    ("twingolem", 8),
+    ("verdant_ooze", 8),
+    ("verdant_ooze_blob", 8),
+    ("verdant_ooze_blopper", 8),
+    ("verdant_ooze_healer", 8),
+    ("verdant_ooze_pack_leader", 8),
 ];
 
-/// Which installed set a creature draws from: a pack leader's own art when it has some,
-/// the ordinary creature's otherwise, and nothing at all if the species has no art yet.
+/// The Last City's townsfolk (`assets/npcs/<key>/`). Loaded exactly like a creature —
+/// eight walk facings and, for the armed ones, a south attack — and looked up by key
+/// rather than pooled, because an NPC is one person rather than one of a species.
 ///
-/// The FALLBACK is the point — art lands in batches, so a species can have its ordinary
-/// form drawn and its leader not, and a leader rendering as nothing is far worse than a
-/// leader that merely looks like a big one of its own kind. Split out from
-/// [`WorldAssets::creature_frames`] so the rule can be tested without standing up the
-/// whole asset resource.
-pub(crate) fn creature_art_key(
-    kind: &str,
-    leader: bool,
-    installed: impl Fn(&str) -> bool,
-) -> Option<String> {
-    if leader {
-        let boss_of_the_pack = format!("{kind}_pack_leader");
-        if installed(&boss_of_the_pack) {
-            return Some(boss_of_the_pack);
+/// They replace three Kenney GRAVEYARD models (a keeper, a ghost and a skeleton) that
+/// stood in the friendly hub as "a hint of the crowd to come".
+pub(crate) const NPC_CHARS: &[&str] = &[
+    "npc_alembic_keeper",
+    "npc_apothecary_keeper",
+    "npc_beggar",
+    "npc_bounty_clerk",
+    "npc_broker",
+    "npc_cartographer",
+    "npc_child",
+    "npc_innkeeper",
+    "npc_master_smith",
+    "npc_phoenix_guard_sentry",
+    "npc_quartermaster",
+    "npc_soldier_bow",
+    "npc_soldier_captain",
+    "npc_soldier_spear",
+    "npc_soldier_sword",
+    "npc_townsfolk_dwarf",
+    "npc_townsfolk_elf",
+    "npc_townsfolk_gnome",
+    "npc_townsfolk_halfling",
+    "npc_townsfolk_harefolk",
+    "npc_townsfolk_hobgoblin",
+    "npc_townsfolk_human",
+    "npc_vault_clerk",
+];
+
+/// Which installed set a creature draws from, out of its species' whole POOL.
+///
+/// A species is a set of variants sharing a name prefix — `myconid_brute`,
+/// `myconid_mage`, `myconid_warrior`, `myconid_pack_leader` — and NONE of them need be
+/// named exactly after the species. That is not a detail: renaming the species key from
+/// `myconid_brute` to `myconid` (because the brute is one myconid among several, not the
+/// species) instantly left the species with no art at all under a lookup that only knew
+/// `<kind>` and `<kind>_pack_leader`.
+///
+/// So: take the pool, prefer the half that matches what this spawn IS — a pack leader
+/// draws from `_pack_leader` variants, everything else from the rest — and fall back to
+/// the other half rather than to nothing, because a leader rendering as an ordinary one
+/// of its kind is far better than a leader rendering as nothing.
+///
+/// The exact species name wins inside its half when it exists, so a species that does
+/// have a canonical ordinary form keeps using it.
+pub(crate) fn creature_art_key(kind: &str, leader: bool, installed: &[&str]) -> Option<String> {
+    let mine = |k: &str| k == kind || k.strip_prefix(kind).is_some_and(|r| r.starts_with('_'));
+    let is_leader = |k: &str| k.ends_with("_pack_leader");
+    let (want, rest): (Vec<&str>, Vec<&str>) = installed
+        .iter()
+        .copied()
+        .filter(|k| mine(k))
+        .partition(|k| is_leader(k) == leader);
+    let pick = |v: &[&str]| -> Option<String> {
+        if v.contains(&kind) {
+            return Some(kind.to_string());
         }
-    }
-    installed(kind).then(|| kind.to_string())
+        // Sorted rather than first-seen: the list's order is whatever the sync wrote, and
+        // a creature must not change appearance because a file landed in a new order.
+        v.iter().min().map(|k| k.to_string())
+    };
+    pick(&want).or_else(|| pick(&rest))
 }
 
 /// Shared meshes/materials + the psyker sprite set, built once at startup so the
@@ -514,6 +620,8 @@ pub(crate) struct WorldAssets {
     /// not landed, which keeps it
     /// on the old single-png billboard rather than on missing-asset errors.
     pub(crate) creature_chars: HashMap<String, CharacterFrames>,
+    /// Townsfolk sprite sets (`assets/npcs/<key>/`), keyed by [`NPC_CHARS`] entry.
+    pub(crate) npc_chars: HashMap<String, CharacterFrames>,
     pub(crate) monster_pool: Vec<Handle<Image>>,
     /// Real 3D prop models (Kenney Nature Kit, CC0) keyed by terrain-obstacle kind →
     /// several `(scene, baked_scale)` variants (picked per-entity by id hash), so the
@@ -586,8 +694,16 @@ impl WorldAssets {
     /// species' — a species may get its leader art before its minion art, and half a pack
     /// rendering as nothing at all is worse than half a pack sharing one sprite.
     pub(crate) fn creature_frames(&self, kind: &str, leader: bool) -> Option<&CharacterFrames> {
-        let key = creature_art_key(kind, leader, |k| self.creature_chars.contains_key(k))?;
+        let installed: Vec<&str> = CREATURE_CHARS.iter().map(|(k, _)| *k).collect();
+        let key = creature_art_key(kind, leader, &installed)?;
         self.creature_chars.get(&key)
+    }
+
+    /// A townsfolk's sprite set. Keyed by name, not pooled by prefix like a creature:
+    /// an NPC is one PERSON, and the innkeeper standing at the inn has to be the
+    /// innkeeper every time rather than whichever townsfolk the hash landed on.
+    pub(crate) fn npc_frames(&self, key: &str) -> Option<&CharacterFrames> {
+        self.npc_chars.get(key)
     }
 
     pub(crate) fn class_frames(&self, class: &str) -> &CharacterFrames {
@@ -656,11 +772,11 @@ pub(crate) fn setup(
     // (seamless "full lower" terrain tile per biome); the `GroundBiome` shader still
     // applies each biome's colour tint on top.
     let ground_tex: Vec<Handle<Image>> = [
-        "ground/tile_forest.png",  // Forest
-        "ground/tile_desert.png",  // Desert
-        "ground/tile_ashfall.png", // Ashfall
-        "ground/tile_tundra.png",  // Tundra
-        "ground/tile_mire.png",    // Mire
+        "ground/atlas/forest.png",  // Forest
+        "ground/atlas/desert.png",  // Desert
+        "ground/atlas/ashfall.png", // Ashfall
+        "ground/atlas/tundra.png",  // Tundra
+        "ground/atlas/mire.png",    // Mire
     ]
     .iter()
     .map(|p| load_tiled(&assets, p))
@@ -690,6 +806,13 @@ pub(crate) fn setup(
             water_clear: load_tiled(&assets, "ground/water_clear.png"),
             water_bog: load_tiled(&assets, "ground/water_bog.png"),
             water_ice: load_tiled(&assets, "ground/water_ice.png"),
+            // Side-view rock per biome, tiled like everything else here.
+            cliff_forest: load_tiled(&assets, "ground/cliff_forest.png"),
+            cliff_desert: load_tiled(&assets, "ground/cliff_desert.png"),
+            cliff_ashfall: load_tiled(&assets, "ground/cliff_ashfall.png"),
+            cliff_tundra: load_tiled(&assets, "ground/cliff_tundra.png"),
+            cliff_mire: load_tiled(&assets, "ground/cliff_mire.png"),
+            dungeon_floor: load_tiled(&assets, "ground/atlas/dungeon.png"),
             // Rings start empty; `update_ground_biome_rings` fills them from the
             // streamed sections each frame (count 0 ⇒ shader falls back to forest).
             params: BiomeParams::default(),
@@ -733,10 +856,14 @@ pub(crate) fn setup(
         ("frost_lurker", "monsters/wolf.png"),
         ("ice_revenant", "monsters/skeletal_warrior.png"),
         ("bog_serpent", "monsters/adder.png"),
-        ("myconid_brute", "monsters/troll.png"),
+        ("myconid", "monsters/troll.png"),
         // The oozes, until their animated sets land (`CREATURE_CHARS`).
         ("verdant_ooze", "monsters/jelly.png"),
         ("bog_ooze", "monsters/acid_blob.png"),
+        // The frog tribes, until their animated set lands. Without an entry here a kind
+        // HASHES to an arbitrary sprite, so a brand-new species renders as whatever the
+        // hash lands on — which reads as a bug rather than as missing art.
+        ("frog_tribesman", "monsters/kobold.png"),
     ]
     .into_iter()
     .map(|(k, p)| (k.to_string(), ld(p)))
@@ -967,29 +1094,38 @@ pub(crate) fn setup(
     // per-clip: template `walk` cycles are 6f for humanoids / 8f for quadrupeds; the
     // v3 attack + ability clips are 8f. miredrowned's two abilities + ashenleviathan's
     // `eruption` weren't generated (PixelLab credit cap) — they're simply absent.
-    fn boss_clips(key: &str) -> &'static [(&'static str, usize)] {
+    // `(clip, frames, drawn-for-all-eight-facings)`. The flag exists because a dungeon
+    // sprite may be drawn only from the south — declaring such a clip as directional asks
+    // the loader for seven folders nobody made, which is 56 missing-asset errors a launch.
+    fn boss_clips(key: &str) -> &'static [(&'static str, usize, bool)] {
         match key {
-            "gloamhound" => &[("walk", 8), ("attack", 8), ("howl", 8), ("pounce", 8)],
-            "rustfang" => &[("walk", 8), ("attack", 8), ("slam", 8), ("overcharge", 8)],
-            "choirmother" => &[("walk", 6), ("attack", 8), ("wail", 8), ("grasp", 8)],
-            "pyrewarden" => &[("walk", 6), ("attack", 8), ("furnace_slam", 8), ("ember_burst", 8)],
-            "sepulcher" => &[("walk", 8), ("attack", 8), ("rend", 8), ("phantom", 8)],
-            "hollowbishop" => &[("walk", 6), ("attack", 8), ("soulfire", 8), ("bone_nova", 8)],
-            "ironmaw" => &[("walk", 8), ("attack", 8), ("devour", 8), ("reactor_roar", 8)],
-            "weepingcolossus" => &[("walk", 6), ("attack", 8), ("chain_sweep", 8), ("sorrow_quake", 8)],
-            "miredrowned" => &[("walk", 6), ("attack", 8)],
-            "ashenleviathan" => &[("walk", 8), ("attack", 8), ("cinder_charge", 8)],
+            "gloamhound" => &[("walk", 8, true), ("attack", 8, true), ("howl", 8, true), ("pounce", 8, true)],
+            "rustfang" => &[("walk", 8, true), ("attack", 8, true), ("slam", 8, true), ("overcharge", 8, true)],
+            "choirmother" => &[("walk", 6, true), ("attack", 8, true), ("wail", 8, true), ("grasp", 8, true)],
+            "pyrewarden" => &[("walk", 6, true), ("attack", 8, true), ("furnace_slam", 8, true), ("ember_burst", 8, true)],
+            "sepulcher" => &[("walk", 8, true), ("attack", 8, true), ("rend", 8, true), ("phantom", 8, true)],
+            "hollowbishop" => &[("walk", 6, true), ("attack", 8, true), ("soulfire", 8, true), ("bone_nova", 8, true)],
+            "ironmaw" => &[("walk", 8, true), ("attack", 8, true), ("devour", 8, true), ("reactor_roar", 8, true)],
+            "weepingcolossus" => &[("walk", 6, true), ("attack", 8, true), ("chain_sweep", 8, true), ("sorrow_quake", 8, true)],
+            "miredrowned" => &[("walk", 6, true), ("attack", 8, true)],
+            "ashenleviathan" => &[("walk", 8, true), ("attack", 8, true), ("cinder_charge", 8, true)],
             // The barrow's fae court: walk + attack, no ability art yet, so its kit
             // falls through to the attack clip.
-            "briarlord" => &[("walk", 8), ("attack", 8)],
-            _ => &[("walk", 8), ("attack", 8)],
+            "briarlord" => &[("walk", 8, true), ("attack", 8, true)],
+            // The Ocean Palace's guardian. A dungeon `sprite`, deliberately NOT one of
+            // the named bosses (`meld_proto::bosses`) — it draws no name plate. Its walk
+            // is still to be made, so it declares the attack only: naming a clip with no
+            // frames behind it is asset errors on every launch.
+            // Its attack is drawn SOUTH-ONLY; its walk is not drawn at all yet.
+            "twingolem" => &[("attack", 8, false)],
+            _ => &[("walk", 8, true), ("attack", 8, true)],
         }
     }
     let boss_chars: HashMap<String, CharacterFrames> = boss_keys()
         .map(|key| {
             (
                 key.to_string(),
-                hd2d::load_character_clips(&assets, &format!("bosses/{key}"), boss_clips(key)),
+                hd2d::load_creature_clips(&assets, &format!("bosses/{key}"), boss_clips(key)),
             )
         })
         .collect();
@@ -1001,14 +1137,38 @@ pub(crate) fn setup(
     // party. See `hd2d::load_creature_clips`.
     let creature_chars: HashMap<String, CharacterFrames> = CREATURE_CHARS
         .iter()
-        .map(|&key| {
+        .map(|&(key, walk_frames)| {
             (
                 key.to_string(),
                 hd2d::load_creature_clips(
                     &assets,
                     &format!("creatures/{key}"),
-                    &[("walk", 8, true), ("attack", 8, false)],
+                    // The walk's length comes from the SET, not a constant — six frames
+                    // from the stock template, eight from a custom clip.
+                    &[("walk", walk_frames, true), ("attack", 8, false)],
                 ),
+            )
+        })
+        .collect();
+
+    // Townsfolk. Eighteen of the twenty-three never fight, so only the armed ones have
+    // an attack — `load_creature_clips` is told which clips exist rather than assuming.
+    let npc_chars: HashMap<String, CharacterFrames> = NPC_CHARS
+        .iter()
+        .map(|&key| {
+            let armed = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("assets/npcs")
+                .join(key)
+                .join("animations/attack")
+                .is_dir();
+            let clips: &[(&str, usize, bool)] = if armed {
+                &[("walk", 8, true), ("attack", 8, false)]
+            } else {
+                &[("walk", 8, true)]
+            };
+            (
+                key.to_string(),
+                hd2d::load_creature_clips(&assets, &format!("npcs/{key}"), clips),
             )
         })
         .collect();
@@ -1021,6 +1181,7 @@ pub(crate) fn setup(
     commands.insert_resource(WorldAssets {
         class_chars,
         creature_chars,
+        npc_chars,
         boss_chars,
         prop_sprites,
         // Cylindrical normals so the sun models the flat sprite (HD-2D depth).
@@ -1074,7 +1235,10 @@ pub(crate) fn setup(
         }),
         rock_mesh: meshes.add(Cuboid::new(1.0, 0.7, 1.0)),
         wall_mesh: meshes.add(Cuboid::new(1.0, 1.0, 1.0)), // unit cube for solid dungeon walls
-        wall_tex: load_tiled(&assets, "ground/tile_street.png"), // cobblestone masonry for walls
+        // A dungeon wall is a vertical face, so it wants a SIDE-VIEW texture. It wore
+        // `tile_street.png` — a top-down cobblestone — as the stopgap
+        // docs/asset-pipeline.md has admitted to since it was written.
+        wall_tex: load_tiled(&assets, "ground/wall_dungeon.png"),
         // A BASIN, not a disc: the rim stays proud of the terrain (no z-fighting) while the
         // surface sits below it, so water reads as sunk into the ground rather than floating
         // on it. Worst in the Mire, whose entire maze fill is water.
@@ -2354,7 +2518,7 @@ pub(crate) fn title_case(s: &str) -> String {
 /// A const rather than a literal inside `setup`, because the menus reach for the same
 /// sprites (`icons`) and a name that only exists at the call site cannot be checked — a
 /// menu asking for art nobody loads draws a hole where the icon should be.
-pub(crate) const PROP_KEYS: [&str; 39] = [
+pub(crate) const PROP_KEYS: [&str; 64] = [
     "obstacle_tree", "obstacle_tree_pine", "obstacle_tree_birch", "obstacle_tree_dead",
     "obstacle_tree_willow", "obstacle_tree_bushy",
     "obstacle_boulder", "obstacle_pond", "obstacle_dune",
@@ -2367,6 +2531,22 @@ pub(crate) const PROP_KEYS: [&str; 39] = [
     "connector_ladder", "connector_rope", "connector_ramp",
     "item_chest_common", "item_chest_rare", "item_chest_open", "item_gold_pile", "item_loot_gem",
     "marker_target_marker",
+    // The best chest in the game. `chest:<tier>` has always been on the wire and the
+    // client drew every chest as the common one, so the blue art already in this list
+    // was never once shown and the tier meant nothing to look at.
+    "item_chest_red",
+    // Dungeon traps, FOUR SPRITES PER KIND. A trap rides the wire as `trap:<kind>` and
+    // used to draw as the target marker tinted red for every kind alike — so the one
+    // thing the warning could have told you, which is what you are about to step on, was
+    // the one thing it did not. Variants for the same reason creatures have them: a
+    // corridor of identical thorn traps reads as copy-paste, and the pick is by entity
+    // id so a given trap looks the same every time you walk past it.
+    "trap_thorns_0", "trap_thorns_1", "trap_thorns_2", "trap_thorns_3",
+    "trap_dart_0", "trap_dart_1", "trap_dart_2", "trap_dart_3",
+    "trap_snare_0", "trap_snare_1", "trap_snare_2", "trap_snare_3",
+    "trap_rune_0", "trap_rune_1", "trap_rune_2", "trap_rune_3",
+    "trap_acid_0", "trap_acid_1", "trap_acid_2", "trap_acid_3",
+    "trap_pit_0", "trap_pit_1", "trap_pit_2", "trap_pit_3",
 ];
 
 /// Biome theme name → ground-texture / ring index (matches `BIOMES` order in
@@ -2395,6 +2575,7 @@ pub(crate) fn update_ground_biome_rings(
     tell: Res<crate::ShiftTell>,
     clock: Res<Time>,
     frame: Res<crate::WorldFrame>,
+    dungeon: Res<DungeonSceneRes>,
     ground_q: Query<&MeshMaterial3d<GroundMat>, With<WorldGround>>,
     mut mats: ResMut<Assets<GroundMat>>,
 ) {
@@ -2444,6 +2625,10 @@ pub(crate) fn update_ground_biome_rings(
     // prop and shades the troughs into blue "corridor" ribbons — flatten it (amp 0).
     mat.extension.params.terrain_amp =
         if *state.get() == Screen::Overworld { 1.0 } else { 0.0 };
+    // Underground stands on a floor. Set beside `terrain_amp` because they answer the
+    // same question — what KIND of place is this — and splitting them is how one of the
+    // two ends up stale in a scene the other already knows about.
+    mat.extension.params.dungeon = u32::from(dungeon.active);
     // Publish the SAME coast + flatten state to the placement side, right here, so
     // `terrain_height` answers for the surface this uniform is about to draw. Everything
     // in the world floated over every shoreline for as long as these were two answers.
@@ -3676,17 +3861,34 @@ mod creature_sprite_tests {
         };
         // Exactly what `load_creature_clips` will ask for: eight walk facings by name, a
         // south attack, and the idle rotations.
+        // Must agree with `sync_creature_chars.py`'s definition, because the two decide
+        // the same thing from opposite sides — and when they disagreed, the looser one
+        // (this) called a set finished that the stricter one refused to list, so the test
+        // failed on art that was genuinely broken and pointed at the wrong culprit.
+        //
+        // EVERY FACING MUST AGREE ON ITS FRAME COUNT. `dune_colossus_sunmarked` came back
+        // with seven frames facing north and eight everywhere else — one job of eight
+        // quietly short — which a "does frame_000 exist" check waves straight through.
         let complete = |key: &str| -> bool {
             let d = dir.join(key);
-            d.join("rotations/south.png").is_file()
-                && d.join("animations/attack/south/frame_000.png").is_file()
-                && hd2d::DIRS.iter().all(|f| {
-                    d.join("animations/walk").join(f).join("frame_000.png").is_file()
+            if !d.join("rotations/south.png").is_file()
+                || !d.join("animations/attack/south/frame_000.png").is_file()
+            {
+                return false;
+            }
+            let counts: Vec<usize> = hd2d::DIRS
+                .iter()
+                .map(|f| {
+                    std::fs::read_dir(d.join("animations/walk").join(f))
+                        .map(|r| r.count())
+                        .unwrap_or(0)
                 })
+                .collect();
+            counts[0] >= 4 && counts.iter().all(|n| *n == counts[0])
         };
         for e in entries.filter_map(|e| e.ok()).filter(|e| e.path().is_dir()) {
             let key = e.file_name().to_string_lossy().into_owned();
-            let listed = CREATURE_CHARS.contains(&key.as_str());
+            let listed = CREATURE_CHARS.iter().any(|(k, _)| *k == key);
             if complete(&key) {
                 assert!(
                     listed,
@@ -3702,48 +3904,63 @@ mod creature_sprite_tests {
                 );
             }
         }
-        for key in CREATURE_CHARS {
+        for (key, frames) in CREATURE_CHARS {
             assert!(
                 dir.join(key).is_dir(),
                 "CREATURE_CHARS lists {key} but assets/creatures/{key} does not exist"
             );
+            // THE DECLARED LENGTH MUST MATCH THE FILES. The loader asks for exactly this
+            // many frames per facing, so a number that drifted from the art is a missing
+            // -asset error per frame per direction, on every launch.
+            let d = dir.join(key).join("animations/walk/south");
+            let on_disk = std::fs::read_dir(&d).map(|r| r.count()).unwrap_or(0);
+            assert_eq!(
+                on_disk, *frames,
+                "creatures/{key} declares a {frames}-frame walk but has {on_disk}"
+            );
         }
     }
 
-    /// A leader falls back to the ordinary creature's art, never to nothing — art lands
-    /// in batches, so a species can have its ordinary form drawn and its leader not.
+    /// A species draws from its POOL, and no variant need carry the species' own name.
     #[test]
-    fn a_pack_leader_without_its_own_art_borrows_the_ordinary_creature() {
-        let installed =
-            |k: &str| matches!(k, "thornback_boar" | "bog_serpent" | "bog_serpent_pack_leader");
-        // A leader's own art wins when it exists.
+    fn a_species_draws_from_its_whole_pool() {
+        // The case that forced this: six myconids, not one of them called `myconid`.
+        const MYCONID: &[&str] = &["myconid_brute", "myconid_mage", "myconid_minion",
+                                   "myconid_pack_leader", "myconid_warrior"];
         assert_eq!(
-            creature_art_key("bog_serpent", true, installed).as_deref(),
-            Some("bog_serpent_pack_leader")
+            creature_art_key("myconid", true, MYCONID).as_deref(),
+            Some("myconid_pack_leader"),
+            "a leader must find the leader art"
         );
-        // …and falls back to the ordinary creature when it does not.
+        let ordinary = creature_art_key("myconid", false, MYCONID);
+        assert!(
+            ordinary.as_deref().is_some_and(|k| !k.ends_with("_pack_leader")),
+            "an ordinary myconid drew its own leader's art"
+        );
+        // Stable across list order: a creature must not change appearance because the
+        // sync happened to write the folders in a different sequence.
+        let shuffled: Vec<&str> = MYCONID.iter().rev().copied().collect();
+        assert_eq!(ordinary, creature_art_key("myconid", false, &shuffled));
+
+        // The species' own name still wins when a species does have one.
+        const BOAR: &[&str] = &["thornback_boar", "thornback_boar_beta",
+                                "thornback_boar_pack_leader"];
         assert_eq!(
-            creature_art_key("thornback_boar", true, installed).as_deref(),
-            Some("thornback_boar"),
-            "a leader fell back to no art at all"
+            creature_art_key("thornback_boar", false, BOAR).as_deref(),
+            Some("thornback_boar")
         );
-        // An ordinary creature never reaches for the leader's art, which is what keeps a
-        // pack's rank and file from all drawing as their own leader.
+
+        // A leader with no leader art borrows an ordinary one rather than drawing nothing.
+        const NO_LEADER: &[&str] = &["sporeling_baby"];
         assert_eq!(
-            creature_art_key("bog_serpent", false, installed).as_deref(),
-            Some("bog_serpent")
+            creature_art_key("sporeling", true, NO_LEADER).as_deref(),
+            Some("sporeling_baby")
         );
-        // A species with no art stays a static billboard rather than drawing nothing.
-        assert_eq!(creature_art_key("sporeling", true, installed), None);
-        assert_eq!(creature_art_key("sporeling", false, installed), None);
-        // Leader art alone is not enough: the ordinary form is the common case, so a
-        // species with only a leader set stays on billboards for everything else.
-        let only_leader = |k: &str| k == "glacier_maw_pack_leader";
-        assert_eq!(creature_art_key("glacier_maw", false, only_leader), None);
-        assert_eq!(
-            creature_art_key("glacier_maw", true, only_leader).as_deref(),
-            Some("glacier_maw_pack_leader")
-        );
+        // And a species with no art at all stays on its billboard.
+        assert_eq!(creature_art_key("glacier_maw", false, NO_LEADER), None);
+        // A prefix must not bleed across species: `bog_ooze` is not a `bog` variant.
+        const BOG: &[&str] = &["bog_ooze_baby"];
+        assert_eq!(creature_art_key("bog_serpent", false, BOG), None);
     }
 }
 

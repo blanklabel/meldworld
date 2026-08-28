@@ -213,6 +213,11 @@ pub struct EntityView {
     pub level: u8,
     /// For chests: whether it's already been opened.
     pub opened: bool,
+    /// For chests: the treasure tier off `chest:<tier>:<open>`, which is what decides
+    /// how good the loot inside is — and so what the chest should LOOK like. It rode the
+    /// wire from the day chests existed and the client threw it away, drawing every
+    /// chest as the common brown one.
+    pub chest_tier: i32,
     /// Overworld mob intel (Explorer/Psyker perks). `None` for non-mobs. The client
     /// shows each field only when the viewer's perk unlocks it (see `Perks`).
     pub mob_level: Option<i32>,
@@ -2885,6 +2890,7 @@ impl Inner {
                             let mut radius = 0.0;
                             let mut bodies_required: u8 = 1;
                             let mut opened = false;
+                            let mut chest_tier = 0;
                             let mut quarry = false;
                             let mut expects_parties = 0u8;
                             let mut held = false;
@@ -2901,6 +2907,11 @@ impl Inner {
                                 Some(s) if s.starts_with("chest:") => {
                                     // chest:<tier>:<open>
                                     opened = s.ends_with(":1");
+                                    chest_tier = s["chest:".len()..]
+                                        .split(':')
+                                        .next()
+                                        .and_then(|t| t.parse().ok())
+                                        .unwrap_or(0);
                                     (EntityKind::Chest, None, None)
                                 }
                                 Some(s) if s.starts_with("mob:") => {
@@ -2973,6 +2984,7 @@ impl Inner {
                                 battling,
                                 level: e.level.unwrap_or(0),
                                 opened,
+                                chest_tier,
                                 mob_level: is_mob.then_some(e.mob_level).flatten(),
                                 hp: is_mob.then_some(e.hp).flatten(),
                                 max_hp: is_mob.then_some(e.max_hp).flatten(),

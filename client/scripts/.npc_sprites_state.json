@@ -1,0 +1,76 @@
+{
+ "npc_alembic_keeper": {
+  "id": "9602e2d1-3787-4ebc-a8f4-5937badf3e80"
+ },
+ "npc_apothecary_keeper": {
+  "id": "2ccf3aa6-bf98-466a-9c75-77eff2d21b48"
+ },
+ "npc_beggar": {
+  "id": "880a517e-5a7a-4d62-93a2-e74202df0b65"
+ },
+ "npc_bounty_clerk": {
+  "id": "e7eb6edc-0ea5-4683-9373-92a9684efe6a"
+ },
+ "npc_broker": {
+  "id": "828570c3-bae6-4523-af71-bb18486bb720"
+ },
+ "npc_cartographer": {
+  "id": "111f9d43-b042-444b-8f22-4d09ce600a0a"
+ },
+ "npc_child": {
+  "id": "0b6d74a1-8f65-4fc3-a669-f508fb3d6026"
+ },
+ "npc_innkeeper": {
+  "id": "249350ab-5878-4b6e-82b3-2bc9227faf9a"
+ },
+ "npc_master_smith": {
+  "id": "9c9e7650-80e5-4cdf-91c5-f81b27d9e637"
+ },
+ "npc_phoenix_guard_sentry": {
+  "attack": true,
+  "id": "63c82594-e7d4-4e43-9a38-feaf7c1cba8e"
+ },
+ "npc_quartermaster": {
+  "id": "4cee05ca-e02d-458c-8042-1d3f06cc587a"
+ },
+ "npc_soldier_bow": {
+  "attack": true,
+  "id": "d5f9fee7-ec1c-4684-ac5b-eefe0415e18a"
+ },
+ "npc_soldier_captain": {
+  "attack": true,
+  "id": "eb7fb322-fc1b-4bc0-a38e-d35ec7466ae0"
+ },
+ "npc_soldier_spear": {
+  "attack": true,
+  "id": "7ed1bd44-578b-4330-a956-2f8963c75ac5"
+ },
+ "npc_soldier_sword": {
+  "attack": true,
+  "id": "6a9f7a5e-7b83-4930-98cc-4af2fd98d64d"
+ },
+ "npc_townsfolk_dwarf": {
+  "id": "dd323b1c-a242-41f4-93b8-391bf3f90bba"
+ },
+ "npc_townsfolk_elf": {
+  "id": "81849d51-6fb8-4ee3-af65-106af6c60383"
+ },
+ "npc_townsfolk_gnome": {
+  "id": "6834f921-fdee-4c11-bd92-bb306bc50942"
+ },
+ "npc_townsfolk_halfling": {
+  "id": "de8829cb-5d6e-482e-8ddc-9e7af0e0dbac"
+ },
+ "npc_townsfolk_harefolk": {
+  "id": "db1b1404-4192-4554-b06f-673f9d3e3cc2"
+ },
+ "npc_townsfolk_hobgoblin": {
+  "id": "84b2d60e-3421-475d-9cfc-d58585e3e6b9"
+ },
+ "npc_townsfolk_human": {
+  "id": "84fd61e2-4672-44a9-8e97-0a8f19c69f54"
+ },
+ "npc_vault_clerk": {
+  "id": "567472f9-acf6-4da5-b12f-4e8768a6abc1"
+ }
+}

@@ -2024,7 +2024,7 @@ aggression = "aggressive"
 flees = false
 loot_kind = "serpent_fang"
 
-[creature.myconid_brute]      # mire BRUISER — a huge, armoured fungal wall
+[creature.myconid]      # mire BRUISER — a huge, armoured fungal wall
 base_hp = 160
 base_atk = 13
 base_def = 3
@@ -2061,6 +2061,24 @@ loot_kind = "spore_pod"
 # to the elemental damage that same party has no answer for. Slow and territorial: a
 # slime does not chase, it is simply in the way. Priced at the same distance-0 budget as
 # everything else, with the physical halving paid for in low attack and low speed.
+# THE FROG TRIBES of the mire — the first creature in the game that is plainly PEOPLE.
+# Everything else out there is an animal, a construct or a growth; these carry tools and
+# live in a tribe, which is what makes meeting one different from meeting wildlife even
+# though the engine fights them identically. `beast` because they are living things, and
+# in the mire that puts them at odds with the fungal, the fiendish and the ooze all at
+# once — the busiest turf war in the game, which is the point of putting them there.
+[creature.frog_tribesman]   # mire SKIRMISHER — amphibian tribal, quick and soft
+base_hp = 58
+base_atk = 10
+base_def = 2
+speed_stat = 96
+xp_reward = 62
+encounter_class = "standard"
+faction = "beast"
+aggression = "territorial"
+flees = true
+loot_kind = "frog_totem"
+
 [creature.verdant_ooze]     # forest ABSORBER — jelly that ate the undergrowth
 base_hp = 66
 base_atk = 6

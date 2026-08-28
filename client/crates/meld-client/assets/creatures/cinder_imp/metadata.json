@@ -1,11 +1,11 @@
 {
-  "group_id": "5ffa785d-cdb1-4597-b303-c20126c1dfd6",
+  "group_id": "32ebc361-948d-4774-9af5-e71eba979398",
   "states": [
     {
       "character": {
-        "id": "3281d988-1293-49e1-8dd8-0ceac44d7985",
+        "id": "06d00661-90ee-4a32-80b4-14b971fbc011",
         "name": "Idle",
-        "prompt": "a small horned fire imp whelp, dull charcoal skin with faint orange cracks, stubby ember wings and short horns in a weird HD-2D fantasy style. Full body, head to toe, whole creature inside the frame, standing on the ground.",
+        "prompt": "a large horned fire imp, cracked charcoal-black skin glowing molten orange in the fissures, broad ember wings, long curved horns and clawed hands wreathed in flame in a weird HD-2D fantasy style. Full body, head to toe, whole creature inside the frame, standing on the ground.",
         "size": {
           "width": 96,
           "height": 96
@@ -13,7 +13,7 @@
         "template_id": "mannequin",
         "directions": 8,
         "view": "low top-down",
-        "created_at": "2026-08-26T16:49:52.887612+00:00"
+        "created_at": "2026-08-26T15:09:53.495116+00:00"
       },
       "folder": "Idle",
       "frames": {
@@ -51,6 +51,26 @@
               "Idle/animations/walk/south-east/frame_006.png",
               "Idle/animations/walk/south-east/frame_007.png"
             ],
+            "south-west": [
+              "Idle/animations/walk/south-west/frame_000.png",
+              "Idle/animations/walk/south-west/frame_001.png",
+              "Idle/animations/walk/south-west/frame_002.png",
+              "Idle/animations/walk/south-west/frame_003.png",
+              "Idle/animations/walk/south-west/frame_004.png",
+              "Idle/animations/walk/south-west/frame_005.png",
+              "Idle/animations/walk/south-west/frame_006.png",
+              "Idle/animations/walk/south-west/frame_007.png"
+            ],
+            "west": [
+              "Idle/animations/walk/west/frame_000.png",
+              "Idle/animations/walk/west/frame_001.png",
+              "Idle/animations/walk/west/frame_002.png",
+              "Idle/animations/walk/west/frame_003.png",
+              "Idle/animations/walk/west/frame_004.png",
+              "Idle/animations/walk/west/frame_005.png",
+              "Idle/animations/walk/west/frame_006.png",
+              "Idle/animations/walk/west/frame_007.png"
+            ],
             "north-east": [
               "Idle/animations/walk/north-east/frame_000.png",
               "Idle/animations/walk/north-east/frame_001.png",
@@ -60,6 +80,16 @@
               "Idle/animations/walk/north-east/frame_005.png",
               "Idle/animations/walk/north-east/frame_006.png",
               "Idle/animations/walk/north-east/frame_007.png"
+            ],
+            "north-west": [
+              "Idle/animations/walk/north-west/frame_000.png",
+              "Idle/animations/walk/north-west/frame_001.png",
+              "Idle/animations/walk/north-west/frame_002.png",
+              "Idle/animations/walk/north-west/frame_003.png",
+              "Idle/animations/walk/north-west/frame_004.png",
+              "Idle/animations/walk/north-west/frame_005.png",
+              "Idle/animations/walk/north-west/frame_006.png",
+              "Idle/animations/walk/north-west/frame_007.png"
             ],
             "east": [
               "Idle/animations/walk/east/frame_000.png",
@@ -71,16 +101,6 @@
               "Idle/animations/walk/east/frame_006.png",
               "Idle/animations/walk/east/frame_007.png"
             ],
-            "south": [
-              "Idle/animations/walk/south/frame_000.png",
-              "Idle/animations/walk/south/frame_001.png",
-              "Idle/animations/walk/south/frame_002.png",
-              "Idle/animations/walk/south/frame_003.png",
-              "Idle/animations/walk/south/frame_004.png",
-              "Idle/animations/walk/south/frame_005.png",
-              "Idle/animations/walk/south/frame_006.png",
-              "Idle/animations/walk/south/frame_007.png"
-            ],
             "north": [
               "Idle/animations/walk/north/frame_000.png",
               "Idle/animations/walk/north/frame_001.png",
@@ -90,6 +110,16 @@
               "Idle/animations/walk/north/frame_005.png",
               "Idle/animations/walk/north/frame_006.png",
               "Idle/animations/walk/north/frame_007.png"
+            ],
+            "south": [
+              "Idle/animations/walk/south/frame_000.png",
+              "Idle/animations/walk/south/frame_001.png",
+              "Idle/animations/walk/south/frame_002.png",
+              "Idle/animations/walk/south/frame_003.png",
+              "Idle/animations/walk/south/frame_004.png",
+              "Idle/animations/walk/south/frame_005.png",
+              "Idle/animations/walk/south/frame_006.png",
+              "Idle/animations/walk/south/frame_007.png"
             ]
           }
         }
@@ -97,5 +127,5 @@
     }
   ],
   "export_version": "3.1",
-  "export_date": "2026-08-26T17:31:19.502440"
+  "export_date": "2026-08-27T20:22:38.561912"
 }

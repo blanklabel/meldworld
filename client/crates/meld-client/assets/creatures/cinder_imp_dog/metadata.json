@@ -110,17 +110,17 @@
               "Idle/animations/Walking/south-east/frame_007.png"
             ]
           },
-          "lashing_forward_blowing_flames_from_its_mouth": {
+          "attack": {
             "south": [
-              "Idle/animations/lashing_forward_blowing_flames_from_its_mouth/south/frame_000.png",
-              "Idle/animations/lashing_forward_blowing_flames_from_its_mouth/south/frame_001.png",
-              "Idle/animations/lashing_forward_blowing_flames_from_its_mouth/south/frame_002.png",
-              "Idle/animations/lashing_forward_blowing_flames_from_its_mouth/south/frame_003.png",
-              "Idle/animations/lashing_forward_blowing_flames_from_its_mouth/south/frame_004.png",
-              "Idle/animations/lashing_forward_blowing_flames_from_its_mouth/south/frame_005.png",
-              "Idle/animations/lashing_forward_blowing_flames_from_its_mouth/south/frame_006.png",
-              "Idle/animations/lashing_forward_blowing_flames_from_its_mouth/south/frame_007.png",
-              "Idle/animations/lashing_forward_blowing_flames_from_its_mouth/south/frame_008.png"
+              "Idle/animations/attack/south/frame_000.png",
+              "Idle/animations/attack/south/frame_001.png",
+              "Idle/animations/attack/south/frame_002.png",
+              "Idle/animations/attack/south/frame_003.png",
+              "Idle/animations/attack/south/frame_004.png",
+              "Idle/animations/attack/south/frame_005.png",
+              "Idle/animations/attack/south/frame_006.png",
+              "Idle/animations/attack/south/frame_007.png",
+              "Idle/animations/attack/south/frame_008.png"
             ]
           }
         }
@@ -128,5 +128,5 @@
     }
   ],
   "export_version": "3.1",
-  "export_date": "2026-08-26T18:48:53.090015"
+  "export_date": "2026-08-27T20:23:56.603924"
 }
