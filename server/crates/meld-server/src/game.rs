@@ -981,6 +981,7 @@ fn broadcast_ser<'a>(
 /// is what makes that rule statable in one place instead of five.
 #[derive(Default)]
 struct SectionGeometry {
+    ridges: Vec<meld_proto::terrain::Ridge>,
     peaks: Vec<[f32; 4]>,
     straits: Vec<meld_proto::coast::Strait>,
     lobes: Vec<meld_proto::coast::Lobe>,
@@ -1003,6 +1004,11 @@ impl SectionGeometry {
             r >= start && r < end
         };
         SectionGeometry {
+            // A RIDGE is the other boundary-crosser, and for the same reason a river is: a
+            // SPOKE range spans several rings by design. Selected on its FIRST endpoint alone,
+            // so a segment reaching into the next band is carried exactly once rather than by
+            // both sections — a capsule drawn twice is a mountain twice as tall.
+            ridges: arena.ridges.iter().filter(|r| holds(r[0], r[1])).copied().collect(),
             peaks: arena.peaks.iter().filter(|p| holds(p[0], p[1])).copied().collect(),
             straits: arena.straits.iter().filter(|s| holds(s[0], s[1])).copied().collect(),
             lobes: arena.lobes.iter().filter(|l| holds(l[0], l[1])).copied().collect(),
@@ -1044,6 +1050,7 @@ fn terrain_section_msg(
         biome: area.biome.to_string(),
         radial_half,
         corridor_lateral,
+        ridges: geom.ridges,
         peaks: geom.peaks,
         straits: geom.straits,
         lobes: geom.lobes,
@@ -5509,6 +5516,7 @@ impl GameState {
                         let (ox, oz) = inst.arena.terrain_offset();
                         [ox, oz]
                     },
+                    ridges: inst.arena.ridges.clone(),
                     peaks: inst.arena.peaks.clone(),
                     // CONTINENTS (WG-7): the client's ground shader ramps a beach over the
                     // same signed field the server collides against, and its prop placement

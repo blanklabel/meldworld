@@ -1669,6 +1669,25 @@ peak_min_distance = 45.0         # nearest hub distance an authored peak may spa
 # carries isthmuses at least `coast::MIN_BRIDGE_HALF_WIDTH` of arc wide. Three or more ways
 # across every barrier is what makes this a decision rather than the retired `Seam` — a
 # full-width wall with one door, which made the world read as a corridor and was removed.
+# THE RANGES (`WG-7` routes half): mountain ranges laid along a REGION CELL boundary, with
+# the gaps between their segments as the passes through. A range is what finally makes the
+# world something you route around rather than across. [TUNABLE]
+ridge_chance = 0.45             # chance a deep-enough section raises a range (0..1). Not 1.0: a world walled at every ring is a corridor again, which is what the retired `Seam` was.
+ridge_min_section = 3           # earliest section index. Keeps the on-ramp open — a new party should not meet a wall before it has a reason to want one.
+ridge_arc_share_min = 0.22      # a range's span as a share of the FAN, not in world units. WG-4 bends a fixed-width corridor into an arc that grows with radius (~2,000 units at r=400, ~15,700 at r=3000), so a range measured in units is a wall at the hub and a pebble at the frontier — one cell boundary (~250u) is something you round without noticing. A share is the same fraction of the horizon at every depth. [TUNABLE]
+ridge_arc_share_max = 0.46      # widest. CAPPED BELOW 1.0 ON PURPOSE, and that is what makes the world unsealable BY CONSTRUCTION rather than by check: a range always stops short of the fan's rim, so rounding its end is always possible. Same argument the strait uses.
+ridge_spoke_rings_min = 2       # a SPOKE range's radial extent, in region rings. Radial distance does not distort with depth, so this one is a straight multiple.
+ridge_spoke_rings_max = 4
+ridge_passes_min = 1            # interior passes per range. With the boundary's two ends that is at least three ways past — one door is the retired `Seam` again.
+ridge_passes_max = 3
+ridge_pass_share = 0.09         # a pass's width as a share of the range's own length, floored at `ridge_pass_width`. A share so the gap scales with the wall.
+ridge_arc_share = 0.55          # share of ranges laid along an ARC boundary (blocking OUTWARD travel, forcing a lateral detour) rather than a SPOKE one (blocking lateral travel, which is what makes corridors and dead ends). Both, so the world has walls in both axes.
+ridge_half_width_min = 26.0     # narrowest range, world units from spine to foot.
+ridge_half_width_max = 52.0     # widest. A range's height is `half_width * ridge_aspect`, so this also sets how tall it stands.
+ridge_aspect = 1.35             # height / half_width — and because a ridge's falloff is LINEAR, this IS its slope. MUST stay above `terrain::WALKABLE_SLOPE` (0.75) or the range is a hill you stroll over; held by test.
+ridge_pass_width = 30.0         # world units of gap between two segments — the PASS. Must stay well above `2 * (path_clear_radius + player_radius)` so a party fits and A* can find it; held by test.
+ridge_segments_min = 2          # fewest segments per range. TWO, so there is always at least one interior pass — plus the boundary's two ends, which is three ways past every range. One door is the `Seam` again.
+ridge_segments_max = 4
 strait_chance = 0.55             # chance a deep-enough section holds a strait (0..1). Not 1.0: a continent should be several sections across, and a world where every ring is a coast is a world of islands. [TUNABLE]
 strait_min_section = 6           # earliest section index that may hold one. Sections are 20 + 7*i long, so this is also what makes them thick enough to hold a sea with land margin either side — and it keeps the on-ramp coastline-free.
 strait_thickness_share = 0.34    # a strait's radial thickness as a share of its section's length. Bounded well under 1 so land always remains on BOTH shores inside the same section: the section's clear path enters on one side and leaves on the other, so A* always has dry ground at both ends to route between. [TUNABLE]

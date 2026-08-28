@@ -225,6 +225,17 @@ pub mod world {
         /// bearing ∈ [−radial_half, radial_half]). Pairs with `radial_half` for the bend.
         #[serde(default)]
         pub corridor_lateral: f64,
+        /// **THE RANGES this section raises** ([`crate::terrain::Ridge`]) — world-space
+        /// `[x0, z0, x1, z1, half_width, height]`. Replaced per section exactly like `peaks`,
+        /// so a Shift retile must carry them forward unchanged.
+        ///
+        /// A range is a WALL: its falloff is linear, so `height / half_width` is its slope at
+        /// every point on the flank, and above `terrain::WALKABLE_SLOPE` that flank cannot be
+        /// walked. The client needs them to DRAW the mountain and to put entities on top of
+        /// the right ground — a barrier the renderer has not been told about is an invisible
+        /// wall, which is worse than no wall at all.
+        #[serde(default)]
+        pub ridges: Vec<crate::terrain::Ridge>,
         /// Authored CLIMBABLE landmark peaks this section adds (world-space
         /// `[cx, cz, radius, height]`; see `terrain::peak_height` / `run.started.peaks`).
         #[serde(default)]
@@ -721,6 +732,10 @@ pub mod run {
         /// randomized dive. Say it, and the client can stop guessing.
         #[serde(default)]
         pub tutorial: bool,
+        /// **THE RANGES of the initial chain** ([`crate::terrain::Ridge`]), as `peaks` ride
+        /// here — world-space `[x0, z0, x1, z1, half_width, height]`.
+        #[serde(default)]
+        pub ridges: Vec<crate::terrain::Ridge>,
         /// Authored CLIMBABLE landmark peaks (mountains), each `[cx, cz, radius, height]`
         /// in world space (see `terrain::peak_height`). The client sums them onto the
         /// ground so each mountain renders + you climb it; a boss or treasure sits on the
