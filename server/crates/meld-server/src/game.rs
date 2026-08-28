@@ -5545,6 +5545,7 @@ impl GameState {
                         grid: inst.arena.regions(),
                         gate: meld_world::biome_gate_slice(&balance),
                         blend: balance.region.blend_width as f32,
+                        force: inst.arena.forced_biome_index(),
                     },
                 },
             ));

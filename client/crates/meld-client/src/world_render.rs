@@ -93,6 +93,11 @@ mod biome_params {
         /// nearest edge, because a boundary is 2D now rather than a radial band.
         pub(crate) region_blend: f32,
         pub(crate) region_seed: u32,
+        /// DEV/QA `MELD_BIOME`: the biome index every cell is forced to, or `-1` in play. In
+        /// the uniform because the shader picks a cell's biome itself — without it the ground
+        /// paints the decomposition's answer while the server spawns the forced one, which is
+        /// how ashfall lava rocks ended up strewn across green ground.
+        pub(crate) region_force: i32,
         pub(crate) uv_scale: f32,
         /// Heightmap displacement amplitude: 1.0 in the Overworld, 0.0 elsewhere (City +
         /// menus stay flat — see `set_ground_terrain_amp`). Also the struct's tail pad.
@@ -200,6 +205,7 @@ mod biome_params {
                 gate_hi2: Vec4::ZERO,
                 region_blend: 26.0,
                 region_seed: 0,
+                region_force: -1,
                 uv_scale: 1.0 / 3.0,
                 // Default flat: menus/join/city render level ground. The Overworld flips it
                 // to 1.0 on entry (`set_ground_terrain_amp`).
@@ -2883,6 +2889,7 @@ pub(crate) fn update_ground_biome_rings(
     p.region = Vec4::new(rg.grid.arc_half, rg.grid.ring_step, rg.grid.cell_width, rg.grid.warp);
     p.region_blend = rg.blend;
     p.region_seed = rg.grid.seed;
+    p.region_force = rg.force;
     // `BIOMES` order, four then two — the split is only that a uniform wants `vec4`s.
     let g = |i: usize| rg.gate.get(i).copied().unwrap_or(0.0);
     p.gate = Vec4::new(g(0), g(1), g(2), g(3));
@@ -2968,14 +2975,12 @@ pub(crate) fn regions() -> meld_proto::regions::Regions {
 /// and the HUD label cannot disagree with the floor they are drawn on.
 pub(crate) fn biome_at_world(x: f32, z: f32) -> &'static str {
     let rg = regions();
-    if rg.grid.ring_step <= 0.0 {
+    // No world yet (menus, city): the decomposition is inert and everything reads forest.
+    // A FORCED biome still answers, so `MELD_BIOME` colours those screens too.
+    if rg.grid.ring_step <= 0.0 && rg.force < 0 {
         return "forest";
     }
-    let mut gate = [0.0f32; meld_proto::regions::BIOMES.len()];
-    for (i, g) in gate.iter_mut().enumerate() {
-        *g = rg.gate.get(i).copied().unwrap_or(0.0);
-    }
-    meld_proto::regions::BIOMES[rg.grid.biome_at(x, z, &gate)]
+    meld_proto::regions::BIOMES[rg.biome_at(x, z)]
 }
 
 /// Bob the atmosphere motes and keep them anchored around the PLAYER (in the
@@ -4022,7 +4027,8 @@ mod ground_uniform_tests {
             .expect("…and closes it")
             .0;
         for field in [
-            "region", "gate", "gate_hi", "gate_hi2", "region_blend", "region_seed", "uv_scale",
+            "region", "gate", "gate_hi", "gate_hi2", "region_blend", "region_seed",
+            "region_force", "uv_scale",
             "terrain_amp", "terrain_off",
             "_pad_peaks", "peaks", "peak_count", "straits", "strait_count", "lobes",
             "lobe_count", "basins", "rivers", "basin_count", "river_count", "shift",

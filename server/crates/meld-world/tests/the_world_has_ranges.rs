@@ -140,3 +140,74 @@ fn a_volcanic_region_grows_more_mountain_than_a_desert() {
         "ashfall should grow far more mountain than desert (ashfall {ash:.0} vs {desert:.0})"
     );
 }
+
+/// ⚠️ **A RANGE MUST BE LONGER THAN IT IS WIDE.** `half_width` used to be drawn independently
+/// of the segment length, so a spine cut by three passes could give 27 units of length against
+/// 52 of half-width — and a capsule wider than it is long is a disc, which linear falloff
+/// renders as a mathematically perfect, featureless cone. It shipped exactly once and was
+/// reported from a screenshot as "a smooth brown pyramid".
+///
+/// This is the property that makes the shape a WALL rather than a peak, so it is held here
+/// rather than left to the constant that enforces it.
+#[test]
+fn a_range_is_a_wall_and_never_a_cone() {
+    let b = Balance::load_default().unwrap();
+    let mut checked = 0;
+    for (i, a) in worlds(&b).into_iter().enumerate() {
+        for r in &a.ridges {
+            let len = (((r[2] - r[0]) as f64).powi(2) + ((r[3] - r[1]) as f64).powi(2)).sqrt();
+            let hw = r[4] as f64;
+            assert!(
+                len >= hw * 2.0,
+                "seed {}: a range segment is {len:.0} long and {hw:.0} wide — that is a cone, \
+                 not a wall",
+                SEEDS[i]
+            );
+            checked += 1;
+        }
+    }
+    assert!(checked > 0, "no ranges to check");
+}
+
+/// Nothing scatters on a mountainside: a prop there hangs off a face the ground draws as bare
+/// rock, and it is a collider nothing can ever touch. Reported from a screenshot as lava rocks
+/// carpeting a range's flank.
+#[test]
+fn nothing_the_world_scatters_stands_on_a_mountainside() {
+    let b = Balance::load_default().unwrap();
+    for (i, a) in worlds(&b).into_iter().enumerate() {
+        let steep = |x: f32, z: f32| {
+            meld_proto::terrain::landform_slope(x, z, a.terrain_offset().0, a.terrain_offset().1, &a.ridges)
+                >= meld_proto::terrain::WALKABLE_SLOPE
+        };
+        for o in &a.obstacles {
+            assert!(
+                !steep(o.position.x as f32, o.position.y as f32),
+                "seed {}: a `{}` stands on an unwalkable flank",
+                SEEDS[i],
+                o.kind
+            );
+        }
+        for n in &a.resources {
+            assert!(
+                !steep(n.position.x as f32, n.position.y as f32),
+                "seed {}: a harvest node stands on an unwalkable flank",
+                SEEDS[i]
+            );
+        }
+        for c in &a.chests {
+            assert!(
+                !steep(c.position.x as f32, c.position.y as f32),
+                "seed {}: a chest stands on an unwalkable flank",
+                SEEDS[i]
+            );
+        }
+        for m in &a.monsters {
+            assert!(
+                !steep(m.position.x as f32, m.position.y as f32),
+                "seed {}: a creature stands on an unwalkable flank it cannot leave",
+                SEEDS[i]
+            );
+        }
+    }
+}

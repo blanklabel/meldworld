@@ -2836,6 +2836,15 @@ impl Arena {
         self.regions
     }
 
+    /// The `MELD_BIOME` override as an index into [`BIOMES`], or `-1` in normal play. Rides the
+    /// wire so the client paints the biome the server is actually spawning.
+    pub fn forced_biome_index(&self) -> i32 {
+        self.force_biome
+            .and_then(|b| BIOMES.iter().position(|k| *k == b))
+            .map(|i| i as i32)
+            .unwrap_or(-1)
+    }
+
     /// The biome at a **world** position — the one place a coordinate becomes a theme.
     ///
     /// `force_biome` (the `MELD_BIOME` harness flag) still wins, so a single biome's maze
@@ -3610,6 +3619,23 @@ impl Arena {
                 &stand_ridges,
             ) < meld_proto::terrain::WALKABLE_SLOPE
         };
+        // ⚠️ **NOTHING SCATTERS ON A MOUNTAINSIDE.** Reported from a screenshot: lava rocks
+        // carpeted a range's flank all the way up its steep faces. Props are placed AFTER the
+        // ranges are raised (#318's ordering), so they know the mountain is there — they just
+        // never asked. A prop on an unwalkable slope is worse than untidy: it is scenery on
+        // ground no one can reach, it hangs off a face the ground shader draws as bare rock,
+        // and every one of them is a collider nothing can ever touch.
+        //
+        // The corridor variant, because every scatter pass works in the unbent frame while a
+        // range is already world space — the frame trap this crate has paid for five times.
+        let (bend_half, bend_lat) = (self.radial_half, self.corridor_lateral.max(1.0));
+        let standable_c = {
+            let standable = standable.clone();
+            move |p: &Position| -> bool {
+                let w = if bend_half > 0.0 { radial_tf(*p, bend_half, bend_lat) } else { *p };
+                standable(&w)
+            }
+        };
 
         // Scatter harvestable resource nodes through the section (2D). What a node YIELDS
         // is the biome of the ground it stands on, so an ore vein and a reagent bed can sit
@@ -3619,6 +3645,9 @@ impl Arena {
         for _ in 0..n_nodes {
             let rx = start_x + 2.0 + rng.unit() * (length - 4.0).max(1.0);
             let ry = wg.resource_lateral_spread * rng.signed();
+            if !standable_c(&Position::new(rx, ry)) {
+                continue;
+            }
             let rkinds = resources_for_biome(self.biome_in_corridor(Position::new(rx, ry)));
             // Nothing grows in the Oubliette and nothing is buried under it, so a node
             // rolled onto that ground is simply not placed.
@@ -4184,6 +4213,9 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
             attempts += 1;
             let ox = start_x + rng.unit() * length;
             let oy = rng.signed() * (self.corridor_lateral - 1.0);
+            if !standable_c(&Position::new(ox, oy)) {
+                continue;
+            }
             let okinds = obstacles_for_biome(self.biome_in_corridor(Position::new(ox, oy)));
             if okinds.is_empty() {
                 continue;
@@ -4320,6 +4352,10 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
                 let cx = start_x + 2.0 + rng.unit() * (length - 4.0).max(1.0);
                 let cy = (wg.creature_lateral_spread - 2.0) * rng.signed();
                 let cpos = Position::new(cx, cy);
+                // A chest on an unwalkable flank is a reward nobody can ever reach.
+                if !standable_c(&cpos) {
+                    continue;
+                }
                 let clear_of_path = dist_to_path(&cpos, &self.corridor_path) > wg.path_clear_radius;
                 let clear_of_mobs = self.monsters.iter().all(|m| m.position.distance_to(&cpos) > 2.0)
                     && self.resources.iter().all(|r| r.position.distance_to(&cpos) > 2.0);
@@ -4454,6 +4490,9 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
                 // keeps nearly everything, a desert cell keeps about a ninth, and the
                 // boundary between them is where that changes — no transition width, no
                 // neighbour lookup, no direction.
+                if !standable_c(&Position::new(ox, oy)) {
+                    continue;
+                }
                 let here = self.biome_in_corridor(Position::new(ox, oy));
                 if frng.unit() * maze_mult > biome_obstacle_mult(wg, here) {
                     continue;
@@ -4928,8 +4967,23 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
             return;
         }
         let seg_len = spine / segs as f64;
-        let half_width = wg.ridge_half_width_min
-            + rng.unit() * (wg.ridge_half_width_max - wg.ridge_half_width_min).max(0.0);
+        // ⚠️ **A RANGE MUST BE LONGER THAN IT IS WIDE, OR IT IS A CONE.** `half_width` was
+        // drawn independently of `seg_len`, so a 200-unit spine cut by three passes gave 27.5
+        // units of length against up to 52 of half-width — and a capsule wider than it is long
+        // is a disc, which linear falloff renders as a mathematically perfect, featureless
+        // cone. Reported from a screenshot: a smooth brown pyramid standing alone in a field.
+        //
+        // Capped at a third of the segment, so the thing always reads as a WALL running
+        // somewhere rather than a lone peak. A shallow band therefore grows a smaller range
+        // than a deep one, which is correct — the arc it is a share of is smaller too — and
+        // because the aspect is fixed, a narrower range is a proportionally lower one.
+        let half_width = (wg.ridge_half_width_min
+            + rng.unit() * (wg.ridge_half_width_max - wg.ridge_half_width_min).max(0.0))
+            .min(seg_len / 3.0);
+        // Too stubby to read as a range at all is not an error: it is a section with no range.
+        if half_width < wg.ridge_half_width_min * 0.5 {
+            return;
+        }
         // A ridge's falloff is LINEAR, so this ratio IS its slope, at every point on the flank.
         // Above `WALKABLE_SLOPE` the flank is a wall — that is the whole mechanism, and there
         // is no second copy of it anywhere.

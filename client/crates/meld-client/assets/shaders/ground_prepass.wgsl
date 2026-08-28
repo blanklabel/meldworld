@@ -48,6 +48,10 @@ struct BiomeParams {
     // this is a distance from the nearest edge rather than a radial band.
     region_blend: f32,
     region_seed: u32,
+    // DEV/QA `MELD_BIOME`: the biome index every cell is forced to, or -1 in play. The shader
+    // derives a cell's biome itself, so without this the ground paints the decomposition's
+    // answer while the server spawns the forced one.
+    region_force: i32,
     uv_scale: f32,
     // Displacement amplitude: 1.0 in the Overworld (rolling hills + cliffs), 0.0 in the
     // City/menus (flat ground — those scenes are hand-placed for a level plaza, and the
