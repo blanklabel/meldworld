@@ -528,7 +528,10 @@ fn vnoise(p: vec2<f32>) -> f32 {
 // ground that changes character across a hillside with no boundary anywhere in it.
 
 const ATLAS_GRID: f32 = 4.0;
-const ATLAS_TEXELS: f32 = 256.0;
+const ATLAS_CELL: f32 = 64.0;    // the tile itself
+const ATLAS_PAD: f32 = 1.0;      // its wrap gutter (see `pack_ground_atlas.py`)
+const ATLAS_STRIDE: f32 = 66.0;  // ATLAS_CELL + 2 * ATLAS_PAD
+const ATLAS_SIDE: f32 = 264.0;   // ATLAS_STRIDE * ATLAS_GRID
 // Sixteen drawn variations, each usable at four quarter-turns: SIXTY-FOUR.
 const ATLAS_VARIANTS: f32 = 64.0;
 
@@ -544,6 +547,23 @@ const ATLAS_VARIANTS: f32 = 64.0;
 // Quarter-turns only, and written out rather than built from a rotation matrix: 90
 // degrees maps texel centres onto texel centres exactly, while an arbitrary angle
 // resamples pixel art off its own grid.
+//
+// ⚠️ A TURN SWAPS WHICH PAIR OF EDGES MEETS AT THE JOIN, so a tile that wraps
+// left-to-right but not top-to-bottom GROWS a seam grid the moment it is turned.
+// Measured per atlas as the edge-wrap difference over ordinary interior variation
+// (`client/scripts/atlas_seams.py`), and it is not uniform:
+//
+//   field 1.4/4.9 and dungeon 2.0/3.1  -- seamless, well under the noise floor
+//   mire 22.9/26.6, forest 22.1/26.8   -- marginal, symmetric: a turn costs nothing
+//   desert 21.4/22.4 (noise 4.6)       -- SEAMY on both axes, so it shows turned or not
+//   tundra 55.8/56.3 (noise 17.3)      -- the worst, and symmetric: rotation is neutral
+//   ashfall 32.3/58.0                  -- ASYMMETRIC 1.8x: this is the one a turn HURTS
+//
+// So rotation is free on six of the seven and ashfall is the exception. The fix is to
+// regenerate that material as tileable rather than to special-case it here -- a per-biome
+// rotation flag is a rule about the ART hidden inside the renderer, where nobody looking
+// at a seamy tile would think to find it. Re-run the script rather than trusting this
+// block: these are numbers about the current drawings, not a law about the shader.
 fn atlas_sample(t: texture_2d<f32>, uv: vec2<f32>, variant: f32) -> vec4<f32> {
     var f = fract(uv) - vec2<f32>(0.5, 0.5);
     let turns = floor(variant / 16.0);
@@ -551,14 +571,27 @@ fn atlas_sample(t: texture_2d<f32>, uv: vec2<f32>, variant: f32) -> vec4<f32> {
     else if (turns == 2.0) { f = vec2<f32>(-f.x, -f.y); }
     else if (turns == 3.0) { f = vec2<f32>(f.y, -f.x); }
     f = f + vec2<f32>(0.5, 0.5);
-    // ⚠️ INSET BY HALF A TEXEL. Sub-rects of an atlas cannot use a repeat sampler to keep
-    // their own edges clean: filtering at a cell boundary reaches into the NEIGHBOURING
-    // variation and drags its colour in as a bright fringe along every tile.
-    let inset = 0.5 / ATLAS_TEXELS;
-    f = clamp(f, vec2<f32>(inset, inset), vec2<f32>(1.0 - inset, 1.0 - inset));
+    // A cell is addressed INSIDE its gutter. Sub-rects of an atlas cannot use the hardware
+    // REPEAT wrap — it would wrap the whole ATLAS rather than the cell — so the wrapped
+    // neighbour is baked around each tile as a one-pixel border: the texel REPEAT would
+    // have fetched, sitting where a filter will look for it.
+    //
+    // ⚠️ IT BUYS NOTHING TODAY AND IS STILL THE RIGHT SHAPE. `load_tiled` samples this
+    // atlas NEAREST (pixel art), and a nearest sample takes exactly one texel, so there
+    // is no filtering here to drag a neighbouring variation across the join. The gutter
+    // is what makes the cell correct under a filter, and it is the precondition for ever
+    // turning one on — which distant ground will eventually want, because nearest with no
+    // mips is what makes the far field crawl.
+    //
+    // It replaces a CLAMP, which was the wrong tool twice: it repeated the edge texel
+    // rather than wrapping it (breaking the join on any tile that genuinely was seamless),
+    // and its inset was computed against the atlas width while being applied in cell
+    // space — an eighth of a texel where the comment claimed a half. Under nearest that
+    // only ever guarded an off-by-one exactly on the boundary, which is real but is not
+    // the fringe the comment described.
     let tile = variant % 16.0;
     let g = vec2<f32>(floor(tile % ATLAS_GRID), floor(tile / ATLAS_GRID));
-    return textureSample(t, samp, (g + f) / ATLAS_GRID);
+    return textureSample(t, samp, (g * ATLAS_STRIDE + ATLAS_PAD + f * ATLAS_CELL) / ATLAS_SIDE);
 }
 
 // Which of the sixty-four a stretch of ground is made of. Quantised from a smooth field
