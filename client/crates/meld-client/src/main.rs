@@ -249,8 +249,6 @@ fn main() {
                 // Player characters carry their own light at night (overworld +
                 // battle) so the game stays readable in the dark.
                 illuminate_players,
-                // Route every UI text through the bundled symbol-capable font.
-                apply_ui_font,
             ),
         )
         // Join
