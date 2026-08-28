@@ -420,6 +420,7 @@ pub(crate) type GroundMat = ExtendedMaterial<StandardMaterial, GroundBiome>;
 pub(crate) fn boss_keys() -> impl Iterator<Item = &'static str> {
     meld_proto::bosses::keys()
         .chain(meld_proto::bosses::WORLD_BOSSES.iter().map(|(k, _)| *k))
+        .chain(meld_proto::bosses::LIEUTENANTS.iter().map(|(k, _, _)| *k))
         .chain(DUNGEON_SPRITES.iter().copied())
 }
 
@@ -1153,6 +1154,16 @@ pub(crate) fn setup(
             // frames behind it is asset errors on every launch.
             // Its attack is drawn SOUTH-ONLY; its walk is not drawn at all yet.
             "twingolem" => &[("attack", 8, false)],
+            // ⚠️ THE WORLD BOSSES DO NOT WALK, so they declare an IDLE and nothing else.
+            // The fallback below asks for `walk` and `attack` across all eight facings —
+            // sixteen folders nobody drew, which is a wall of missing-asset errors every
+            // launch. Their idle is drawn SOUTH-ONLY (they are met head-on, in an arena,
+            // and never seen from behind), hence the `false`.
+            "termina" | "nestiph" | "slake" | "ometus" | "velvetmaw" | "cogwright"
+            | "vatmother" => &[("idle", 8, false)],
+            // The All-Father is an OBJECT rather than a character: eight rotations and no
+            // clips at all, because a mountain has no animation to give.
+            "allfather" => &[],
             _ => &[("walk", 8, true), ("attack", 8, true)],
         }
     }

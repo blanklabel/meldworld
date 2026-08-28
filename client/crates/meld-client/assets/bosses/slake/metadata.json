@@ -1,11 +1,11 @@
 {
-  "group_id": "7fcdfc76-b19a-42ab-9c2d-df25db31685b",
+  "group_id": "a3046654-d2eb-42fc-a718-98e225f51fa7",
   "states": [
     {
       "character": {
-        "id": "d0a053d1-61a4-4dfc-987a-86ae40c2edc1",
+        "id": "bf3d0c25-797a-4d20-a888-8f86a85bdf94",
         "name": "Idle",
-        "prompt": "Ometus, the forgotten Arch-Devil behind every Shift: an immense ancient evil that spans space and time, a cracked obsidian and bone colossus whose body is coming apart into drifting fragments held in place by pale light, countless unblinking eyes weeping glowing mercury across its chest, broken golden prison rings and heavy iron chains orbiting its shoulders",
+        "prompt": "Slake, a Male Demon Lord of Desire: a tall languid demon of indulgence heavily muscled, soft flushed rose-pale flesh heavy with excess, draped in slipping wine-red silk and heavy gold chains, gilded horns curling back like a crown, too many slow beckoning arms offering cups and fruit, a beautiful serene face with several half-lidded eyes, long dark hair streaming as if caught in a warm wind. His black beard adorned in gold and gems... he wears only a loincloth that barely covers",
         "size": {
           "width": 256,
           "height": 256
@@ -13,7 +13,7 @@
         "template_id": "mannequin",
         "directions": 8,
         "view": "low top-down",
-        "created_at": "2026-08-28T18:52:04.124211+00:00"
+        "created_at": "2026-08-28T19:38:26.786642+00:00"
       },
       "folder": "Idle",
       "frames": {
@@ -45,5 +45,5 @@
     }
   ],
   "export_version": "3.1",
-  "export_date": "2026-08-28T19:58:44.716253"
+  "export_date": "2026-08-28T19:57:13.824166"
 }

@@ -1,11 +1,11 @@
 {
-  "group_id": "7fcdfc76-b19a-42ab-9c2d-df25db31685b",
+  "group_id": "7a99c1ec-7309-47b8-a9b8-e6b2c16d4075",
   "states": [
     {
       "character": {
-        "id": "d0a053d1-61a4-4dfc-987a-86ae40c2edc1",
+        "id": "421ded2c-a65f-40f3-b7c2-fd63f83002a9",
         "name": "Idle",
-        "prompt": "Ometus, the forgotten Arch-Devil behind every Shift: an immense ancient evil that spans space and time, a cracked obsidian and bone colossus whose body is coming apart into drifting fragments held in place by pale light, countless unblinking eyes weeping glowing mercury across its chest, broken golden prison rings and heavy iron chains orbiting its shoulders",
+        "prompt": "Nestiph, Goddess of Unlife and Rebirth: a colossal fungal matriarch, pale bloated body wrapped in chitin plating, a vast cap of red and grey mushroom flesh crowning her head, spore clouds venting from vents in her back, half-dissolved corpses fused into her robes, glowing amber vat-fluid dripping from her hands",
         "size": {
           "width": 256,
           "height": 256
@@ -13,7 +13,7 @@
         "template_id": "mannequin",
         "directions": 8,
         "view": "low top-down",
-        "created_at": "2026-08-28T18:52:04.124211+00:00"
+        "created_at": "2026-08-28T18:51:38.231078+00:00"
       },
       "folder": "Idle",
       "frames": {
@@ -45,5 +45,5 @@
     }
   ],
   "export_version": "3.1",
-  "export_date": "2026-08-28T19:58:44.716253"
+  "export_date": "2026-08-28T19:57:30.425351"
 }
