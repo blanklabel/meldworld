@@ -161,7 +161,7 @@ pub fn biome_for_distance(d: i64) -> &'static str {
 /// Re-exported from [`meld_proto::regions`] rather than declared here: the ORDER is a
 /// wire contract, since a cell's biome crosses the wire as an index into it and the ground
 /// shader indexes its textures the same way.
-pub const BIOMES: [&str; 6] = meld_proto::regions::BIOMES;
+pub const BIOMES: [&str; meld_proto::regions::BIOMES.len()] = meld_proto::regions::BIOMES;
 
 /// Independent per-section biome stream, salted off the section seed so the theme
 /// choice is stable even if unrelated placement draws change.
@@ -222,8 +222,8 @@ pub fn biome_gate_slice(balance: &Balance) -> Vec<f32> {
     biome_gate_array(balance).to_vec()
 }
 
-fn biome_gate_array(balance: &Balance) -> [f32; 6] {
-    let mut out = [0.0f32; 6];
+fn biome_gate_array(balance: &Balance) -> [f32; BIOMES.len()] {
+    let mut out = [0.0f32; BIOMES.len()];
     for (i, b) in BIOMES.iter().enumerate() {
         out[i] = balance.biome_gate.get(*b).copied().unwrap_or(0) as f32;
     }
@@ -262,7 +262,8 @@ fn creatures_for_biome(biome: &str) -> &'static [&'static str] {
         "desert" => &["dune_wyrm", "sand_shade", "dune_colossus"],
         "ashfall" => &["cinder_imp", "magma_golem", "ember_wisp"],
         "tundra" => &["frost_lurker", "ice_revenant", "glacier_maw"],
-        _ => &["bog_serpent", "myconid", "bog_stinger", "bog_ooze", "frog_tribesman"],
+        "mire" => &["bog_serpent", "myconid", "bog_stinger", "bog_ooze", "frog_tribesman"],
+        other => creatures_for_biome(stand_in_biome(other)),
     }
 }
 
@@ -293,6 +294,31 @@ pub fn biomes_of_creature(kind: &str) -> Vec<&'static str> {
         .collect()
 }
 
+/// The classic biome a NEW biome borrows its bestiary and its harvest nodes from, until it
+/// has its own.
+///
+/// ⚠️ A STAND-IN, AND SAID OUT LOUD IN ONE PLACE. The five biomes added for the deep world
+/// have their own ground, their own cliffs and their own terrain weights — but a bestiary
+/// is eight sprite sets per creature, so they borrow rosters for now. Without this they
+/// would fall through the `_ =>` arm to the MIRE, and the end of the world would spawn bog
+/// serpents and hand out peat: not a placeholder, just wrong. Each mapping is a lineage
+/// argument, so replacing one is a local change rather than a hunt.
+fn stand_in_biome(biome: &str) -> &str {
+    match biome {
+        // An autumn wood is a wood.
+        "amber_wood" => "forest",
+        // A dead clockwork plane: constructs and fire-spirits are the closest lineage.
+        "seized_engine" => "ashfall",
+        // Rot and rebirth — the fungal and ooze lineages already live here.
+        "nestiphian_cradle" => "mire",
+        // A pastoral plain, however infernal it is underneath.
+        "hearth_plains" => "field",
+        // A sterile prison: revenants and shades, and nothing that grows.
+        "seraphic_oubliette" => "tundra",
+        other => other,
+    }
+}
+
 /// Harvestable resource node ids that spawn in a biome (one alchemy reagent + one
 /// forging ore/wood per biome). Structural; stats live under `[resource.<key>]`.
 fn resources_for_biome(biome: &str) -> &'static [&'static str] {
@@ -306,7 +332,8 @@ fn resources_for_biome(biome: &str) -> &'static [&'static str] {
         "desert" => &["sun_salts", "dune_iron", "sun_sandstone"],
         "ashfall" => &["ember_ash", "cinder_ore", "basalt_slab"],
         "tundra" => &["frost_lichen", "rime_ore", "rime_stone"],
-        _ => &["bog_myrrh", "peat_iron", "peat_shale", "bog_root_timber"],
+        "mire" => &["bog_myrrh", "peat_iron", "peat_shale", "bog_root_timber"],
+        other => resources_for_biome(stand_in_biome(other)),
     }
 }
 
@@ -436,6 +463,11 @@ fn biome_water_mult(biome: &str) -> f64 {
         "field" | "forest" => 1.0,
         "ashfall" => 0.5,
         "desert" => 0.25,
+        "nestiphian_cradle" => 2.4, // rot needs standing wet
+        "amber_wood" => 0.9,
+        "hearth_plains" => 0.6,
+        "seraphic_oubliette" => 0.2, // it weeps mercury, not water
+        "seized_engine" => 0.15,     // oil and coolant, and neither pools as a lake
         _ => 1.0,
     }
 }
@@ -453,7 +485,13 @@ fn biome_terrace_mult(biome: &str) -> f64 {
         "field" => 0.3,   // open meadow — you can see across it
         "tundra" => 0.7,  // rolling
         "mire" => 0.35,   // flooded, not mountainous
-        _ => 0.15,        // desert: the open breather — nearly flat
+        // The Oubliette IS a crater — the land drops into it, so it climbs hardest of all.
+        "seraphic_oubliette" => 1.7,
+        "seized_engine" => 1.1, // decks and gantries, stepped like the machine it was
+        "amber_wood" => 0.8,    // a wood, mazed by trees like its green twin
+        "nestiphian_cradle" => 0.4,
+        "hearth_plains" => 0.25, // rolling and open, and that openness is the trap
+        _ => 0.15,               // desert: the open breather — nearly flat
     }
 }
 
@@ -2528,7 +2566,7 @@ pub struct Arena {
     regions: meld_proto::regions::Grid,
     /// `[biome_gate]` flattened into `BIOMES` order, so a cell's biome can be resolved
     /// without reaching for `Balance` — the lookup runs per placed prop.
-    biome_gate: [f32; 6],
+    biome_gate: [f32; BIOMES.len()],
     terrain_cell: f64,
     terraces_per_area: f64,
     max_level: u8,
@@ -8624,8 +8662,48 @@ mod tests {
         assert!(biomes_of_creature("no_such_creature").is_empty());
         // Field and forest are the same fauna on different tree counts, so a forest
         // creature answers with both — the advice has to name both or it is wrong half
-        // the time.
-        assert_eq!(biomes_of_creature("forest_bloom_stalker"), vec!["field", "forest"]);
+        // the time. It answers with the biomes that BORROW that roster too
+        // (`stand_in_biome`): a stalker really does stand in the Amber Wood, and a board
+        // that failed to say so would be sending players to the wrong half of the map.
+        assert_eq!(
+            biomes_of_creature("forest_bloom_stalker"),
+            vec!["field", "forest", "amber_wood", "hearth_plains"]
+        );
+    }
+
+    /// ⚠️ AN EXCLUSIVE BIOME GATED SHALLOW EATS THE ENTIRE WORLD.
+    ///
+    /// `regions::EXCLUSIVE` means "past this gate, nothing else draws" — so a capstone at
+    /// distance 0 is open at every radius and every cell in the world answers with it. The
+    /// world would be one biome from the hub outward and the seed would stop mattering.
+    /// It is a one-character edit in `balance.toml` away, and nothing else would fail:
+    /// the game would boot, render, and be wrong everywhere.
+    ///
+    /// So the capstone must be the DEEPEST gate there is, and deep enough that the end
+    /// fight stands inside it rather than at its doorstep.
+    #[test]
+    fn the_capstone_is_the_deepest_gate_and_holds_the_end_fight() {
+        let balance = Balance::load_default().unwrap();
+        let gate = |b: &str| balance.biome_gate.get(b).copied().unwrap_or(0);
+        for name in meld_proto::regions::EXCLUSIVE {
+            let mine = gate(name);
+            assert!(mine > 0, "{name} is exclusive and gated at {mine}: it would be the whole world");
+            for other in meld_proto::regions::BIOMES {
+                if other != *name {
+                    assert!(
+                        gate(other) < mine,
+                        "{other} is gated at {}, past the exclusive {name} at {mine} — it can never appear",
+                        gate(other)
+                    );
+                }
+            }
+            assert!(
+                (mine as f64) <= balance.encounters.end_fight_min_distance,
+                "{name} opens at {mine}, past the end fight at {} — the fight would stand \
+                 outside the biome it is the climax of",
+                balance.encounters.end_fight_min_distance
+            );
+        }
     }
 
     // AD-4: a hunt that names a creature nothing spawns is a contract that can never

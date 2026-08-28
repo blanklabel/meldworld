@@ -2464,9 +2464,20 @@ blend_width = 26.0       # world units the ground cross-fades across a cell boun
 field = 0
 forest = 0
 mire = 0
+amber_wood = 0
 ashfall = 250
 desert = 400
 tundra = 550
+# THE DEEP WORLD. Each of these is a world boss's arena (docs/proposals/endgame-bosses.md),
+# so they are gated to where a party has any business meeting one.
+seized_engine = 1200        # Termina
+nestiphian_cradle = 1800    # Nestiph
+hearth_plains = 2400        # Slake
+# THE CAPSTONE, and the only EXCLUSIVE biome (`meld_proto::regions::EXCLUSIVE`): past this
+# it is the ONLY thing that draws, so the last stretch of the world is one place rather than
+# a patchwork. Set below `[encounters] end_fight_min_distance` (3200) on purpose — the end
+# fight has to stand INSIDE it, not at its doorstep.
+seraphic_oubliette = 3000   # Ometus
 
 # THE HUNT BOARD (AD-4): what the board pays for a completed hunt. A hunt is a
 # directed goal, not a grind loop — each one is claimable ONCE, so these are one-off
