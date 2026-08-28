@@ -85,6 +85,7 @@
               "Idle/animations/Walking/north/frame_000.png",
               "Idle/animations/Walking/north/frame_001.png",
               "Idle/animations/Walking/north/frame_002.png",
+              "Idle/animations/Walking/north/frame_003.png",
               "Idle/animations/Walking/north/frame_004.png",
               "Idle/animations/Walking/north/frame_005.png",
               "Idle/animations/Walking/north/frame_006.png",
@@ -121,13 +122,10 @@
               "Idle/animations/Walking/west/frame_007.png"
             ]
           }
-        },
-        "missing_frames": [
-          "Idle/animations/Walking/north/frame_003.png"
-        ]
+        }
       }
     }
   ],
   "export_version": "3.1",
-  "export_date": "2026-08-27T20:19:26.090235"
+  "export_date": "2026-08-28T13:08:17.325719"
 }

@@ -194,10 +194,16 @@ def installed_on_disk(asset, clips=("walk", "attack")):
     if "walk" in clips:
         if not set(ALL_DIRS) <= clip_dirs_on_disk(asset, "walk"):
             return False
-        # FRAME COUNT COUNTS. A 6-frame walk has every facing and every file, so a
-        # facings-only check calls it finished and it never gets fixed — which is exactly
-        # how five creatures ended up walking at a different cadence to the rest.
-        if clip_frames_on_disk(asset, "walk") != WALK_FRAMES:
+        # ⚠️ THE COUNT IS THE ART'S, NOT OURS — the same rule `sync_creature_chars.py`
+        # and the client test use. Demanding exactly eight rejected every set made with
+        # the stock template, which produces six, and produced the uniquely useless
+        # message "came back incomplete (walk missing nothing)": nothing WAS missing.
+        #
+        # What must hold is that the facings AGREE. A walk with eight frames east and
+        # seven north steps at two rates depending on which way the creature is going,
+        # and that is a real defect a count-per-facing check catches and a total does not.
+        counts = {clip_frames_on_disk(asset, "walk", d) for d in ALL_DIRS}
+        if len(counts) != 1 or counts.pop() < 4:
             return False
     return "attack" not in clips or "south" in clip_dirs_on_disk(asset, "attack")
 
