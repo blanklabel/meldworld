@@ -418,7 +418,9 @@ pub(crate) type GroundMat = ExtendedMaterial<StandardMaterial, GroundBiome>;
 /// client titles them from — a hand-copied list here is a list that goes stale against
 /// the `boss:<key>` tags actually arriving on the wire.
 pub(crate) fn boss_keys() -> impl Iterator<Item = &'static str> {
-    meld_proto::bosses::keys().chain(DUNGEON_SPRITES.iter().copied())
+    meld_proto::bosses::keys()
+        .chain(meld_proto::bosses::WORLD_BOSSES.iter().map(|(k, _)| *k))
+        .chain(DUNGEON_SPRITES.iter().copied())
 }
 
 /// Bespoke dungeon sprites that get an animated set but are NOT named bosses.

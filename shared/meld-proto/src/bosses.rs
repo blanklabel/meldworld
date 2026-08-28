@@ -40,10 +40,27 @@ pub const BOSSES: [(&str, &str); 11] = [
 /// in its `[boss.B1] sprite`.
 pub const DUNGEON_ONLY: &[&str] = &["briarlord"];
 
+/// The **world bosses** (`EW`): Termina, Nestiph, Slake, Ometus, and the hidden apex the
+/// non-combat personas get. Art only, for now.
+///
+/// ⚠️ DELIBERATELY NOT IN [`BOSSES`]. That list is the pool the open world draws from —
+/// elite champions, Gatekeepers, undead rites, and the three peers at the end fight — so
+/// putting a world boss in it would stand Ometus in a field at d3200 as a random named
+/// elite, ahead of the unlock ladder that is supposed to gate it (`proposals/endgame-bosses.md`:
+/// all three known bosses fall before Ometus is reachable at all). They are here so the
+/// sprites are loaded and named rather than sitting unreferenced on disk; the encounter
+/// that places them is `EW-1` and does not exist yet.
+pub const WORLD_BOSSES: [(&str, &str); 4] = [
+    ("termina", "Termina"),
+    ("nestiph", "Nestiph"),
+    ("ometus", "Ometus"),
+    ("allfather", "The All-Father"),
+];
+
 /// Can this boss be placed in the OPEN WORLD — an elite champion, a Gatekeeper in a
 /// pass, an undead rite, a peer at the end fight? False for a dungeon's own boss.
 pub fn wanders_the_overworld(key: &str) -> bool {
-    !DUNGEON_ONLY.contains(&key)
+    !DUNGEON_ONLY.contains(&key) && !WORLD_BOSSES.iter().any(|(k, _)| *k == key)
 }
 
 /// The title a named boss is shown under, or `None` for anything that is not one of
@@ -51,7 +68,11 @@ pub fn wanders_the_overworld(key: &str) -> bool {
 /// identity behind it. `None` means "draw no name plate" rather than "draw a guess":
 /// a plate reading `Unknown Horror` over ordinary scenery is worse than no plate.
 pub fn display_name(key: &str) -> Option<&'static str> {
-    BOSSES.iter().find(|(k, _)| *k == key).map(|(_, title)| *title)
+    BOSSES
+        .iter()
+        .chain(WORLD_BOSSES.iter())
+        .find(|(k, _)| *k == key)
+        .map(|(_, title)| *title)
 }
 
 /// Is this one of the ten named bosses?
