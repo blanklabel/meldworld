@@ -2450,6 +2450,16 @@ wll_per_level = 2
 # lead with armoured bruisers. Gating the harsher themes outward is what makes the
 # first ring an on-ramp without flattening the creatures themselves. Keyed by biome
 # id; a biome missing here is available from the hub. [TUNABLE]
+# THE REGION DECOMPOSITION (`meld_proto::regions`): the world is a partition of the
+# WG-4 fan into cells with adjacency — the substrate the biome label, the Shift's blast
+# radius, an anchor's hold and the maze's routes all read. The STRUCTURE is code; these
+# are its coefficients. [TUNABLE]
+[region]
+ring_step = 250.0        # radial thickness of one ring of cells. With `cell_width` this is a cell's size: ~250 units on a side is a region you cross in well under a minute but never mistake for the one next door. Deliberately CONSTANT, unlike a section's length (20 + 7i), so a region means the same thing at the hub and at the frontier.
+cell_width = 250.0       # target arc width of one cell. The sector COUNT rides the radius to hold this roughly fixed — 8 cells around the arc at r=400, 65 at r=3000 — which is what stops a cell being a sliver near the hub and a province deep.
+boundary_warp = 88.0     # how far a ring boundary wanders with bearing. Its whole job is to stop the boundary reading as an ARC; it depends on bearing alone, which is what keeps the ring index monotone along every ray and the partition well-defined at any magnitude.
+blend_width = 26.0       # world units the ground cross-fades across a cell boundary. A boundary is 2D now, so this is a distance rather than the old per-ring band — and the fade is symmetric from both sides, or a boundary seams.
+
 [biome_gate]
 field = 0
 forest = 0
@@ -2640,7 +2650,32 @@ repair_hp_per_material = 120
 demolish_refund_fraction = 0.5
 # No two structures inside this of each other, so a wall is a wall and not a hedge of
 # three hundred overlapping ones.
+#
+# ⚠️ TWO BLOCKING STRUCTURES ARE EXEMPT, because a wall you cannot continue is not a wall.
+# Drag-to-stretch (BD-9) needs pieces that ABUT, so a pair of blockers is held to
+# `abut_spacing` instead — touching but not overlapping. Everything else still answers to
+# this, so a run of walls cannot hide a forge inside it.
 min_spacing = 6.0
+# How far from your avatar you may place a piece (BD-9's aimed placement). Bounded because
+# the client asks for a POSITION now: without this you could build across the map, or into
+# ground you cannot see.
+build_reach = 14.0
+# The closest two BLOCKING structures may stand: touching, not overlapping. Below the
+# footprint and pieces interpenetrate; far above it and a "continuous" wall has gaps a
+# creature walks through.
+abut_spacing = 1.6
+# How far a player must be able to get from where they stand for the ground not to count as
+# ENCLOSED. This is what replaced the spacing rule's escapability guarantee once walls were
+# allowed to abut: geometry no longer promises a gap, so placement asks the question
+# directly.
+enclosure_escape_radius = 22.0
+# Grid pitch of that reachability walk. Finer costs more cells; coarser can step through a
+# gap narrower than a player.
+enclosure_cell = 0.9
+# Cap on cells the walk will visit before it gives up and calls the ground OPEN. A bound is
+# required rather than nice: the world streams outward without limit, so an unbounded flood
+# fill over open country is unbounded work on the one task that owns the game loop.
+enclosure_cell_budget = 6000
 # No blocking structure may go up this close to ANOTHER player. The spacing rule above
 # already guarantees a ring of walls has a gap you can walk through, but that is a promise
 # about geometry — it says nothing about penning somebody in one block at a time while

@@ -30,10 +30,22 @@
 #import meld::water_wave::sea_swell
 
 struct BiomeParams {
-    rings: array<vec4<f32>, 32>,
-    count: u32,
+    // THE REGION DECOMPOSITION (`meld_proto::regions`): (arc_half, ring_step, cell_width,
+    // boundary_warp). A biome is a property of a CELL, not of a radius ring — so the ground
+    // asks which cell a fragment stands in rather than which band, and the world paints as a
+    // patchwork. This replaces the 32-slot radial biome LUT that used to head this struct.
+    region: vec4<f32>,
+    // `[biome_gate]` in `BIOMES` order: gate.xyzw = field, forest, desert, ashfall and
+    // gate_hi.xy = tundra, mire. In the uniform because the gate decides WHICH themes a
+    // cell may draw, and a shader that does not know it paints a biome the server does not
+    // spawn — the same failure the coast constants are passed in to avoid.
+    gate: vec4<f32>,
+    gate_hi: vec4<f32>,
+    // World units the ground cross-fades across a cell boundary. A boundary is 2D now, so
+    // this is a distance from the nearest edge rather than a radial band.
+    region_blend: f32,
+    region_seed: u32,
     uv_scale: f32,
-    blend_half: f32,
     // Displacement amplitude: 1.0 in the Overworld (rolling hills + cliffs), 0.0 in the
     // City/menus (flat ground — those scenes are hand-placed for a level plaza, and the
     // rolling heightmap would tilt every prop and shade the troughs into blue ribbons).

@@ -38,6 +38,7 @@ pub mod statuses;
 pub mod structures;
 pub mod synergies;
 pub mod coast;
+pub mod regions;
 pub mod terrain;
 pub mod unlocks;
 pub mod warbands;

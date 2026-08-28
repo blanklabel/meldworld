@@ -1050,6 +1050,90 @@ fn hero_resource(class_key: &str) -> Option<String> {
 /// Split out of the centre column when the map moved into it. Every row here spends
 /// something you are carrying, which is why none of them is a hotkey: the primary way out of
 /// a dive belongs somewhere a player can find it.
+/// **One row of the Map column, as data.** What it does, what it says, and whether it is
+/// live — decided without a `Commands` in sight.
+///
+/// The repo already does this for the town counters (`CounterView`): rows as data is what
+/// lets each be its own tappable chip. Here it buys something else as well — the row logic
+/// becomes TESTABLE. It needed to be: the build rows asked for ORE on every structure for a
+/// whole release, and nothing could catch it because the decision lived inside a
+/// `with_children` closure that only a running game exercises.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum MapRowKind {
+    ReturnToTown,
+    /// A field bench (MS-1). Class-gated: a forge is a Smithwright's, a still a Keeper's.
+    Station(&'static str),
+    /// A player-built structure (BD-2). **Not** class-gated — see
+    /// `raising_a_structure_is_not_locked_behind_a_profession_class`.
+    Structure(&'static str),
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct MapRow {
+    pub(crate) kind: MapRowKind,
+    pub(crate) label: String,
+    /// Live (bright) vs unavailable (dim). The button is spawned either way — a row you
+    /// cannot use still has to say WHY, which is the whole point of the label.
+    pub(crate) live: bool,
+    /// A second line under the row, where the registry has one.
+    pub(crate) detail: Option<&'static str>,
+}
+
+/// Every row the Map column shows, in order, for this backpack and party.
+///
+/// Takes the party's CLASS KEYS rather than the whole roster: the only question it asks of
+/// the party is "is there a Smithwright / a Keeper in it", and narrowing the argument to
+/// that is what lets it be tested without constructing twenty fields of hero.
+pub(crate) fn map_rows(backpack: &RunBackpack, party_classes: &[&str]) -> Vec<MapRow> {
+    let mut rows = Vec::new();
+
+    let portals = backpack.count("town_portal");
+    rows.push(MapRow {
+        kind: MapRowKind::ReturnToTown,
+        label: if portals > 0 {
+            format!("Return to town   ({portals})")
+        } else {
+            "Return to town   (none held)".to_string()
+        },
+        live: portals > 0,
+        detail: None,
+    });
+
+    // A forge is a Smithwright's bench and a still is a Keeper's, so the row says who is
+    // MISSING rather than offering work nobody in this party can do.
+    for kind in ["smith", "alembic"] {
+        let what = if kind == "smith" {
+            ("smith station", "ore", "Smithwright", "smithwright")
+        } else {
+            ("Keeper's still", "reagents", "Keeper", "keeper")
+        };
+        let have_builder = party_classes.contains(&what.3);
+        let stock = carried_for(backpack, kind);
+        let (label, live) = if !have_builder {
+            (format!("Set up a {}   (needs a {} in the party)", what.0, what.2), false)
+        } else {
+            match stock {
+                Some((k, qty)) => (format!("Set up a {}   ({qty} {k})", what.0), true),
+                None => (format!("Set up a {}   (no {} carried)", what.0, what.1), false),
+            }
+        };
+        rows.push(MapRow { kind: MapRowKind::Station(kind), label, live, detail: None });
+    }
+
+    // The structures, from the REGISTRY rather than a list here: a new function is a row in
+    // `meld_proto::structures`, and a hand-written list is a list a function gets left off.
+    for def in meld_proto::structures::STRUCTURES {
+        let (label, tint) = build_row(def, backpack);
+        rows.push(MapRow {
+            kind: MapRowKind::Structure(def.key),
+            label,
+            live: tint == glass::TEXT,
+            detail: Some(def.description),
+        });
+    }
+    rows
+}
+
 fn map_actions(
     col: &mut ChildSpawnerCommands,
     menu: &MainMenu,
@@ -1066,69 +1150,29 @@ fn map_actions(
         glass::DIM,
     ));
     col.spawn(glass::divider());
-    // Going home on a Town Portal is an ITEM use, so it is an explicit choice rather than a
-    // hotkey — the primary way out of a dive should be somewhere a player can FIND it.
-    let portals = backpack.count("town_portal");
-    let focused = depth == 1 && menu.cursor == 0;
-    col.spawn((Button, glass::inset(focused), ReturnToTownButton)).with_children(|row| {
-        let (label, tint) = if portals > 0 {
-            (format!("Return to town   ({portals})"), glass::TEXT)
-        } else {
-            ("Return to town   (none held)".to_string(), glass::DIM)
-        };
-        row.spawn(glass::text(label, 19.0, tint));
-    });
-    // Raising a field forge is an ITEM-shaped choice like the Town Portal above it: it
-    // spends ore you gathered, so it belongs on a row a player can read.
-    for (i, kind) in ["smith", "alembic"].into_iter().enumerate() {
-        let stock = carried_for(backpack, kind);
-        let focused = depth == 1 && menu.cursor == 1 + i;
-        // A forge is a Smithwright's bench and a still is a Keeper's, so the row says who is
-        // missing rather than offering work nobody in this party can do.
-        let builder = if kind == "smith" { "smithwright" } else { "keeper" };
-        let have_builder = roster.heroes.iter().any(|h| h.class_key == builder);
-        col.spawn((Button, glass::inset(focused), BuildStationButton { kind })).with_children(
-            |row| {
-                let what = if kind == "smith" {
-                    ("smith station", "ore", "Smithwright")
-                } else {
-                    ("Keeper's still", "reagents", "Keeper")
-                };
-                let (label, tint) = if !have_builder {
-                    (
-                        format!("Set up a {}   (needs a {} in the party)", what.0, what.2),
-                        glass::DIM,
-                    )
-                } else {
-                    match stock {
-                        Some((k, qty)) => {
-                            (format!("Set up a {}   ({qty} {k})", what.0), glass::TEXT)
-                        }
-                        None => {
-                            (format!("Set up a {}   (no {} carried)", what.0, what.1), glass::DIM)
-                        }
-                    }
-                };
-                row.spawn(glass::text(label, 19.0, tint));
-            },
-        );
-    }
-    // The structures, from the registry rather than a list here: a new function is a row in
-    // `meld_proto::structures`, and a hand-written list is a list a function gets left off.
-    let ore = carried_for(backpack, "smith");
-    for (i, def) in meld_proto::structures::STRUCTURES.iter().enumerate() {
-        let focused = depth == 1 && menu.cursor == 3 + i;
-        col.spawn((Button, glass::inset(focused), BuildStructureButton { function: def.key }))
-            .with_children(|row| {
-                let (label, tint) = match &ore {
-                    Some((k, qty)) => {
-                        (format!("Raise a {}   ({qty} {k})", def.name), glass::TEXT)
-                    }
-                    None => (format!("Raise a {}   (no ore carried)", def.name), glass::DIM),
-                };
-                row.spawn(glass::text(label, 19.0, tint));
-            });
-        col.spawn(glass::text(def.description, 14.0, glass::DIM));
+    // Rendering only: every decision above, in `map_rows`.
+    let classes: Vec<&str> = roster.heroes.iter().map(|h| h.class_key.as_str()).collect();
+    for (i, row) in map_rows(backpack, &classes).into_iter().enumerate() {
+        let focused = depth == 1 && menu.cursor == i;
+        let tint = if row.live { glass::TEXT } else { glass::DIM };
+        let mut ent = col.spawn((Button, glass::inset(focused)));
+        match row.kind {
+            MapRowKind::ReturnToTown => {
+                ent.insert(ReturnToTownButton);
+            }
+            MapRowKind::Station(kind) => {
+                ent.insert(BuildStationButton { kind });
+            }
+            MapRowKind::Structure(function) => {
+                ent.insert(BuildStructureButton { function });
+            }
+        }
+        ent.with_children(|r| {
+            r.spawn(glass::text(row.label, 19.0, tint));
+        });
+        if let Some(d) = row.detail {
+            col.spawn(glass::text(d, 14.0, glass::DIM));
+        }
     }
 }
 
@@ -1531,6 +1575,22 @@ pub(crate) fn carried_for(backpack: &RunBackpack, station: &str) -> Option<(Stri
     } else {
         meld_proto::materials::MaterialClass::Ore
     };
+    carried_of_class(backpack, class)
+}
+
+/// The deepest carried stack of one material class, as `(kind, quantity)`.
+///
+/// ⚠️ THE BUILD MENU USED TO ASK FOR ORE, WHATEVER IT WAS OFFERING TO BUILD. It called
+/// `carried_for(.., "smith")` for every structure in the registry, which was true only while
+/// everything was built out of ore — and BD-1 ended that. Afterwards the menu was wrong in
+/// BOTH directions: a player carrying six stone saw "Raise an Anchor (no ore carried)",
+/// greyed out, on a build the server would have accepted; and a player carrying ore saw it
+/// lit up and got refused. Ask the REGISTRY what a structure is made of
+/// (`StructureDef::material`), the way the server does.
+pub(crate) fn carried_of_class(
+    backpack: &RunBackpack,
+    class: meld_proto::materials::MaterialClass,
+) -> Option<(String, i32)> {
     backpack
         .items
         .iter()
@@ -1539,6 +1599,46 @@ pub(crate) fn carried_for(backpack: &RunBackpack, station: &str) -> Option<(Stri
             meld_proto::materials::material(kind).map(|m| m.tier).unwrap_or(0)
         })
         .map(|(kind, qty)| (kind.clone(), *qty))
+}
+
+/// One build row's label and tint: what it raises, and what you are carrying toward it.
+///
+/// Pulled out of the UI closure so it can be TESTED. The bug it was written to close is not
+/// hypothetical — the row used to ask `carried_for(.., "smith")`, i.e. ORE, for every
+/// structure in the registry, which was true only while everything was built out of ore.
+/// After BD-1 it was wrong in both directions at once, and nothing could catch that because
+/// the logic lived inside a `with_children` closure that only a running game exercises.
+/// "a Wall" but "an Anchor". A registry of nouns will keep growing and someone will add an
+/// Inn, an Outpost, an Alembic — so this is one function rather than a hand-written article
+/// on each row.
+fn article_for(name: &str) -> &'static str {
+    match name.chars().next().map(|c| c.to_ascii_lowercase()) {
+        Some('a' | 'e' | 'i' | 'o' | 'u') => "an",
+        _ => "a",
+    }
+}
+
+pub(crate) fn build_row(
+    def: &meld_proto::structures::StructureDef,
+    backpack: &RunBackpack,
+) -> (String, Color) {
+    match carried_of_class(backpack, def.material) {
+        Some((kind, qty)) => (
+            format!("Raise {} {}   ({qty} {kind})", article_for(def.name), def.name),
+            glass::TEXT,
+        ),
+        // Name the material it WANTS. "No ore carried" on a timber palisade sent a player
+        // looking for entirely the wrong thing.
+        None => (
+            format!(
+                "Raise {} {}   (no {} carried)",
+                article_for(def.name),
+                def.name,
+                def.material.wire()
+            ),
+            glass::DIM,
+        ),
+    }
 }
 
 /// Tapping the Map column's "Set up a smith station" row raises one — the touch twin of
@@ -1563,11 +1663,28 @@ pub(crate) fn build_structure_click(
     rows: Query<(&Interaction, &BuildStructureButton), Changed<Interaction>>,
     mut overlay: ResMut<Overlay>,
     backpack: Res<RunBackpack>,
-    net: NonSend<NetRes>,
+    mut build: ResMut<crate::builder::BuildMode>,
 ) {
     for (interaction, btn) in &rows {
-        if *interaction == Interaction::Pressed && carried_for(&backpack, "smith").is_some() {
-            net.0.send(ClientCmd::BuildStructure { function: btn.function.into() });
+        if *interaction != Interaction::Pressed {
+            continue;
+        }
+        // ⚠️ THIS GATE ASKED FOR ORE, AND THAT IS WHY NOTHING WAS CLICKABLE. The row's
+        // LABEL was fixed to ask the registry and this handler was not — so a player
+        // carrying eight timber saw "Raise a Wall (8 Heartoak Log)" lit up, clicked it, and
+        // nothing happened at all. One rule in two places, in the same file as the comment
+        // warning about it.
+        //
+        // The affordability question belongs to `map_rows` (which decides `live`), so ask
+        // the same question the same way: the structure's OWN material.
+        let Some(def) = meld_proto::structures::structure(btn.function) else {
+            continue;
+        };
+        if carried_of_class(&backpack, def.material).is_some() {
+            // BD-9: clicking a row ARMS the tool rather than dropping a structure at your
+            // feet. You then aim it, turn it with `R`, and drag to lay a run — which is what
+            // "click and stretch" needs, and what a single click-to-place could never be.
+            build.arm(btn.function);
             overlay.kind = None;
         }
     }
@@ -1832,5 +1949,188 @@ mod tests {
         );
         assert_eq!(len, 0);
         assert_eq!(len.max(1), 1, "the guard the cursor relies on");
+    }
+}
+
+#[cfg(test)]
+mod build_row_tests {
+    use super::*;
+
+    fn bag(items: &[(&str, i32)]) -> RunBackpack {
+        RunBackpack {
+            items: items.iter().map(|(k, q)| ((*k).to_string(), *q)).collect(),
+            ..Default::default()
+        }
+    }
+
+    /// **Each row asks about its OWN material.** A bag of masonry lights up the anchor and
+    /// dims the palisade, and a bag of timber does the opposite. The old code asked for ore
+    /// on every row, so after BD-1 it was wrong in BOTH directions: stone in the bag showed
+    /// "no ore carried" on a build the server would have accepted, and ore in the bag lit up
+    /// a row the server would refuse.
+    #[test]
+    fn a_build_row_asks_for_the_material_it_is_made_of() {
+        let stone_only = bag(&[("river_granite", 9)]);
+        let wood_only = bag(&[("heartoak_log", 9)]);
+        for def in meld_proto::structures::STRUCTURES {
+            let (with_stone, tint_stone) = build_row(def, &stone_only);
+            let (with_wood, tint_wood) = build_row(def, &wood_only);
+            match def.material {
+                meld_proto::materials::MaterialClass::Stone => {
+                    assert!(with_stone.contains("river_granite"), "{}: {with_stone}", def.key);
+                    assert_eq!(tint_stone, glass::TEXT, "{} should be live on stone", def.key);
+                    assert!(with_wood.contains("no stone carried"), "{}: {with_wood}", def.key);
+                    assert_eq!(tint_wood, glass::DIM, "{} should be dim on wood", def.key);
+                }
+                meld_proto::materials::MaterialClass::Wood => {
+                    assert!(with_wood.contains("heartoak_log"), "{}: {with_wood}", def.key);
+                    assert_eq!(tint_wood, glass::TEXT, "{} should be live on wood", def.key);
+                    assert!(with_stone.contains("no wood carried"), "{}: {with_stone}", def.key);
+                    assert_eq!(tint_stone, glass::DIM, "{} should be dim on stone", def.key);
+                }
+                other => panic!("{} is built from {other:?}, which is not structural", def.key),
+            }
+        }
+    }
+
+    /// ORE never pays for a building any more, and the row must say so. This is the exact
+    /// regression: `carried_for(.., "smith")` would have found this bag and lit every row.
+    #[test]
+    fn a_bag_of_ore_does_not_light_up_a_single_build_row() {
+        let ore = bag(&[("heartoak_bark", 40), ("dune_iron", 40)]);
+        for def in meld_proto::structures::STRUCTURES {
+            let (label, tint) = build_row(def, &ore);
+            assert_eq!(tint, glass::DIM, "{} lit up for a bag of ore: {label}", def.key);
+            assert!(label.contains("carried"), "{}: {label}", def.key);
+        }
+    }
+
+    /// The DEEPEST stack is what a row reports, matching what the server will actually
+    /// spend (`building::affordable_kind`). A menu naming the shallow stock while the
+    /// server spends the deep stock is a menu that lies about your bag.
+    #[test]
+    fn a_row_names_the_stock_the_server_will_spend() {
+        let both = bag(&[("heartoak_log", 9), ("bog_root_timber", 9)]);
+        let wall = meld_proto::structures::structure("wall").unwrap();
+        let (label, _) = build_row(wall, &both);
+        assert!(label.contains("bog_root_timber"), "should name the deeper stock: {label}");
+    }
+}
+
+#[cfg(test)]
+mod map_row_tests {
+    use super::*;
+
+    fn bag(items: &[(&str, i32)]) -> RunBackpack {
+        RunBackpack {
+            items: items.iter().map(|(k, q)| ((*k).to_string(), *q)).collect(),
+            ..Default::default()
+        }
+    }
+
+    fn row<'a>(rows: &'a [MapRow], kind: &MapRowKind) -> &'a MapRow {
+        rows.iter().find(|r| &r.kind == kind).expect("that row should exist")
+    }
+
+    /// **BUILDING IS NOT LOCKED BEHIND A PROFESSION CLASS, AND STATIONS ARE.** The two sit
+    /// next to each other in the same column, so it is an easy thing to be wrong about in
+    /// either direction — and the server agrees with this: `building::raise` has no class
+    /// check, while the station path maps `"smith" => CharacterClass::Smithwright`.
+    ///
+    /// It is deliberate rather than an oversight. An anchor is the co-op permanence verb —
+    /// it is specifically exempt from the no-build-near-player rule so a party can plant one
+    /// together, and anyone may repair one. Gating it on a class would mean a party without
+    /// a Smithwright could not hold ground at all.
+    #[test]
+    fn raising_a_structure_is_not_locked_behind_a_profession_class() {
+        // A party with NO Smithwright and NO Keeper, carrying both structural materials.
+        let rows = map_rows(
+            &bag(&[("heartoak_log", 9), ("river_granite", 9)]),
+            &(["explorer", "psyker", "resonant", "hunter"]),
+        );
+        for def in meld_proto::structures::STRUCTURES {
+            let r = row(&rows, &MapRowKind::Structure(def.key));
+            assert!(
+                r.live,
+                "`{}` is dim for a party with no crafter, but the server would allow it: {}",
+                def.key, r.label
+            );
+        }
+        // …while the benches say who is missing.
+        for (kind, who) in [("smith", "Smithwright"), ("alembic", "Keeper")] {
+            let r = row(&rows, &MapRowKind::Station(kind));
+            assert!(!r.live, "the {kind} bench should be dim with no {who}: {}", r.label);
+            assert!(r.label.contains(who), "it should name the class it needs: {}", r.label);
+        }
+    }
+
+    /// With the right crafter AND the right stock, the bench lights up — so the test above
+    /// is proving a GATE rather than a row that is simply always dim.
+    #[test]
+    fn a_bench_lights_up_for_the_crafter_who_owns_it() {
+        let rows = map_rows(
+            &bag(&[("heartoak_bark", 9), ("bloom_herb", 9)]),
+            &(["smithwright", "keeper"]),
+        );
+        assert!(row(&rows, &MapRowKind::Station("smith")).live, "a Smithwright with ore");
+        assert!(row(&rows, &MapRowKind::Station("alembic")).live, "a Keeper with reagents");
+    }
+
+    /// Every structure in the registry gets a row, and each is lit only by ITS OWN material.
+    /// This is the regression that shipped: the rows all asked for ore.
+    #[test]
+    fn each_structure_row_is_lit_only_by_its_own_material() {
+        let crafters = ["explorer"];
+        for def in meld_proto::structures::STRUCTURES {
+            let own = meld_proto::materials::MATERIALS
+                .iter()
+                .find(|m| m.class == def.material)
+                .expect("its material exists")
+                .key;
+            let other = meld_proto::materials::MATERIALS
+                .iter()
+                .find(|m| m.class.is_structural() && m.class != def.material)
+                .expect("the other structural class exists")
+                .key;
+
+            let with_own = map_rows(&bag(&[(own, 9)]), &crafters);
+            assert!(row(&with_own, &MapRowKind::Structure(def.key)).live, "{} on {own}", def.key);
+
+            let with_other = map_rows(&bag(&[(other, 9)]), &crafters);
+            assert!(
+                !row(&with_other, &MapRowKind::Structure(def.key)).live,
+                "{} lit up on {other}, which cannot pay for it",
+                def.key
+            );
+
+            // And ore pays for NOTHING structural any more.
+            let with_ore = map_rows(&bag(&[("heartoak_bark", 40)]), &crafters);
+            assert!(
+                !row(&with_ore, &MapRowKind::Structure(def.key)).live,
+                "{} lit up for a bag of ore",
+                def.key
+            );
+        }
+    }
+
+    /// Going home needs the ITEM, and the row says so when you have none — the primary way
+    /// out of a dive must be findable, including when you cannot use it.
+    #[test]
+    fn the_way_home_is_dim_without_a_portal() {
+        let rows = map_rows(&bag(&[]), &(["explorer"]));
+        let r = row(&rows, &MapRowKind::ReturnToTown);
+        assert!(!r.live);
+        assert!(r.label.contains("none held"), "{}", r.label);
+        let rows = map_rows(&bag(&[("town_portal", 2)]), &(["explorer"]));
+        assert!(row(&rows, &MapRowKind::ReturnToTown).live);
+    }
+
+    /// The column's rows and the cursor must agree about how many there are. `map_actions`
+    /// indexes the cursor by row position, so a row added anywhere but the end used to shift
+    /// what every key below it pressed.
+    #[test]
+    fn the_column_has_a_row_for_everything_it_can_do() {
+        let rows = map_rows(&bag(&[]), &(["explorer"]));
+        assert_eq!(rows.len(), 1 + 2 + meld_proto::structures::STRUCTURES.len());
     }
 }

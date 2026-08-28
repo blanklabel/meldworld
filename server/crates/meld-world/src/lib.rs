@@ -154,10 +154,14 @@ pub fn biome_for_distance(d: i64) -> &'static str {
 
 /// The base biome set. Difficulty is carried entirely by `distance` (creature
 /// stats scale via `stat_mult` at spawn), so a biome is a difficulty-neutral
-/// **skin** — which is exactly what lets us vary the theme order per run without
+/// **skin** — which is exactly what lets us vary the theme per cell without
 /// touching fairness. This is the Hades / Risk-of-Rain-2 model: fixed difficulty
 /// axis, shuffled theme. See docs/proposals/worldgen-wg.md and roadmap WG-2/WG-3.
-pub const BIOMES: [&str; 6] = ["field", "forest", "desert", "ashfall", "tundra", "mire"];
+///
+/// Re-exported from [`meld_proto::regions`] rather than declared here: the ORDER is a
+/// wire contract, since a cell's biome crosses the wire as an index into it and the ground
+/// shader indexes its textures the same way.
+pub const BIOMES: [&str; 6] = meld_proto::regions::BIOMES;
 
 /// Independent per-section biome stream, salted off the section seed so the theme
 /// choice is stable even if unrelated placement draws change.
@@ -209,6 +213,21 @@ fn section_biome(
     };
     let mut rng = Rng(biome_pick_seed(run_seed, i));
     cands[rng.below(cands.len())]
+}
+
+/// `[biome_gate]` as an array in [`BIOMES`] order — the shape [`meld_proto::regions`]
+/// takes, since a cell's biome is resolved per placed prop and a `HashMap<String, _>` lookup
+/// per prop is not the price to pay for it.
+pub fn biome_gate_slice(balance: &Balance) -> Vec<f32> {
+    biome_gate_array(balance).to_vec()
+}
+
+fn biome_gate_array(balance: &Balance) -> [f32; 6] {
+    let mut out = [0.0f32; 6];
+    for (i, b) in BIOMES.iter().enumerate() {
+        out[i] = balance.biome_gate.get(*b).copied().unwrap_or(0) as f32;
+    }
+    out
 }
 
 /// Creature content ids that spawn in a biome. Structural (content-extensible);
@@ -2475,6 +2494,17 @@ pub struct Arena {
     /// wire beside `peaks` (`run.started.straits` + `world.terrain_section.straits`),
     /// selected per section by the same radius-band filter.
     pub straits: Vec<meld_proto::coast::Strait>,
+    /// Whether this arena's entities are already in WORLD space. False while
+    /// `generate_with` builds the initial chain (everything is corridor-space until
+    /// `radialize`), true afterwards — so streamed sections are appended corridor-space and
+    /// bent immediately, while everything already present is world-space.
+    ///
+    /// ⚠️ This exists because the corridor/world split has now caused FOUR bugs in one
+    /// feature: the clear-path check compared a corridor path against world water, creature
+    /// spacing was measured in the wrong frame, water-covers-creature bent the creatures it
+    /// tested, and that same check then DOUBLE-bent the ones already bent. Anything comparing
+    /// a generated entity against world-space geometry has to know which frame it is holding.
+    bent: bool,
     /// **This world's coastal LOBES** — bays bitten into the fan's rim and isles standing
     /// offshore of it ([`meld_proto::coast::Lobe`]). One list for both, because they are one
     /// primitive: a disc that edits the shoreline, differing only in which side of the
@@ -2491,6 +2521,14 @@ pub struct Arena {
     /// [`meld_proto::coast::RiverNode`]. A node marked `chain_start` begins a new chain, and
     /// the gap before it is a FORD.
     pub rivers: Vec<meld_proto::coast::RiverNode>,
+    /// **THE REGION DECOMPOSITION** ([`meld_proto::regions`]) — this world's cells. A
+    /// biome is a property of a CELL, not of a section, so the world is a patchwork rather
+    /// than a set of concentric rings. Derived from the seed and `[region]`, so it costs
+    /// nothing to persist and nothing to stream.
+    regions: meld_proto::regions::Grid,
+    /// `[biome_gate]` flattened into `BIOMES` order, so a cell's biome can be resolved
+    /// without reaching for `Balance` — the lookup runs per placed prop.
+    biome_gate: [f32; 6],
     terrain_cell: f64,
     terraces_per_area: f64,
     max_level: u8,
@@ -2689,10 +2727,67 @@ impl Arena {
     /// `(x, z, arc_half)` to `+ straits` to `+ lobes`, and every addition meant revisiting
     /// all of them. Asking `shore().is_land(..)` means the next thing the coastline learns
     /// costs one field in [`meld_proto::coast::Shore`] and nothing here.
+    /// This world's cell decomposition.
+    pub fn regions(&self) -> meld_proto::regions::Grid {
+        self.regions
+    }
+
+    /// The biome at a **world** position — the one place a coordinate becomes a theme.
+    ///
+    /// `force_biome` (the `MELD_BIOME` harness flag) still wins, so a single biome's maze
+    /// can be loaded whole for inspection.
+    pub fn biome_at(&self, p: Position) -> &'static str {
+        if let Some(b) = self.force_biome {
+            return b;
+        }
+        BIOMES[self.regions.biome_at(p.x as f32, p.y as f32, &self.biome_gate)]
+    }
+
+    /// The biome at a **corridor** position, for the generation passes — which run before
+    /// the bend and would otherwise be asking the region grid about coordinates that mean
+    /// something else entirely (see `bent`).
+    fn biome_in_corridor(&self, p: Position) -> &'static str {
+        self.biome_at(self.to_world(p))
+    }
+
+    /// A corridor coordinate in world terms. Identity when there is no fan to bend into.
+    fn to_world(&self, p: Position) -> Position {
+        if self.radial_half > 0.0 {
+            radial_tf(p, self.radial_half, self.corridor_lateral.max(1.0))
+        } else {
+            p
+        }
+    }
+
+    /// The largest value `f` takes over any cell this section's radius band touches.
+    ///
+    /// Density is authored per biome, and a section now spans many biomes — so a count for
+    /// the section has to be drawn for its DENSEST cell and thinned back per cell on
+    /// acceptance. Sizing to the section's representative biome instead would cap a forest
+    /// cell inside a desert band at desert density, which is the ring world wearing a
+    /// patchwork's clothes.
+    fn max_over_cells(&self, start_x: f64, end_x: f64, f: impl Fn(&str) -> f64) -> f64 {
+        if let Some(b) = self.force_biome {
+            return f(b);
+        }
+        let g = self.regions;
+        let mut out = 0.0f64;
+        let lo = g.ring_at(start_x as f32, 0.0).saturating_sub(1);
+        let hi = g.ring_at(end_x as f32, 0.0) + 1;
+        for ring in lo..=hi {
+            for sector in 0..g.sectors(ring) {
+                let cell = meld_proto::regions::Cell::new(ring, sector);
+                out = out.max(f(BIOMES[g.biome_of(cell, &self.biome_gate)]));
+            }
+        }
+        out
+    }
+
     pub fn shore(&self) -> meld_proto::coast::Shore<'_> {
         meld_proto::coast::Shore {
             arc_half: self.radial_half as f32,
             terrain_off: self.terrain_off,
+            peaks: &self.peaks,
             straits: &self.straits,
             lobes: &self.lobes,
             basins: &self.basins,
@@ -2816,8 +2911,17 @@ impl Arena {
             peaks: Vec::new(),
             straits: Vec::new(),
             lobes: Vec::new(),
+            bent: false,
             basins: Vec::new(),
             rivers: Vec::new(),
+            regions: meld_proto::regions::Grid {
+                arc_half: (wg.radial_arc_degrees.to_radians() * 0.5) as f32,
+                ring_step: balance.region.ring_step as f32,
+                cell_width: balance.region.cell_width as f32,
+                warp: balance.region.boundary_warp as f32,
+                seed: seed as u32,
+            },
+            biome_gate: biome_gate_array(balance),
             terrain_cell: wg.terrain_cell,
             terraces_per_area: wg.terraces_per_area,
             max_level: wg.max_level,
@@ -2857,9 +2961,8 @@ impl Arena {
             .map(|a| a.portal)
             .unwrap_or_else(|| Position::new(arena.cursor, 0.0));
         arena.x_max = arena.cursor + wg.world_margin;
-        // Snapshot the unbent corridor path BEFORE the bend — outward streaming
-        // regenerates in this corridor frame, then bends each new section's tail.
-        arena.corridor_path = arena.path.clone();
+        // No snapshot needed: `push_section` writes the corridor path to `corridor_path`
+        // directly, so the unbent trail is already where streaming expects it.
         // WG-4: bend the whole (flat) corridor into a radial arc around the hub, so
         // the world fans out in every direction but the western city sliver.
         arena.radialize(wg.radial_arc_degrees);
@@ -2890,9 +2993,11 @@ impl Arena {
         // below can read.
         let (straits, lobes) = (self.straits.clone(), self.lobes.clone());
         let (basins, rivers) = (self.basins.clone(), self.rivers.clone());
+        let peak_list = self.peaks.clone();
         let shore = meld_proto::coast::Shore {
             arc_half: half as f32,
             terrain_off: toff,
+            peaks: &peak_list,
             straits: &straits,
             lobes: &lobes,
             basins: &basins,
@@ -2904,19 +3009,16 @@ impl Arena {
             Position::new(r * theta.cos(), r * theta.sin())
         };
         for m in &mut self.monsters {
-            // A creature is scattered without asking the shoreline, so the bend can drop
-            // one into a strait — a fight nobody can reach, wandering in open water. Nudged
-            // ashore rather than dropped: removing a spawn here would take a pack leader out
-            // from under its own minions (`join_pack` has already run).
-            //
-            // ⚠️ WATER ONLY. `nudge_to_walkable` would also pull creatures off CLIFFS, which
-            // they have always been allowed to stand on, and that moved every creature in
-            // every seeded world. A fix for the sea must not quietly become one for terrain.
-            m.position = nudge_ashore(tf(m.position), shore);
-            m.home = nudge_ashore(tf(m.home), shore);
+            // ⚠️ NOT nudged. See `drown_proof`: there is no displacement that preserves both
+            // a creature's DISTANCE (which is its difficulty) and its ADJACENCY (which is its
+            // pack and its formation), because the placement pass chose those together. A
+            // creature the bend leaves in water is removed by `drown_proof` instead — by pack,
+            // so no orphan is left carrying `back_row` with nothing to stand behind.
+            m.position = tf(m.position);
+            m.home = tf(m.home);
             // The pack anchor is world-space like `home`, so it bends with it. A member
             // left anchored in corridor space would roam a disc a quarter-turn away.
-            m.pack_home = nudge_ashore(tf(m.pack_home), shore);
+            m.pack_home = tf(m.pack_home);
             // Keep the corridor [start_x, end_x] as a RADIUS band: after the bend a
             // creature's hub-distance is its corridor x, so `step_creatures` clamps its
             // radius to this band and it never wanders out of its biome ring (#10).
@@ -2949,7 +3051,8 @@ impl Arena {
         // would cut deep across the arc — off the cleared tube and into off-path
         // terraces (breaking a path-follower). Inserting collinear intermediates makes
         // the bent trail hug the arc so a follower stays inside the corridor tube.
-        let corridor_path = std::mem::take(&mut self.path);
+        let corridor_path = self.corridor_path.clone();
+        self.path.clear();
         if let Some(&first) = corridor_path.first() {
             self.path.push(radial_tf(first, half, lat));
             for w in corridor_path.windows(2) {
@@ -2984,6 +3087,9 @@ impl Arena {
         self.retain_placeable_obstacles();
         // Straight-wall biome seams don't survive the bend — drop them.
         self.seams.clear();
+        // From here on every entity in the arena is world-space; streamed sections append in
+        // corridor space and are bent as they arrive.
+        self.bent = true;
         // A square box that contains the whole fan (radius up to the frontier).
         let rmax = self.cursor + 4.0;
         self.x_min = -rmax;
@@ -3015,9 +3121,11 @@ impl Arena {
         let web = self.web.clone();
         let (straits, lobes) = (self.straits.clone(), self.lobes.clone());
         let (basins, rivers) = (self.basins.clone(), self.rivers.clone());
+        let peak_list = self.peaks.clone();
         let shore = meld_proto::coast::Shore {
             arc_half: self.radial_half as f32,
             terrain_off: self.terrain_off,
+            peaks: &peak_list,
             straits: &straits,
             lobes: &lobes,
             basins: &basins,
@@ -3070,13 +3178,13 @@ impl Arena {
     /// radial arc and append it — the streaming counterpart to the one-shot bend in
     /// [`Arena::radialize`]. Returns `i`. Only called in radial mode.
     fn stream_radial_section(&mut self, balance: &Balance, i: usize) -> usize {
-        // Enter the pristine corridor frame: `push_section` reads `self.lateral` (the
-        // placement extent) and `self.path` (the rejection polyline), both of which
-        // `radialize` repurposed for the bent world — so swap the corridor values in
-        // for the duration of the call, then swap the bent world back.
-        let saved_lateral = self.lateral;
-        let saved_path = std::mem::replace(&mut self.path, std::mem::take(&mut self.corridor_path));
-        self.lateral = self.corridor_lateral;
+        // ⚠️ **NO FRAME SWAP.** `push_section` reads `corridor_path` and `corridor_lateral` by
+        // name, so the corridor frame is never installed into the world's own fields for the
+        // duration of a call. Swapping them is what let five separate checks in this crate
+        // compare a corridor coordinate against a world one and silently always pass: the
+        // clear-path check, creature spacing, water-over-creature, its double-bend, and
+        // `clear_of_peaks`. A field holding one frame at one moment and the other frame at
+        // another cannot be reasoned about — and cannot be given a type either.
         let toff = self.terrain_off;
         // Snapshot the tails so we can bend exactly what this section appends.
         let (m0, r0, o0, c0, s0) = (
@@ -3086,18 +3194,11 @@ impl Arena {
             self.chests.len(),
             self.seams.len(),
         );
-        let p0 = self.path.len();
+        let p0 = self.corridor_path.len();
         let w0 = self.corridor_web.len();
         let pk0 = self.peaks.len();
-        // Where this section's inland water starts, so `drown_proof` can scope itself to it.
-        let (wb0, wr0) = (self.basins.len(), self.rivers.len());
 
         self.push_section(balance, i); // corridor-space append; advances `cursor`.
-
-        // Leave the corridor frame: the (now-extended) corridor path goes back to
-        // `corridor_path`; restore the bent public `path` + the fan's bounds `lateral`.
-        self.corridor_path = std::mem::replace(&mut self.path, saved_path);
-        self.lateral = saved_lateral;
 
         // Bend this section's freshly-added tail into the arc (same map as radialize).
         let half = self.radial_half;
@@ -3106,9 +3207,11 @@ impl Arena {
         // everything the bend touches is checked against them (see `radialize`).
         let (straits, lobes) = (self.straits.clone(), self.lobes.clone());
         let (basins, rivers) = (self.basins.clone(), self.rivers.clone());
+        let peak_list = self.peaks.clone();
         let shore = meld_proto::coast::Shore {
             arc_half: half as f32,
             terrain_off: toff,
+            peaks: &peak_list,
             straits: &straits,
             lobes: &lobes,
             basins: &basins,
@@ -3120,19 +3223,16 @@ impl Arena {
             Position::new(r * theta.cos(), r * theta.sin())
         };
         for m in &mut self.monsters[m0..] {
-            // A creature is scattered without asking the shoreline, so the bend can drop
-            // one into a strait — a fight nobody can reach, wandering in open water. Nudged
-            // ashore rather than dropped: removing a spawn here would take a pack leader out
-            // from under its own minions (`join_pack` has already run).
-            //
-            // ⚠️ WATER ONLY. `nudge_to_walkable` would also pull creatures off CLIFFS, which
-            // they have always been allowed to stand on, and that moved every creature in
-            // every seeded world. A fix for the sea must not quietly become one for terrain.
-            m.position = nudge_ashore(tf(m.position), shore);
-            m.home = nudge_ashore(tf(m.home), shore);
+            // ⚠️ NOT nudged. See `drown_proof`: there is no displacement that preserves both
+            // a creature's DISTANCE (which is its difficulty) and its ADJACENCY (which is its
+            // pack and its formation), because the placement pass chose those together. A
+            // creature the bend leaves in water is removed by `drown_proof` instead — by pack,
+            // so no orphan is left carrying `back_row` with nothing to stand behind.
+            m.position = tf(m.position);
+            m.home = tf(m.home);
             // The pack anchor is world-space like `home`, so it bends with it. A member
             // left anchored in corridor space would roam a disc a quarter-turn away.
-            m.pack_home = nudge_ashore(tf(m.pack_home), shore);
+            m.pack_home = tf(m.pack_home);
             // Keep [start_x, end_x] as a radius band (see `radialize`) so streamed
             // creatures also stay inside their own biome ring (#10).
         }
@@ -3171,9 +3271,6 @@ impl Arena {
                 nudge_to_walkable(tf(b), toff, shore),
             ));
         }
-        // Anything an inland body sprung this section is now standing in gets moved ashore —
-        // including entities from EARLIER sections, which the sweeps above never look at.
-        self.drown_proof(wb0, wr0);
         // Straight-wall biome seams don't survive the bend — drop the ones just added.
         self.seams.truncate(s0);
         // The bend distorts the clear-path tube AND appending this section's waypoint
@@ -3200,9 +3297,21 @@ impl Arena {
         let start_x = self.cursor;
         // Theme rides the run (WG-2/WG-3) but difficulty rides `distance` as always.
         let prev_biome = self.areas.last().map(|a| a.biome);
-        let biome = self.force_biome.unwrap_or_else(|| {
-            section_biome(balance, self.seed_base, i, start_x.floor() as i64, prev_biome, self.tutorial)
-        });
+        // A biome is a property of a CELL now, not of a section — a section spans many, so
+        // this one is only its REPRESENTATIVE: the theme at the section's own mid-radius on
+        // the clear path, which is what the HUD names and what the tutorial's authored
+        // progression still needs to be a single answer. Everything the section SCATTERS
+        // asks the cell under its own feet instead.
+        let biome = if self.tutorial || self.force_biome.is_some() {
+            self.force_biome.unwrap_or_else(|| {
+                section_biome(balance, self.seed_base, i, start_x.floor() as i64, prev_biome, self.tutorial)
+            })
+        } else {
+            self.biome_in_corridor(Position::new(
+                0.5 * (start_x + self.cursor.max(start_x + 1.0)),
+                self.corridor_path.last().map(|p| p.y).unwrap_or(0.0),
+            ))
+        };
         let kinds = creatures_for_biome(biome);
 
         // Area 0 of the TUTORIAL run is a small, deterministic onboarding section
@@ -3250,15 +3359,15 @@ impl Arena {
                 end_x,
                 portal: Position::new(portal_x, 0.0),
                 // The tutorial section is entirely flat (level 0).
-                terrain: Terrain::empty(start_x, end_x, -self.lateral, self.terrain_cell),
+                terrain: Terrain::empty(start_x, end_x, -self.corridor_lateral, self.terrain_cell),
                 dungeon: false,
                 shifted_at: 0,
             });
             // The tutorial path routes to y=0, around any cliffs (A*, like the procedural
             // sections) so the very first stretch is walkable too.
-            let entry = *self.path.last().unwrap_or(&Position::new(0.0, 0.0));
+            let entry = *self.corridor_path.last().unwrap_or(&Position::new(0.0, 0.0));
             for p in self.astar_route(entry, Position::new(end_x, 0.0)) {
-                self.path.push(p);
+                self.corridor_path.push(p);
             }
             self.cursor = end_x;
             return;
@@ -3292,7 +3401,7 @@ impl Arena {
         // …and its inland water: a river that runs downhill and the lakes it pools into.
         // Also before the route, for the same reason — and it matters more here, because a
         // river is the one water body that can genuinely sever the world.
-        self.push_water(balance, i, start_x, end_x, biome);
+        self.push_water(balance, i, start_x, end_x);
 
         // WG-1: every Nth procedural section is a DUNGEON — rooms divided by walls
         // with a door on the clear path (connectivity guaranteed like a biome seam),
@@ -3327,7 +3436,7 @@ impl Arena {
         // test still holds byte-identically; each extra lane draws from its OWN stream.
         let r_mid = (start_x + end_x) * 0.5;
         let arc_stretch = if self.radial_half > 0.0 {
-            (r_mid * self.radial_half / self.lateral.max(1.0)).max(1.0)
+            (r_mid * self.radial_half / self.corridor_lateral.max(1.0)).max(1.0)
         } else {
             1.0
         };
@@ -3358,11 +3467,13 @@ impl Arena {
         // it appends to `self.monsters`.
         let (sea, sea_lobes) = (self.straits.clone(), self.lobes.clone());
         let (sea_basins, sea_rivers) = (self.basins.clone(), self.rivers.clone());
+        let wet_peaks = self.peaks.clone();
         let toff_wet = self.terrain_off;
         let wet = move |w: &Position| -> bool {
             meld_proto::coast::Shore {
                 arc_half: bend_half as f32,
                 terrain_off: toff_wet,
+                peaks: &wet_peaks,
                 straits: &sea,
                 lobes: &sea_lobes,
                 basins: &sea_basins,
@@ -3370,11 +3481,248 @@ impl Arena {
             }
             .is_ocean(w.x as f32, w.y as f32)
         };
-        let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
+
+        // Scatter harvestable resource nodes through the section (2D). What a node YIELDS
+        // is the biome of the ground it stands on, so an ore vein and a reagent bed can sit
+        // in the same band — which is what makes a crafter's node-sense worth having.
+        let n_nodes = wg.resources_per_area.max(0.0).round() as usize;
+        let mut section_resources: Vec<usize> = Vec::new();
+        for _ in 0..n_nodes {
+            let rx = start_x + 2.0 + rng.unit() * (length - 4.0).max(1.0);
+            let ry = wg.resource_lateral_spread * rng.signed();
+            let rkinds = resources_for_biome(self.biome_in_corridor(Position::new(rx, ry)));
+            let rk = rkinds[rng.below(rkinds.len())];
+            let nid = self.resources.len();
+            self.resources.push(ResourceNode {
+                spent_tick: 0,
+                entity_id: format!("res-{nid}"),
+                kind: rk.to_string(),
+                position: Position::new(rx, ry),
+                elevation: 0,
+                remaining: node_stock(balance, rk),
+            });
+            section_resources.push(nid);
+        }
+
+        // The clear path meanders to a fresh ±y at this section's end. The initial
+        // chain's last section aims its final waypoint at the portal; streamed
+        // sections just meander onward (endless). This completes the path segment
+        // spanning the section, letting obstacles + terraces avoid the whole tube.
+        let is_chain_end = i + 1 == wg.area_count.max(1);
+        // Where this section's path segment aims (the deep portal on the last section, a
+        // fresh meander ±y otherwise). A* ROUTES the segment there through walkable
+        // terrain, bending around cliffs; the portal is the routed segment's walkable end.
+        let exit_target = if is_chain_end {
+            Position::new(end_x - wg.portal_setback, 0.0)
+        } else {
+            Position::new(end_x, wg.path_meander * rng.signed())
+        };
+        let entry = *self.corridor_path.last().unwrap_or(&Position::new(0.0, 0.0));
+        let route = self.astar_route(entry, exit_target);
+        for p in &route {
+            self.corridor_path.push(*p);
+        }
+        let portal = if is_chain_end {
+            *self.corridor_path.last().unwrap()
+        } else {
+            Position::new(end_x - wg.portal_setback, 0.0)
+        };
+
+        // WEB of trails: weave extra routes through this section so the overworld is an
+        // interconnected maze with real junctions + choices, not one lane. Built in
+        // CORRIDOR space (bent + streamed like `path`) from the section's entry/exit
+        // backbone points; own rng stream so the main creature/obstacle/terrace draws
+        // stay byte-stable. The clear tube is carved around these too (below).
+        {
+            let entry = self.corridor_path[self.corridor_path.len() - 2];
+            let exit = *self.corridor_path.last().unwrap();
+            // Dungeons keep their own rooms-and-corridors layout — no woven web through
+            // them. Scale the count with section size so a small early section keeps its
+            // dense walls (a few trails) while a big deep one webs richly.
+            let n = if is_dungeon {
+                0
+            } else {
+                (wg.web_trails_per_area * (length / 40.0).clamp(0.35, 1.5)).round() as usize
+            };
+            if n > 0 {
+                let mut wrng = Rng(section_seed(self.seed_base, i) ^ 0x3EB0_57A1_3EB0_57A1);
+                let lat = (self.corridor_lateral - 2.0).max(2.0);
+                // A parallel LOOP: a chain of side-offset nodes from entry to exit (a
+                // second route alongside the backbone — take either fork).
+                let mut prev = entry;
+                let mut nodes: Vec<Position> = Vec::new();
+                for k in 0..n {
+                    let t = (k as f64 + 1.0) / (n as f64 + 1.0);
+                    let bx = entry.x + (exit.x - entry.x) * t;
+                    let by = entry.y + (exit.y - entry.y) * t;
+                    let side = if k % 2 == 0 { 1.0 } else { -1.0 };
+                    let off = wrng.range(6.0, lat) * side;
+                    let nd = Position::new(bx, (by + off).clamp(-lat, lat));
+                    self.corridor_web.push((prev, nd));
+                    prev = nd;
+                    nodes.push(nd);
+                }
+                self.corridor_web.push((prev, exit)); // close the loop back to the backbone
+                // CROSS-LINKS: tie every other loop node straight to the backbone
+                // midpoint — real junctions where routes cross.
+                let mid = Position::new((entry.x + exit.x) * 0.5, (entry.y + exit.y) * 0.5);
+                for &nd in nodes.iter().step_by(2) {
+                    self.corridor_web.push((nd, mid));
+                }
+                // A DEAD-END SPUR off the last node — an explore-for-it pocket.
+                if let Some(&last) = nodes.last() {
+                    let spur = Position::new(
+                        (last.x + wrng.range(-6.0, 6.0)).clamp(start_x + 2.0, end_x - 2.0),
+                        (last.y + wrng.range(-8.0, 8.0)).clamp(-lat, lat),
+                    );
+                    self.corridor_web.push((last, spur));
+                }
+            }
+        }
+
+        // Climbing maze (#B): the terrain for this section is created up front so a
+        // plateau can be raised over the INTERIOR of the clear-path segment — the
+        // critical route itself climbs up a ramp and back down. Endpoints (the
+        // section waypoints) stay on level 0, so seams/portal/streaming and the
+        // "waypoints are grounded" guarantee are untouched; only the mid-segment
+        // rises. `maybe_climb_path` uses its own rng stream so the creature/obstacle/
+        // terrace/chest draws below stay byte-stable.
+        let mut terrain = Terrain::empty(start_x, end_x, -self.corridor_lateral, self.terrain_cell);
+        // Crown a walkable SUMMIT with a payoff (#3): where the A*-routed clear path
+        // climbs over a genuine crest of the rolling heightmap, a gate-boss guards the
+        // top on a `peak_boss_chance` roll, otherwise a guaranteed treasure chest rewards
+        // the climb — so scaling a hill is always worth it. No discrete terrace now: the
+        // crest IS the heightmap, so the reward sits at elevation 0 on high ground (the
+        // client grounds every entity on `terrain_height`), and it's guaranteed reachable
+        // because it lands ON the cleared route. Boss is held off the tutorial (a first
+        // dive tops out in loot, not a wall of HP) and the creature-free hub ring; every
+        // other qualifying summit still gets one or the other. Own rng stream keeps the
+        // main creature/obstacle/chest draws byte-stable.
+        // Authored CLIMBABLE landmark MOUNTAIN (#3): on a `path_climb_chance` roll (biome
+        // weighted), raise a walkable dome beside the route and crown its SUMMIT with a
+        // gate-boss (`peak_boss_chance`) or a guaranteed treasure chest — so scaling a
+        // mountain is always worth it. The dome is summed into the terrain
+        // (`terrain::peak_height`), so it renders and the reward's Y (client
+        // `terrain_height`) puts it on the peak. Placed beside an interior route waypoint
+        // (a landmark near the trail), deep enough that the big dome has room, and off the
+        // tutorial. Own rng stream keeps the main creature/obstacle/chest draws byte-stable.
+        let terr_mult = biome_terrace_mult(biome);
+        let mut prng = Rng(section_seed(self.seed_base, i) ^ 0x5EED_9EA1_B055_0BEE);
+        let mid = route.get(route.len() / 2).copied();
+        if let Some(base_wp) = mid {
+            if !self.tutorial
+                && base_wp.x >= wg.peak_min_distance
+                && prng.unit() < wg.path_climb_chance * terr_mult
+            {
+                // A walkable dome: height ≤ radius·PEAK_MAX_ASPECT keeps its slope climbable.
+                let radius = wg.peak_radius;
+                let height = radius * meld_proto::terrain::PEAK_MAX_ASPECT as f64 * 0.9;
+                // Nudge the centre off the path so the climb is a side-trip landmark, kept
+                // inside the lateral bounds.
+                let side = if prng.unit() < 0.5 { 1.0 } else { -1.0 };
+                // …and if that side is under water (WG-7: this section may hold a strait),
+                // take the OTHER side. A mountain in the sea is nonsense, and its summit
+                // reward — a gate boss or a guaranteed chest — is what makes the climb worth
+                // taking, so a wet summit is an unreachable payoff rather than a cosmetic
+                // slip. `authored_peaks_are_climbable_and_crowned` caught exactly that.
+                //
+                // Flipping rather than skipping keeps the peak: the path's midpoint is dry
+                // by construction (A* routed it), so at least one flank of it is dry too,
+                // and the peak is the whole reason `path_climb_chance` fired.
+                let wet_side = |off: f64| -> bool {
+                    let p = Position::new(base_wp.x, (base_wp.y + off)
+                        .clamp(-(self.corridor_lateral - 2.0), self.corridor_lateral - 2.0));
+                    let w = radial_tf(p, self.radial_half, self.corridor_lateral.max(1.0));
+                    !self.on_land(w.x, w.y)
+                };
+                let side = if wet_side(side * radius * 0.55) { -side } else { side };
+                let offset = side * radius * 0.55;
+                let cy = (base_wp.y + offset)
+                    .clamp(-(self.corridor_lateral - 2.0), self.corridor_lateral - 2.0);
+                let summit = Position::new(base_wp.x, cy);
+                // ⚠️ Measured across 48 seeds, 2 peaks of ~144 land in water, always because a
+                // STRAIT or BAY reaches the summit — sea-level water is purely geometric and
+                // ignores elevation, unlike a `Basin` (which fills against `height +
+                // peak_height`, so a hill in a lake is correctly an island). A crowned summit
+                // under water loses its reward, which is the only reason to climb.
+                // Only the PEAK is skipped: an earlier attempt `return`ed and gutted the
+                // section's obstacles and terraces too.
+                let bent = radial_tf(summit, self.radial_half, self.corridor_lateral.max(1.0));
+                if self.on_land(bent.x, bent.y) {
+                self.peaks
+                    .push([summit.x as f32, summit.y as f32, radius as f32, height as f32]);
+                // `hub_safe_radius` alone put a 10x-HP Gatekeeper 14 units from the
+                // hub — a new party's first contact, and the end of the dive.
+                if summit.x > wg.hub_safe_radius
+                    && summit.distance_floor() >= enc.gatekeeper_min_distance
+                    && prng.unit() < wg.peak_boss_chance
+                {
+                    let gidx = self.monsters.len();
+                    let gseed = section_seed(self.seed_base, i) ^ 0x9EA1_B055_0000_0000;
+                    self.monsters
+                        .push(MonsterSpawn::build(balance, format!("mob-{gidx}"), kinds[0], summit, gseed));
+                    self.monsters[gidx].area_min_x = start_x;
+                    self.monsters[gidx].area_max_x = end_x;
+                    self.monsters[gidx].promote(
+                        enc.gatekeeper_hp_mult,
+                        enc.gatekeeper_atk_mult,
+                        enc.gatekeeper_xp_mult,
+                        "gatekeeper",
+                    );
+                    self.monsters[gidx].apply_affix(gseed ^ 0xAFF1);
+                    // Through `become_boss`, not by writing `boss_kind`: the identity and
+                    // the LINEAGE that comes with it are one act. Assigning the field
+                    // directly is what left every summit Gatekeeper fighting as whatever
+                    // wildlife it rode in on — a Choirmother tagged `beast`, which is the
+                    // exact bug `become_boss` was written to end.
+                    let boss = pick_gatekeeper_boss_kind(summit.x.floor() as i64, gseed ^ 0xB055);
+                    self.monsters[gidx].become_boss(boss);
+                } else {
+                    self.chests.push(Chest {
+                        opened_tick: 0,
+                        entity_id: format!("chest-{}", self.chests.len()),
+                        position: summit,
+                        tier: Scaling::new(balance).tier(summit.x.floor() as i64) as i32,
+                        opened: false,
+                        elevation: 0,
+                    });
+                }
+                }
+            }
+        }
+
+        // ═══ CREATURES, AFTER THE STRUCTURAL WORLD ═══ Water, the route, the terrain and
+        // its peaks are all finished above, so a creature is placed ON them: it refuses a
+        // wet spot and reads its own elevation off the terrain rather than being lifted.
+        //
+        // ⚠️ SCENERY still comes after, and that boundary is measured rather than tidy. A
+        // biome's fill runs several times the base density, so making creatures avoid props
+        // instead of the reverse suppresses population exactly where the fill is thickest —
+        // 0.59-0.67 of the shallow ring against the 0.7 floor that
+        // `the_world_does_not_empty_out_as_it_fans_open` holds, a floor that exists because
+        // a player reported seeing nothing on screen. Trees filling the gaps around animals
+        // is also how a wood actually reads.
+        // What the world already put down. A creature placed into an obstacle is buried and a
+        // creature on a chest hides a reward, and neither can be fixed afterwards without
+        // moving something — which is the whole reason this pass runs last.
+        //
+        // ⚠️ The bar is INSIDE the footprint, not clear of it. A biome's fill runs several times
+        // the base density (a forest is 7x), so demanding a body's margin around every prop
+        // excludes most of a wood — measured, a uniform 4.3-unit exclusion halved the deep
+        // population again. A creature standing against a tree is ordinary; a creature inside
+        // one is the bug.
+let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
+        // ⚠️ **CREATURES DRAW FROM THEIR OWN STREAM.** Sharing the section's main `rng` with the
+        // obstacles, terraces and chests below couples them: any world-generation edit changes
+        // how many draws precede this loop and so moves every creature in every seeded world.
+        // Measured, that breaks unrelated pack, formation and peak assertions at once, and makes
+        // a real regression indistinguishable from reseed noise. Mountains, ravines, caves and a
+        // biome field are all still to come through this function.
+        let mut crng = Rng(section_seed(self.seed_base, i) ^ 0xC8EA_7085_C8EA_7085);
         for lane in 0..lanes {
             let mut lane_rng =
                 (lane > 0).then(|| Rng(section_seed(self.seed_base, i) ^ 0x1A4E_5EED ^ (lane << 32)));
-            let rng = lane_rng.as_mut().unwrap_or(&mut rng);
+            let rng = lane_rng.as_mut().unwrap_or(&mut crng);
             // The SPAWN section (i == 0) keeps a creature-free safe ring around the Center
             // Hub: a stationary player at spawn is otherwise inside `[ai] aggro_radius` of
             // the first creature, so something closes and yanks them into a battle before
@@ -3383,17 +3731,16 @@ impl Arena {
             // there guarantees a calm spawn. Deeper sections start at their western edge.
             let mut x = start_x + if i == 0 { wg.hub_safe_radius.max(2.0) } else { 2.0 };
             while x < inner_end {
-                let kind = kinds[rng.below(kinds.len())];
                 // A few tries at a fresh lateral before giving the station up: skipping on
                 // the first clash loses the spawn outright, and at this density a clash is
                 // common enough that the world would thin back out through the side door.
                 let Some((pos, world)) = (0..CREATURE_PLACEMENT_TRIES).find_map(|_| {
                     let p = Position::new(x, wg.creature_lateral_spread * rng.signed());
                     let w = bend(p);
-                    // Crowded OR at sea (WG-7). Asked HERE, in the bent frame, because
-                    // this is already where "is this spot acceptable" lives — so the spot
-                    // grid stays consistent and no post-hoc nudge disturbs the spacing this
-                    // very check exists to protect.
+                    // Crowded, at sea, or standing in something the world already put here.
+                    // Asked HERE, in the bent frame, because this is already where "is this
+                    // spot acceptable" lives — so the spot grid stays consistent and no
+                    // post-hoc nudge disturbs the spacing this very check exists to protect.
                     (!taken.crowded(&w) && !wet(&w)).then_some((p, w))
                 }) else {
                     let gap = creature_spacing * (1.0 + wg.monster_spacing_jitter * rng.signed());
@@ -3401,12 +3748,21 @@ impl Arena {
                     continue;
                 };
                 taken.insert(world);
+                // WHAT lives here is decided by the ground it stands on, after the ground is
+                // known — a creature is native to its cell, not to the band it happens to
+                // share with sixty others. Difficulty is untouched: that rides `distance`
+                // (CANON §B) and a biome is a difficulty-neutral skin.
+                let local = creatures_for_biome(self.biome_at(world));
+                let kind = local[rng.below(local.len())];
                 let idx = self.monsters.len();
                 let mseed = rng.next_u64();
                 self.monsters
                     .push(MonsterSpawn::build(balance, format!("mob-{idx}"), kind, pos, mseed));
                 self.monsters[idx].area_min_x = start_x;
                 self.monsters[idx].area_max_x = end_x;
+                // The level comes off the FINISHED terrain, so a creature standing on a plateau
+                // is on the plateau by construction rather than by being lifted onto it.
+                self.monsters[idx].elevation = terrain.level_at(&pos);
                 // Never shallow: an Elite is a named boss carrying `elite_hp_mult`, so one
                 // in the first ring is a wipe rather than an encounter. Gate on the RADIUS
                 // (corridor x), which is what the spawn's hub distance becomes once the fan
@@ -3459,14 +3815,13 @@ impl Arena {
                         let bidx = if n == 0 {
                             leader_idx
                         } else {
-                            let angle = erng.unit() * std::f64::consts::TAU;
-                            let dist = enc.pack_spread * (0.5 + 0.5 * erng.unit());
-                            let bpos = corridor_offset(
+                            let bpos = dry_companion(
                                 pos,
-                                dist * angle.cos(),
-                                dist * angle.sin(),
+                                enc.pack_spread,
+                                &mut erng,
                                 self.radial_half,
                                 self.corridor_lateral.max(1.0),
+                                &wet,
                             );
                             let j = self.monsters.len();
                             let bseed = erng.next_u64();
@@ -3522,14 +3877,13 @@ impl Arena {
                     };
                     self.monsters[leader_idx].join_pack(&rite_id, rite_home, &rite_faction);
                     for _ in 0..enc.undead_rite_minions {
-                        let angle = erng.unit() * std::f64::consts::TAU;
-                        let dist = enc.pack_spread * (0.4 + 0.6 * erng.unit());
-                        let mpos = corridor_offset(
+                        let mpos = dry_companion(
                             pos,
-                            dist * angle.cos(),
-                            dist * angle.sin(),
+                            enc.pack_spread,
+                            &mut erng,
                             self.radial_half,
                             self.corridor_lateral.max(1.0),
+                            &wet,
                         );
                         let midx = self.monsters.len();
                         let mseed = erng.next_u64();
@@ -3607,18 +3961,17 @@ impl Arena {
                             // Mixed groups: past the duo band, some of the littles are a
                             // different species than what they follow.
                             let mkind = if erng.unit() < band.mixed_chance {
-                                kinds[erng.below(kinds.len())]
+                                local[erng.below(local.len())]
                             } else {
                                 kind
                             };
-                            let angle = erng.unit() * std::f64::consts::TAU;
-                            let dist = enc.pack_spread * (0.35 + 0.65 * erng.unit());
-                            let mpos = corridor_offset(
+                            let mpos = dry_companion(
                                 pos,
-                                dist * angle.cos(),
-                                dist * angle.sin(),
+                                enc.pack_spread,
+                                &mut erng,
                                 self.radial_half,
                                 self.corridor_lateral.max(1.0),
+                                &wet,
                             );
                             let midx = self.monsters.len();
                             let mseed = erng.next_u64();
@@ -3656,216 +4009,20 @@ impl Arena {
         }
         self.creature_spots = taken;
 
-        // Scatter harvestable resource nodes through the section (2D, biome kinds).
-        let rkinds = resources_for_biome(biome);
-        let n_nodes = wg.resources_per_area.max(0.0).round() as usize;
-        let mut section_resources: Vec<usize> = Vec::new();
-        for _ in 0..n_nodes {
-            let rk = rkinds[rng.below(rkinds.len())];
-            let rx = start_x + 2.0 + rng.unit() * (length - 4.0).max(1.0);
-            let ry = wg.resource_lateral_spread * rng.signed();
-            let nid = self.resources.len();
-            self.resources.push(ResourceNode {
-                spent_tick: 0,
-                entity_id: format!("res-{nid}"),
-                kind: rk.to_string(),
-                position: Position::new(rx, ry),
-                elevation: 0,
-                remaining: node_stock(balance, rk),
-            });
-            section_resources.push(nid);
-        }
-
-        // The clear path meanders to a fresh ±y at this section's end. The initial
-        // chain's last section aims its final waypoint at the portal; streamed
-        // sections just meander onward (endless). This completes the path segment
-        // spanning the section, letting obstacles + terraces avoid the whole tube.
-        let is_chain_end = i + 1 == wg.area_count.max(1);
-        // Where this section's path segment aims (the deep portal on the last section, a
-        // fresh meander ±y otherwise). A* ROUTES the segment there through walkable
-        // terrain, bending around cliffs; the portal is the routed segment's walkable end.
-        let exit_target = if is_chain_end {
-            Position::new(end_x - wg.portal_setback, 0.0)
-        } else {
-            Position::new(end_x, wg.path_meander * rng.signed())
-        };
-        let entry = *self.path.last().unwrap_or(&Position::new(0.0, 0.0));
-        let route = self.astar_route(entry, exit_target);
-        for p in &route {
-            self.path.push(*p);
-        }
-        let portal = if is_chain_end {
-            *self.path.last().unwrap()
-        } else {
-            Position::new(end_x - wg.portal_setback, 0.0)
-        };
-
-        // WEB of trails: weave extra routes through this section so the overworld is an
-        // interconnected maze with real junctions + choices, not one lane. Built in
-        // CORRIDOR space (bent + streamed like `path`) from the section's entry/exit
-        // backbone points; own rng stream so the main creature/obstacle/terrace draws
-        // stay byte-stable. The clear tube is carved around these too (below).
-        {
-            let entry = self.path[self.path.len() - 2];
-            let exit = *self.path.last().unwrap();
-            // Dungeons keep their own rooms-and-corridors layout — no woven web through
-            // them. Scale the count with section size so a small early section keeps its
-            // dense walls (a few trails) while a big deep one webs richly.
-            let n = if is_dungeon {
-                0
-            } else {
-                (wg.web_trails_per_area * (length / 40.0).clamp(0.35, 1.5)).round() as usize
-            };
-            if n > 0 {
-                let mut wrng = Rng(section_seed(self.seed_base, i) ^ 0x3EB0_57A1_3EB0_57A1);
-                let lat = (self.lateral - 2.0).max(2.0);
-                // A parallel LOOP: a chain of side-offset nodes from entry to exit (a
-                // second route alongside the backbone — take either fork).
-                let mut prev = entry;
-                let mut nodes: Vec<Position> = Vec::new();
-                for k in 0..n {
-                    let t = (k as f64 + 1.0) / (n as f64 + 1.0);
-                    let bx = entry.x + (exit.x - entry.x) * t;
-                    let by = entry.y + (exit.y - entry.y) * t;
-                    let side = if k % 2 == 0 { 1.0 } else { -1.0 };
-                    let off = wrng.range(6.0, lat) * side;
-                    let nd = Position::new(bx, (by + off).clamp(-lat, lat));
-                    self.corridor_web.push((prev, nd));
-                    prev = nd;
-                    nodes.push(nd);
-                }
-                self.corridor_web.push((prev, exit)); // close the loop back to the backbone
-                // CROSS-LINKS: tie every other loop node straight to the backbone
-                // midpoint — real junctions where routes cross.
-                let mid = Position::new((entry.x + exit.x) * 0.5, (entry.y + exit.y) * 0.5);
-                for &nd in nodes.iter().step_by(2) {
-                    self.corridor_web.push((nd, mid));
-                }
-                // A DEAD-END SPUR off the last node — an explore-for-it pocket.
-                if let Some(&last) = nodes.last() {
-                    let spur = Position::new(
-                        (last.x + wrng.range(-6.0, 6.0)).clamp(start_x + 2.0, end_x - 2.0),
-                        (last.y + wrng.range(-8.0, 8.0)).clamp(-lat, lat),
-                    );
-                    self.corridor_web.push((last, spur));
-                }
-            }
-        }
-
-        // Climbing maze (#B): the terrain for this section is created up front so a
-        // plateau can be raised over the INTERIOR of the clear-path segment — the
-        // critical route itself climbs up a ramp and back down. Endpoints (the
-        // section waypoints) stay on level 0, so seams/portal/streaming and the
-        // "waypoints are grounded" guarantee are untouched; only the mid-segment
-        // rises. `maybe_climb_path` uses its own rng stream so the creature/obstacle/
-        // terrace/chest draws below stay byte-stable.
-        let mut terrain = Terrain::empty(start_x, end_x, -self.lateral, self.terrain_cell);
-        // Crown a walkable SUMMIT with a payoff (#3): where the A*-routed clear path
-        // climbs over a genuine crest of the rolling heightmap, a gate-boss guards the
-        // top on a `peak_boss_chance` roll, otherwise a guaranteed treasure chest rewards
-        // the climb — so scaling a hill is always worth it. No discrete terrace now: the
-        // crest IS the heightmap, so the reward sits at elevation 0 on high ground (the
-        // client grounds every entity on `terrain_height`), and it's guaranteed reachable
-        // because it lands ON the cleared route. Boss is held off the tutorial (a first
-        // dive tops out in loot, not a wall of HP) and the creature-free hub ring; every
-        // other qualifying summit still gets one or the other. Own rng stream keeps the
-        // main creature/obstacle/chest draws byte-stable.
-        // Authored CLIMBABLE landmark MOUNTAIN (#3): on a `path_climb_chance` roll (biome
-        // weighted), raise a walkable dome beside the route and crown its SUMMIT with a
-        // gate-boss (`peak_boss_chance`) or a guaranteed treasure chest — so scaling a
-        // mountain is always worth it. The dome is summed into the terrain
-        // (`terrain::peak_height`), so it renders and the reward's Y (client
-        // `terrain_height`) puts it on the peak. Placed beside an interior route waypoint
-        // (a landmark near the trail), deep enough that the big dome has room, and off the
-        // tutorial. Own rng stream keeps the main creature/obstacle/chest draws byte-stable.
-        let terr_mult = biome_terrace_mult(biome);
-        let mut prng = Rng(section_seed(self.seed_base, i) ^ 0x5EED_9EA1_B055_0BEE);
-        let mid = route.get(route.len() / 2).copied();
-        if let Some(base_wp) = mid {
-            if !self.tutorial
-                && base_wp.x >= wg.peak_min_distance
-                && prng.unit() < wg.path_climb_chance * terr_mult
-            {
-                // A walkable dome: height ≤ radius·PEAK_MAX_ASPECT keeps its slope climbable.
-                let radius = wg.peak_radius;
-                let height = radius * meld_proto::terrain::PEAK_MAX_ASPECT as f64 * 0.9;
-                // Nudge the centre off the path so the climb is a side-trip landmark, kept
-                // inside the lateral bounds.
-                let side = if prng.unit() < 0.5 { 1.0 } else { -1.0 };
-                // …and if that side is under water (WG-7: this section may hold a strait),
-                // take the OTHER side. A mountain in the sea is nonsense, and its summit
-                // reward — a gate boss or a guaranteed chest — is what makes the climb worth
-                // taking, so a wet summit is an unreachable payoff rather than a cosmetic
-                // slip. `authored_peaks_are_climbable_and_crowned` caught exactly that.
-                //
-                // Flipping rather than skipping keeps the peak: the path's midpoint is dry
-                // by construction (A* routed it), so at least one flank of it is dry too,
-                // and the peak is the whole reason `path_climb_chance` fired.
-                let wet_side = |off: f64| -> bool {
-                    let p = Position::new(base_wp.x, (base_wp.y + off)
-                        .clamp(-(self.lateral - 2.0), self.lateral - 2.0));
-                    let w = radial_tf(p, self.radial_half, self.corridor_lateral.max(1.0));
-                    !self.on_land(w.x, w.y)
-                };
-                let side = if wet_side(side * radius * 0.55) { -side } else { side };
-                let cy = (base_wp.y + side * radius * 0.55)
-                    .clamp(-(self.lateral - 2.0), self.lateral - 2.0);
-                let summit = Position::new(base_wp.x, cy);
-                self.peaks
-                    .push([summit.x as f32, summit.y as f32, radius as f32, height as f32]);
-                // `hub_safe_radius` alone put a 10x-HP Gatekeeper 14 units from the
-                // hub — a new party's first contact, and the end of the dive.
-                if summit.x > wg.hub_safe_radius
-                    && summit.distance_floor() >= enc.gatekeeper_min_distance
-                    && prng.unit() < wg.peak_boss_chance
-                {
-                    let gidx = self.monsters.len();
-                    let gseed = section_seed(self.seed_base, i) ^ 0x9EA1_B055_0000_0000;
-                    self.monsters
-                        .push(MonsterSpawn::build(balance, format!("mob-{gidx}"), kinds[0], summit, gseed));
-                    self.monsters[gidx].area_min_x = start_x;
-                    self.monsters[gidx].area_max_x = end_x;
-                    self.monsters[gidx].promote(
-                        enc.gatekeeper_hp_mult,
-                        enc.gatekeeper_atk_mult,
-                        enc.gatekeeper_xp_mult,
-                        "gatekeeper",
-                    );
-                    self.monsters[gidx].apply_affix(gseed ^ 0xAFF1);
-                    // Through `become_boss`, not by writing `boss_kind`: the identity and
-                    // the LINEAGE that comes with it are one act. Assigning the field
-                    // directly is what left every summit Gatekeeper fighting as whatever
-                    // wildlife it rode in on — a Choirmother tagged `beast`, which is the
-                    // exact bug `become_boss` was written to end.
-                    let boss = pick_gatekeeper_boss_kind(summit.x.floor() as i64, gseed ^ 0xB055);
-                    self.monsters[gidx].become_boss(boss);
-                } else {
-                    self.chests.push(Chest {
-                        opened_tick: 0,
-                        entity_id: format!("chest-{}", self.chests.len()),
-                        position: summit,
-                        tier: Scaling::new(balance).tier(summit.x.floor() as i64) as i32,
-                        opened: false,
-                        elevation: 0,
-                    });
-                }
-            }
-        }
-
         // Scatter impassable biome terrain, rejecting anything that would block the
         // clear path tube or bury a creature/resource. Rejection-sampled so the
         // path (and the exit) is always feasible by construction.
-        let okinds = obstacles_for_biome(biome);
         let n_obs = wg.obstacles_per_area.max(0.0).round() as usize;
         let (mut placed, mut attempts) = (0usize, 0usize);
         while placed < n_obs && attempts < n_obs * 10 {
             attempts += 1;
             let ox = start_x + rng.unit() * length;
-            let oy = rng.signed() * (self.lateral - 1.0);
+            let oy = rng.signed() * (self.corridor_lateral - 1.0);
+            let okinds = obstacles_for_biome(self.biome_in_corridor(Position::new(ox, oy)));
             let okind = okinds[rng.below(okinds.len())];
             let radius = obstacle_radius_for(wg, okind, rng.unit());
             let pos = Position::new(ox, oy);
-            if dist_to_path(&pos, &self.path) < self.path_clear_radius + radius
+            if dist_to_path(&pos, &self.corridor_path) < self.path_clear_radius + radius
                 || dist_to_web(&pos, &self.corridor_web) < self.web_clear() + radius
             {
                 continue;
@@ -3904,7 +4061,7 @@ impl Arena {
             let w = rng.range(self.terrace_min_size, self.terrace_max_size);
             let h = rng.range(self.terrace_min_size, self.terrace_max_size);
             let cx = start_x + rng.range(2.0, (length - 2.0).max(2.0));
-            let cy = rng.range(-self.lateral + 2.0, self.lateral - 2.0);
+            let cy = rng.range(-self.corridor_lateral + 2.0, self.corridor_lateral - 2.0);
             let (x0, x1) = (cx - w * 0.5, cx + w * 0.5);
             let (y0, y1) = (cy - h * 0.5, cy + h * 0.5);
             // Reject if any part of the terrace (+ a margin so the cliff edge itself
@@ -3928,7 +4085,7 @@ impl Arena {
             raise_terrace(&mut terrain, x0, y0, x1, y1, level);
             // Place a connector on the middle of the terrace's south edge, nudged
             // outward toward the ground so it straddles the level boundary.
-            let conn_pos = Position::new(cx, (y0 - terrain.cell * 0.5).max(-self.lateral));
+            let conn_pos = Position::new(cx, (y0 - terrain.cell * 0.5).max(-self.corridor_lateral));
             // Ramps sell better: weight the connector roll toward slopes (½ slope,
             // ¼ ladder, ¼ rope). One draw either way, so the main rng stays aligned.
             let kind = match rng.below(4) {
@@ -3994,7 +4151,7 @@ impl Arena {
                 let cx = start_x + 2.0 + rng.unit() * (length - 4.0).max(1.0);
                 let cy = (wg.creature_lateral_spread - 2.0) * rng.signed();
                 let cpos = Position::new(cx, cy);
-                let clear_of_path = dist_to_path(&cpos, &self.path) > wg.path_clear_radius;
+                let clear_of_path = dist_to_path(&cpos, &self.corridor_path) > wg.path_clear_radius;
                 let clear_of_mobs = self.monsters.iter().all(|m| m.position.distance_to(&cpos) > 2.0)
                     && self.resources.iter().all(|r| r.position.distance_to(&cpos) > 2.0);
                 if (clear_of_path && clear_of_mobs) || attempt == 23 {
@@ -4029,7 +4186,7 @@ impl Arena {
             let mount_gatekeeper = bd.floor() as i64 >= enc.gatekeeper_min_distance;
             self.seams.push(Seam {
                 x: bd,
-                gap_y: path_y_at(&self.path, bd),
+                gap_y: path_y_at(&self.corridor_path, bd),
                 gap_half_width: wg.path_clear_radius,
                 biome_from: from,
                 biome_to: to,
@@ -4044,7 +4201,7 @@ impl Arena {
             if !mount_gatekeeper {
                 continue;
             }
-            let gk_pos = Position::new(bd, path_y_at(&self.path, bd));
+            let gk_pos = Position::new(bd, path_y_at(&self.corridor_path, bd));
             let gidx = self.monsters.len();
             let gseed = section_seed(self.seed_base, i) ^ (0x6A7E_0000_0000_0000 | bd as u64);
             self.monsters
@@ -4078,7 +4235,13 @@ impl Arena {
         // chest/seam draws stay byte-identical and every determinism test still holds.
         // Ground level only (nothing floating on a terrace/plateau), and never buries
         // the path/creatures/nodes/chests.
-        let maze_mult = biome_obstacle_mult(wg, biome);
+        // Density is authored per biome and a section now spans many, so the count is drawn
+        // for the section's DENSEST cell and thinned back per cell on acceptance. That is
+        // what makes a sparse desert cell inside a thick forest band actually read as
+        // desert: the thinning IS the transition, in every direction, so the old
+        // taper-toward-the-next-RING is gone rather than adapted — a cell's neighbour is
+        // not ahead of it and behind it, it is all around it.
+        let maze_mult = self.max_over_cells(start_x, end_x, |b| biome_obstacle_mult(wg, b));
         // A DUNGEON SECTION IS STILL A BIOME SECTION. Its divider walls used to be laid
         // INSTEAD of the maze fill ("rooms-and-corridors instead of the scattered fill"),
         // which was true when a section was a 20-tile corridor with three rooms in it.
@@ -4100,34 +4263,8 @@ impl Arena {
             // into an open field. Obstacles are still placed across the corridor lateral
             // and bent, so the extra count fills the widened arc.
             let radial_scale =
-                maze_fill_scale(wg, self.radial_half, self.lateral, start_x, end_x);
+                maze_fill_scale(wg, self.radial_half, self.corridor_lateral, start_x, end_x);
             let extra = (maze_mult * wg.obstacles_per_area * radial_scale).round().max(0.0) as usize;
-            let fill_kind = fill_kind_for_biome(biome);
-            // Density taper: near each edge, blend toward the NEIGHBOUR section's
-            // density so a dense biome visibly THINS as it gives way to a sparser one
-            // (trees scarce into desert) and thickens into a denser one (rock into
-            // Ashfall) — matching the ground cross-fade. Only ever thins (a section
-            // never exceeds its own count), and the neighbour ramps up from its side.
-            let tw = wg.biome_transition_width.max(0.0);
-            let next_biome = self.force_biome.unwrap_or_else(|| {
-                section_biome(balance, self.seed_base, i + 1, end_x.floor() as i64, Some(biome), self.tutorial)
-            });
-            let prev_ratio = (biome_obstacle_mult(wg, prev_biome.unwrap_or(biome)) / maze_mult).min(1.0);
-            let next_ratio = (biome_obstacle_mult(wg, next_biome) / maze_mult).min(1.0);
-            let keep_prob = |ox: f64| -> f64 {
-                let mut p = 1.0_f64;
-                if tw > 0.0 {
-                    if ox < start_x + tw {
-                        let t = ((ox - start_x) / tw).clamp(0.0, 1.0);
-                        p = p.min(prev_ratio + (1.0 - prev_ratio) * t);
-                    }
-                    if ox > end_x - tw {
-                        let t = ((end_x - ox) / tw).clamp(0.0, 1.0);
-                        p = p.min(next_ratio + (1.0 - next_ratio) * t);
-                    }
-                }
-                p
-            };
             // How close is too close, asked in the frame the player stands in. Corridor y
             // is an ANGLE: at r=355 a tangential gap is worth 37× what it measures here.
             // Comparing raw corridor distance therefore threw out trees that would end up
@@ -4143,14 +4280,19 @@ impl Arena {
             while fp < extra && fa < extra * 12 {
                 fa += 1;
                 let ox = start_x + frng.unit() * length;
-                let oy = frng.signed() * (self.lateral - 1.0);
-                // Taper toward the neighbouring biome near the section edges.
-                if frng.unit() > keep_prob(ox) {
+                let oy = frng.signed() * (self.corridor_lateral - 1.0);
+                // Thin to this CELL's own share of the section's densest. A forest cell
+                // keeps nearly everything, a desert cell keeps about a ninth, and the
+                // boundary between them is where that changes — no transition width, no
+                // neighbour lookup, no direction.
+                let here = self.biome_in_corridor(Position::new(ox, oy));
+                if frng.unit() * maze_mult > biome_obstacle_mult(wg, here) {
                     continue;
                 }
+                let fill_kind = fill_kind_for_biome(here);
                 let radius = obstacle_radius_for(wg, fill_kind, frng.unit());
                 let pos = Position::new(ox, oy);
-                if dist_to_path(&pos, &self.path) < self.path_clear_radius + radius
+                if dist_to_path(&pos, &self.corridor_path) < self.path_clear_radius + radius
                     || dist_to_web(&pos, &self.corridor_web) < self.web_clear() + radius
                 {
                     continue;
@@ -4193,20 +4335,21 @@ impl Arena {
             let rooms = wg.dungeon_rooms.max(2);
             for w in 1..rooms {
                 let wall_x = start_x + length * (w as f64) / (rooms as f64);
-                let mut y = -self.lateral + 1.0;
-                while y <= self.lateral - 1.0 {
+                let mut y = -self.corridor_lateral + 1.0;
+                while y <= self.corridor_lateral - 1.0 {
                     let pos = Position::new(wall_x, y);
                     // A door gap wherever the (A*-routed, possibly winding) clear path
                     // crosses this wall — so every path crossing has an opening, not just
                     // one, and connectivity survives the cliff detours.
-                    let in_door = dist_to_path(&pos, &self.path) < wg.dungeon_door_half + r;
+                    let in_door = dist_to_path(&pos, &self.corridor_path) < wg.dungeon_door_half + r;
                     let occupied = self.monsters.iter().any(|m| m.position.distance_to(&pos) < r + 1.0)
                         || self.resources.iter().any(|rn| rn.position.distance_to(&pos) < r + 1.0)
                         || self.chests.iter().any(|c| c.position.distance_to(&pos) < r + 1.0);
                     if !in_door && terrain.level_at(&pos) == 0 && !occupied {
                         self.obstacles.push(Obstacle {
                             entity_id: format!("obs-{}", self.obstacles.len()),
-                            kind: okinds[0].to_string(),
+                            kind: obstacles_for_biome(self.biome_in_corridor(pos))[0]
+                                .to_string(),
                             position: pos,
                             radius: r,
                         });
@@ -4216,7 +4359,7 @@ impl Arena {
             }
             // Guaranteed loot chest in the final room, just inside the exit.
             let chest_x = end_x - wg.portal_setback - 2.0;
-            let cy = path_y_at(&self.path, chest_x) + 2.0;
+            let cy = path_y_at(&self.corridor_path, chest_x) + 2.0;
             let cpos = Position::new(chest_x, cy);
             let elevation = terrain.level_at(&cpos);
             self.chests.push(Chest {
@@ -4277,6 +4420,33 @@ impl Arena {
     /// Returns the corridor waypoints AFTER `entry` (last one ≈ a walkable `exit_target`).
     /// Falls back to a straight `[exit_target]` if no route is found (the connected base
     /// makes that essentially never happen).
+    /// Is `(p, pad)` clear of every authored PEAK?
+    ///
+    /// A peak is crowned with a gate boss or a guaranteed chest — unconditionally, one or the
+    /// other — and that reward is the only reason the climb exists. Flood the summit and the
+    /// chest is displaced by `nudge_to_walkable`, which is exactly what
+    /// `authored_peaks_are_climbable_and_crowned` forbids: it wants a reward within 2 units of
+    /// the centre.
+    ///
+    /// ⚠️ Asked by EVERY water generator, not just the basins. Peaks are placed after water
+    /// within their own section (the `wet_side` flip covers that), so the real risk is a LATER
+    /// section's water flooding a peak already standing — and a strait or a bay is far more
+    /// than large enough. Guarding only basins is what left this test failing.
+    ///
+    /// ⚠️ AND `self.peaks` IS CORRIDOR-SPACE UNTIL `radialize` BENDS IT, while `p` is world.
+    /// Comparing them directly is the fifth instance of that trap in this feature — after the
+    /// clear-path check, creature spacing, water-over-creature, and its double-bend — and it
+    /// fails the same silent way: the guard simply never rejects anything.
+    fn clear_of_peaks(&self, p: Position, pad: f64) -> bool {
+        let (half, lat) = (self.radial_half, self.corridor_lateral.max(1.0));
+        let bent_already = self.bent;
+        self.peaks.iter().all(|k| {
+            let c = Position::new(k[0] as f64, k[1] as f64);
+            let c = if bent_already { c } else { radial_tf(c, half, lat) };
+            (p.x - c.x).hypot(p.y - c.y) > pad + k[2] as f64
+        })
+    }
+
     /// **Cut this section's STRAIT — the boundary between two continents.**
     ///
     /// A strait is an annular sector of sea: a radius band inside this section's own band,
@@ -4384,6 +4554,17 @@ impl Arena {
         if !meld_proto::coast::strait_is_crossable(&s, self.radial_half as f32) {
             return;
         }
+        // …and never over a PEAK already standing (see `clear_of_peaks`). Sampled along the
+        // strait's own centre-line arc, because a strait is a sector, not a disc.
+        let samples = 24;
+        for k in 0..=samples {
+            let t = k as f64 / samples as f64;
+            let th = (th_c - th_half) + t * 2.0 * th_half;
+            let q = Position::new(r_c * th.cos(), r_c * th.sin());
+            if !self.clear_of_peaks(q, r_half) {
+                return;
+            }
+        }
         self.straits.push(s);
     }
 
@@ -4440,7 +4621,9 @@ impl Arena {
                 ];
                 // The contract, asked rather than assumed: a bay that could pinch the fan
                 // in two is not cut at all. A strait at least has an isthmus; this has none.
-                if meld_proto::coast::bay_leaves_a_shore(&lobe, self.radial_half as f32) {
+                if meld_proto::coast::bay_leaves_a_shore(&lobe, self.radial_half as f32)
+                    && self.clear_of_peaks(Position::new(lobe[0] as f64, lobe[1] as f64), radius)
+                {
                     self.lobes.push(lobe);
                 }
             }
@@ -4497,7 +4680,7 @@ impl Arena {
     /// Fords are placed on a fixed cadence, not rolled: connectedness is what a river IS,
     /// and a connected impassable line is exactly the thing that disconnects a world. Same
     /// contract as a strait's isthmus — a guarantee, never a repair.
-    fn push_water(&mut self, balance: &Balance, i: usize, start_x: f64, end_x: f64, biome: &str) {
+    fn push_water(&mut self, balance: &Balance, i: usize, start_x: f64, end_x: f64) {
         let wg = &balance.worldgen;
         if self.tutorial
             || self.radial_half <= 0.0
@@ -4531,7 +4714,7 @@ impl Arena {
         // green suite is not evidence that a generator generates anything.
         // ⚠️ **THE PATH IS IN CORRIDOR SPACE HERE AND THE WATER IS IN WORLD SPACE.** Section
         // generation runs entirely in the corridor frame and `radialize`/`ensure_frontier`
-        // bend it afterwards, so `self.path` is corridor coordinates — while a basin and a
+        // bend it afterwards, so `self.corridor_path` is corridor coordinates — while a basin and a
         // river node are placed through `radial_tf` and are already world. Comparing them
         // directly is comparing two coordinate systems, which is what the first version of
         // this check did: it silently always passed, and the clear path kept ending up in the
@@ -4542,9 +4725,56 @@ impl Arena {
         // arc. This is the same reason `push_bent_segment` densifies — a sparse path bent by
         // its endpoints cuts across the fan.
         let drawn: Vec<Position> =
-            self.path.iter().map(|p| radial_tf(*p, half, lat)).collect();
+            self.corridor_path.iter().map(|p| radial_tf(*p, half, lat)).collect();
         let clear = self.path_clear_radius;
         let off_drawn = |p: Position, pad: f64| dist_to_path(&p, &drawn) > clear + pad;
+        // …and never over a PEAK's summit. A peak is crowned with a gate boss or a guaranteed
+        // chest — that reward is the whole reason the climb exists — and a summit under water
+        // either drowns the reward or forces the party that holds it to be moved. Peaks are
+        // few, so checking them all is free.
+        let peaks: Vec<[f32; 4]> = self.peaks.clone();
+        // ⚠️ **AND NEVER OVER A CREATURE THAT ALREADY STANDS THERE.** Water is FOUND by walking
+        // downhill, so it does not respect where anything was placed — and every mechanism that
+        // tried to fix that AFTERWARDS perturbed something the placement pass had already got
+        // right: moving a creature radially crosses a difficulty gate (distance IS difficulty,
+        // CANON §B), moving it tangentially strands it from its pack or lands it inside another
+        // encounter's `group_radius`, and deleting it silently removes summit rewards and the
+        // members of an undead rite. There is no post-hoc repair, because the placement pass
+        // chose those positions TOGETHER. So the water yields instead: nothing that already
+        // exists is ever touched.
+        //
+        // Positions are BENT for the test. Section generation runs in the corridor frame and
+        // creatures are bent later, while a basin is already world-space — the same
+        // two-coordinate-systems trap that made the clear-path check silently pass three runs
+        // running.
+        // ⚠️ Bend ONLY if the arena has not been bent yet. During the initial chain every
+        // creature is corridor-space and needs the map; once `radialize` has run, streamed
+        // sections arrive beside creatures that are ALREADY world-space, and bending those a
+        // second time yields a position nowhere near the creature — so the check passed and
+        // water landed on it anyway. That is the fourth corridor/world bug in this feature.
+        let bent_already = self.bent;
+        // ⚠️ EVERYTHING already placed, not just the creatures. A chest or a harvest node under
+        // water is an unreachable reward, and since nothing relocates them any more there is no
+        // second chance — `nudge_to_walkable` runs when a section is bent, long before a LATER
+        // section's downhill walk can reach back and flood it. `chest-21 at sea` was exactly
+        // that. Water yields to what is already there; the list has to be all of it.
+        let frame = |p: Position| if bent_already { p } else { radial_tf(p, half, lat) };
+        let standing: Vec<Position> = self
+            .monsters
+            .iter()
+            .map(|m| frame(m.position))
+            .chain(self.chests.iter().map(|c| frame(c.position)))
+            .chain(self.resources.iter().map(|r| frame(r.position)))
+            .collect();
+        let off_creatures = |p: Position, pad: f64| {
+            standing.iter().all(|q| q.distance_to(&p) > pad + 4.0)
+        };
+        let off_peaks = |p: Position, pad: f64| {
+            peaks.iter().all(|k| {
+                let d = (p.x - k[0] as f64).hypot(p.y - k[1] as f64);
+                d > pad + k[2] as f64
+            })
+        };
         // A body smaller than this is not worth placing — it renders as a puddle and reads
         // as an artefact rather than as water.
         const MIN_BODY: f64 = 18.0;
@@ -4560,7 +4790,10 @@ impl Arena {
         // --- the RIVER ----------------------------------------------------------------
         // A biome's own wetness. The Mire is a swamp because of this line, now that its fill
         // is roots rather than pools.
-        let wet_mult = biome_water_mult(biome);
+        // Drawn for the section's WETTEST cell and thinned back per body, the same way the
+        // maze fill is: a mire cell sitting in an otherwise dry band has to be able to flood,
+        // and a dry cell in a mire band has to stay dry.
+        let wet_mult = self.max_over_cells(start_x, end_x, biome_water_mult);
         if rng.unit() < wg.river_chance * wet_mult {
             // A SPRING is the highest of a few candidates: water starts high, so choosing
             // the highest is what makes the source read as a spring rather than a puddle
@@ -4571,6 +4804,10 @@ impl Arena {
                 if h(c.x, c.y) > h(src.x, src.y) {
                     src = c;
                 }
+            }
+            // A spring belongs to the ground it rises from.
+            if rng.unit() * wet_mult > biome_water_mult(self.biome_at(src)) {
+                return;
             }
             let mut nodes: Vec<meld_proto::coast::RiverNode> = Vec::new();
             let width = wg.river_half_width_min
@@ -4614,8 +4851,10 @@ impl Arena {
             let mut broke = false;
             for n in &nodes {
                 let p = Position::new(n[0] as f64, n[1] as f64);
-                if !off_drawn(p, n[2] as f64) {
-                    broke = true; // the trail crosses here — leave dry ground for it
+                if !off_drawn(p, n[2] as f64) || !off_creatures(p, n[2] as f64) {
+                    // The trail crosses here, or something already stands here. Either way the
+                    // channel leaves dry ground and resumes past it — which reads as a ford.
+                    broke = true;
                     continue;
                 }
                 let mut n = *n;
@@ -4633,7 +4872,14 @@ impl Arena {
             if let Some(p) = pooled {
                 let radius = wg.basin_radius_min
                     + rng.unit() * (wg.basin_radius_max - wg.basin_radius_min).max(0.0);
-                if radius >= MIN_BODY && off_drawn(p, radius) {
+                // Shrink to fit rather than give up: a smaller lake beats no lake, and the
+                // radius is a BOUND on the contour fill rather than the shape itself, so a
+                // reduced one is still a real body of water.
+                let mut radius = radius;
+                while radius >= MIN_BODY && !off_creatures(p, radius) {
+                    radius -= 12.0;
+                }
+                if radius >= MIN_BODY && off_drawn(p, radius) && off_peaks(p, radius) {
                     self.basins.push([
                         p.x as f32,
                         p.y as f32,
@@ -4676,77 +4922,19 @@ impl Arena {
             let radius = wg.basin_radius_min
                 + rng.unit() * (wg.basin_radius_max - wg.basin_radius_min).max(0.0);
             let p = Position::new(x, z);
+            let mut radius = radius;
+            while radius >= MIN_BODY && !off_creatures(p, radius) {
+                radius -= 12.0;
+            }
             if self.shore().sea(x as f32, z as f32) < 0.0
                 && radius >= MIN_BODY
+                && rng.unit() * wet_mult <= biome_water_mult(self.biome_at(p))
                 && off_drawn(p, radius)
+                && off_peaks(p, radius)
             {
                 self.basins.push([x as f32, z as f32, radius as f32, (cur + wg.basin_fill) as f32]);
             }
         }
-        }
-    }
-
-    /// **Move anything a newly-sprung body of water is standing on.**
-    ///
-    /// Inland water is FOUND by walking downhill, so it does not respect section boundaries:
-    /// a lake discovered while building section 20 can spread back into section 19, whose
-    /// creatures, nodes and chests were placed and bent long ago. The bend-time sweeps only
-    /// ever look at the entities a section just added, so nothing would notice.
-    ///
-    /// The clear path is the exception and gets the opposite treatment — it cannot be
-    /// re-routed once drawn, so water yields to IT (see `push_water`'s `off_drawn`, which
-    /// turns a river node on the trail into a ford). Everything else moves.
-    ///
-    /// Scoped to the water added since `(b0, r0)` rather than re-checking the whole world:
-    /// water grows with every section, so a full re-sweep would be quadratic in the section
-    /// count and this runs at the frontier of an endlessly streaming world.
-    fn drown_proof(&mut self, b0: usize, r0: usize) {
-        if self.basins.len() == b0 && self.rivers.len() == r0 {
-            return;
-        }
-        let fresh = meld_proto::coast::Shore {
-            arc_half: self.radial_half as f32,
-            terrain_off: self.terrain_off,
-            straits: &[],
-            lobes: &[],
-            basins: &self.basins[b0..],
-            rivers: &self.rivers[r0..],
-        };
-        // A creature's whole territory has to come with it, or it spends the dive walking at
-        // water it can never reach (`home`) or gets dragged back by its pack anchor.
-        let wet = |p: Position| fresh.inland(p.x as f32, p.y as f32) > 0.0;
-        let mut moves: Vec<(usize, Position)> = Vec::new();
-        for (i, m) in self.monsters.iter().enumerate() {
-            if wet(m.position) || wet(m.home) || wet(m.pack_home) {
-                moves.push((i, m.position));
-            }
-        }
-        let (half, straits, lobes) = (self.radial_half, self.straits.clone(), self.lobes.clone());
-        let (basins, rivers, toff) =
-            (self.basins.clone(), self.rivers.clone(), self.terrain_off);
-        let shore = meld_proto::coast::Shore {
-            arc_half: half as f32,
-            terrain_off: toff,
-            straits: &straits,
-            lobes: &lobes,
-            basins: &basins,
-            rivers: &rivers,
-        };
-        for (i, _) in moves {
-            let m = &mut self.monsters[i];
-            m.position = nudge_ashore(m.position, shore);
-            m.home = nudge_ashore(m.home, shore);
-            m.pack_home = nudge_ashore(m.pack_home, shore);
-        }
-        for r in self.resources.iter_mut() {
-            if fresh.inland(r.position.x as f32, r.position.y as f32) > 0.0 {
-                r.position = nudge_to_walkable(r.position, toff, shore);
-            }
-        }
-        for c in self.chests.iter_mut() {
-            if fresh.inland(c.position.x as f32, c.position.y as f32) > 0.0 {
-                c.position = nudge_to_walkable(c.position, toff, shore);
-            }
         }
     }
 
@@ -5038,11 +5226,13 @@ impl Arena {
         // section it became a boar wading across open sea.
         let (straits, lobes) = (self.straits.clone(), self.lobes.clone());
         let (basins, rivers) = (self.basins.clone(), self.rivers.clone());
+        let dry_peaks = self.peaks.clone();
         let toff_dry = self.terrain_off;
         let dry = |p: &Position| -> bool {
             meld_proto::coast::Shore {
                 arc_half: radial_half as f32,
                 terrain_off: toff_dry,
+                peaks: &dry_peaks,
                 straits: &straits,
                 lobes: &lobes,
                 basins: &basins,
@@ -6669,37 +6859,6 @@ fn hub_terrain_offset(seed: u64) -> (f32, f32) {
 /// Buttes are small + convex and sit in a connected walkable base, so a short search
 /// always finds walkable terrain around them — this routes the clear path AROUND a
 /// cliff instead of through it, keeping the world feasible under slope collision.
-/// Move `p` to the nearest DRY ground if it is at sea, and leave it exactly where it is
-/// otherwise. The sibling of [`nudge_to_walkable`], and deliberately **not** the same
-/// function: that one also refuses steep terrain, and creatures have always been allowed to
-/// stand on a cliff. Widening the sea fix into a terrain fix moved every creature in every
-/// seeded world — three unrelated pack/formation tests went red on the first attempt.
-///
-/// The backstop rather than the main line: creature placement rejects a wet spot where it
-/// already rejects a crowded one, so what reaches here is a pack minion or a rite's retinue
-/// scattered around an already-dry leader — a short hop, if any.
-fn nudge_ashore(p: Position, shore: meld_proto::coast::Shore<'_>) -> Position {
-    let dry = |q: &Position| shore.is_land(q.x as f32, q.y as f32);
-    if dry(&p) {
-        return p;
-    }
-    // Far enough to walk out of the widest LEGAL body of water: a bay is capped at
-    // `bay_radius_max` and a basin at `basin_radius_max`, both under 200 units, so a spiral
-    // to ~360 clears the centre of either. The old 96-unit reach silently failed inside a
-    // large bay and left the creature standing in the sea.
-    for step in 1..90 {
-        let r = step as f64 * 4.0;
-        for k in 0..12 {
-            let a = k as f64 * std::f64::consts::TAU / 12.0;
-            let q = Position::new(p.x + r * a.cos(), p.y + r * a.sin());
-            if dry(&q) {
-                return q;
-            }
-        }
-    }
-    p
-}
-
 fn nudge_to_walkable(
     p: Position,
     off: (f32, f32),
@@ -6745,6 +6904,46 @@ fn tier_at_distance(balance: &Balance, x: f64) -> i32 {
 /// ~50 world units out at r=500, far outside `[ai] group_radius`. Inverting that is
 /// what keeps a pack a pack at any depth. `radial_half == 0` is corridor mode,
 /// where world and corridor space agree.
+/// Place a companion `spread` from `anchor` on **dry ground**, trying a few bearings before
+/// giving up and standing it on the anchor itself.
+///
+/// ⚠️ **The main placement loop rejects a wet spot; the offset-from-a-leader paths did not**,
+/// and that is the whole of `nothing_the_world_places_ever_lands_in_the_sea`. A pack's minions,
+/// an undead rite's retinue and the end fight's extra bosses are all positioned RELATIVE to a
+/// leader — so a dry leader beside a lake could scatter half its pack into the water, and the
+/// fight became one nobody could reach.
+///
+/// Falling back to the anchor is deliberate: it is known dry (the leader passed the check), it
+/// keeps the companion inside its own pack, and a stacked pair is a cosmetic flaw where a
+/// drowned one is an unreachable encounter. It does NOT move anything already placed — that
+/// road was tried five times and every version broke something the placement pass had already
+/// got right (difficulty gates, pack adjacency, summit rewards, rite retinues).
+#[allow(clippy::too_many_arguments)]
+fn dry_companion(
+    anchor: Position,
+    spread: f64,
+    rng: &mut Rng,
+    half: f64,
+    lat: f64,
+    wet: &dyn Fn(&Position) -> bool,
+) -> Position {
+    for _ in 0..8 {
+        let angle = rng.unit() * std::f64::consts::TAU;
+        let dist = spread * (0.4 + 0.6 * rng.unit());
+        let p = corridor_offset(anchor, dist * angle.cos(), dist * angle.sin(), half, lat);
+        let w = if half > 0.0 {
+            let theta = (p.y / lat.max(1.0)).clamp(-1.0, 1.0) * half;
+            Position::new(p.x.max(0.0) * theta.cos(), p.x.max(0.0) * theta.sin())
+        } else {
+            p
+        };
+        if !wet(&w) {
+            return p;
+        }
+    }
+    anchor
+}
+
 fn corridor_offset(anchor: Position, radial: f64, tangential: f64, half: f64, lat: f64) -> Position {
     let dy = if half > 0.0 {
         let r = anchor.x.max(1.0);
@@ -7075,6 +7274,125 @@ mod tests {
             }
             false
         }
+
+        /// Stand somewhere genuinely OPEN — clear ground for `clearance` units around.
+        ///
+        /// [`stand_somewhere_legal`] only asks whether ONE piece fits where you stand, and
+        /// two of these tests then assume the ground AROUND it is clear as well: a run of
+        /// four extending east, and a bystander beside you who is not already fenced in by
+        /// trees. Those are different questions, and a single legal spot inside a thicket
+        /// answers the first while failing the second — `would_enclose_someone` reads
+        /// `blocking_field`, so terrain closes a pocket exactly as a wall does.
+        fn stand_somewhere_open(b: &Balance, a: &mut Arena, radius: f64, clearance: f64) -> bool {
+            let lat = a.corridor_lateral();
+            for k in 0..400 {
+                let frac = -0.9 + 1.8 * (k as f64 / 400.0);
+                let p = bend_for_test(a, Position::new(radius, lat * frac));
+                if a.obstacles.iter().any(|o| o.position.distance_to(&p) < clearance + o.radius) {
+                    continue;
+                }
+                a.avatar_mut("p1").unwrap().position = p;
+                if a.place_structure(b, "p1", "wall", "probe", 0).is_ok() {
+                    let id = a.structures.last().unwrap().entity_id.clone();
+                    a.demolish_structure(b, &id);
+                    return true;
+                }
+            }
+            false
+        }
+
+        /// **A wall RUN abuts** — which every piece after the first used to be
+        /// refused for, as `TooClose`. That is why drag-to-stretch was impossible
+        /// rather than merely unbuilt.
+        #[test]
+        fn a_wall_run_abuts_but_still_cannot_cage_a_player() {
+            let (b, mut a) = built();
+            // 16 units of clearance: the run reaches 4 x `abut_spacing` east and every piece
+            // of it has to land.
+            assert!(stand_somewhere_open(&b, &mut a, 200.0, 16.0), "no open ground at d200");
+            let here = a.avatar("p1").unwrap().position;
+
+            // BD-9: a RUN. Pieces at `abut_spacing` would each have been refused as
+            // `TooClose` before — which is why drag-to-stretch was impossible rather than
+            // merely unimplemented.
+            let step = b.building.abut_spacing;
+            let mut placed = 0;
+            let mut why: Vec<String> = Vec::new();
+            for k in 1..=4 {
+                let at = Position::new(here.x + step * k as f64, here.y);
+                match a.place_structure_at(&b, "p1", "wall", "dune_iron", 100, Some(at)) {
+                    Ok(_) => placed += 1,
+                    Err(e) => why.push(format!("{k}:{e:?}")),
+                }
+            }
+            assert!(placed >= 3, "a wall run should abut, only {placed} of 4 went up: {why:?}");
+
+            // …and the pieces really are touching, not merely near.
+            let xs: Vec<f64> = a.structures.iter().map(|s| s.position.x).collect();
+            let mut gaps: Vec<f64> = xs.windows(2).map(|w| (w[1] - w[0]).abs()).collect();
+            gaps.sort_by(f64::total_cmp);
+            if let Some(g) = gaps.first() {
+                assert!(
+                    *g < b.building.min_spacing,
+                    "the run is spaced like separate structures ({g}), not a wall"
+                );
+            }
+        }
+
+        /// **The trade: abutment is allowed, caging is not.** The old guarantee was
+        /// geometric — no two structures within `min_spacing`, so a ring always had a gap.
+        /// A wall run retires that, so placement must refuse the cage directly.
+        #[test]
+        fn a_second_player_cannot_be_walled_in_by_a_run() {
+            let (b, mut a) = built();
+            // The victim stands 8 units east and the "not a cage" half of this test puts a
+            // single wall beside them, so the pocket has to be open to begin with.
+            assert!(stand_somewhere_open(&b, &mut a, 200.0, 16.0), "no open ground at d200");
+            let here = a.avatar("p1").unwrap().position;
+
+            // A victim standing just off the builder's spot, and the builder ringing them.
+            a.add_avatar("victim".into(), 5.0);
+            a.avatar_mut("victim").unwrap().position =
+                Position::new(here.x + 8.0, here.y);
+            let victim = a.avatar("victim").unwrap().position;
+
+            // Ask the rule directly with a tight ring of hypothetical pieces: it must see
+            // the cage. Built from `abut_spacing` so the ring has no walkable gap.
+            let step = b.building.abut_spacing * 0.9;
+            let r = 2.2_f64;
+            let mut ring = Vec::new();
+            let mut t = 0.0_f64;
+            while t < std::f64::consts::TAU {
+                ring.push(Position::new(victim.x + r * t.cos(), victim.y + r * t.sin()));
+                t += step / r;
+            }
+            assert_eq!(
+                a.would_enclose_someone(&b, "p1", &ring).as_deref(),
+                Some("victim"),
+                "a closed ring around another player must read as enclosing them"
+            );
+
+            // And open ground does NOT read as a cage, or every build in a field is refused.
+            assert_eq!(
+                a.would_enclose_someone(&b, "p1", &[Position::new(victim.x + 3.0, victim.y)]),
+                None,
+                "a single wall beside someone is not a cage"
+            );
+        }
+
+        /// You cannot build across the map now that the client asks for a position.
+        #[test]
+        fn an_aimed_placement_has_to_be_within_reach() {
+            let (b, mut a) = built();
+            assert!(stand_somewhere_legal(&b, &mut a, 200.0), "no legal ground at d200");
+            let here = a.avatar("p1").unwrap().position;
+            let far = Position::new(here.x + b.building.build_reach * 3.0, here.y);
+            assert_eq!(
+                a.place_structure_at(&b, "p1", "wall", "dune_iron", 100, Some(far)).err(),
+                Some(PlaceRefusal::OutOfReach)
+            );
+        }
+
 
         /// Corridor → world, so a corridor-space probe lands where the arena expects it.
         fn bend_for_test(a: &Arena, p: Position) -> Position {
@@ -9040,10 +9358,17 @@ mod tests {
             arena.monsters[k].hp = arena.monsters[k].max_hp / 2;
         }
         let before: i32 = arena.monsters.iter().map(|m| m.hp).sum();
+        // ⚠️ That a clash HAPPENED, not that one is still live at the end of an arbitrary
+        // window. These two wander (passive only stops them giving chase), so they drift past
+        // `skirmish_range` after trading for a while and the clash lingers out — measured, they
+        // brawl for ~5s of a 10s window and separate. The invariant is that HP does not climb
+        // while they are fighting, which is what the sum below pins.
+        let mut clashed = false;
         for _ in 0..40 {
             arena.step_creatures(0.25);
+            clashed |= !arena.clashes.is_empty();
         }
-        assert!(!arena.clashes.is_empty(), "the fixture stopped clashing");
+        assert!(clashed, "the fixture never clashed at all");
         let after: i32 = arena.monsters.iter().map(|m| m.hp).sum();
         assert!(after < before, "creatures healed mid-brawl: {before} -> {after}");
     }
@@ -9414,6 +9739,74 @@ mod tests {
             .collect()
     }
 
+    /// ⚠️ **A GREEN SUITE IS NOT EVIDENCE THAT A GENERATOR GENERATES ANYTHING** — the lesson
+    /// the inland-water census already cost us once. The region decomposition's whole claim is
+    /// that what a section SCATTERS varies with the cell rather than with the band, so measure
+    /// it: count how many distinct biome rosters and prop kinds a single section actually
+    /// produces. A ring world reads exactly one of each, per section, by construction.
+    ///
+    /// Measured across five seeds out to d900: **20 of 20** deep sections hold props from more
+    /// than one biome. The floor stays at half, because a single-biome section is LEGAL —
+    /// neighbouring cells drawing the same theme is how a region larger than one cell exists —
+    /// and pinning a measurement that happens to be total would fail on the first retune.
+    #[test]
+    fn one_section_holds_several_biomes_worth_of_content() {
+        let b = Balance::load_default().unwrap();
+        let mut worst_creatures = usize::MAX;
+        let mut mixed_sections = 0;
+        let mut total_sections = 0;
+        for seed in [1u64, 7, 424242, 99, 1_000_003] {
+            let mut a = Arena::generate_with(&b, seed, false, None);
+            // Out past the on-ramp, where the gate has opened and the arc is wide enough to
+            // hold a real handful of cells.
+            a.ensure_frontier(&b, 900.0);
+            for area in a.areas.iter().filter(|ar| ar.start_x > 300.0) {
+                total_sections += 1;
+                let inside = |x: f64| x >= area.start_x && x < area.end_x;
+                // Prop kinds standing in this band, and creature species living in it. Both
+                // are drawn per position now, so both should show a mix.
+                let mut kinds: Vec<&str> = Vec::new();
+                for o in a.obstacles.iter().filter(|o| inside(o.position.distance_floor() as f64)) {
+                    if !kinds.contains(&o.kind.as_str()) {
+                        kinds.push(&o.kind);
+                    }
+                }
+                let mut species: Vec<&str> = Vec::new();
+                for m in a.monsters.iter().filter(|m| inside(m.position.distance_floor() as f64)) {
+                    if !species.contains(&m.monster_kind.as_str()) {
+                        species.push(&m.monster_kind);
+                    }
+                }
+                // A biome's own roster is several kinds wide, so counting kinds alone cannot
+                // separate "one biome" from "many". Count the BIOMES those kinds belong to.
+                let biomes_present = BIOMES
+                    .iter()
+                    .filter(|bi| {
+                        let scatter = obstacles_for_biome(bi);
+                        kinds.iter().any(|k| scatter.contains(k) || *k == fill_kind_for_biome(bi))
+                    })
+                    .count();
+                if biomes_present > 1 {
+                    mixed_sections += 1;
+                }
+                if !species.is_empty() {
+                    worst_creatures = worst_creatures.min(species.len());
+                }
+            }
+        }
+        assert!(total_sections >= 10, "only measured {total_sections} deep sections");
+        // The claim is about the DISTRIBUTION, not about every section: a section CAN legally
+        // hold one biome (neighbouring cells that drew the same theme are how a region larger
+        // than one cell exists at all). What cannot happen in a ring world is a mixed section.
+        let share = mixed_sections as f64 / total_sections as f64;
+        assert!(
+            share > 0.5,
+            "only {mixed_sections}/{total_sections} deep sections hold more than one biome's \
+             props ({share:.2}) — the scatter is still reading the band, not the cell"
+        );
+        assert!(worst_creatures >= 1, "a deep section with no creature species at all");
+    }
+
     #[test]
     fn the_wood_is_thick_where_you_are_standing() {
         // Reported from play: "the forest biome feels more like a field with trees in it."
@@ -9495,9 +9888,25 @@ mod tests {
 
     #[test]
     fn the_mire_floods_with_water() {
-        // #9: the Mire's dense fill is impassable water (`bog_pool`) — a flooded maze,
-        // not a field of solid props.
-        assert_eq!(fill_kind_for_biome("mire"), "bog_pool");
+        // The Mire's fill used to be impassable `bog_pool` water — water AS the maze. Its
+        // water is `coast::Basin` now (analytic, filling to the terrain's contour), so the
+        // fill is solid and the FLOODING is what has to be asserted instead: the mire must
+        // still be the wettest biome in the game, or retiring its fill quietly drained it.
+        //
+        // The old assertion was `fill_kind_for_biome("mire") == "bog_pool"`, and it was right
+        // to fail — it was defending a design that was deliberately changed. What it was
+        // really protecting is this, so this is what it protects now.
+        assert!(
+            !is_water_kind(fill_kind_for_biome("mire")),
+            "the mire's fill is solid now; its water comes from basins"
+        );
+        let dry_biomes = ["desert", "ashfall", "forest", "field", "tundra"];
+        for b in dry_biomes {
+            assert!(
+                biome_water_mult("mire") > biome_water_mult(b),
+                "the mire must be wetter than {b} — it is the swamp"
+            );
+        }
     }
 
     #[test]
@@ -9747,16 +10156,40 @@ mod tests {
         assert_ne!(order(1), order(2), "different seeds vary the biome order");
     }
 
+    /// **A SECTION IS NOT A BIOME ANY MORE, AND THIS IS THE TEST THAT SAYS SO.**
+    ///
+    /// It replaces `no_two_adjacent_sections_share_a_biome`, which held the ring world's
+    /// no-adjacent-repeat rule — and that rule had to go rather than be ported: two
+    /// neighbours drawing the same theme is the ONLY way a region bigger than one cell
+    /// exists, and any such rule needs an ordering, which would make the decomposition a
+    /// traversal instead of a pure function of position (CANON §W5 wants the second).
+    ///
+    /// What is asserted instead is the thing that was false before: walk ACROSS a section,
+    /// at its own radius, and you cross several themes.
     #[test]
-    fn no_two_adjacent_sections_share_a_biome() {
-        // The no-adjacent-repeat rule: you never walk from one theme into the same one.
+    fn one_section_spans_several_biomes() {
         let b = Balance::load_default().unwrap();
         let mut a = Arena::generate(&b, 31_337, false);
-        a.ensure_frontier(&b, 800.0);
-        assert!(a.areas.len() >= 3, "need a few sections to check adjacency");
-        for w in a.areas.windows(2) {
-            assert_ne!(w[0].biome, w[1].biome, "adjacent sections must differ in biome");
+        a.ensure_frontier(&b, 900.0);
+        assert!(a.areas.len() >= 4, "need a few sections to sweep");
+        let mut widest = 0usize;
+        for area in a.areas.iter().skip(2) {
+            let r = 0.5 * (area.start_x + area.end_x);
+            let mut seen: Vec<&str> = Vec::new();
+            for k in 0..200 {
+                let bearing = (k as f64 / 200.0 * 2.0 - 1.0) * a.radial_half * 0.99;
+                let biome = a.biome_at(Position::new(r * bearing.cos(), r * bearing.sin()));
+                if !seen.contains(&biome) {
+                    seen.push(biome);
+                }
+            }
+            widest = widest.max(seen.len());
         }
+        assert!(
+            widest >= 3,
+            "the widest section holds only {widest} biomes across its whole arc — that is \
+             still a ring world"
+        );
     }
 
     // ---- WG-1: dungeons (BSP-ish rooms via divider walls + guaranteed loot) ----
@@ -11682,10 +12115,24 @@ mod tests {
                     "a rite pulled only {} into the fight",
                     group.len()
                 );
-                for &gi in &group {
-                    if gi != ri {
-                        assert_eq!(a.monsters[gi].faction, "undead", "a living retainer");
-                    }
+                // ⚠️ Its RETINUE — its own pack — not everything `group_around` reaches.
+                // `group_around` is the battle assembler and works on proximity, so it also
+                // pulls whatever unrelated creature happens to stand within `group_radius`;
+                // asserting on it conflates "the rite's dead" with "the rite's neighbours".
+                //
+                // That a neighbour can be pulled into a set-piece at all is a real and separate
+                // problem: companions (pack minions, rite retinues) are placed as offsets from
+                // their leader, so they can land inside an unrelated encounter's group radius.
+                // `only_a_pack_ever_makes_a_group` covers the standard-spawn half of it.
+                let pack = a.monsters[ri].pack.clone();
+                let retinue: Vec<usize> = group
+                    .iter()
+                    .copied()
+                    .filter(|&gi| gi != ri && a.monsters[gi].pack == pack)
+                    .collect();
+                assert!(!retinue.is_empty(), "a rite with no retinue of its own");
+                for gi in retinue {
+                    assert_eq!(a.monsters[gi].faction, "undead", "a living retainer");
                 }
                 // Harder than a pack leader, softer than a Gatekeeper.
                 assert!(boss.max_hp > 0 && !boss.affix.is_empty(), "a rite boss with no affix");
@@ -12036,6 +12483,8 @@ pub enum PlaceRefusal {
     Blocked,
     AtYourLimit,
     SomeoneStanding,
+    OutOfReach,
+    WouldEncloseSomeone,
 }
 
 impl PlaceRefusal {
@@ -12048,6 +12497,8 @@ impl PlaceRefusal {
             PlaceRefusal::Blocked => "There is no room here.",
             PlaceRefusal::AtYourLimit => "You are holding as much ground as you can.",
             PlaceRefusal::SomeoneStanding => "Someone is standing there.",
+            PlaceRefusal::OutOfReach => "Too far away to build there.",
+            PlaceRefusal::WouldEncloseSomeone => "That would wall somebody in.",
         }
     }
 }
@@ -12087,6 +12538,9 @@ impl Arena {
     /// construction and the Shift's re-scatter honours the same tube; a player-built wall
     /// across the trail would be the one thing in the world that could seal the exit, and
     /// it would do it on purpose.
+    /// Place one at your own feet — the pre-BD-9 behaviour, kept because eighteen call
+    /// sites and every existing test mean it, and because it is still what a keyboard
+    /// "raise this here" does.
     pub fn place_structure(
         &mut self,
         balance: &Balance,
@@ -12094,6 +12548,31 @@ impl Arena {
         function: &str,
         ore: &str,
         tick: u64,
+    ) -> Result<&Structure, PlaceRefusal> {
+        self.place_structure_at(balance, player_id, function, ore, tick, None)
+    }
+
+    /// **Place one at `at`** (BD-9: aimed placement, and the unit a drag repeats). `None`
+    /// means the player's own position.
+    ///
+    /// Two rules differ from the feet-only version, and both exist because a wall you can
+    /// CONTINUE is a different object from a wall you can only dot around:
+    ///
+    /// * **Blockers may ABUT.** `min_spacing` would refuse the second piece of every wall
+    ///   run, so a pair of blocking structures answers to `abut_spacing` instead — touching
+    ///   but not overlapping. Anything else still answers to `min_spacing`, so a run of
+    ///   walls cannot conceal a forge inside it.
+    /// * **And nothing may wall a player in.** Allowing abutment retires the geometric
+    ///   promise that a ring of walls always has a gap, so placement asks the question
+    ///   directly (`would_enclose_someone`). That check is the price of the drag.
+    pub fn place_structure_at(
+        &mut self,
+        balance: &Balance,
+        player_id: &str,
+        function: &str,
+        ore: &str,
+        tick: u64,
+        at: Option<Position>,
     ) -> Result<&Structure, PlaceRefusal> {
         let b = &balance.building;
         let Some((cost, max_hp, build_ms)) = b.spec(function) else {
@@ -12105,7 +12584,11 @@ impl Arena {
         let Some(av) = self.avatar(player_id) else {
             return Err(PlaceRefusal::NotInWorld);
         };
-        let (position, elevation) = (av.position, av.elevation);
+        let (feet, elevation) = (av.position, av.elevation);
+        let position = at.unwrap_or(feet);
+        if at.is_some() && position.distance_to(&feet) > b.build_reach {
+            return Err(PlaceRefusal::OutOfReach);
+        }
         if self.structures.iter().filter(|s| s.owner_player_id == player_id).count()
             >= b.max_per_player
         {
@@ -12117,12 +12600,25 @@ impl Arena {
         {
             return Err(PlaceRefusal::OnTheTrail);
         }
-        if self
-            .structures
+        // Two BLOCKING structures may abut — that is what makes a wall RUN possible — while
+        // every other pair keeps `min_spacing`, so a line of walls cannot hide a forge or a
+        // second anchor inside it.
+        let mine_blocks = meld_proto::structures::structure(function).is_some_and(|d| d.blocks);
+        // ⚠️ THE COMPARISON NEEDS A TOLERANCE, and abutment is exactly why. A grid-snapped
+        // drag places pieces EXACTLY `abut_spacing` apart, and out at world coordinates in
+        // the hundreds the subtraction loses the low bits: `(x + 3.2) - (x + 1.6)` came out
+        // as 1.5999999999999943 against a 1.6 limit, so every OTHER piece of a wall run was
+        // refused as `TooClose`. Alternating gaps in a dragged wall would have read as a
+        // physics quirk rather than arithmetic.
+        const SPACING_EPS: f64 = 1e-3;
+        let too_close = self.structures.iter().any(|s| {
+            let limit = if mine_blocks && s.blocks() { b.abut_spacing } else { b.min_spacing };
+            s.position.distance_to(&position) < limit - SPACING_EPS
+        }) || self
+            .stations
             .iter()
-            .any(|s| s.position.distance_to(&position) < b.min_spacing)
-            || self.stations.iter().any(|s| s.position.distance_to(&position) < b.min_spacing)
-        {
+            .any(|s| s.position.distance_to(&position) < b.min_spacing);
+        if too_close {
             return Err(PlaceRefusal::TooClose);
         }
         if self
@@ -12146,6 +12642,10 @@ impl Arena {
                 .any(|a| a.player_id != player_id && a.position.distance_to(&position) < keep_clear)
             {
                 return Err(PlaceRefusal::SomeoneStanding);
+            }
+            // The replacement for the escapability guarantee that abutment retired.
+            if self.would_enclose_someone(balance, player_id, &[position]).is_some() {
+                return Err(PlaceRefusal::WouldEncloseSomeone);
             }
         }
         let tick_ms = balance.battle.tick_ms.max(1);
@@ -12275,6 +12775,119 @@ impl Arena {
     ///
     /// A structure still going up already blocks: a half-built wall you can walk through
     /// is a wall nobody would bother finishing.
+    /// **Can whoever stands at `from` still get away from there?** A bounded flood fill
+    /// over `field`, looking for any reachable spot further than `escape` from the start.
+    ///
+    /// ⚠️ THIS IS WHAT REPLACED THE SPACING RULE'S ESCAPABILITY GUARANTEE. While no two
+    /// structures could stand within `min_spacing`, a ring of walls ALWAYS had a gap wide
+    /// enough to walk through — the geometry promised it, and
+    /// `a_ring_of_walls_always_leaves_a_way_out` proved it. Drag-to-stretch (BD-9) needs
+    /// pieces that abut, which retires that promise: a continuous wall run is exactly the
+    /// thing the old rule made impossible. So placement has to ask the question directly
+    /// rather than inherit the answer from a radius.
+    ///
+    /// **Bounded on purpose.** The world streams outward without limit, so a flood fill
+    /// over open country is unbounded work on the single task that owns the game loop.
+    /// Running out of budget means the ground is OPEN — the safe direction: a false
+    /// "enclosed" would refuse legitimate builds out in a field, while a false "open" only
+    /// permits a cage that has to be enormous to reach the cap in the first place.
+    fn can_get_away(
+        &self,
+        field: &BlockField,
+        from: &Position,
+        escape: f64,
+        cell: f64,
+        budget: usize,
+    ) -> bool {
+        let cell = cell.max(0.1);
+        let key = |p: &Position| ((p.x / cell).floor() as i64, (p.y / cell).floor() as i64);
+        let centre = |k: (i64, i64)| {
+            Position::new((k.0 as f64 + 0.5) * cell, (k.1 as f64 + 0.5) * cell)
+        };
+        let start = key(from);
+        let mut seen: std::collections::HashSet<(i64, i64)> = std::collections::HashSet::new();
+        let mut queue: std::collections::VecDeque<(i64, i64)> =
+            std::collections::VecDeque::new();
+        seen.insert(start);
+        queue.push_back(start);
+        while let Some(k) = queue.pop_front() {
+            if seen.len() > budget {
+                return true; // open country: the cage would have to be vast
+            }
+            let here = centre(k);
+            if here.distance_to(from) > escape {
+                return true;
+            }
+            // Four-way, so a diagonal gap narrower than a player is not a way out.
+            for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+                let n = (k.0 + dx, k.1 + dy);
+                if seen.contains(&n) {
+                    continue;
+                }
+                let c = centre(n);
+                // Beyond the escape ring in one hop still counts as getting away, so a
+                // player standing right at the edge is not judged enclosed by the grid.
+                if field.blocks(&c, self.player_radius) {
+                    continue;
+                }
+                seen.insert(n);
+                queue.push_back(n);
+            }
+        }
+        false
+    }
+
+    /// **Would blocking structures at `pieces` leave somebody else unable to get away?**
+    /// Returns the first such player, or `None` if everyone can still move.
+    ///
+    /// Only OTHER players are checked. Walling yourself in is self-inflicted and you own
+    /// the walls, so you can pack them back down — and only the owner may
+    /// (`only_the_owner_may_pack_a_structure_down`), which is exactly why somebody ELSE
+    /// caging you has no answer and must be refused up front.
+    pub fn would_enclose_someone(
+        &self,
+        balance: &Balance,
+        placer: &str,
+        pieces: &[Position],
+    ) -> Option<String> {
+        let b = &balance.building;
+        if pieces.is_empty() {
+            return None;
+        }
+        let mut items: Vec<(Position, f64)> =
+            self.obstacles.iter().map(|o| (o.position, o.radius)).collect();
+        items.extend(
+            self.structures
+                .iter()
+                .filter(|s| s.blocks())
+                .map(|s| (s.position, self.structure_radius)),
+        );
+        // The hypothetical pieces, so the question is about the world AFTER this build.
+        items.extend(pieces.iter().map(|p| (*p, self.structure_radius)));
+        let field = BlockField::new(items);
+        let reach = b.enclosure_escape_radius;
+        for av in &self.avatars {
+            if av.player_id == placer {
+                continue;
+            }
+            // Nobody far from the new pieces can have been enclosed BY them, and checking
+            // every avatar in a streamed world would be a flood fill per player per build.
+            if pieces.iter().all(|p| p.distance_to(&av.position) > reach * 2.0) {
+                continue;
+            }
+            if !self.can_get_away(
+                &field,
+                &av.position,
+                reach,
+                b.enclosure_cell,
+                b.enclosure_cell_budget,
+            ) {
+                return Some(av.player_id.clone());
+            }
+        }
+        None
+    }
+
     fn blocking_field(&self) -> BlockField {
         let mut out: Vec<(Position, f64)> =
             self.obstacles.iter().map(|o| (o.position, o.radius)).collect();
@@ -12288,6 +12901,49 @@ impl Arena {
     }
 
     /// The structure `player_id` is standing at, within `radius` and on their level.
+    /// **Move `player_id` to somewhere a structure may legally go**, probing outward at
+    /// `radius`. Returns false if nowhere at that radius works.
+    ///
+    /// DEV/QA and test scaffolding: the world REFUSES most ground on purpose — the clear
+    /// path, another structure's spacing, a tree, another player — and a run starts you at
+    /// the origin, which is ON the trail. So "I pressed build and nothing happened" is the
+    /// expected experience of a fresh dive, and any harness or sandbox that wants to
+    /// exercise building has to move first.
+    ///
+    /// It probes with the REAL placement rule and cleans up after itself, rather than
+    /// reimplementing "is this legal" — which is the only way it stays correct as the rules
+    /// grow. `meld-server`'s `MELD_BUILD` sandbox and its `BuildHarness` both call this, so
+    /// there is one answer to where you can stand.
+    pub fn stand_somewhere_buildable(
+        &mut self,
+        balance: &Balance,
+        player_id: &str,
+        radius: f64,
+    ) -> bool {
+        let lat = self.corridor_lateral();
+        let half = self.radial_half();
+        for k in 0..400 {
+            let frac = -0.9 + 1.8 * (k as f64 / 400.0);
+            let p = Position::new(radius, lat * frac);
+            // Corridor -> world: corridor `y` is an ANGLE once the fan bends (WG-4), so a
+            // raw corridor point lands somewhere else entirely.
+            let bent = if half <= 0.0 {
+                p
+            } else {
+                let theta = (p.y / lat.max(1.0)).clamp(-1.0, 1.0) * half;
+                Position::new(p.x.max(0.0) * theta.cos(), p.x.max(0.0) * theta.sin())
+            };
+            let Some(av) = self.avatar_mut(player_id) else { return false };
+            av.position = bent;
+            if self.place_structure(balance, player_id, "wall", "probe", 0).is_ok() {
+                let id = self.structures.last().unwrap().entity_id.clone();
+                self.demolish_structure(balance, &id);
+                return true;
+            }
+        }
+        false
+    }
+
     pub fn structure_at(&self, player_id: &str, entity_id: &str, radius: f64) -> Option<&Structure> {
         let av = self.avatar(player_id)?;
         self.structures.iter().find(|s| {

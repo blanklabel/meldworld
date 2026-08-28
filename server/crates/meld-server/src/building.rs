@@ -100,14 +100,24 @@ pub(crate) fn held(run: &meld_run::PlayerRun, class: MaterialClass) -> i32 {
 /// The order is the rule. Placement is checked BEFORE the stock is spent, because a refusal
 /// that also charged you is the worst kind — and the arena is the only thing that knows the
 /// ground (spacing, the clear path, another player standing too close).
-pub(crate) fn raise(
+/// **Raise one at a chosen spot** (BD-9). `at` absent means the player's feet.
+///
+/// `yaw` is carried but not yet stored on the `Structure` — the client uses it to lay a run
+/// along its drag, and the server accepts it so the wire does not have to change again when
+/// the structure starts remembering which way it faces. Storing it is the next step, and
+/// pretending it is stored would be worse than saying so.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn raise_at(
     arena: &mut meld_world::Arena,
     run: &mut meld_run::PlayerRun,
     balance: &Balance,
     function: &str,
     player_id: &str,
     tick: u64,
+    at: Option<meld_proto::common::Position>,
+    yaw: Option<f64>,
 ) -> Result<Charged, String> {
+    let _ = yaw;
     let def = meld_proto::structures::structure(function).ok_or("No such structure.")?;
     let (cost, _, _) = balance.building.spec(function).ok_or("No such structure.")?;
     // BD-1: what it is made of comes from the REGISTRY, never from here.
@@ -115,7 +125,7 @@ pub(crate) fn raise(
     let kind = affordable_kind(run, class, cost)
         .ok_or_else(|| format!("{} takes {cost} {}.", def.name, class.wire()))?;
     arena
-        .place_structure(balance, player_id, function, &kind, tick)
+        .place_structure_at(balance, player_id, function, &kind, tick, at)
         .map_err(|why| why.message().to_string())?;
     spend(run, class, cost).expect("affordability was just checked");
     Ok(Charged { kind, qty: cost })
@@ -221,32 +231,14 @@ impl BuildHarness {
         h
     }
 
-    /// Walk the corridor at `radius` until we find a spot the arena will actually accept,
-    /// probing with the REAL placement rule and cleaning up after itself.
+    /// Stand somewhere a structure may legally go. **Delegates to
+    /// `Arena::stand_somewhere_buildable`** — the same probe the `MELD_BUILD` sandbox uses,
+    /// so a test and a hand-played session agree about where you can build. It used to be a
+    /// private copy here, which is the drift this repo keeps meeting.
     pub(crate) fn stand_somewhere_legal(&mut self, radius: f64) -> bool {
-        let lat = self.arena.corridor_lateral();
-        let half = self.arena.radial_half();
         let b = self.balance.clone();
-        for k in 0..400 {
-            let frac = -0.9 + 1.8 * (k as f64 / 400.0);
-            let p = meld_proto::common::Position::new(radius, lat * frac);
-            // Corridor → world: corridor `y` is an ANGLE once the fan bends (WG-4), so a
-            // raw corridor point lands somewhere else entirely.
-            let bent = if half <= 0.0 {
-                p
-            } else {
-                let theta = (p.y / lat.max(1.0)).clamp(-1.0, 1.0) * half;
-                meld_proto::common::Position::new(p.x.max(0.0) * theta.cos(), p.x.max(0.0) * theta.sin())
-            };
-            let Some(av) = self.arena.avatar_mut(&self.player) else { return false };
-            av.position = bent;
-            if self.arena.place_structure(&b, &self.player, "wall", "probe", 0).is_ok() {
-                let id = self.arena.structures.last().unwrap().entity_id.clone();
-                self.arena.demolish_structure(&b, &id);
-                return true;
-            }
-        }
-        false
+        let p = self.player.clone();
+        self.arena.stand_somewhere_buildable(&b, &p, radius)
     }
 
     fn run(&mut self) -> &mut meld_run::PlayerRun {
@@ -286,7 +278,7 @@ impl BuildHarness {
         let (p, tick) = (self.player.clone(), self.tick);
         let arena = &mut self.arena;
         let run = self.inst.runs.iter_mut().find(|r| r.player_id == p).unwrap();
-        raise(arena, run, &b, function, &p, tick)
+        raise_at(arena, run, &b, function, &p, tick, None, None)
     }
 
     pub(crate) fn mend(&mut self, entity_id: &str) -> Result<Charged, String> {
@@ -494,5 +486,58 @@ mod harness_tests {
         let err = pack_down(&mut h.arena, run, &b, &id, "p2")
             .expect_err("someone else's anchor is not yours to take down");
         assert!(err.contains("not yours"), "should refuse on ownership: {err}");
+    }
+}
+
+#[cfg(test)]
+mod sandbox_tests {
+    use super::*;
+
+    /// **The sandbox's whole claim: you can build the moment you arrive.** A run starts you
+    /// at the origin, which is ON the clear path, where every build is refused — so this is
+    /// the one thing `MELD_BUILD` has to deliver, and the one a player cannot diagnose
+    /// (a refused build and a broken button look identical).
+    #[test]
+    fn a_fresh_arrival_cannot_build_but_the_sandbox_start_can() {
+        let (kind, cost) = {
+            let def = meld_proto::structures::structure("wall").unwrap();
+            let k = meld_proto::materials::MATERIALS
+                .iter()
+                .find(|m| m.class == def.material)
+                .unwrap()
+                .key;
+            let b = Balance::load_default().unwrap();
+            (k, b.building.spec("wall").unwrap().0)
+        };
+
+        // A player standing where a run puts them, carrying plenty: REFUSED, on the trail.
+        let mut h = BuildHarness::new();
+        h.arena.avatar_mut("p1").unwrap().position = meld_proto::common::Position::new(0.0, 0.0);
+        h.gather(kind, cost * 4);
+        let err = h.raise("wall").expect_err("the origin is on the clear path");
+        assert!(
+            !err.contains("takes"),
+            "it should be refused for the GROUND, not for affordability: {err}"
+        );
+
+        // The sandbox's probe moves them somewhere legal, and then it works.
+        assert!(h.stand_somewhere_legal(60.0), "the sandbox found nowhere buildable at d60");
+        h.raise("wall").expect("standing on buildable ground, carrying enough");
+        assert_eq!(h.arena.structures.len(), 1);
+    }
+
+    /// The sandbox hands over enough stock that gathering is not the exercise — and it must
+    /// cover EVERY structure, not just the cheap one.
+    #[test]
+    fn the_sandbox_stock_pays_for_everything_in_the_registry() {
+        let b = Balance::load_default().unwrap();
+        for def in meld_proto::structures::STRUCTURES {
+            let cost = b.building.spec(def.key).unwrap().0;
+            assert!(
+                cost <= 999,
+                "`{}` costs {cost}, more than the sandbox hands out",
+                def.key
+            );
+        }
     }
 }

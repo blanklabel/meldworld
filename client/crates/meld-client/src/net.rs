@@ -68,6 +68,8 @@ pub enum ClientCmd {
     /// Raise a `Structure` (CANON D21/§W3). One command for every function, because there
     /// is one primitive — the key comes from `meld_proto::structures`.
     BuildStructure { function: String },
+    /// BD-9: build at a chosen spot with a facing — what one piece of a dragged run is.
+    BuildStructureAt { function: String, at: (f64, f64), yaw: f64 },
     RepairStructure { entity_id: String },
     DemolishStructure { entity_id: String },
     /// Ask whoever raised this station to do a piece of work for you: the smith's
@@ -673,6 +675,11 @@ pub enum ServerMsg {
         /// Inland water: this world's standing bodies and river chains.
         basins: Vec<meld_proto::coast::Basin>,
         rivers: Vec<meld_proto::coast::RiverNode>,
+        /// **THE REGION DECOMPOSITION** ([`meld_proto::regions`]) — how this world is
+        /// partitioned into cells, plus the `[biome_gate]` that decides which biome each may
+        /// wear. The ground shader derives every fragment's cell from it, so a client that
+        /// guessed instead would paint a world the server does not hold.
+        regions: meld_proto::regions::Regions,
         tutorial: bool,
     },
     /// The caller's hero roster (name/class/level/stats) for the party panel.
@@ -2221,6 +2228,14 @@ impl Inner {
             ClientCmd::BuildStation { kind } => {
                 self.send_env(wr::BuildStation::TYPE, json!({ "kind": kind }))
             }
+            ClientCmd::BuildStructureAt { function, at, yaw } => self.send_env(
+                wr::BuildStructure::TYPE,
+                json!({
+                    "function": function,
+                    "at": { "x": at.0, "y": at.1 },
+                    "yaw": yaw,
+                }),
+            ),
             ClientCmd::BuildStructure { function } => {
                 self.send_env(wr::BuildStructure::TYPE, json!({ "function": function }))
             }
@@ -2422,6 +2437,10 @@ impl Inner {
                         .unwrap_or_default()
                 };
                 let (basins, rivers) = (quads("basins"), quads("rivers"));
+                // Absent on an older server: `Regions::default()` reads `ring_step == 0`,
+                // which every reader — the shader included — treats as "no world here".
+                let regions: meld_proto::regions::Regions =
+                    serde_json::from_value(raw.payload["regions"].clone()).unwrap_or_default();
                 self.out.push_back(ServerMsg::RunStarted {
                     terrain_off,
                     peaks,
@@ -2430,6 +2449,7 @@ impl Inner {
                     lobes,
                     basins,
                     rivers,
+                    regions,
                     tutorial,
                 });
                 self.emit_backpack();

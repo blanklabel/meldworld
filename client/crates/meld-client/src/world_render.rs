@@ -25,11 +25,6 @@ use meld_client::hd2d::{self, CharacterFrames};
 
 use super::*;
 
-/// Max radial biome rings the ground shader blends across (near the player). A
-/// section = one concentric ring, so this bounds how many nearby sections colour the
-/// visible ground; deeper/closer sections beyond the window clamp to the ends.
-pub(crate) const MAX_BIOME_RINGS: usize = 32;
-
 /// The sliding ground plane's size + tessellation. The plane follows the player so
 /// there's always ground underfoot, and its vertices are displaced into hills by
 /// `terrain_height`. Bevy's `Plane3d` emits `subdivisions + 2` vertices per side, so
@@ -71,17 +66,30 @@ const RIVER_SLOTS: usize = meld_proto::coast::MAX_RIVER_NODES;
 mod biome_params {
     #![allow(dead_code)]
     use super::{
-        BASIN_SLOTS, LOBE_SLOTS, MAX_BIOME_RINGS, PEAK_SLOTS, RIVER_SLOTS, STRAIT_SLOTS,
+        BASIN_SLOTS, LOBE_SLOTS, PEAK_SLOTS, RIVER_SLOTS, STRAIT_SLOTS,
     };
     use bevy::prelude::*;
     use bevy::render::render_resource::ShaderType;
 
     #[derive(Clone, Copy, ShaderType, Debug)]
     pub(crate) struct BiomeParams {
-        pub(crate) rings: [Vec4; MAX_BIOME_RINGS],
-        pub(crate) count: u32,
+        /// **THE REGION DECOMPOSITION** ([`meld_proto::regions`]):
+        /// `(arc_half, ring_step, cell_width, boundary_warp)`. A biome is a property of a
+        /// CELL, so the shader derives the cell a fragment stands in rather than reading a
+        /// radius band out of a LUT. `ring_step <= 0` is the "no world here" state the menus
+        /// and the city render against, which is what the shader tests.
+        pub(crate) region: Vec4,
+        /// `[biome_gate]` in `BIOMES` order — `gate.xyzw` = field, forest, desert, ashfall
+        /// and `gate_hi.xy` = tundra, mire. In the uniform for the same reason the coast
+        /// constants are: the shader picks a cell's biome itself, and a shader that has not
+        /// been told the gate paints a theme the server does not spawn.
+        pub(crate) gate: Vec4,
+        pub(crate) gate_hi: Vec4,
+        /// World units the ground cross-fades across a cell boundary. A distance from the
+        /// nearest edge, because a boundary is 2D now rather than a radial band.
+        pub(crate) region_blend: f32,
+        pub(crate) region_seed: u32,
         pub(crate) uv_scale: f32,
-        pub(crate) blend_half: f32,
         /// Heightmap displacement amplitude: 1.0 in the Overworld, 0.0 elsewhere (City +
         /// menus stay flat — see `set_ground_terrain_amp`). Also the struct's tail pad.
         pub(crate) terrain_amp: f32,
@@ -171,10 +179,12 @@ mod biome_params {
     impl Default for BiomeParams {
         fn default() -> Self {
             BiomeParams {
-                rings: [Vec4::ZERO; MAX_BIOME_RINGS],
-                count: 0,
+                region: Vec4::ZERO,
+                gate: Vec4::ZERO,
+                gate_hi: Vec4::ZERO,
+                region_blend: 26.0,
+                region_seed: 0,
                 uv_scale: 1.0 / 3.0,
-                blend_half: 18.0,
                 // Default flat: menus/join/city render level ground. The Overworld flips it
                 // to 1.0 on entry (`set_ground_terrain_amp`).
                 terrain_amp: 0.0,
@@ -619,6 +629,15 @@ pub(crate) struct WorldAssets {
     pub(crate) prop_scenes: HashMap<String, Vec<(Handle<WorldAsset>, f32)>>,
     /// 3D harvest-node models keyed by resource content id → `(scene, baked_scale)`.
     pub(crate) resource_scenes: HashMap<String, (Handle<WorldAsset>, f32)>,
+    /// **What a player-built structure is MADE OF, as kit pieces.** Keyed by structure
+    /// function; each entry is `(scene, local offset, yaw°, scale)`, composed the way
+    /// `CITY_PROPS` composes a crypt out of a body and a roof.
+    ///
+    /// ⚠️ Before this, a wall and an anchor both drew as a tinted copy of
+    /// `fx/portal_arch.png` — the same blue arch as a dungeon exit. The whole
+    /// player-building pillar had no art at all, so "I built a wall" and "there is a
+    /// portal here" were the same picture.
+    pub(crate) structure_parts: HashMap<&'static str, Vec<(Handle<WorldAsset>, Vec3, f32, f32)>>,
     pub(crate) portal_sprite: Handle<Image>,
     pub(crate) portal_mesh: Handle<Mesh>,
     pub(crate) portal_mat: Handle<StandardMaterial>,
@@ -993,6 +1012,26 @@ pub(crate) fn setup(
         ("rime_ore", sc("stone_smallC", 7.337)),
         ("bog_myrrh", sc("mushroom_redGroup", 4.791)),
         ("peat_iron", sc("rock_smallB", 5.656)),
+        // ⚠️ BD-1's STRUCTURAL NODES, AND THEY MUST BE HERE OR THEY ARE INVISIBLE.
+        //
+        // The node spawn tries `resource_<kind>.png` first and falls through to this map —
+        // and if BOTH miss, it spawns NOTHING AT ALL. So shipping seven new materials
+        // without a row here put seven kinds of gatherable stock into the world that no
+        // player could see: the server knew they were there, `[E]` would even harvest one
+        // you happened to stand on, and the ground looked empty. A material you cannot see
+        // is a material that does not exist, the same way a token nothing renders does not.
+        //
+        // Timber reads as a stack of cut logs (deadfall you can carry off, not a standing
+        // tree — that is CR's `Flora`); masonry as loose stone, sized and shaped to its
+        // band. Bespoke billboards should replace these the moment the art exists, which is
+        // what the `resource_<kind>.png` branch above is for.
+        ("heartoak_log", sc("log_stack", 3.4)),
+        ("bog_root_timber", sc("log", 4.041)),
+        ("river_granite", sc("stone_smallFlatA", 6.2)),
+        ("sun_sandstone", sc("stone_smallC", 7.337)),
+        ("basalt_slab", sc("stone_smallFlatB", 6.2)),
+        ("rime_stone", sc("stone_tallC", 5.4)),
+        ("peat_shale", sc("stone_largeA", 4.6)),
     ]
     .into_iter()
     .map(|(k, v)| (k.to_string(), v))
@@ -1155,6 +1194,37 @@ pub(crate) fn setup(
         monster_pool,
         prop_scenes,
         resource_scenes,
+        structure_parts: {
+            // Kenney CC0 `fantasy-town`, already the kit Last City is built from — and its
+            // matched wood/stone lines map onto BD-1's timber/masonry split exactly: a
+            // palisade is `wall-wood`, an anchor is a standing stone.
+            let kit = |p: &str| -> Handle<WorldAsset> {
+                assets.load(GltfAssetLabel::Scene(0).from_asset(format!("models/fantasy-town/{p}.glb")))
+            };
+            let mut m: HashMap<&'static str, Vec<(Handle<WorldAsset>, Vec3, f32, f32)>> =
+                HashMap::new();
+            // A palisade: three timber panels in a short run, so it reads as a LENGTH of
+            // wall rather than one lonely panel — a wall you cannot tell the facing of is a
+            // wall you cannot line up with the next one.
+            m.insert(
+                "wall",
+                vec![
+                    (kit("wall-wood"), Vec3::new(0.0, 0.0, 0.0), 0.0, 2.2),
+                    (kit("wall-wood"), Vec3::new(2.0, 0.0, 0.0), 0.0, 2.2),
+                    (kit("wall-wood"), Vec3::new(-2.0, 0.0, 0.0), 0.0, 2.2),
+                ],
+            );
+            // An anchor: a standing stone on a plinth. It has to read as PERMANENT from a
+            // distance, because that is the entire claim it makes about the ground.
+            m.insert(
+                "anchor",
+                vec![
+                    (kit("pillar-stone"), Vec3::new(0.0, 0.0, 0.0), 0.0, 2.6),
+                    (kit("wall-block-half"), Vec3::new(0.0, 0.0, 0.0), 0.0, 2.0),
+                ],
+            );
+            m
+        },
         portal_sprite: ld("fx/portal_arch.png"),
         // A faint emissive ground-ring keeps the portal glowing under the billboard.
         portal_mesh: meshes.add(Torus::new(0.18, 1.15)),
@@ -1782,19 +1852,25 @@ pub(crate) struct Backdrop {
     off: Vec2,
 }
 
-/// Wind sway for foliage: the prop leans back and forth around its base (which sits
-/// on the ground) so the top travels most — reading as leaves moving in the wind.
-/// `base_yaw` preserves the spawn-time variety rotation the sway composes onto; the
-/// sway strengthens in rain (see [`animate_sway`]). Applied to trees/mushrooms/cacti.
+/// Wind sway for foliage: the sprite leans back and forth around its BASE, so the canopy
+/// travels and the trunk stays planted. Lives on the billboard QUAD (not its root), because
+/// a billboard owns its own world rotation — see [`animate_sway`] for why that decides
+/// everything about how this is applied.
+///
+/// `pivot_y` is the quad's local height above the ground it stands on; the lean is a
+/// rotation about that point rather than about the quad's centre, which is the difference
+/// between a tree bending and a tree see-sawing at its waist.
 #[derive(Component)]
 pub(crate) struct Sway {
-    pub(crate) base_yaw: f32,
+    pub(crate) pivot_y: f32,
     pub(crate) phase: f32,
     pub(crate) amp: f32,
     pub(crate) speed: f32,
 }
 
-/// Per-obstacle-kind wind-sway amplitude (radians of lean); `None` = rigid (rock/etc).
+/// Per-obstacle-kind wind-sway amplitude (radians of lean at full storm); `None` = rigid
+/// (rock/cliff/etc). Read together with [`gust_response`], which is shaped so these numbers
+/// land on the degrees the comments below claim.
 pub(crate) fn sway_amp(kind: &str) -> Option<f32> {
     // ⚠️ THESE WERE A THIRD OF WHAT YOU CAN SEE. `animate_sway` multiplies them by
     // `0.06 + wind * 2.4`, which is 0.42 in fair weather — so a tree at 0.05 leaned ONE
@@ -1824,14 +1900,37 @@ pub(crate) fn animate_sway(time: Res<Time>, sky: Option<Res<Sky>>, mut q: Query<
     // rises before a storm and hardest in the downpour. A hair of idle sway keeps a
     // calm forest from looking frozen.
     let wind = sky.map(|s| s.wind).unwrap_or(0.0);
-    let gust = 0.06 + wind * 2.4;
+    let gust = gust_response(wind);
     for (s, mut tf) in &mut q {
         // Faster, choppier motion the harder it blows.
         let a = (t * s.speed * (1.0 + wind) + s.phase).sin() * s.amp * gust;
-        tf.rotation = Quat::from_rotation_y(s.base_yaw)
-            * Quat::from_rotation_z(a)
-            * Quat::from_rotation_x(a * 0.35);
+        // ⚠️ COMPOSE ONTO THE BILLBOARD'S YAW, NEVER REPLACE IT — the same rule the grass
+        // lean follows, for the same reason: `hd2d::billboard` wrote this rotation, and
+        // assigning over it drops the sprite's facing and turns it edge-on. Ordered
+        // `.after(hd2d::billboard)` at the registration, so the yaw is already here.
+        //
+        // Leaning about Z in the billboard's OWN frame is what makes the lean read as a lean
+        // from every camera bearing. Rotating the ROOT instead would pivot at the base for
+        // free, but the root is a billboard's ancestor, and a lean applied there tips the
+        // sprite toward the camera rather than across the screen whenever the camera looks
+        // down the world Z axis.
+        let q = tf.rotation * Quat::from_rotation_z(a);
+        tf.rotation = q;
+        // Which leaves the pivot to rebuild by hand: a quad's own origin is its CENTRE, so
+        // rotating there swings the trunk out as far as the canopy. Carrying the quad's
+        // offset through the same rotation pivots the whole sprite about the ground instead.
+        tf.translation = q * Vec3::new(0.0, s.pivot_y, 0.0);
     }
+}
+
+/// How hard the wind leans things, per unit of `sky.wind`.
+///
+/// Shaped rather than arbitrary: [`sway_amp`] is multiplied by this, so the two together
+/// decide the actual angle, and an amplitude table nobody can read in degrees is what let a
+/// tree ship leaning one and a half degrees. These coefficients put a tree (`0.17`) at **4°
+/// in fair weather and 15° in a super storm** — the design the table's own comments state.
+pub(crate) fn gust_response(wind: f32) -> f32 {
+    0.213 + wind * 1.327
 }
 
 /// Keep the [`Backdrop`] cliffs parked around the camera (they never get closer, like
@@ -2278,6 +2377,7 @@ pub(crate) fn set_section_water(
 /// exists to answer "where am I".
 pub(crate) struct ShoreData {
     pub(crate) terrain_off: (f32, f32),
+    pub(crate) peaks: Vec<[f32; 4]>,
     pub(crate) straits: Vec<meld_proto::coast::Strait>,
     pub(crate) lobes: Vec<meld_proto::coast::Lobe>,
     pub(crate) basins: Vec<meld_proto::coast::Basin>,
@@ -2286,10 +2386,15 @@ pub(crate) struct ShoreData {
 
 impl ShoreData {
     /// Borrow it as a [`meld_proto::coast::Shore`] for the given fan.
+    ///
+    /// The PEAKS are part of the shoreline here because a basin fills against
+    /// `height + peak_height` — a hill standing in a lake is an island, and leaving the domes
+    /// out floods straight through a mountain.
     pub(crate) fn shore(&self, arc_half: f32) -> meld_proto::coast::Shore<'_> {
         meld_proto::coast::Shore {
             arc_half,
             terrain_off: self.terrain_off,
+            peaks: &self.peaks,
             straits: &self.straits,
             lobes: &self.lobes,
             basins: &self.basins,
@@ -2302,6 +2407,7 @@ impl ShoreData {
 pub(crate) fn shore_data() -> ShoreData {
     ShoreData {
         terrain_off: terrain_offset(),
+        peaks: peaks_snapshot(),
         straits: STRAITS.read().map(|s| s.clone()).unwrap_or_default(),
         lobes: LOBES.read().map(|l| l.clone()).unwrap_or_default(),
         basins: BASINS.read().map(|b| b.clone()).unwrap_or_default(),
@@ -2457,13 +2563,12 @@ pub(crate) fn biome_ring_index(name: &str) -> usize {
     }
 }
 
-/// Rebuild the ground shader's radial biome LUT from the streamed sections, so the
-/// floor is coloured by each section's ACTUAL biome (its concentric radius ring)
-/// instead of fixed distance bands — the fix for the ground/creature biome mismatch.
-/// A window of `MAX_BIOME_RINGS` rings centred on the player covers the visible fan;
-/// deeper dives clamp the far/near ends (out in the haze / behind you anyway).
+/// Feed the ground shader this world's coast, water, mountains and REGION DECOMPOSITION.
+///
+/// The biome half needs no window and no LUT any more: the shader derives a fragment's own
+/// cell from five numbers, so there is nothing to centre on the player and nothing to run
+/// out of at depth. The coast and water tables are still windowed, because those are lists.
 pub(crate) fn update_ground_biome_rings(
-    terrain: Res<Terrain>,
     world: Res<Overworld>,
     session: Res<Session>,
     state: Res<State<Screen>>,
@@ -2633,30 +2738,54 @@ pub(crate) fn update_ground_biome_rings(
         };
     }
     mat.extension.params.river_count = window.len() as u32;
-    // (outer_radius, biome_index) per section, sorted by radius (= corridor end_x).
-    let mut rings: Vec<(f32, f32)> = terrain
-        .sections
-        .values()
-        .map(|s| (s.end_x as f32, biome_ring_index(&s.biome) as f32))
-        .collect();
-    rings.sort_by(|a, b| a.0.total_cmp(&b.0));
 
-    // Window the rings around the player's radius (`pr`, above) when there are more than fit.
-    let start = if rings.len() <= MAX_BIOME_RINGS {
-        0
-    } else {
-        let center = rings.iter().position(|(r, _)| *r >= pr).unwrap_or(rings.len() - 1);
-        center
-            .saturating_sub(MAX_BIOME_RINGS / 2)
-            .min(rings.len() - MAX_BIOME_RINGS)
-    };
-    let window = &rings[start..(start + MAX_BIOME_RINGS).min(rings.len())];
-
+    // THE REGION DECOMPOSITION. Not a window and not a LUT: the shader derives a fragment's
+    // own cell from these five numbers, so there is nothing to centre on the player and
+    // nothing to run out of at depth — which is what the ring window had to keep managing.
+    let rg = regions();
     let p = &mut mat.extension.params;
-    p.count = window.len() as u32;
-    for (i, (radius, biome)) in window.iter().enumerate() {
-        p.rings[i] = Vec4::new(*radius, *biome, 0.0, 0.0);
+    p.region = Vec4::new(rg.grid.arc_half, rg.grid.ring_step, rg.grid.cell_width, rg.grid.warp);
+    p.region_blend = rg.blend;
+    p.region_seed = rg.grid.seed;
+    // `BIOMES` order, four then two — the split is only that a uniform wants `vec4`s.
+    let g = |i: usize| rg.gate.get(i).copied().unwrap_or(0.0);
+    p.gate = Vec4::new(g(0), g(1), g(2), g(3));
+    p.gate_hi = Vec4::new(g(4), g(5), 0.0, 0.0);
+}
+
+/// **THIS WORLD'S REGION DECOMPOSITION**, as the server sent it on `run.started`.
+///
+/// Held beside the terrain offset, the straits and the world seed because it is the same
+/// kind of thing: a per-world fact handed down once that several surfaces read. Never
+/// derived client-side — the gate and the cell size are balance, and a client that guessed
+/// them would paint a world the server does not hold.
+static REGIONS: std::sync::RwLock<Option<meld_proto::regions::Regions>> =
+    std::sync::RwLock::new(None);
+
+/// Record this world's decomposition (call on `run.started`).
+pub(crate) fn set_regions(r: meld_proto::regions::Regions) {
+    *REGIONS.write().unwrap() = Some(r);
+}
+
+/// This world's decomposition, or the empty one (`ring_step == 0`, which every reader
+/// treats as "no world here") before a run has started.
+pub(crate) fn regions() -> meld_proto::regions::Regions {
+    REGIONS.read().unwrap().clone().unwrap_or_default()
+}
+
+/// The biome at a world position, by the same decomposition the ground shader paints with.
+/// The one place a client-side coordinate becomes a theme, so grass placement, the minimap
+/// and the HUD label cannot disagree with the floor they are drawn on.
+pub(crate) fn biome_at_world(x: f32, z: f32) -> &'static str {
+    let rg = regions();
+    if rg.grid.ring_step <= 0.0 {
+        return "forest";
     }
+    let mut gate = [0.0f32; meld_proto::regions::BIOMES.len()];
+    for (i, g) in gate.iter_mut().enumerate() {
+        *g = rg.gate.get(i).copied().unwrap_or(0.0);
+    }
+    meld_proto::regions::BIOMES[rg.grid.biome_at(x, z, &gate)]
 }
 
 /// Bob the atmosphere motes and keep them anchored around the PLAYER (in the
@@ -2896,9 +3025,24 @@ pub(crate) fn advance_sky(
         }
     }
     // Per-phase wind + rain targets (a super storm blows harder).
-    let (wind_target, rain_target) = match sky.phase {
+    let (wind_target, rain_target) = wind_and_rain_targets(sky.phase, sky.super_storm);
+    let wr = 0.35 * dt;
+    sky.wind += (wind_target - sky.wind).clamp(-wr, wr);
+    let rr = 0.25 * dt;
+    sky.weather += (rain_target - sky.weather).clamp(-rr, rr);
+}
+
+/// The weather's shape, as a pure function so the ordering it promises can be tested:
+/// Fair → Gust → Storm → Clearing, with the wind LEADING the rain and peaking in the
+/// downpour.
+pub(crate) fn wind_and_rain_targets(phase: u8, super_storm: bool) -> (f32, f32) {
+    match phase {
         1 => (0.7, 0.0),
-        2 => (if sky.super_storm { 1.0 } else { 0.65 }, 1.0),
+        // ⚠️ A STORM MUST OUTBLOW ITS OWN PRECURSOR. The gust phase targets 0.7, so an
+        // ordinary storm at 0.65 blew SOFTER than the wind that announced it — the weather
+        // peaked and then eased off exactly as the rain arrived, which is backwards from
+        // the shape the phase machine is built to tell.
+        2 => (if super_storm { 1.0 } else { 0.82 }, 1.0),
         3 => (0.3, 0.0),
         // ⚠️ FAIR IS A BREEZE, NOT DEAD CALM — AND THIS IS WHY NOTHING EVER SWAYED.
         //
@@ -2912,11 +3056,7 @@ pub(crate) fn advance_sky(
         // ripples, and the gust before a storm is still four times stronger, so the weather
         // keeps its shape.
         _ => (0.15, 0.0),
-    };
-    let wr = 0.35 * dt;
-    sky.wind += (wind_target - sky.wind).clamp(-wr, wr);
-    let rr = 0.25 * dt;
-    sky.weather += (rain_target - sky.weather).clamp(-rr, rr);
+    }
 }
 
 // -------------------------------------------------------------- dungeon scene ---
@@ -3531,6 +3671,69 @@ mod ground_uniform_tests {
         }
     }
 
+    /// ⚠️ **THE REGION DECOMPOSITION IS WRITTEN TWICE**, in `meld_proto::regions` and again in
+    /// WGSL, because a shader cannot import Rust. The whole module is 32-bit integer and f32
+    /// arithmetic FOR this reason — WGSL has no 64-bit integer — so the two can mirror line
+    /// for line. What they cannot do is notice each other drifting: a changed hash constant
+    /// or sector cap on the Rust side would leave the server spawning one world and the
+    /// ground painting another, with nothing red anywhere.
+    ///
+    /// So derive the numbers from the Rust constants and read them out of the shader.
+    #[test]
+    fn the_region_decomposition_matches_the_shader() {
+        use meld_proto::regions::MAX_SECTORS;
+        let wgsl = include_str!("../assets/shaders/ground_biome.wgsl");
+        let bits = MAX_SECTORS.trailing_zeros();
+
+        // The cap on sectors per ring, and the key packing that depends on it.
+        assert!(
+            wgsl.contains(&format!("{MAX_SECTORS}u)")),
+            "the shader must cap sectors at MAX_SECTORS ({MAX_SECTORS})"
+        );
+        assert!(
+            wgsl.contains(&format!("(ring << {bits}u) | (sector & {}u)", MAX_SECTORS - 1)),
+            "the shader must pack a cell key the same way `Cell::key` does \
+             (<< {bits}, mask {})",
+            MAX_SECTORS - 1
+        );
+        // The biome list length is the gate's length and the loop bound.
+        assert!(
+            wgsl.contains(&format!("i < {}u", meld_proto::regions::BIOMES.len())),
+            "the shader must walk all {} biomes when filtering the gate",
+            meld_proto::regions::BIOMES.len()
+        );
+        // Every salt. A changed one silently repartitions the world on one side only.
+        for salt in ["0x7feb352du", "0x846ca68bu", "0x9E3779B9u", "0x5F356495u", "0x2545F491u"] {
+            assert!(wgsl.contains(salt), "the shader is missing the salt `{salt}`");
+        }
+        // The warp's two harmonics — its whole job is to stop a ring boundary reading as an
+        // arc, and a shader that wobbles it differently draws a boundary the server does not
+        // have.
+        for term in ["0.62 * sin(bearing * 3.0 + phase)", "0.38 * cos(bearing * 7.0 - phase * 2.0)"] {
+            assert!(wgsl.contains(term), "the shader's ring warp is missing `{term}`");
+        }
+    }
+
+    /// **Every region helper the ground shader defines must actually be CALLED** — the same
+    /// rule as the coast helpers below, for the same reason: inland water shipped completely
+    /// invisible because `inland_depth_at` was defined, mirrored, carried through the uniform
+    /// and never called from a fragment, and WGSL does not complain about an unused function.
+    #[test]
+    fn every_region_helper_is_actually_called() {
+        let wgsl = include_str!("../assets/shaders/ground_biome.wgsl");
+        for f in [
+            "rg_hash32", "rg_sectors", "rg_ring_offset", "rg_warp_at", "rg_ring_at",
+            "rg_fan_t", "rg_sector_in", "rg_biome_of", "rg_biome_at", "rg_edge", "rg_tex_of",
+        ] {
+            assert!(wgsl.contains(&format!("fn {f}(")), "ground_biome.wgsl should define `{f}`");
+            assert!(
+                wgsl.matches(&format!("{f}(")).count() >= 2,
+                "`{f}` is defined in ground_biome.wgsl and never called — a shader helper \
+                 with no call site renders nothing, and nothing else in this suite notices"
+            );
+        }
+    }
+
     #[test]
     fn the_basin_shore_slope_matches_the_shader() {
         let want = format!("/ {:?};", meld_proto::coast::BASIN_SHORE_SLOPE);
@@ -3567,7 +3770,8 @@ mod ground_uniform_tests {
             .expect("…and closes it")
             .0;
         for field in [
-            "rings", "count", "uv_scale", "blend_half", "terrain_amp", "terrain_off",
+            "region", "gate", "gate_hi", "region_blend", "region_seed", "uv_scale",
+            "terrain_amp", "terrain_off",
             "_pad_peaks", "peaks", "peak_count", "straits", "strait_count", "lobes",
             "lobe_count", "basins", "rivers", "basin_count", "river_count", "shift",
             "sea_anim",
@@ -3583,7 +3787,7 @@ mod ground_uniform_tests {
             .collect();
         assert_eq!(
             order.first().copied(),
-            Some("rings"),
+            Some("region"),
             "the shader's first field moved: {order:?}"
         );
         assert_eq!(
@@ -3757,5 +3961,259 @@ mod creature_sprite_tests {
         // A prefix must not bleed across species: `bog_ooze` is not a `bog` variant.
         const BOG: &[&str] = &["bog_ooze_baby"];
         assert_eq!(creature_art_key("bog_serpent", false, BOG), None);
+    }
+}
+
+#[cfg(test)]
+mod node_art_tests {
+    /// **Every gatherable material must have something to draw.** The node spawn tries a
+    /// bespoke `resource_<kind>.png` billboard, falls back to a 3D scene, and if BOTH miss
+    /// it spawns nothing at all — so a material with neither is invisible stock. BD-1
+    /// shipped seven of them that way for one commit.
+    ///
+    /// Checked against the material REGISTRY rather than a list, because the failure mode is
+    /// adding a material and forgetting the art, and a hand-written list is a list the new
+    /// material gets left off.
+    #[test]
+    fn every_gatherable_material_has_something_to_render() {
+        // The scene map is built inside `setup` against a live `AssetServer`, so mirror just
+        // its KEYS here — the same discipline as the shader-mirror tests.
+        const SCENE_KEYS: &[&str] = &[
+            "bloom_herb", "heartoak_bark", "sun_salts", "dune_iron", "ember_ash", "cinder_ore",
+            "frost_lichen", "rime_ore", "bog_myrrh", "peat_iron", "heartoak_log",
+            "bog_root_timber", "river_granite", "sun_sandstone", "basalt_slab", "rime_stone",
+            "peat_shale",
+        ];
+        for m in meld_proto::materials::MATERIALS {
+            // Only the ones the world actually scatters as nodes: refined stock is smelted
+            // and a trophy comes off a carcass, so neither is ever a thing standing in a
+            // field waiting to be harvested.
+            if !matches!(
+                m.class,
+                meld_proto::materials::MaterialClass::Reagent
+                    | meld_proto::materials::MaterialClass::Ore
+                    | meld_proto::materials::MaterialClass::Wood
+                    | meld_proto::materials::MaterialClass::Stone
+            ) {
+                continue;
+            }
+            let art = std::path::Path::new("assets/props")
+                .join(format!("resource_{}.png", m.key))
+                .exists();
+            assert!(
+                art || SCENE_KEYS.contains(&m.key),
+                "`{}` ({:?}) has neither a resource_{}.png billboard nor a scene — it would \
+                 spawn NOTHING and be invisible in the world",
+                m.key,
+                m.class,
+                m.key
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod structure_art_tests {
+    /// **Every buildable thing must have its own art.** The bug this closes had a wall and
+    /// an anchor drawing as the same tinted `portal_arch` billboard a dungeon exit uses — so
+    /// the whole player-building pillar rendered as "there is a portal here", and the two
+    /// functions were indistinguishable.
+    ///
+    /// Read off the registry rather than a list, because the failure is adding a structure
+    /// function and forgetting the art — and it fails SILENTLY, since the fallback still
+    /// draws something you can walk up to.
+    #[test]
+    fn every_structure_function_has_its_own_kit_parts() {
+        // Mirror of the keys built in `setup` (which needs a live AssetServer), plus the
+        // model files they name — so a renamed .glb fails here rather than at runtime.
+        const PARTS: &[(&str, &[&str])] = &[
+            ("wall", &["wall-wood"]),
+            ("anchor", &["pillar-stone", "wall-block-half"]),
+        ];
+        for def in meld_proto::structures::STRUCTURES {
+            let entry = PARTS.iter().find(|(k, _)| *k == def.key);
+            let Some((_, pieces)) = entry else {
+                panic!(
+                    "`{}` has no kit parts — it would fall back to the placeholder and be \
+                     indistinguishable from every other structure",
+                    def.key
+                );
+            };
+            for piece in *pieces {
+                let path = std::path::Path::new("assets/models/fantasy-town")
+                    .join(format!("{piece}.glb"));
+                assert!(path.exists(), "{} names `{piece}`, which is not in the kit", def.key);
+            }
+        }
+    }
+
+    /// A palisade is timber and an anchor is masonry (BD-1), and the ART has to agree — a
+    /// stone-looking wall you paid wood for is a lie about the cost.
+    #[test]
+    fn the_art_matches_the_material_it_is_built_from() {
+        use meld_proto::materials::MaterialClass;
+        for def in meld_proto::structures::STRUCTURES {
+            let looks_wooden = match def.key {
+                "wall" => true,
+                "anchor" => false,
+                other => panic!("`{other}` has no art claim in this test"),
+            };
+            let is_wooden = def.material == MaterialClass::Wood;
+            assert_eq!(
+                looks_wooden, is_wooden,
+                "`{}` is built from {:?} but its kit pieces read the other way",
+                def.key, def.material
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod weather_tests {
+    use super::*;
+
+    /// The phase machine tells a story — a breeze, then a gust announcing a storm, then the
+    /// storm itself, then it eases off. That story is only true if the numbers rise and fall
+    /// in that order, and one of them did not: the gust outblew the storm it was announcing.
+    #[test]
+    fn the_wind_builds_toward_the_downpour_and_eases_after_it() {
+        let fair = wind_and_rain_targets(0, false).0;
+        let gust = wind_and_rain_targets(1, false).0;
+        let storm = wind_and_rain_targets(2, false).0;
+        let super_storm = wind_and_rain_targets(2, true).0;
+        let clearing = wind_and_rain_targets(3, false).0;
+
+        assert!(fair > 0.0, "fair weather still moves leaves — a dead calm world reads as a still frame");
+        assert!(gust > fair, "the gust must rise above the breeze ({gust} vs {fair})");
+        assert!(
+            storm > gust,
+            "an ordinary storm must outblow its own precursor ({storm} vs gust {gust}) — \
+             otherwise the weather peaks before the rain and eases as it lands"
+        );
+        assert!(super_storm >= storm, "a super storm blows at least as hard ({super_storm} vs {storm})");
+        assert!(clearing < storm, "clearing eases off ({clearing} vs {storm})");
+    }
+
+    /// Only the storm phases bring rain, and the wind arrives BEFORE the water.
+    #[test]
+    fn the_wind_leads_the_rain() {
+        assert_eq!(wind_and_rain_targets(1, false).1, 0.0, "the gust is dry — it only announces");
+        assert_eq!(wind_and_rain_targets(2, false).1, 1.0, "the storm rains");
+        assert_eq!(wind_and_rain_targets(3, false).1, 0.0, "clearing stops raining");
+    }
+
+    /// The amplitude table is multiplied by [`gust_response`], so neither number is the angle
+    /// on its own — which is exactly how a tree shipped leaning one and a half degrees while
+    /// its table entry looked reasonable. Assert the DEGREES, so what the comments promise is
+    /// what the wind does.
+    #[test]
+    fn a_tree_leans_the_degrees_the_table_claims() {
+        let tree = sway_amp("tree").expect("a tree sways");
+        let fair = (tree * gust_response(wind_and_rain_targets(0, false).0)).to_degrees();
+        let storm = (tree * gust_response(wind_and_rain_targets(2, true).0)).to_degrees();
+        assert!(
+            (3.5..4.5).contains(&fair),
+            "fair weather should stir a tree about 4 degrees, got {fair:.1}"
+        );
+        assert!(
+            (14.0..16.0).contains(&storm),
+            "a super storm should toss a tree about 15 degrees, got {storm:.1}"
+        );
+        // And a cactus is a water tank on a stalk: it moves, barely.
+        let cactus = sway_amp("cactus").expect("a cactus sways");
+        assert!(cactus * 3.0 < tree, "a cactus should stay far stiffer than a tree");
+        assert!(sway_amp("boulder").is_none(), "rock is rigid");
+    }
+
+    /// ⚠️ **A SPRITE'S OWN ORIGIN IS ITS CENTRE, SO A LEAN ABOUT IT SEE-SAWS.** The trunk
+    /// swings out as far as the canopy and the tree stops touching the ground. `animate_sway`
+    /// carries the quad's offset through the same rotation to pivot about the base instead;
+    /// this is that arithmetic, checked rather than asserted in a comment.
+    #[test]
+    fn a_leaning_sprite_pivots_at_its_base_not_its_middle() {
+        let pivot_y = 3.5_f32; // a 7-unit tree
+        for lean in [0.07_f32, 0.26] {
+            // `hd2d::billboard` has already put the camera-facing yaw here; take it as
+            // identity (camera dead ahead) so the lean is the only thing moving anything.
+            let q = Quat::IDENTITY * Quat::from_rotation_z(lean);
+            let centre = q * Vec3::new(0.0, pivot_y, 0.0);
+            // The quad's bottom edge sits `pivot_y` below its centre in its own frame.
+            let base = centre + q * Vec3::new(0.0, -pivot_y, 0.0);
+            assert!(
+                base.length() < 1e-5,
+                "the trunk left the ground at lean {lean}: {base:?}"
+            );
+        }
+        // And the canopy genuinely travels, or the whole exercise renders as a still frame.
+        let q = Quat::from_rotation_z(0.26);
+        let travel = (q * Vec3::new(0.0, pivot_y, 0.0)).x.abs();
+        assert!(travel > 0.8, "a full storm moved the canopy {travel:.2} units");
+    }
+
+    /// ⚠️ **A SWAYING KIND WITH NO SPRITE SILENTLY LOSES ITS SWAY.** `Sway` now lives on the
+    /// billboard quad, so a kind that falls through to the 3D-model path gets none — which is
+    /// the bug this replaces, where every swaying kind took the sprite path and the only
+    /// `Sway` insertion sat on the model path nothing reached.
+    #[test]
+    fn every_swaying_kind_draws_as_a_sprite() {
+        for (kind, sprite) in [
+            ("tree", "obstacle_tree_pine"),
+            ("cactus", "obstacle_cactus"),
+            ("fungal_wall", "obstacle_fungal_wall"),
+        ] {
+            assert!(sway_amp(kind).is_some(), "{kind} should sway");
+            assert!(
+                PROP_KEYS.contains(&sprite),
+                "`{kind}` sways, so it must draw as a sprite — `{sprite}` is missing from \
+                 PROP_KEYS, which drops it onto the 3D-model path where nothing sways"
+            );
+        }
+    }
+
+    /// Both wind leans compose onto the yaw rather than assigning over it, and both are
+    /// ordered so there is a yaw to compose onto. One rule, two call sites, held in one place.
+    #[test]
+    fn both_wind_leans_compose_after_the_billboard() {
+        let here = include_str!("world_render.rs");
+        assert!(
+            here.contains("let q = tf.rotation * Quat::from_rotation_z(a);"),
+            "the prop lean must post-multiply onto the billboard yaw"
+        );
+        assert!(
+            here.contains("tf.translation = q * Vec3::new(0.0, s.pivot_y, 0.0);"),
+            "the prop lean must carry the quad's offset through the rotation, or it see-saws"
+        );
+        let main = include_str!("main.rs");
+        for sys in ["animate_sway.after(hd2d::billboard)", "ambient::update_ambient_scatter.after(hd2d::billboard)"] {
+            assert!(main.contains(sys), "`{sys}` must be ordered after the billboard pass");
+        }
+    }
+
+    /// ⚠️ **A GRASS BLADE IS A BILLBOARD, AND TWO SYSTEMS WANT ITS ROTATION.**
+    ///
+    /// `hd2d::billboard` writes the camera-facing yaw; the grass lean in
+    /// `ambient::update_ambient_scatter` writes the bend. Assigning in the second dropped the
+    /// first, and with no ordering between them the winner changed frame to frame — grass
+    /// snapping between flat-on and edge-on across the whole ground plane. The rule is
+    /// COMPOSE, and it is only a comment at the call site, so hold it here.
+    #[test]
+    fn the_grass_lean_composes_onto_the_billboard_yaw() {
+        let src = include_str!("ambient.rs");
+        assert!(
+            src.contains("tf.rotation *= Quat::from_rotation_z(lean)"),
+            "the grass lean must post-multiply onto the yaw `hd2d::billboard` already wrote — \
+             assigning `tf.rotation` there destroys the blade's facing"
+        );
+        assert!(
+            !src.contains("tf.rotation = Quat::from_rotation_z(lean)"),
+            "the grass lean is ASSIGNING its rotation again, which drops the billboard yaw"
+        );
+        // And the compose is only meaningful if the yaw is there to compose onto.
+        let main = include_str!("main.rs");
+        assert!(
+            main.contains("ambient::update_ambient_scatter.after(hd2d::billboard)"),
+            "the grass scatter must be ordered after `hd2d::billboard`, or it composes onto \
+             whatever last frame left behind"
+        );
     }
 }

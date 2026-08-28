@@ -13,8 +13,7 @@
 use bevy::prelude::*;
 
 use crate::hd2d;
-use crate::overworld::biome_display;
-use crate::{Session, Terrain, WorldEntity};
+use crate::{Session, WorldEntity};
 
 const SPACING: f32 = 3.0;
 const GRID: i32 = 15;
@@ -55,14 +54,13 @@ fn cell_hash(cx: i32, cz: i32, salt: u32) -> u32 {
     hash(((cx as u32 as u64) << 32) ^ (cz as u32 as u64) ^ ((salt as u64) << 20))
 }
 
-fn biome_at(terrain: &Terrain, x: f32, z: f32) -> String {
-    let r = ((x * x + z * z).sqrt()) as f64;
-    terrain
-        .sections
-        .values()
-        .find(|s| r >= s.start_x && r < s.end_x)
-        .map(|s| s.biome.clone())
-        .unwrap_or_else(|| biome_display(r.floor() as i64).to_string())
+/// Which biome this ground is, by the SAME decomposition the ground shader paints with.
+///
+/// A section's `biome` is only its representative theme now — a section spans many cells —
+/// so asking the section would scatter grass by one answer onto a floor painted by another,
+/// and the disagreement is visible as tufts standing on sand.
+fn biome_at(x: f32, z: f32) -> &'static str {
+    crate::world_render::biome_at_world(x, z)
 }
 fn grassy(biome: &str) -> bool {
     matches!(biome, "field" | "forest" | "mire")
@@ -102,7 +100,6 @@ fn player_pos(
 
 pub(crate) fn update_ambient_scatter(
     session: Res<Session>,
-    terrain: Res<Terrain>,
     grass: Res<AmbientGrass>,
     time: Res<Time>,
     sky: Option<Res<crate::world_render::Sky>>,
@@ -133,7 +130,15 @@ pub(crate) fn update_ambient_scatter(
             // Grass moves MORE than the canopy, not less: it is lighter, and it is what the
             // eye reads wind from first. ~8 degrees in a breeze, ~30 in a storm.
             let lean = (t * (1.4 + wind * 1.6) + blade.phase).sin() * (0.06 + wind * 0.50);
-            tf.rotation = Quat::from_rotation_z(lean);
+            // ⚠️ COMPOSE ONTO THE BILLBOARD'S YAW, NEVER REPLACE IT. A blade carries both
+            // `GrassBlade` and `hd2d::Billboard`, so `billboard` and this system both write
+            // one `Transform::rotation`. Assigning here dropped the camera-facing yaw
+            // outright, and with no ordering between the two the winner changed frame to
+            // frame — grass snapping between flat-on and edge-on across the whole ground.
+            // Ordered `.after(hd2d::billboard)` at the registration, so the yaw is already
+            // there; post-multiplying puts the lean in the blade's OWN frame, which is a
+            // bend left and right across the screen rather than a pivot out of view.
+            tf.rotation *= Quat::from_rotation_z(lean);
         }
         let dx = (blade.idx as i32 % GRID) - GRID / 2;
         let dz = (blade.idx as i32 / GRID) - GRID / 2;
@@ -149,7 +154,7 @@ pub(crate) fn update_ambient_scatter(
         // two kinds of scatter cannot disagree about where the shoreline is.
         if crate::world_render::on_open_water(&frame, state.get(), wx, wz)
             || (h % 100) < 55
-            || !grassy(&biome_at(&terrain, wx, wz))
+            || !grassy(biome_at(wx, wz))
         {
             *vis = Visibility::Hidden;
             continue;

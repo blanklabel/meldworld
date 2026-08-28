@@ -524,19 +524,6 @@ pub(crate) fn touch_action_buttons(
     }
 }
 
-/// Display name of the biome band at a floored distance (client-side mirror of
-/// the server's structural biome table — display only; the server stays
-/// authoritative for what actually spawns).
-pub(crate) fn biome_display(d: i64) -> &'static str {
-    match d {
-        0..=99 => "Forest",
-        100..=299 => "Desert",
-        300..=499 => "Ashfall",
-        500..=999 => "Tundra",
-        _ => "Mire",
-    }
-}
-
 /// Server (x, y) → HD-2D world space: x east, **z = server y** (south, +Z toward
 /// the camera parked behind the player). Y is up: `height` above the rolling ground,
 /// which sits at `terrain_height(x, z)` — so everything placed through here rides the
@@ -823,7 +810,6 @@ pub(crate) fn channel_fill_pct(phase: f32, fill_ms: u64) -> f32 {
 pub(crate) fn update_run_stats(
     world: Res<Overworld>,
     session: Res<Session>,
-    terrain: Res<Terrain>,
     mut stats: ResMut<RunStats>,
 ) {
     let Some(me) = world.entities.get(&session.player_id) else {
@@ -831,15 +817,10 @@ pub(crate) fn update_run_stats(
     };
     let d = (me.x * me.x + me.y * me.y).sqrt().floor() as i64;
     let tier = d / 100; // tier(d) = floor(d/100) — the CANON distance axis.
-    // The biome label reads the ACTUAL section the player stands in (its radius ring),
-    // so it agrees with the ground + the creatures — not the fixed distance bands.
-    let r = d as f64;
-    let biome = terrain
-        .sections
-        .values()
-        .find(|s| r >= s.start_x && r < s.end_x)
-        .map(|s| title_case(&s.biome))
-        .unwrap_or_else(|| biome_display(d).to_string());
+    // The label reads the CELL the player is standing in, through the same decomposition
+    // the ground shader paints with — so it names the ground under your feet rather than a
+    // whole ring's representative theme, which is now only a summary of many cells.
+    let biome = title_case(crate::world_render::biome_at_world(me.x, me.y));
     if stats.distance != d {
         stats.distance = d;
     }
@@ -1720,7 +1701,7 @@ pub(crate) fn sync_overworld_sprites(
                     Some("elite") => (1.6 * 1.4, Color::srgb(1.5, 0.8, 0.55)),
                     _ => (1.6, tint),
                 };
-                spawn_billboard_entity(&mut commands, &mut mats, &wa, id, e, tex, size, tint, 0.55);
+                spawn_billboard_entity(&mut commands, &mut mats, &wa, id, e, tex, size, tint, 0.55, None);
             }
             EntityKind::Portal => {
                 // The stone-gateway billboard, plus a faint emissive ground ring so
@@ -1735,6 +1716,7 @@ pub(crate) fn sync_overworld_sprites(
                     3.0,
                     Color::srgb(1.2, 1.2, 1.3),
                     0.0,
+                    None,
                 );
                 add_ground_ring(&mut commands, &wa, root);
             }
@@ -1821,31 +1803,70 @@ pub(crate) fn sync_overworld_sprites(
                     1.8,
                     Color::srgb(1.5, 1.0, 0.55),
                     0.25,
+                    None,
                 );
                 add_ground_ring(&mut commands, &wa, root);
             }
             EntityKind::Structure => {
-                // A player-built structure. Cool steel against the warm field bench, so
-                // "somebody built this to LAST" reads differently at a glance from
-                // "somebody set this up for a minute" — and dim while it is still going
-                // up, because a half-built wall is not yet a wall.
+                // A player-built structure, out of the same Kenney kit Last City is built
+                // from: a timber palisade for a wall, a standing stone for an anchor.
+                //
+                // ⚠️ IT USED TO BE A TINTED PORTAL ARCH — the identical billboard a dungeon
+                // exit uses. So the entire player-building pillar drew as "there is a portal
+                // here", and a wall and an anchor were the same picture in two shades of
+                // blue. A building is GEOMETRY rather than a billboard on purpose: you walk
+                // around it and it has to occlude and cast shadow from any angle, and a
+                // billboard's shading normals swing with the camera (fixed earlier, but a
+                // flat quad would still read as paper when you orbit).
                 let going_up = e.opened;
-                let tint = if going_up {
-                    Color::srgb(0.55, 0.62, 0.72)
-                } else {
-                    Color::srgb(0.85, 1.05, 1.45)
-                };
-                let root = spawn_billboard_entity(
-                    &mut commands,
-                    &mut mats,
-                    &wa,
-                    id,
-                    e,
-                    wa.portal_sprite.clone(),
-                    2.4,
-                    tint,
-                    if going_up { 0.10 } else { 0.28 },
-                );
+                let function = e.name.as_deref().unwrap_or("wall");
+                let root = commands
+                    .spawn((
+                        WorldEntity(id.clone()),
+                        Transform::from_translation(world_pos(e.x, e.y, 0.0)),
+                        Visibility::default(),
+                    ))
+                    .id();
+                match wa.structure_parts.get(function) {
+                    Some(parts) => {
+                        for (scene, off, yaw, scale) in parts {
+                            // While it is still going up it stands PART WAY out of the
+                            // ground, rather than being drawn dimmer: a half-built wall is
+                            // legible as half-built from any distance, and sinking it avoids
+                            // reaching into a GLB's materials to tint them.
+                            let grow = if going_up { 0.45 } else { 1.0 };
+                            let child = commands
+                                .spawn((
+                                    WorldAssetRoot(scene.clone()),
+                                    Transform::from_translation(Vec3::new(
+                                        off.x,
+                                        off.y - (1.0 - grow) * 1.6,
+                                        off.z,
+                                    ))
+                                    .with_scale(Vec3::splat(scale * grow))
+                                    .with_rotation(Quat::from_rotation_y(yaw.to_radians())),
+                                ))
+                                .id();
+                            commands.entity(root).add_child(child);
+                        }
+                    }
+                    // A function with no art is a bug, not a case to design around — but it
+                    // must still be visible enough to walk up to and demolish.
+                    None => {
+                        let child = commands
+                            .spawn((
+                                Mesh3d(wa.sprite_quad.clone()),
+                                MeshMaterial3d(mats.add(hd2d::sprite_material(
+                                    Color::srgb(1.0, 0.2, 0.8),
+                                    wa.portal_sprite.clone(),
+                                ))),
+                                Transform::from_xyz(0.0, 1.2, 0.0),
+                                hd2d::Billboard,
+                            ))
+                            .id();
+                        commands.entity(root).add_child(child);
+                    }
+                }
                 add_ground_ring(&mut commands, &wa, root);
             }
             EntityKind::Stair => {
@@ -1865,6 +1886,7 @@ pub(crate) fn sync_overworld_sprites(
                     2.8,
                     Color::srgb(0.75, 1.15, 1.5),
                     0.3,
+                    None,
                 );
                 add_ground_ring(&mut commands, &wa, root);
             }
@@ -1903,6 +1925,7 @@ pub(crate) fn sync_overworld_sprites(
                         Color::srgb(1.4, 0.35, 0.3)
                     },
                     0.2,
+                    None,
                 );
             }
             EntityKind::Entrance => {
@@ -1919,6 +1942,7 @@ pub(crate) fn sync_overworld_sprites(
                     3.2,
                     Color::srgb(0.85, 0.45, 1.25),
                     0.45,
+                    None,
                 );
             }
         }
@@ -3300,6 +3324,11 @@ pub(crate) fn spawn_connector(
         });
 }
 
+/// `sway` is the wind-lean amplitude from [`sway_amp`], or `None` for anything rigid. It
+/// lands on the QUAD rather than the root because a billboard owns its own world rotation
+/// (see [`animate_sway`]); the root stays translation-only, which is the invariant
+/// `hd2d::billboard` depends on.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn spawn_billboard_entity(
     commands: &mut Commands,
     mats: &mut Assets<StandardMaterial>,
@@ -3310,6 +3339,7 @@ pub(crate) fn spawn_billboard_entity(
     height: f32,
     tint: Color,
     shadow: f32,
+    sway: Option<f32>,
 ) -> Entity {
     // The shared quad mesh is 2.2 world-units tall; scale to the wanted height and
     // lift it so the sprite's feet sit on the ground plane.
@@ -3322,12 +3352,22 @@ pub(crate) fn spawn_billboard_entity(
             Visibility::default(),
         ))
         .with_children(|p| {
-            p.spawn((
+            let mut quad = p.spawn((
                 Mesh3d(wa.sprite_quad.clone()),
                 MeshMaterial3d(mat),
                 Transform::from_xyz(0.0, height * 0.5, 0.0).with_scale(Vec3::splat(scale)),
                 hd2d::Billboard,
             ));
+            if let Some(amp) = sway {
+                // Phase and speed off the id, so neighbouring trees never toss in lockstep.
+                let h = hash_pick(id, 10000);
+                quad.insert(Sway {
+                    pivot_y: height * 0.5,
+                    phase: (h % 628) as f32 / 100.0,
+                    amp,
+                    speed: 0.7 + ((h / 628) % 60) as f32 / 100.0,
+                });
+            }
             if shadow > 0.0 {
                 p.spawn((
                     Mesh3d(wa.shadow_mesh.clone()),
@@ -3462,13 +3502,19 @@ pub(crate) fn spawn_obstacle(
                 // canopy line varies. (Bumped up — they read too small/low before.)
                 let vf = 0.85 + (hash_pick(id, 100) as f32 / 100.0) * 0.9; // 0.85..1.75
                 let height = ((3.6 + r * 1.4) * vf).clamp(3.4, 9.5);
-                spawn_billboard_entity(commands, mats, wa, id, e, tex, height, Color::WHITE, height * 0.28);
+                spawn_billboard_entity(
+                    commands, mats, wa, id, e, tex, height, Color::WHITE, height * 0.28,
+                    sway_amp(name),
+                );
                 return;
             }
         }
         if let Some(tex) = wa.prop_sprites.get(&format!("obstacle_{name}")) {
             let height = (1.8 + r * 0.8).clamp(1.8, 4.5);
-            spawn_billboard_entity(commands, mats, wa, id, e, tex.clone(), height, Color::WHITE, 0.55);
+            spawn_billboard_entity(
+                commands, mats, wa, id, e, tex.clone(), height, Color::WHITE, 0.55,
+                sway_amp(name),
+            );
             return;
         }
     }
@@ -3480,23 +3526,21 @@ pub(crate) fn spawn_obstacle(
             // obstacles read bigger, without drifting far from the tuned size.
             let scale = base * (0.85 + r * 0.15).clamp(0.85, 1.5);
             let yaw = (hash_pick(id, 360) as f32).to_radians();
-            let mut ent = commands.spawn((
+            commands.spawn((
                 WorldEntity(id.to_string()),
                 WorldAssetRoot(scene.clone()),
                 Transform::from_translation(world_pos(e.x, e.y, 0.0))
                     .with_scale(Vec3::splat(scale))
                     .with_rotation(Quat::from_rotation_y(yaw)),
             ));
-            // Foliage sways in the wind (see `animate_sway`); rock/cliff stays rigid.
-            if let Some(amp) = sway_amp(name) {
-                let h = hash_pick(id, 10000);
-                ent.insert(Sway {
-                    base_yaw: yaw,
-                    phase: (h % 628) as f32 / 100.0,
-                    amp,
-                    speed: 0.7 + ((h / 628) % 60) as f32 / 100.0,
-                });
-            }
+            // ⚠️ NO SWAY ON THE 3D-MODEL PATH, AND THAT IS WHY TREES NEVER SWAYED. Every
+            // kind `sway_amp` answers for — tree, cactus, fungal_wall — has a prop sprite in
+            // `PROP_KEYS`, and the sprite branch above returns before reaching here. So this
+            // was the ONLY place `Sway` was ever inserted, on a path nothing takes: the
+            // feature had no live entities at all. It belongs on the billboard quad, where
+            // `spawn_billboard_entity` now puts it. A swaying 3D model would need its own
+            // path, since rotating a mesh root and rotating a billboard are different
+            // problems.
             return;
         }
     }

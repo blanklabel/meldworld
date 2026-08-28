@@ -1011,6 +1011,16 @@ pure) let you load a SPECIFIC world on demand instead of random-walking into it:
 - **`MELD_BIOME=<forest|desert|ashfall|tundra|mire>`** pins *every* section to that
   biome (and forces the tutorial off), so you can inspect one biome's maze directly.
 - **`MELD_SEED=<u64>`** fixes the world layout for reproducible screenshots/repros.
+- **`MELD_BUILD=1`** is the **building sandbox**, and it is the only way to examine the
+  build loop by hand. One flag implies effectively unlimited structural stock (999 of every
+  wood and stone), no wildlife, no tutorial, and — the part nobody guesses — it **stands you
+  off the clear path**. A run starts every avatar at the ORIGIN, the origin is on the trail,
+  and `nothing_may_be_built_on_the_clear_path` refuses every build there: so a fresh dive's
+  build row does nothing, and it looks exactly like a broken button rather than a rule.
+  Combine with `MELD_PARTY` for the crew — `MELD_BUILD=1
+  MELD_PARTY=smithwright,keeper,explorer,resonant` is the whole crafting bench in one line
+  (a Smithwright and a Keeper are what the FIELD BENCH rows need; raising a wall or an
+  anchor is not class-gated at all).
 - **`MELD_BARREN=1`** strips every creature from the world, every tick. Art and shader
   work does not want wildlife: a boar standing in front of the water is the frame you were
   trying to take, and a capture retried until the fauna wanders off is a capture taken
@@ -1852,6 +1862,41 @@ holds measured FLOORS for exactly that reason. Census before you believe a gener
   Without that, BD-3 would be "plant one, forget the region" — the opposite of the loop it
   is named for. Creatures do not siege structures yet (`BD-4`), so the weather is currently
   an anchor's only enemy.
+
+**A BIOME IS A PROPERTY OF A CELL, NOT OF A RADIUS RING** ([`meld_proto::regions`]).
+One decomposition of the WG-4 fan into cells with adjacency, and everything that asks
+"which part of the world is this, and what is next to it" asks it: the biome a patch of
+ground wears, the Shift's blast radius, an anchor's hold, and the routes a maze gets
+carved along. Polar cells rather than a Voronoi because the world **streams outward
+without bound** — a cell has to be derivable from a position alone, in constant time, at
+any radius, with no state — and because their boundaries are analytic, which is what lets a
+range or a ravine be DRAWN along one. Sector count rides the radius so cell AREA stays
+roughly constant (8 cells around the arc at r=400, 65 at r=3000), ring boundaries wobble
+with bearing so they do not read as arcs, and adjacent cells drawing the same biome merge
+on sight — so the pattern is organic blobs rather than a grid. Measured over eight seeds,
+a full circle at fixed radius crosses 2-4 biomes at r=400 (where `[biome_gate]` holds four
+of six themes out on purpose) and 6 with 51-61 boundaries at r=3000; the ring world it
+replaces reads **1 and 1 at every radius**.
+
+⚠️ **`meld_proto::regions` IS u32/f32 ONLY, AND THAT IS STRUCTURAL.** WGSL has no 64-bit
+integer, and the ground shader has to reach the same answer as the server or it paints a
+world the server does not collide with — so every hash here is 32-bit wrapping arithmetic
+that mirrors line for line into `ground_biome.wgsl`. The two are held together by
+`the_region_decomposition_matches_the_shader` (salts, sector cap, key packing, warp
+harmonics, read out of the shader source) and by `every_region_helper_is_actually_called`,
+because this repo has already shipped a whole water feature invisible behind an unused
+WGSL function.
+
+⚠️ **`Area.biome` IS ONLY A SECTION'S REPRESENTATIVE THEME.** A section spans many cells,
+so anything that SCATTERS asks the cell under its own feet — creature rosters, obstacle
+kinds, node yields, water density — and so do the client's grass placement, minimap and
+HUD label (`world_render::biome_at_world`, one function, so they cannot disagree with the
+floor they are drawn on). What still reads the representative is the HUD's band summary,
+the tutorial's authored progression, and `MELD_BIOME`. **Density is drawn for a section's
+DENSEST cell and thinned back per cell on acceptance** — sizing to the representative
+instead would cap a forest cell inside a desert band at desert density, which is the ring
+world wearing a patchwork's clothes. The old taper-toward-the-next-RING is deleted rather
+than adapted: a cell's neighbour is not ahead of it and behind it, it is all around it.
 
 - **Per-section seeds & streaming.** Each area is a **section** generated from its OWN
   seed `section_seed(run_seed, n)` (`meld-world`), so sections are independent +

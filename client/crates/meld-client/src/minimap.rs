@@ -268,7 +268,7 @@ fn sample(
     // river you cannot see on the map is a detour you only discover by walking into it.
     let w = crate::world_render::shore_data();
     if w.shore(arc_half).is_ocean(wx, wz) {
-        return Some((water_tile(&sec.biome), 1.0));
+        return Some((water_tile(crate::world_render::biome_at_world(wx, wz)), 1.0));
     }
 
     let (half, lat) = crate::overworld::radial_params(sec);
@@ -292,7 +292,11 @@ fn sample(
     // Each terrace steps the tile brighter. Clamped well under 2.0: a tint is a reading of
     // height, not a spotlight.
     let bright = (0.72 + level as f32 * 0.14).min(1.35);
-    Some((ground_tile(&sec.biome), bright))
+    // ⚠️ THE CELL, NOT THE SECTION. A section spans many cells and its own `biome` is only a
+    // representative summary of them, so painting the map by section would draw concentric
+    // rings over a patchwork ground — and the map is where that lie costs most, because a
+    // player navigates by it.
+    Some((ground_tile(crate::world_render::biome_at_world(wx, wz)), bright))
 }
 
 /// What world rectangle the map is currently showing, in the Map column's own framing.

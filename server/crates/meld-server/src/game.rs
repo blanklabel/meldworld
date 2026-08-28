@@ -614,6 +614,51 @@ fn dev_town_portals() -> Option<i32> {
         .filter(|n| *n > 0)
 }
 
+/// `MELD_STOCK` — DEV/QA: start the dive carrying this many units of every STRUCTURAL
+/// material (BD-1 wood and stone), so the build loop can be exercised without first walking
+/// out to a deadfall and working a channel.
+///
+/// The same argument as `MELD_POTIONS` and `MELD_GEAR_TIER`: the thing worth measuring is
+/// what happens once you HAVE the stock — whether the build menu names the right material,
+/// whether the row lights up, whether the structure goes up where you are standing — and
+/// gathering first is a ten-minute detour that measures the harvest channel instead. It is
+/// also the only way to screenshot the build menu in a useful state.
+fn dev_stock() -> Option<i32> {
+    std::env::var("MELD_STOCK")
+        .ok()
+        .and_then(|v| v.trim().parse::<i32>().ok())
+        .filter(|n| *n > 0)
+        .or(if build_sandbox() { Some(SANDBOX_STOCK) } else { None })
+}
+
+/// `MELD_BUILD=1` — **the building sandbox.** One flag that makes the build loop
+/// immediately playable: effectively unlimited structural stock, no wildlife, no tutorial,
+/// and you START standing somewhere a structure may legally go.
+///
+/// Every part of that is answering something that made building unexaminable by hand:
+///
+/// * **Stock**, because gathering enough timber to try a palisade is a walk to a deadfall
+///   and a channel per unit — that measures the harvest, not the build.
+/// * **Off the trail**, and this is the one nobody would guess. A run starts you at the
+///   ORIGIN, the origin is on the clear path, and `nothing_may_be_built_on_the_clear_path`
+///   refuses every build there. So "I press build and nothing happens" is the expected
+///   experience of a fresh dive, and it looks exactly like a broken button.
+/// * **Barren**, because a creature wandering into you starts a fight and a fighter cannot
+///   build.
+/// * **No tutorial**, because the guided dive owns the first corridor.
+///
+/// The party is the existing `MELD_PARTY` — `MELD_BUILD=1 MELD_PARTY=smithwright,keeper,
+/// explorer,resonant` is the whole crafting bench in one line.
+fn build_sandbox() -> bool {
+    static SANDBOX: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *SANDBOX.get_or_init(|| std::env::var("MELD_BUILD").is_ok_and(|v| v.trim() != "0"))
+}
+
+/// How much structural stock the sandbox hands you. Not literally infinite — a number the
+/// UI can still print, and a bag that says `999` reads as "as much as you like" without
+/// needing a special case anywhere that counts.
+const SANDBOX_STOCK: i32 = 999;
+
 /// The guided [T]-dive's own, more patient turn timeout (vs. `balance.toml`'s
 /// normal 15s auto-Defend) — see the comment at its one use site in `form_run`.
 const TUTORIAL_TURN_TIMEOUT_MS: u64 = 60_000;
@@ -1176,7 +1221,11 @@ impl WatchFeed {
 /// stays pure. See the call site in the world tick for why the strip is per-tick.
 fn barren_world() -> bool {
     static BARREN: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *BARREN.get_or_init(|| std::env::var("MELD_BARREN").is_ok_and(|v| v.trim() != "0"))
+    // The build sandbox implies it: a creature that wanders into you starts a fight, and a
+    // fighter cannot build.
+    *BARREN.get_or_init(|| {
+        std::env::var("MELD_BARREN").is_ok_and(|v| v.trim() != "0") || build_sandbox()
+    })
 }
 
 struct WorldActor {
@@ -4852,6 +4901,8 @@ impl GameState {
                 .and_then(|v| meld_world::BIOMES.iter().copied().find(|b| *b == v.trim()));
             let tutorial = force_biome.is_none()
                 && !std::env::var("MELD_NO_TUTORIAL").is_ok_and(|v| v != "0")
+                // The guided dive owns the first corridor; the sandbox wants open ground.
+                && !build_sandbox()
                 && (wants_tutorial || std::env::var("MELD_TUTORIAL").is_ok_and(|v| v != "0"));
             // Server-generated world seed (CANON: the client never supplies or
             // computes seeds) — overridable by `MELD_SEED` for the QA harness.
@@ -5014,7 +5065,19 @@ impl GameState {
             ("bloom_salve", dev_potions().unwrap_or(self.balance.runs.starting_salves)),
             ("elixir", dev_potions().unwrap_or(self.balance.runs.starting_elixirs)),
         ];
-        for (kind, qty) in starting_stock {
+        // `MELD_STOCK=<n>`: every structural material, n units each. Deliberately ALL of
+        // them rather than one — the interesting question is whether each structure's row
+        // finds its OWN material, and a bag holding only wood cannot tell a menu that asks
+        // correctly from one that asks for wood every time.
+        let dev_structural: Vec<(&str, i32)> = match dev_stock() {
+            None => Vec::new(),
+            Some(n) => meld_proto::materials::MATERIALS
+                .iter()
+                .filter(|m| m.class.is_structural())
+                .map(|m| (m.key, n))
+                .collect(),
+        };
+        for (kind, qty) in starting_stock.into_iter().chain(dev_structural) {
             if qty <= 0 {
                 continue;
             }
@@ -5026,6 +5089,28 @@ impl GameState {
                         quantity: qty,
                         insurance: None,
                     });
+                }
+            }
+        }
+        // ⚠️ THE SANDBOX HAS TO MOVE YOU OFF THE TRAIL, and this is the part nobody would
+        // guess from the outside. A run starts every avatar at the ORIGIN, the origin is on
+        // the clear path, and `nothing_may_be_built_on_the_clear_path` refuses every build
+        // there — so a fresh dive's build button does nothing, and it looks exactly like a
+        // broken button rather than a rule. Probing with the real placement rule
+        // (`Arena::stand_somewhere_buildable`) rather than guessing an offset, because the
+        // world also refuses trees, spacing and other players.
+        if build_sandbox() {
+            for pid in &party_ids {
+                let ok = inst.arena.stand_somewhere_buildable(&self.balance, pid, 60.0)
+                    || inst.arena.stand_somewhere_buildable(&self.balance, pid, 120.0);
+                if !ok {
+                    tracing::warn!(
+                        player = %pid,
+                        "MELD_BUILD: found nowhere buildable to start — builds will be \
+                         refused until you walk off the clear path"
+                    );
+                } else {
+                    tracing::info!(player = %pid, "MELD_BUILD: standing on buildable ground");
                 }
             }
         }
@@ -5444,6 +5529,15 @@ impl GameState {
                     // The world's own fact, not the caller's request: a joiner who asked
                     // for a normal dive still lands in a live tutorial world.
                     tutorial: inst.tutorial,
+                    // HOW THIS WORLD IS PARTITIONED. The client's ground shader derives a
+                    // fragment's cell from these numbers and colours it from the same gate
+                    // the server spawns against — a shader told a different decomposition
+                    // paints biomes the world does not hold.
+                    regions: meld_proto::regions::Regions {
+                        grid: inst.arena.regions(),
+                        gate: meld_world::biome_gate_slice(&balance),
+                        blend: balance.region.blend_width as f32,
+                    },
                 },
             ));
             if !backpack_gear.is_empty() {
@@ -8061,13 +8155,15 @@ impl WorldActor {
         // Everything that DECIDES anything lives in `crate::building` — validated placement
         // before the stock is spent, the material read off the registry, the cost summed
         // across stacks. This handler is left with what is genuinely about the wire.
-        match crate::building::raise(
+        match crate::building::raise_at(
             &mut self.arena,
             run,
             &balance,
             &req.function,
             player_id,
             tick,
+            req.at,
+            req.yaw,
         ) {
             Err(why) => reject(ErrorCode::InvalidState, &why),
             Ok(charged) => vec![out_msg(
