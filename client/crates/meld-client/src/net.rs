@@ -290,6 +290,8 @@ pub struct TerrainSectionView {
     pub corridor_lateral: f64,
     /// Authored CLIMBABLE peaks this streamed section adds (`[cx, cz, radius, height]`).
     pub peaks: Vec<[f32; 4]>,
+    /// **THE RANGES this streamed section raises** ([`meld_proto::terrain::Ridge`]).
+    pub ridges: Vec<meld_proto::terrain::Ridge>,
     /// **CONTINENTS (WG-7):** the STRAITS this section holds — the inland seas that separate
     /// one landmass from the next ([`meld_proto::coast::Strait`]). A re-sent section replaces
     /// its own, exactly as it replaces its own peaks.
@@ -664,6 +666,8 @@ pub enum ServerMsg {
     RunStarted {
         terrain_off: (f32, f32),
         peaks: Vec<[f32; 4]>,
+        /// **THE RANGES** ([`meld_proto::terrain::Ridge`]) — the walls the world grew.
+        ridges: Vec<meld_proto::terrain::Ridge>,
         /// **CONTINENTS (WG-7):** this world's straits ([`meld_proto::coast::Strait`]).
         straits: Vec<meld_proto::coast::Strait>,
         /// **This WORLD's seed — its public name** (CANON D19). The world's own fact, never
@@ -2358,6 +2362,23 @@ impl Inner {
                     ),
                     _ => (0.0, 0.0),
                 };
+                // THE RANGES — six floats each `[x0, z0, x1, z1, half_width, height]`, so they
+                // do not fit the four-float helper the peaks and lobes share.
+                let ridges: Vec<meld_proto::terrain::Ridge> = raw.payload["ridges"]
+                    .as_array()
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|p| {
+                                let a = p.as_array()?;
+                                let mut out = [0.0f32; 6];
+                                for (k, slot) in out.iter_mut().enumerate() {
+                                    *slot = a.get(k)?.as_f64()? as f32;
+                                }
+                                Some(out)
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
                 // Authored climbable peaks (mountains) — each `[cx, cz, radius, height]`.
                 let peaks: Vec<[f32; 4]> = raw.payload["peaks"]
                     .as_array()
@@ -2444,6 +2465,7 @@ impl Inner {
                 self.out.push_back(ServerMsg::RunStarted {
                     terrain_off,
                     peaks,
+                    ridges,
                     straits,
                     world_seed,
                     lobes,
@@ -3030,6 +3052,7 @@ impl Inner {
                         radial_half: t.radial_half,
                         corridor_lateral: t.corridor_lateral,
                         peaks: t.peaks,
+                        ridges: t.ridges,
                         straits: t.straits,
                         lobes: t.lobes,
                         basins: t.basins,

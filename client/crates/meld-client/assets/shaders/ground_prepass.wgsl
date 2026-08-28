@@ -61,6 +61,12 @@ struct BiomeParams {
     peak_count: u32,
     // 1 underground: the ground draws flagstones instead of the biome's outdoor tile.
     dungeon: u32, _pad_pc1: u32, _pad_pc2: u32,
+    // THE RANGES (`terrain::Ridge`): TWO vec4s each — slot 2k is (x0, z0, x1, z1)
+    // and slot 2k+1 is (half_width, height, 0, 0). A range is a WALL, and the ground
+    // has to draw it or it is an invisible one.
+    ridges: array<vec4<f32>, 32>,
+    ridge_count: u32,
+    _pad_rc0: u32, _pad_rc1: u32, _pad_rc2: u32,
     // The COASTLINE (`meld_proto::coast`): (arc_half_rad, neck_reach, peninsula_length,
     // channel_land_share). Passed in rather than baked, so the sea the player SEES is the
     // sea the server collides with — the shoreline is authored in two scenes that cannot
@@ -245,6 +251,39 @@ fn sea_depth_at(wxz: vec2<f32>) -> f32 {
 // Authored CLIMBABLE peaks: smooth raised-cosine domes summed onto the ground — MUST
 // match `meld_proto::terrain::peak_height`. World-space (NOT offset-shifted).
 
+// A RANGE, mirroring `terrain::ridge_height` line for line. A capsule of raised ground with a
+// LINEAR falloff — so its slope is exactly `height / half_width` at every point on the flank,
+// which is what makes "this is a wall" an identity rather than something to sample for.
+//
+// ⚠️ `max`, NOT `+` (peaks sum, ranges do not). Segments of one range overlap end to end by
+// design, and summing them would stack a wall to twice its authored height at every joint.
+fn rg_seg_dist(p: vec2<f32>, a: vec2<f32>, b: vec2<f32>) -> f32 {
+    let d = b - a;
+    let len2 = dot(d, d);
+    var t = 0.0;
+    if (len2 > 1e-6) {
+        t = clamp(dot(p - a, d) / len2, 0.0, 1.0);
+    }
+    return distance(p, a + d * t);
+}
+
+fn ridge_wedge(wxz: vec2<f32>) -> f32 {
+    var h = 0.0;
+    let n = i32(params.ridge_count);
+    for (var i = 0; i < n; i = i + 1) {
+        let r0 = params.ridges[2 * i];
+        let r1 = params.ridges[2 * i + 1];
+        let hw = r1.x;
+        if (hw > 0.0) {
+            let d = rg_seg_dist(wxz, r0.xy, r0.zw);
+            if (d < hw) {
+                h = max(h, r1.y * (1.0 - d / hw));
+            }
+        }
+    }
+    return h;
+}
+
 fn peak_dome(wxz: vec2<f32>) -> f32 {
     var h = 0.0;
     let n = i32(params.peak_count);
@@ -265,7 +304,7 @@ fn peak_dome(wxz: vec2<f32>) -> f32 {
 // authored peak domes, all scaled by `terrain_amp` (0 flattens City/menus). This is the
 // single source the vertex displaces by and the normal differentiates.
 fn total_height(wxz: vec2<f32>) -> f32 {
-    let land = terrain_height_wgsl(wxz + params.terrain_off) + peak_dome(wxz);
+    let land = terrain_height_wgsl(wxz + params.terrain_off) + peak_dome(wxz) + ridge_wedge(wxz);
     // A SEA IS A LEVEL, NOT AN OFFSET. This used to subtract a constant depth from the
     // land — which left the sea surface carrying the terrain's rolling hills, so the ocean
     // visibly went up and down like a field. Water finds its own level: past the shoreline

@@ -43,6 +43,9 @@ pub(crate) const GROUND_CELL: f32 = GROUND_SIZE / (GROUND_SUBDIVISIONS as f32 + 
 // not about the fields: every one of them is read by the WGSL side of this uniform.
 /// Shader uniform peak slots (must equal `meld_proto::terrain::MAX_PEAKS`).
 const PEAK_SLOTS: usize = 24;
+/// Two `vec4`s per range (endpoints, then half-width + height), so the shader array is twice
+/// [`meld_proto::terrain::MAX_RIDGES`] — the same packing the straits use.
+const RIDGE_SLOTS: usize = meld_proto::terrain::MAX_RIDGES * 2;
 
 /// `vec4` slots the ground shader reserves for STRAITS (WG-7 continents) — **two per
 /// strait**, so this is `2 * coast::MAX_STRAITS`. Windowed around the player's radius the
@@ -66,7 +69,7 @@ const RIVER_SLOTS: usize = meld_proto::coast::MAX_RIVER_NODES;
 mod biome_params {
     #![allow(dead_code)]
     use super::{
-        BASIN_SLOTS, LOBE_SLOTS, PEAK_SLOTS, RIVER_SLOTS, STRAIT_SLOTS,
+        BASIN_SLOTS, LOBE_SLOTS, PEAK_SLOTS, RIDGE_SLOTS, RIVER_SLOTS, STRAIT_SLOTS,
     };
     use bevy::prelude::*;
     use bevy::render::render_resource::ShaderType;
@@ -119,6 +122,17 @@ mod biome_params {
         pub(crate) dungeon: u32,
         pub(crate) _pad_pc1: u32,
         pub(crate) _pad_pc2: u32,
+        /// **THE RANGES** ([`meld_proto::terrain::Ridge`]) — two `vec4`s each: slot `2k` is
+        /// `(x0, z0, x1, z1)` and `2k+1` is `(half_width, height, 0, 0)`.
+        ///
+        /// In the uniform for the same reason the coast is: a range is a WALL the server
+        /// collides against, and a barrier the ground has not been told about is an invisible
+        /// one — which is strictly worse than no barrier at all.
+        pub(crate) ridges: [Vec4; RIDGE_SLOTS],
+        pub(crate) ridge_count: u32,
+        pub(crate) _pad_rc0: u32,
+        pub(crate) _pad_rc1: u32,
+        pub(crate) _pad_rc2: u32,
         /// The COASTLINE, straight from [`meld_proto::coast`]:
         /// `(arc_half_rad, neck_reach, peninsula_length, channel_land_share)`. Carried in
         /// the uniform rather than baked into the shader so **the sea the player sees is
@@ -222,6 +236,11 @@ mod biome_params {
                 dungeon: 0,
                 _pad_pc1: 0,
                 _pad_pc2: 0,
+                ridges: [Vec4::ZERO; RIDGE_SLOTS],
+                ridge_count: 0,
+                _pad_rc0: 0,
+                _pad_rc1: 0,
+                _pad_rc2: 0,
             }
         }
     }
@@ -2556,7 +2575,11 @@ pub(crate) fn terrain_height(x: f32, z: f32) -> f32 {
         .as_ref()
         .map(|p| meld_proto::terrain::peak_height(x, z, p))
         .unwrap_or(0.0);
-    let land = base + peak;
+    // …and the RANGES. This function places every prop, creature and the player's own feet,
+    // so a range it did not know about would leave everything standing at the old ground level
+    // with a mountain drawn through it — the same bug this function already shipped once for
+    // the ocean and once for the straits.
+    let land = base + peak + meld_proto::terrain::ridge_height(x, z, &ridges());
     let (arc_half, city, amp) = ground_coast();
     let sea = if city {
         meld_proto::coast::city_sea_depth(x, z)
@@ -2751,6 +2774,19 @@ pub(crate) fn update_ground_biome_rings(
         };
     }
     mat.extension.params.peak_count = n as u32;
+    // THE RANGES, two vec4s each. Windowed like the peaks: the shader array is fixed and the
+    // world streams outward without bound.
+    let rg = ridges();
+    let rn = rg.len().min(RIDGE_SLOTS / 2);
+    for (i, slot) in mat.extension.params.ridges.iter_mut().enumerate() {
+        let (seg, half) = (i / 2, i % 2);
+        *slot = match rg.get(seg) {
+            Some(r) if seg < rn && half == 0 => Vec4::new(r[0], r[1], r[2], r[3]),
+            Some(r) if seg < rn => Vec4::new(r[4], r[5], 0.0, 0.0),
+            _ => Vec4::ZERO,
+        };
+    }
+    mat.extension.params.ridge_count = rn as u32;
     // The player's own ring — the centre of both windows below (straits and biome rings).
     let pr = world
         .entities
@@ -2862,6 +2898,59 @@ pub(crate) fn update_ground_biome_rings(
 /// them would paint a world the server does not hold.
 static REGIONS: std::sync::RwLock<Option<meld_proto::regions::Regions>> =
     std::sync::RwLock::new(None);
+
+/// **THIS WORLD'S RANGES.** Held beside the peaks because it is the same kind of thing: a
+/// per-world landform table the server hands down and both the ground shader and
+/// [`terrain_height`] read, so an entity stands on the mountain rather than inside it.
+static RIDGES: std::sync::RwLock<Vec<meld_proto::terrain::Ridge>> =
+    std::sync::RwLock::new(Vec::new());
+
+/// Replace this world's ranges (call on `run.started`).
+pub(crate) fn set_ridges(r: Vec<meld_proto::terrain::Ridge>) {
+    if let Ok(mut base) = BASE_RIDGES.write() {
+        *base = r.clone();
+    }
+    if let Ok(mut by_section) = SECTION_RIDGES.write() {
+        by_section.clear();
+    }
+    if let Ok(mut all) = RIDGES.write() {
+        *all = r;
+    }
+}
+
+/// The ranges that came with `run.started` — the initial chain's, which no section message
+/// re-sends. Held apart from the streamed ones so rebuilding after a retile cannot drop them.
+static BASE_RIDGES: std::sync::RwLock<Vec<meld_proto::terrain::Ridge>> =
+    std::sync::RwLock::new(Vec::new());
+
+/// Streamed ranges, keyed by the section that sent them.
+static SECTION_RIDGES: std::sync::RwLock<
+    std::collections::BTreeMap<u32, Vec<meld_proto::terrain::Ridge>>,
+> = std::sync::RwLock::new(std::collections::BTreeMap::new());
+
+/// Replace one section's ranges (call on `world.terrain_section`).
+///
+/// ⚠️ **REPLACE, never append.** A Shift re-cuts a region's topography and re-sends the
+/// section, so accumulating would leave the old range standing beside the new one — and
+/// because ranges combine with `max`, two overlapping walls read as one taller wall that
+/// nothing in the world model believes is there.
+pub(crate) fn set_section_ridges(index: u32, ridges: &[meld_proto::terrain::Ridge]) {
+    let Ok(mut by_section) = SECTION_RIDGES.write() else { return };
+    if ridges.is_empty() && !by_section.contains_key(&index) {
+        return;
+    }
+    by_section.insert(index, ridges.to_vec());
+    let streamed: Vec<meld_proto::terrain::Ridge> =
+        by_section.values().flatten().copied().collect();
+    if let (Ok(mut r), Ok(base)) = (RIDGES.write(), BASE_RIDGES.read()) {
+        *r = base.iter().copied().chain(streamed).collect();
+    }
+}
+
+/// This world's ranges.
+pub(crate) fn ridges() -> Vec<meld_proto::terrain::Ridge> {
+    RIDGES.read().map(|r| r.clone()).unwrap_or_default()
+}
 
 /// Record this world's decomposition (call on `run.started`).
 pub(crate) fn set_regions(r: meld_proto::regions::Regions) {
@@ -3768,6 +3857,68 @@ mod ground_uniform_tests {
                 "`{f}` is DEFINED in ground_biome.wgsl and never called ({calls} occurrence). \
                  A shader helper with no call site renders nothing, and nothing else in this \
                  suite notices — which is exactly how inland water shipped invisible."
+            );
+        }
+    }
+
+    /// **THE RANGES ARE WRITTEN THREE TIMES** — `terrain::ridge_height` in Rust and
+    /// `ridge_wedge` in each of the two ground shaders. A range is a WALL the server collides
+    /// against, so a renderer that computes it differently draws a mountain somewhere the
+    /// world does not have one, and the player walks into open air.
+    ///
+    /// Both halves of the shape are held here, because both are load-bearing: **linear**
+    /// falloff is what makes slope exactly `height / half_width` at every point (a cosine
+    /// would be gentler off the crest and impassability would stop being an identity), and
+    /// **`max`** is what stops overlapping segments of one range stacking into a wall twice
+    /// its authored height at every joint.
+    #[test]
+    fn the_ranges_are_drawn_the_way_the_server_collides_with_them() {
+        for (name, src) in [
+            ("ground_biome.wgsl", include_str!("../assets/shaders/ground_biome.wgsl")),
+            ("ground_prepass.wgsl", include_str!("../assets/shaders/ground_prepass.wgsl")),
+        ] {
+            assert!(src.contains("fn ridge_wedge("), "{name} must define `ridge_wedge`");
+            assert!(
+                src.matches("ridge_wedge(").count() >= 2,
+                "{name} defines `ridge_wedge` and never calls it — a barrier the ground does \
+                 not draw is an invisible wall, which is worse than no wall"
+            );
+            // Linear, not a dome: `(1.0 - d / hw)`.
+            assert!(
+                src.contains("(1.0 - d / hw)"),
+                "{name}'s range must fall off LINEARLY — that is what makes its slope exactly \
+                 height/half_width at every point on the flank"
+            );
+            // `max`, not `+`.
+            assert!(
+                src.contains("h = max(h, r1.y * (1.0 - d / hw))"),
+                "{name} must combine ranges with `max` — summing stacks overlapping segments \
+                 of one range into a wall twice its authored height"
+            );
+            // A range DISPLACES the ground, so both passes must raise it — unlike inland
+            // water, which the prepass deliberately omits.
+            assert!(
+                src.contains("+ ridge_wedge(wxz)"),
+                "{name} must add `ridge_wedge` to the land term, or the ground it draws (or \
+                 shadows) is a world with no mountains in it"
+            );
+        }
+    }
+
+    /// The uniform reserves two `vec4`s per range, and a shorter array in the shader would
+    /// truncate the table silently — `min_size()` is computed from the Rust struct alone and
+    /// cannot notice.
+    #[test]
+    fn the_shader_reserves_room_for_every_range() {
+        let want = meld_proto::terrain::MAX_RIDGES * 2;
+        assert_eq!(RIDGE_SLOTS, want, "two vec4s per range");
+        for (name, src) in [
+            ("ground_biome.wgsl", include_str!("../assets/shaders/ground_biome.wgsl")),
+            ("ground_prepass.wgsl", include_str!("../assets/shaders/ground_prepass.wgsl")),
+        ] {
+            assert!(
+                src.contains(&format!("ridges: array<vec4<f32>, {want}>")),
+                "{name} must declare `ridges: array<vec4<f32>, {want}>`"
             );
         }
     }
