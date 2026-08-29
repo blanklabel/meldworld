@@ -3401,6 +3401,43 @@ fn add_ground_ring(commands: &mut Commands, wa: &WorldAssets, root: Entity) {
     });
 }
 
+/// The art pool a WOODED obstacle kind draws from, or `None` if it is not one.
+///
+/// ⚠️ `obstacle_tree` IS DELIBERATELY NOT IN THE FOREST POOL. It is the RUNE tree —
+/// carved, glowing — and while it sat in the ordinary rotation one in six trees in every
+/// wood was a piece of standing magic that meant nothing. It stays loaded and reserved for
+/// a tree dungeon's mouth.
+pub(crate) fn tree_pool(kind: &str) -> Option<&'static [&'static str]> {
+    Some(match kind {
+        "tree" => &[
+            "obstacle_tree_pine",
+            "obstacle_tree_birch",
+            "obstacle_tree_dead",
+            "obstacle_tree_willow",
+            "obstacle_tree_bushy",
+        ],
+        "amber_tree" => &[
+            "obstacle_amber_tree_1",
+            "obstacle_amber_tree_2",
+            "obstacle_amber_tree_3",
+            "obstacle_amber_tree_4",
+        ],
+        "mire_tree" => &[
+            "obstacle_mire_tree_1",
+            "obstacle_mire_tree_2",
+            "obstacle_mire_tree_3",
+            "obstacle_mire_tree_4",
+        ],
+        "snow_tree" => &[
+            "obstacle_snow_tree_1",
+            "obstacle_snow_tree_2",
+            "obstacle_snow_tree_3",
+            "obstacle_snow_tree_4",
+        ],
+        _ => return None,
+    })
+}
+
 /// Spawn a terrain obstacle sized to its world radius. Vegetation and rock kinds are
 /// **real 3D models** (Kenney Nature Kit, CC0) — one of several variants picked by id
 /// hash and rotated for variety, so the world reads as dimensional HD-2D geometry
@@ -3479,7 +3516,12 @@ pub(crate) fn spawn_obstacle(
         // Trees draw from a variety pool (oak/pine/birch/dead/willow/bushy) picked by
         // id-hash, with an extra per-id size factor on top of the radius so a forest
         // reads as a mix of shapes and heights rather than one stamped tree.
-        if name == "tree" {
+        // A WOOD IS THE BIOME IT GROWS IN. This used to be `if name == "tree"` with one
+        // hardcoded pool, so a swamp, a tundra and an autumn wood all grew the same five
+        // trees — the thing you walk through, which is most of what a biome looks like,
+        // was the one part that never changed. Each wooded kind now has its own pool and
+        // the server decides which kind a biome grows (`obstacles_for_biome`).
+        if let Some(pool_keys) = tree_pool(name) {
             // ⚠️ `obstacle_tree` IS DELIBERATELY NOT IN THIS POOL. It is the RUNE tree —
             // carved, glowing — and while it sat in the ordinary rotation one in six trees
             // in every wood and meadow was a piece of standing magic that meant nothing.
@@ -3487,11 +3529,7 @@ pub(crate) fn spawn_obstacle(
             // spend that way. It stays loaded (see `PROP_KEYS`) and reserved, to be placed
             // deliberately and much larger as the mouth of a tree dungeon — which is
             // `WG-?` and not built yet, so today it simply does not spawn.
-            const TREE_VARIANTS: [&str; 5] = [
-                "obstacle_tree_pine", "obstacle_tree_birch",
-                "obstacle_tree_dead", "obstacle_tree_willow", "obstacle_tree_bushy",
-            ];
-            let pool: Vec<Handle<Image>> = TREE_VARIANTS
+            let pool: Vec<Handle<Image>> = pool_keys
                 .iter()
                 .filter_map(|k| wa.prop_sprites.get(*k).cloned())
                 .collect();
@@ -3504,6 +3542,23 @@ pub(crate) fn spawn_obstacle(
                 let height = ((3.6 + r * 1.4) * vf).clamp(3.4, 9.5);
                 spawn_billboard_entity(
                     commands, mats, wa, id, e, tex, height, Color::WHITE, height * 0.28,
+                    sway_amp(name),
+                );
+                return;
+            }
+        }
+        // The boulder has four rocks now; everything else still has one sprite.
+        if name == "boulder" {
+            let pool: Vec<Handle<Image>> = ["obstacle_boulder_1", "obstacle_boulder_2",
+                "obstacle_boulder_3", "obstacle_boulder_4"]
+                .iter()
+                .filter_map(|k| wa.prop_sprites.get(*k).cloned())
+                .collect();
+            if !pool.is_empty() {
+                let tex = pool[hash_pick(id, pool.len())].clone();
+                let height = (1.8 + r * 0.8).clamp(1.8, 4.5);
+                spawn_billboard_entity(
+                    commands, mats, wa, id, e, tex, height, Color::WHITE, 0.55,
                     sway_amp(name),
                 );
                 return;
@@ -3670,7 +3725,13 @@ pub(crate) fn obstacle_color(kind: &str) -> Color {
         return Color::srgb(0.22, 0.4, 0.6);
     }
     match kind {
-        "tree" | "cactus" | "mire_root" | "fungal_wall" => Color::srgb(0.18, 0.42, 0.22), // foliage
+        "tree" | "cactus" | "mire_root" | "fungal_wall" | "mire_tree" => {
+            Color::srgb(0.18, 0.42, 0.22) // foliage
+        }
+        // The minimap dot follows the SEASON, not the species: an autumn wood reading
+        // summer-green on the map would disagree with the ground it is drawn on.
+        "amber_tree" => Color::srgb(0.55, 0.3, 0.12),
+        "snow_tree" => Color::srgb(0.58, 0.68, 0.72),
         "lava" => Color::srgb(0.75, 0.32, 0.12), // molten
         "ice_spire" | "snow_drift" => Color::srgb(0.72, 0.82, 0.9), // ice
         // cliffs, boulders, dunes, spires, cinder rock — stone tones

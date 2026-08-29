@@ -54,3 +54,44 @@ pub type Id = String;
 
 /// Unix milliseconds UTC — the realtime timestamp type (CANON.md §I).
 pub type UnixMillis = u64;
+
+/// The obstacle kinds the world can place, and the only ones it may.
+///
+/// The server chooses which kinds a biome grows (`meld_world::obstacles_for_biome`) and the
+/// client draws them (`props/obstacle_<kind>.png`, or a pool for the wooded ones) — two
+/// sides that cannot see each other, so the set of legal names lives here where both do.
+///
+/// ⚠️ THE FAILURE MODE IS A NEW BIOME, NOT A NEW PROP. `obstacles_for_biome` ends in a
+/// catch-all, so five biomes added for the deep world silently inherited the MIRE's bog
+/// roots — an autumn wood full of swamp. Nothing failed, because every kind named did have
+/// art; the kinds were simply wrong for the place. A biome that never chose has to name
+/// kinds from this list, and both sides hold themselves to it.
+pub mod obstacles {
+    pub const KINDS: &[&str] = &[
+        "tree",
+        "amber_tree",
+        "mire_tree",
+        "snow_tree",
+        "boulder",
+        "pond",
+        "dune",
+        "rock_spire",
+        "cactus",
+        "cliff",
+        "lava",
+        "cinder_rock",
+        "ice_spire",
+        "frozen_pond",
+        "snow_drift",
+        "bog_pool",
+        "mire_root",
+        "fungal_wall",
+    ];
+
+    /// Wooded kinds draw from a POOL of art rather than one sprite, so a wood is a mix.
+    pub const WOODED: &[&str] = &["tree", "amber_tree", "mire_tree", "snow_tree"];
+
+    pub fn is_kind(k: &str) -> bool {
+        KINDS.contains(&k)
+    }
+}
