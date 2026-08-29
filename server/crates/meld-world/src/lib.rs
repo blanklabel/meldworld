@@ -9687,11 +9687,21 @@ mod tests {
             }
         }
         let mean = reach.iter().sum::<f64>() / reach.len() as f64;
-        // Half its own leash is a low bar deliberately: the destination is drawn inside
-        // the leash disc, so the EXPECTED excursion is well under the full radius, and
-        // terrain legitimately blocks some legs. The bug sat at 1.93.
+        // A THIRD of its own leash, and the margin is the point rather than the number.
+        //
+        // This exists to catch per-tick destination churn, which measured **1.93**. Half the
+        // leash (4.5) left it only 2.6% under the no-terrain baseline of 4.62 — so it was not
+        // really guarding against the churn bug at all, it was pinning a stochastic mean that
+        // any legitimate world change walks through. RANGES are exactly the legitimate change
+        // its own comment anticipates ("terrain legitimately blocks some legs"): they move
+        // where creatures are placed and put walls between them and their wander destination,
+        // and the mean settles at 4.20.
+        //
+        // A third keeps a 55% margin over the bug while surviving terrain, which is the trade
+        // this test was written to make. Measured: 4.62 with no ranges, 4.20 with them, 1.93
+        // when the destination churned.
         assert!(
-            mean > arena.leash_radius * 0.5,
+            mean > arena.leash_radius / 3.0,
             "a wandering creature should cover a real share of its leash \
              (mean furthest excursion {mean:.2} of leash {:.1})",
             arena.leash_radius
