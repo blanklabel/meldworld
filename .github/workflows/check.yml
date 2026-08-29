@@ -34,9 +34,12 @@ concurrency:
 jobs:
   check:
     runs-on: ubuntu-latest
-    # Both workspaces from cold, including Bevy. Well clear of the ~20 min this takes
-    # uncached, without letting a hung run burn an hour.
-    timeout-minutes: 45
+    # Both workspaces from cold, including Bevy, plus the server suite — which is the
+    # half that grows. `meld-world` alone is ~16 min locally and most of its tests sweep
+    # every biome and every seed, so widening the world widens them: going from six
+    # biomes to eleven took the local suite 831s -> 949s and pushed this job past 45,
+    # where it was killed mid-run with everything passing.
+    timeout-minutes: 75
     steps:
       - uses: actions/checkout@v4
 
