@@ -2603,6 +2603,10 @@ pub struct Arena {
     /// WORLD-space like `straits`, so `radialize` does NOT bend them. Rides the wire and is
     /// selected per section by the same radius-band filter.
     pub lobes: Vec<meld_proto::coast::Lobe>,
+    /// **THE RANGES** ([`meld_proto::terrain::Ridge`]) — capsules of steep ground that BLOCK,
+    /// laid along cell boundaries with the gaps between segments as the passes through. World
+    /// space, like `peaks`, and bent by `radialize` with the rest of the section's content.
+    pub ridges: Vec<meld_proto::terrain::Ridge>,
     /// **Standing inland water** — lakes, ponds, bogs, marshes, lagoons, oases, all one
     /// [`meld_proto::coast::Basin`]. The NAME is emergent (size, slope, biome, adjacency),
     /// which is why the primitive has no `kind`.
@@ -2795,7 +2799,17 @@ impl Arena {
         (base + meld_proto::terrain::peak_height(x as f32, z as f32, &self.peaks)) as f64
     }
     fn t_walkable(&self, x: f64, z: f64) -> bool {
-        meld_proto::terrain::walkable(x as f32, z as f32, self.terrain_off.0, self.terrain_off.1)
+        // The RANGES are part of the ground here. `terrain::walkable` reads the base noise
+        // alone, which tops out at slope 0.254 against a 0.75 threshold — so before ranges
+        // existed this check could never once refuse a step, and the world held nothing that
+        // could stop you.
+        meld_proto::terrain::landform_slope(
+            x as f32,
+            z as f32,
+            self.terrain_off.0,
+            self.terrain_off.1,
+            &self.ridges,
+        ) < meld_proto::terrain::WALKABLE_SLOPE
             && self.on_land(x, z)
     }
 
@@ -2820,6 +2834,15 @@ impl Arena {
     /// This world's cell decomposition.
     pub fn regions(&self) -> meld_proto::regions::Grid {
         self.regions
+    }
+
+    /// The `MELD_BIOME` override as an index into [`BIOMES`], or `-1` in normal play. Rides the
+    /// wire so the client paints the biome the server is actually spawning.
+    pub fn forced_biome_index(&self) -> i32 {
+        self.force_biome
+            .and_then(|b| BIOMES.iter().position(|k| *k == b))
+            .map(|i| i as i32)
+            .unwrap_or(-1)
     }
 
     /// The biome at a **world** position — the one place a coordinate becomes a theme.
@@ -2925,6 +2948,25 @@ impl Arena {
         if self.path.len() < 2 {
             return false;
         }
+        // ⚠️ **THE PROBE SLIDES, SO WALKING IT WAS NEVER THE WHOLE CHECK.** `apply_move`
+        // slides along whatever refuses a step, and this gate runs the probe for 100,000
+        // iterations — so a route crossing open sea could be ground around, a few units at a
+        // time, until the probe reached the portal anyway and the world was declared feasible.
+        // Measured on seed 16: the trail held 18 vertices in water at depths up to 7.85 and
+        // this returned true, while `the_clear_path_actually_reaches_the_portal` — which walks
+        // it honestly — failed. The guarantee is that the ROUTE is walkable, not that a
+        // determined prober can eventually get there.
+        //
+        // So ask the route directly, before walking it at all. This is cheap (one shoreline
+        // sample per vertex) and it is the half of the check that cannot be slid past.
+        let shore = self.shore();
+        if self
+            .path
+            .iter()
+            .any(|w| !shore.is_land(w.x as f32, w.y as f32))
+        {
+            return false;
+        }
         let waypoints = self.path.clone();
         let portal = self.portal;
         let probe = "__feasibility_probe__".to_string();
@@ -3004,6 +3046,7 @@ impl Arena {
             bent: false,
             basins: Vec::new(),
             rivers: Vec::new(),
+            ridges: Vec::new(),
             regions: meld_proto::regions::Grid {
                 arc_half: (wg.radial_arc_degrees.to_radians() * 0.5) as f32,
                 ring_step: balance.region.ring_step as f32,
@@ -3084,6 +3127,7 @@ impl Arena {
         let (straits, lobes) = (self.straits.clone(), self.lobes.clone());
         let (basins, rivers) = (self.basins.clone(), self.rivers.clone());
         let peak_list = self.peaks.clone();
+        let ridge_snap: Vec<meld_proto::terrain::Ridge> = self.ridges.clone();
         let shore = meld_proto::coast::Shore {
             arc_half: half as f32,
             terrain_off: toff,
@@ -3119,13 +3163,13 @@ impl Arena {
         // reachable. (Summit chests already sit on the walkable route, so it's a no-op
         // for them.) Obstacles are left on cliffs — impassable scenery is fine there.
         for r in &mut self.resources {
-            r.position = nudge_to_walkable(tf(r.position), toff, shore);
+            r.position = nudge_to_walkable(tf(r.position), toff, shore, &ridge_snap);
         }
         for o in &mut self.obstacles {
             o.position = tf(o.position);
         }
         for c in &mut self.chests {
-            c.position = nudge_to_walkable(tf(c.position), toff, shore);
+            c.position = nudge_to_walkable(tf(c.position), toff, shore, &ridge_snap);
         }
         // Bend each authored peak's CENTRE into the fan (radius/height are world-space
         // scalars — the dome is a world circle at the bent centre, matching its summit
@@ -3162,10 +3206,10 @@ impl Arena {
         // the web trails + portal onto walkable ground (the web isn't A*-routed), and
         // re-anchor the portal to the routed path's walkable end.
         for (a, b) in self.web.iter_mut() {
-            *a = nudge_to_walkable(*a, toff, shore);
-            *b = nudge_to_walkable(*b, toff, shore);
+            *a = nudge_to_walkable(*a, toff, shore, &ridge_snap);
+            *b = nudge_to_walkable(*b, toff, shore, &ridge_snap);
         }
-        self.portal = nudge_to_walkable(self.portal, toff, shore);
+        self.portal = nudge_to_walkable(self.portal, toff, shore, &ridge_snap);
         // The initial chain bends every entity at once against the finished shoreline, so
         // the loops above already saw the water; this is only the portal's own check.
         if let Some(last) = self.path.last_mut() {
@@ -3221,10 +3265,32 @@ impl Arena {
             basins: &basins,
             rivers: &rivers,
         };
+        // ⚠️ **A RANGE RAISED LATER SWALLOWS PROPS PLACED EARLIER, AND THE PROPS GO.**
+        //
+        // A region ring spans many sections, so a range raised for section N+2 stands over
+        // ground section N already scattered — the same ordering that put water on a drawn
+        // trail. But props resolve the OPPOSITE way to water, and deliberately: the reason
+        // water yields is that moving a creature crosses a difficulty gate and deleting one
+        // silently removes summit rewards and the members of a rite. A tree is scenery. When
+        // a mountain rises, the trees on it are gone, and that is what a mountain rising
+        // means.
+        //
+        // It belongs here rather than in each scatter pass because this is already the one
+        // place that culls obstacles the world can no longer host, and the passes cannot see
+        // a range that does not exist yet.
+        let ridges = self.ridges.clone();
+        let off = self.terrain_off;
         self.obstacles.retain(|o| {
             dist_to_path(&o.position, &path) > clear_r + o.radius
                 && dist_to_web(&o.position, &web) > web_r + o.radius
                 && shore.is_land(o.position.x as f32, o.position.y as f32)
+                && meld_proto::terrain::landform_slope(
+                    o.position.x as f32,
+                    o.position.y as f32,
+                    off.0,
+                    off.1,
+                    &ridges,
+                ) < meld_proto::terrain::WALKABLE_SLOPE
         });
     }
 
@@ -3298,6 +3364,7 @@ impl Arena {
         let (straits, lobes) = (self.straits.clone(), self.lobes.clone());
         let (basins, rivers) = (self.basins.clone(), self.rivers.clone());
         let peak_list = self.peaks.clone();
+        let ridge_snap: Vec<meld_proto::terrain::Ridge> = self.ridges.clone();
         let shore = meld_proto::coast::Shore {
             arc_half: half as f32,
             terrain_off: toff,
@@ -3328,13 +3395,13 @@ impl Arena {
         }
         // Keep streamed chests + harvest nodes off cliffs too (see `radialize`).
         for r in &mut self.resources[r0..] {
-            r.position = nudge_to_walkable(tf(r.position), toff, shore);
+            r.position = nudge_to_walkable(tf(r.position), toff, shore, &ridge_snap);
         }
         for o in &mut self.obstacles[o0..] {
             o.position = tf(o.position);
         }
         for c in &mut self.chests[c0..] {
-            c.position = nudge_to_walkable(tf(c.position), toff, shore);
+            c.position = nudge_to_walkable(tf(c.position), toff, shore, &ridge_snap);
         }
         // Bend this streamed section's new peak centres into the fan (see `radialize`).
         for k in pk0..self.peaks.len() {
@@ -3357,8 +3424,8 @@ impl Arena {
         for e in w0..self.corridor_web.len() {
             let (a, b) = self.corridor_web[e];
             self.web.push((
-                nudge_to_walkable(tf(a), toff, shore),
-                nudge_to_walkable(tf(b), toff, shore),
+                nudge_to_walkable(tf(a), toff, shore, &ridge_snap),
+                nudge_to_walkable(tf(b), toff, shore, &ridge_snap),
             ));
         }
         // Straight-wall biome seams don't survive the bend — drop the ones just added.
@@ -3497,6 +3564,10 @@ impl Arena {
         // …and its inland water: a river that runs downhill and the lakes it pools into.
         // Also before the route, for the same reason — and it matters more here, because a
         // river is the one water body that can genuinely sever the world.
+        // BEFORE the water, so a lake yields to a mountain the way it already yields to a
+        // peak — `off_peaks` is what stops a basin flooding straight through one.
+        let ridges_before = self.ridges.len();
+        self.push_ridges(balance, i, start_x, end_x);
         self.push_water(balance, i, start_x, end_x);
 
         // WG-1: every Nth procedural section is a DUNGEON — rooms divided by walls
@@ -3565,6 +3636,12 @@ impl Arena {
         let (sea_basins, sea_rivers) = (self.basins.clone(), self.rivers.clone());
         let wet_peaks = self.peaks.clone();
         let toff_wet = self.terrain_off;
+        // ⚠️ **A COMPANION SPOT MUST BE USABLE, NOT MERELY DRY.** `dry_companion` places every
+        // retinue member, pack minion and end-fight peer by offset from its leader, avoiding
+        // water — and water alone. A range raised earlier in the same section is just as
+        // unusable, and a minion dropped on its flank cannot leave: measured at seed 7 as a
+        // creature standing on ground steeper than `WALKABLE_SLOPE`. Folding the slope in here
+        // fixes all three spawn sites at once, which is the point of them sharing a helper.
         let wet = move |w: &Position| -> bool {
             meld_proto::coast::Shore {
                 arc_half: bend_half as f32,
@@ -3578,6 +3655,44 @@ impl Arena {
             .is_ocean(w.x as f32, w.y as f32)
         };
 
+        // Can a body STAND here — gentle enough to walk off, as well as dry? A range's flank
+        // is steeper than `WALKABLE_SLOPE` by construction, so this is the one question that
+        // separates open ground from a mountainside.
+        let stand_ridges: Vec<meld_proto::terrain::Ridge> = self.ridges.clone();
+        let stand_off = self.terrain_off;
+        let standable = move |w: &Position| -> bool {
+            meld_proto::terrain::landform_slope(
+                w.x as f32,
+                w.y as f32,
+                stand_off.0,
+                stand_off.1,
+                &stand_ridges,
+            ) < meld_proto::terrain::WALKABLE_SLOPE
+        };
+        // ⚠️ **NOTHING SCATTERS ON A MOUNTAINSIDE.** Reported from a screenshot: lava rocks
+        // carpeted a range's flank all the way up its steep faces. Props are placed AFTER the
+        // ranges are raised (#318's ordering), so they know the mountain is there — they just
+        // never asked. A prop on an unwalkable slope is worse than untidy: it is scenery on
+        // ground no one can reach, it hangs off a face the ground shader draws as bare rock,
+        // and every one of them is a collider nothing can ever touch.
+        //
+        // The corridor variant, because every scatter pass works in the unbent frame while a
+        // range is already world space — the frame trap this crate has paid for five times.
+        let (bend_half, bend_lat) = (self.radial_half, self.corridor_lateral.max(1.0));
+        let standable_c = {
+            let standable = standable.clone();
+            move |p: &Position| -> bool {
+                let w = if bend_half > 0.0 { radial_tf(*p, bend_half, bend_lat) } else { *p };
+                standable(&w)
+            }
+        };
+
+        let usable = {
+            let wet = wet.clone();
+            let standable = standable.clone();
+            move |w: &Position| -> bool { wet(w) || !standable(w) }
+        };
+
         // Scatter harvestable resource nodes through the section (2D). What a node YIELDS
         // is the biome of the ground it stands on, so an ore vein and a reagent bed can sit
         // in the same band — which is what makes a crafter's node-sense worth having.
@@ -3586,6 +3701,9 @@ impl Arena {
         for _ in 0..n_nodes {
             let rx = start_x + 2.0 + rng.unit() * (length - 4.0).max(1.0);
             let ry = wg.resource_lateral_spread * rng.signed();
+            if !standable_c(&Position::new(rx, ry)) {
+                continue;
+            }
             let rkinds = resources_for_biome(self.biome_in_corridor(Position::new(rx, ry)));
             // Nothing grows in the Oubliette and nothing is buried under it, so a node
             // rolled onto that ground is simply not placed.
@@ -3619,7 +3737,28 @@ impl Arena {
             Position::new(end_x, wg.path_meander * rng.signed())
         };
         let entry = *self.corridor_path.last().unwrap_or(&Position::new(0.0, 0.0));
-        let route = self.astar_route(entry, exit_target);
+        let mut route = self.astar_route(entry, exit_target);
+        // ⚠️ **A RANGE THAT MAKES ITS OWN SECTION UNROUTABLE IS NOT RAISED.**
+        //
+        // `astar_route` never invents a crossing: when it cannot reach the exit it routes as
+        // far as it can and stops. That is correct on its own, but the chord joining this
+        // section's stub to the next section's start is then drawn straight — across whatever
+        // stopped it. Seed 16 shipped 16 of its 512 path vertices in open sea that way, and all
+        // twelve of `generate_with`'s feasibility re-rolls failed because every attempt raised
+        // the same range.
+        //
+        // So the range yields, exactly as it already yields to a drawn trail and to standing
+        // water. This is self-correcting rather than a rule about WHICH barriers may share a
+        // section: a strait's isthmus is barely wider than A*'s own cell, terrain and water and
+        // ranges interact differently at every radius, and guessing the pairs that conflict is
+        // what the last several attempts at this got wrong. Ask the pathfinder instead.
+        let reached = route
+            .last()
+            .is_some_and(|p| p.distance_to(&exit_target) < 6.0);
+        if !reached && self.ridges.len() > ridges_before {
+            self.ridges.truncate(ridges_before);
+            route = self.astar_route(entry, exit_target);
+        }
         for p in &route {
             self.corridor_path.push(*p);
         }
@@ -3749,7 +3888,18 @@ impl Arena {
                 // Only the PEAK is skipped: an earlier attempt `return`ed and gutted the
                 // section's obstacles and terraces too.
                 let bent = radial_tf(summit, self.radial_half, self.corridor_lateral.max(1.0));
-                if self.on_land(bent.x, bent.y) {
+                // …and never INSIDE A RANGE, for the same reason it is never under water: the
+                // summit's reward is the only thing that makes the climb worth it. A range is
+                // raised before this pass, and a peak built on its flank has unwalkable ground
+                // at the top — so `nudge_to_walkable` shoves the summit chest off the peak
+                // looking for somewhere standable, and the landmark ends up crowned with
+                // nothing. Skip only the PEAK, as the water check above does.
+                let in_range = meld_proto::terrain::ridge_height(
+                    bent.x as f32,
+                    bent.y as f32,
+                    &self.ridges,
+                ) > 0.0;
+                if self.on_land(bent.x, bent.y) && !in_range {
                 self.peaks
                     .push([summit.x as f32, summit.y as f32, radius as f32, height as f32]);
                 // `hub_safe_radius` alone put a 10x-HP Gatekeeper 14 units from the
@@ -3841,11 +3991,19 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
                 let Some((pos, world)) = (0..CREATURE_PLACEMENT_TRIES).find_map(|_| {
                     let p = Position::new(x, wg.creature_lateral_spread * rng.signed());
                     let w = bend(p);
-                    // Crowded, at sea, or standing in something the world already put here.
-                    // Asked HERE, in the bent frame, because this is already where "is this
-                    // spot acceptable" lives — so the spot grid stays consistent and no
-                    // post-hoc nudge disturbs the spacing this very check exists to protect.
-                    (!taken.crowded(&w) && !wet(&w)).then_some((p, w))
+                    // Crowded, at sea, INSIDE A MOUNTAIN, or standing in something the world
+                    // already put here. Asked HERE, in the bent frame, because this is already
+                    // where "is this spot acceptable" lives — so the spot grid stays consistent
+                    // and no post-hoc nudge disturbs the spacing this very check exists to
+                    // protect.
+                    //
+                    // ⚠️ The walkability half is what makes "nothing is stranded inside a range"
+                    // true. Ranges are raised before this pass (#318's ordering: the structural
+                    // world is finished first), but placement rejected only water — so a
+                    // creature could be dropped on a flank too steep to leave and simply stood
+                    // there. Measured: mean wander excursion collapsed and
+                    // `a_wandering_creature_actually_goes_somewhere` failed.
+                    (!taken.crowded(&w) && !wet(&w) && standable(&w)).then_some((p, w))
                 }) else {
                     let gap = creature_spacing * (1.0 + wg.monster_spacing_jitter * rng.signed());
                     x += gap.max(2.0);
@@ -3946,7 +4104,7 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
                                 &mut erng,
                                 self.radial_half,
                                 self.corridor_lateral.max(1.0),
-                                &wet,
+                                &usable,
                             );
                             let j = self.monsters.len();
                             let bseed = erng.next_u64();
@@ -4008,7 +4166,7 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
                             &mut erng,
                             self.radial_half,
                             self.corridor_lateral.max(1.0),
-                            &wet,
+                            &usable,
                         );
                         let midx = self.monsters.len();
                         let mseed = erng.next_u64();
@@ -4096,7 +4254,7 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
                                 &mut erng,
                                 self.radial_half,
                                 self.corridor_lateral.max(1.0),
-                                &wet,
+                                &usable,
                             );
                             let midx = self.monsters.len();
                             let mseed = erng.next_u64();
@@ -4143,6 +4301,9 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
             attempts += 1;
             let ox = start_x + rng.unit() * length;
             let oy = rng.signed() * (self.corridor_lateral - 1.0);
+            if !standable_c(&Position::new(ox, oy)) {
+                continue;
+            }
             let okinds = obstacles_for_biome(self.biome_in_corridor(Position::new(ox, oy)));
             if okinds.is_empty() {
                 continue;
@@ -4279,6 +4440,10 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
                 let cx = start_x + 2.0 + rng.unit() * (length - 4.0).max(1.0);
                 let cy = (wg.creature_lateral_spread - 2.0) * rng.signed();
                 let cpos = Position::new(cx, cy);
+                // A chest on an unwalkable flank is a reward nobody can ever reach.
+                if !standable_c(&cpos) {
+                    continue;
+                }
                 let clear_of_path = dist_to_path(&cpos, &self.corridor_path) > wg.path_clear_radius;
                 let clear_of_mobs = self.monsters.iter().all(|m| m.position.distance_to(&cpos) > 2.0)
                     && self.resources.iter().all(|r| r.position.distance_to(&cpos) > 2.0);
@@ -4413,6 +4578,9 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
                 // keeps nearly everything, a desert cell keeps about a ninth, and the
                 // boundary between them is where that changes — no transition width, no
                 // neighbour lookup, no direction.
+                if !standable_c(&Position::new(ox, oy)) {
+                    continue;
+                }
                 let here = self.biome_in_corridor(Position::new(ox, oy));
                 if frng.unit() * maze_mult > biome_obstacle_mult(wg, here) {
                     continue;
@@ -4469,6 +4637,13 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
                     // A door gap wherever the (A*-routed, possibly winding) clear path
                     // crosses this wall — so every path crossing has an opening, not just
                     // one, and connectivity survives the cliff detours.
+                    // A wall marches straight across the corridor, so a range crossing its
+                    // line would get a row of props laid up the flank — the same "scenery on
+                    // ground nobody can reach" the scatter passes already refuse.
+                    if !standable_c(&pos) {
+                        y += r * 1.8;
+                        continue;
+                    }
                     let in_door = dist_to_path(&pos, &self.corridor_path) < wg.dungeon_door_half + r;
                     let occupied = self.monsters.iter().any(|m| m.position.distance_to(&pos) < r + 1.0)
                         || self.resources.iter().any(|rn| rn.position.distance_to(&pos) < r + 1.0)
@@ -4667,6 +4842,26 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
             *slot = ((c + jit).clamp(-inner, inner), bw);
         }
 
+        // ⚠️ **A STRAIT IS NOT CUT ACROSS TRAIL THAT IS ALREADY DRAWN.**
+        //
+        // `push_water` yields to a drawn route — a basin refuses that ground, a river node on
+        // it becomes a ford — but the two largest water shapes never looked at the path at all.
+        // That matters because **A* is not bounded to its own section's radius band**: section
+        // 5's route wanders out past its own end, at a moment when no strait exists there and
+        // the ground reads as land. Section 6 then cuts its strait straight over those
+        // vertices. Measured on seed 16: 18 of the trail's 512 vertices ended in open sea at
+        // depths to 7.85, every feasibility re-roll failed, and the world could not be walked.
+        //
+        // Moving an isthmus to meet the crossing is not enough — the crossing there spans six
+        // consecutive route nodes and 77 world units of arc, where an isthmus is 34 wide. So
+        // the strait yields entirely, which is what this function already does when it cannot
+        // guarantee a crossing: no barrier is always better than a sealed one.
+        let drawn: Vec<Position> = self
+            .corridor_path
+            .iter()
+            .map(|p| radial_tf(*p, self.radial_half, self.corridor_lateral.max(1.0)))
+            .collect();
+
         let s: meld_proto::coast::Strait = [
             r_c as f32,
             r_half as f32,
@@ -4680,6 +4875,15 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
         // The contract, asked of the thing rather than assumed of the arithmetic. A strait
         // that cannot be crossed is not cut: no barrier is always better than a sealed one.
         if !meld_proto::coast::strait_is_crossable(&s, self.radial_half as f32) {
+            return;
+        }
+        // …and one that would drown trail already drawn is not cut either. Asked with the
+        // strait's OWN depth function, isthmuses included, so a crossing that genuinely lands
+        // on a bridge is still allowed.
+        if drawn
+            .iter()
+            .any(|w| meld_proto::coast::strait_depth(w.x as f32, w.y as f32, &s) > 0.0)
+        {
             return;
         }
         // …and never over a PEAK already standing (see `clear_of_peaks`). Sampled along the
@@ -4808,6 +5012,193 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
     /// Fords are placed on a fixed cadence, not rolled: connectedness is what a river IS,
     /// and a connected impassable line is exactly the thing that disconnects a world. Same
     /// contract as a strait's isthmus — a guarantee, never a repair.
+    /// **RAISE A RANGE ACROSS A RUN OF REGION CELLS** (`WG-7`, the routes half).
+    ///
+    /// Runs where [`Arena::push_strait`] and [`Arena::push_lobes`] run, and for the same
+    /// reason: before the section's clear path is routed, so `astar_route` answers for the
+    /// mountain by itself rather than being told about it.
+    ///
+    /// **Sized as a SHARE OF THE FAN, never in fixed world units.** WG-4 bends a fixed-width
+    /// corridor into an arc that grows with radius — ~2,000 units at r=400 against ~15,700 at
+    /// r=3000 — so a range measured in units is a wall at the hub and a pebble at the
+    /// frontier. One cell boundary (~250 u by design) is something you round without noticing
+    /// it was there, which is the same failure as a biome being a stripe you cross.
+    ///
+    /// **It can never seal the world, by construction rather than by check:**
+    /// `ridge_arc_share_max` is capped below 1.0, so a range always stops short of the fan's
+    /// rim and rounding its end is always possible. That is the strait's argument reused.
+    ///
+    /// **How likely a range is depends on the GROUND, not the section.** Ashfall is authored
+    /// volcanic (`biome_terrace_mult` 1.6 against desert's 0.15, the same weighting the peaks
+    /// and the Shift already use), so the spine is chosen FIRST and the roll is weighted by the
+    /// biome of the cell it stands in — which is a thing only worth doing now that a biome is a
+    /// property of a cell rather than of a whole ring.
+    fn push_ridges(&mut self, balance: &Balance, i: usize, start_x: f64, end_x: f64) {
+        let wg = &balance.worldgen;
+        // No fan means no cells to lay a boundary along.
+        if self.radial_half <= 0.0 || i < wg.ridge_min_section || self.tutorial {
+            return;
+        }
+        let mut rng = Rng(section_seed(self.seed_base, i) ^ 0x21D6_E51D_6E51_D6E5);
+        let g = self.regions;
+        let mid = 0.5 * (start_x + end_x);
+        let polar = |r: f64, bearing: f64| Position::new(r * bearing.cos(), r * bearing.sin());
+        let arc_half = self.radial_half;
+        let ring = g.ring_at(mid as f32, 0.0);
+
+        // An ARC range blocks outward travel and forces a lateral detour; a SPOKE range blocks
+        // lateral travel, which is what makes corridors and dead ends. Both, or the world only
+        // has walls in one axis.
+        let arc = rng.unit() < wg.ridge_arc_share;
+        let share = wg.ridge_arc_share_min
+            + rng.unit() * (wg.ridge_arc_share_max - wg.ridge_arc_share_min).max(0.0);
+        let (a, b, length) = if arc {
+            let r = (ring + 1) as f64 * g.ring_step as f64;
+            let sweep = share * 2.0 * arc_half;
+            // The start bearing is drawn so the whole span stays inside the fan — the cap on
+            // `share` is what leaves room for it, and what keeps the ends roundable.
+            let lo = -arc_half + rng.unit() * (2.0 * arc_half - sweep).max(0.0);
+            (polar(r, lo), polar(r, lo + sweep), r * sweep)
+        } else {
+            let rings = wg.ridge_spoke_rings_min
+                + rng.below(
+                    (wg.ridge_spoke_rings_max.saturating_sub(wg.ridge_spoke_rings_min) + 1) as usize,
+                ) as u32;
+            let n = g.sectors(ring).max(1);
+            let cell = meld_proto::regions::Cell::new(ring, rng.below(n as usize) as u32);
+            let bearing = g.span(cell).bear_hi as f64;
+            let lo = ring as f64 * g.ring_step as f64;
+            let hi = lo + rings as f64 * g.ring_step as f64;
+            (polar(lo, bearing), polar(hi, bearing), hi - lo)
+        };
+
+        // NOW roll, weighted by the ground the spine actually stands on.
+        let spine_mid = Position::new(0.5 * (a.x + b.x), 0.5 * (a.y + b.y));
+        let mountainous = biome_terrace_mult(self.biome_at(spine_mid));
+        if rng.unit() >= wg.ridge_chance * mountainous {
+            return;
+        }
+
+        let passes = wg.ridge_passes_min
+            + rng.below(wg.ridge_passes_max.saturating_sub(wg.ridge_passes_min) + 1);
+        // A share of the spine, so the gap scales with the wall — floored at a width a party
+        // fits through, because a gap nobody can pass is a wall with a rumour of a door.
+        let pass = (length * wg.ridge_pass_share).max(wg.ridge_pass_width);
+        let segs = passes + 1;
+        let spine = length - pass * passes as f64;
+        // Too short to hold its own passes is not an error: it is a section with no range.
+        if spine < pass {
+            return;
+        }
+        let seg_len = spine / segs as f64;
+        // ⚠️ **A RANGE MUST BE LONGER THAN IT IS WIDE, OR IT IS A CONE.** `half_width` was
+        // drawn independently of `seg_len`, so a 200-unit spine cut by three passes gave 27.5
+        // units of length against up to 52 of half-width — and a capsule wider than it is long
+        // is a disc, which linear falloff renders as a mathematically perfect, featureless
+        // cone. Reported from a screenshot: a smooth brown pyramid standing alone in a field.
+        //
+        // Capped at a third of the segment, so the thing always reads as a WALL running
+        // somewhere rather than a lone peak. A shallow band therefore grows a smaller range
+        // than a deep one, which is correct — the arc it is a share of is smaller too — and
+        // because the aspect is fixed, a narrower range is a proportionally lower one.
+        let half_width = (wg.ridge_half_width_min
+            + rng.unit() * (wg.ridge_half_width_max - wg.ridge_half_width_min).max(0.0))
+            .min(seg_len / 3.0);
+        // Too stubby to read as a range at all is not an error: it is a section with no range.
+        if half_width < wg.ridge_half_width_min * 0.5 {
+            return;
+        }
+        // A ridge's falloff is LINEAR, so this ratio IS its slope, at every point on the flank.
+        // Above `WALKABLE_SLOPE` the flank is a wall — that is the whole mechanism, and there
+        // is no second copy of it anywhere.
+        let height = half_width * wg.ridge_aspect;
+
+        // ⚠️ **A BARRIER IS PLACED BEFORE THE ROUTE, BUT THE ROUTE ALREADY DRAWN ALWAYS WINS.**
+        // A region ring is 250 units thick while an early section is 20 + 7i, so one ring spans
+        // many sections and a range for section N lands on ground whose clear path was routed
+        // for section N-3. Measured before this yielded: one world took 2.2s to generate
+        // without ranges and over 60s WITH, because every one of `generate_with`'s twelve
+        // feasibility re-rolls put a wall across the trail and burned the walker's 100k steps
+        // against it.
+        //
+        // So a segment that crosses a trail already drawn is DROPPED — and dropping it IS a
+        // pass, because passes are gaps. Same rule as a ford, and it makes feasibility
+        // structural rather than checked: a range cannot block the trail, because crossing the
+        // trail is what opens it.
+        //
+        // ⚠️ Asked in ONE frame: `corridor_path` is corridor space and a ridge is already world
+        // space, so the path is bent forward. Comparing the two directly is the check that
+        // silently always passes, which is how water kept landing on the trail.
+        let (half, lat) = (self.radial_half, self.corridor_lateral.max(1.0));
+        let drawn: Vec<Position> =
+            self.corridor_path.iter().map(|p| radial_tf(*p, half, lat)).collect();
+        let clear = self.path_clear_radius + self.player_radius;
+        // …and it yields to anything ALREADY STANDING, which resolves the opposite way to a
+        // prop. `retain_placeable_obstacles` deletes trees a range swallows because a tree is
+        // scenery; a creature carries a pack and a difficulty gate (CANON §B), a node is a
+        // crafter's reason to be here and a chest is a reward. Those are not scenery, so the
+        // MOUNTAIN gives way — the same argument `push_water`'s `off_creatures` makes.
+        let standing: Vec<(Position, f64)> = self
+            .monsters
+            .iter()
+            .map(|m| (m.position, 4.0))
+            .chain(self.resources.iter().map(|r| (r.position, 3.0)))
+            .chain(self.chests.iter().map(|c| (c.position, 3.0)))
+            .collect();
+        // …and it yields to WATER already placed, for the same reason and by the same rule.
+        // Within a section `push_ridges` runs before `push_water`, so water yields to a range
+        // there — but a region ring spans many sections, so a range raised for section N+2 can
+        // land on a lake placed for section N. A mountain swallowing a lake is nonsense either
+        // way round; the difference is only which one was there first, and what is already
+        // there wins.
+        let placed_water: Vec<(Position, f64)> = self
+            .basins
+            .iter()
+            .map(|b| (Position::new(b[0] as f64, b[1] as f64), b[2] as f64))
+            .chain(
+                self.rivers
+                    .iter()
+                    .map(|n| (Position::new(n[0] as f64, n[1] as f64), n[2] as f64)),
+            )
+            .collect();
+
+        let mut t = 0.0f64;
+        for _ in 0..segs {
+            let (t0, t1) = (t / length, ((t + seg_len) / length).min(1.0));
+            let p0 = Position::new(a.x + (b.x - a.x) * t0, a.y + (b.y - a.y) * t0);
+            let p1 = Position::new(a.x + (b.x - a.x) * t1, a.y + (b.y - a.y) * t1);
+            t += seg_len + pass;
+            // Sample the spine rather than its endpoints: a segment can straddle the trail with
+            // both of its ends well clear of it.
+            let steps = (p0.distance_to(&p1) / clear.max(1.0)).ceil().max(2.0) as i32;
+            let crosses = (0..=steps).any(|k| {
+                let f = k as f64 / steps as f64;
+                let q = Position::new(p0.x + (p1.x - p0.x) * f, p0.y + (p1.y - p0.y) * f);
+                dist_to_path(&q, &drawn) <= clear + half_width
+                    || placed_water.iter().any(|(c, r)| c.distance_to(&q) <= r + half_width)
+                    || standing.iter().any(|(c, r)| c.distance_to(&q) <= r + half_width)
+                    // …and never over an authored PEAK. A peak is crowned with a gate boss or
+                    // a guaranteed chest, and that reward is the entire reason the climb
+                    // exists — a range swallowing the summit makes its ground unwalkable, the
+                    // scatter pass then refuses to put the reward there, and the landmark
+                    // becomes a hill with nothing on it. `push_strait` and `push_water` both
+                    // refuse a peak for the same reason.
+                    || !self.clear_of_peaks(q, half_width)
+            });
+            if crosses {
+                continue;
+            }
+            self.ridges.push([
+                p0.x as f32,
+                p0.y as f32,
+                p1.x as f32,
+                p1.y as f32,
+                half_width as f32,
+                height as f32,
+            ]);
+        }
+    }
+
     fn push_water(&mut self, balance: &Balance, i: usize, start_x: f64, end_x: f64) {
         let wg = &balance.worldgen;
         if self.tutorial
@@ -4903,6 +5294,31 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
                 d > pad + k[2] as f64
             })
         };
+        // …and never inside a RANGE, for the same reason and one more. A lake filling a
+        // mountain is nonsense on its face; worse, water is placed by walking DOWNHILL from a
+        // source, and a range is the steepest ground in the world, so descent runs straight
+        // into one and pools against it. And a range is impassable, so a basin that formed
+        // inside one is water no party can ever reach.
+        //
+        // Ranges are raised before this pass (`push_ridges` runs above `push_water`), which is
+        // what makes yielding possible at all — the same ordering that lets water yield to a
+        // drawn path by becoming a ford.
+        let ridge_list: Vec<meld_proto::terrain::Ridge> = self.ridges.clone();
+        let off_ridges = |p: Position, pad: f64| {
+            ridge_list.iter().all(|r| {
+                let hw = r[4] as f64;
+                hw <= 0.0
+                    || meld_proto::terrain::dist_to_segment(
+                        p.x as f32,
+                        p.y as f32,
+                        r[0],
+                        r[1],
+                        r[2],
+                        r[3],
+                    ) as f64
+                        > pad + hw
+            })
+        };
         // A body smaller than this is not worth placing — it renders as a puddle and reads
         // as an artefact rather than as water.
         const MIN_BODY: f64 = 18.0;
@@ -4935,6 +5351,10 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
             }
             // A spring belongs to the ground it rises from.
             if rng.unit() * wet_mult > biome_water_mult(self.biome_at(src)) {
+                return;
+            }
+            // A spring inside a mountain has nowhere to go but into it.
+            if !off_ridges(src, 0.0) {
                 return;
             }
             let mut nodes: Vec<meld_proto::coast::RiverNode> = Vec::new();
@@ -5007,7 +5427,8 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
                 while radius >= MIN_BODY && !off_creatures(p, radius) {
                     radius -= 12.0;
                 }
-                if radius >= MIN_BODY && off_drawn(p, radius) && off_peaks(p, radius) {
+                if radius >= MIN_BODY && off_drawn(p, radius) && off_peaks(p, radius)
+                && off_ridges(p, radius) {
                     self.basins.push([
                         p.x as f32,
                         p.y as f32,
@@ -5059,6 +5480,7 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
                 && rng.unit() * wet_mult <= biome_water_mult(self.biome_at(p))
                 && off_drawn(p, radius)
                 && off_peaks(p, radius)
+                && off_ridges(p, radius)
             {
                 self.basins.push([x as f32, z as f32, radius as f32, (cur + wg.basin_fill) as f32]);
             }
@@ -5082,10 +5504,26 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
         // three times.
         let shore = self.shore();
         // A corridor cell is passable iff its BENT (world) position is walkable ground.
+        // The RANGES too, so the guaranteed backbone finds a PASS by itself rather than being
+        // told where one is — the same way it already finds an isthmus through a strait.
+        //
+        // ⚠️ **AS A GRID, NOT A SLOPE EVALUATION.** A* samples every node and then every EDGE
+        // at ≤1 world unit, so asking `landform_slope` here cost four height evaluations plus
+        // the capsule distances thousands of times per section: measured, world generation went
+        // 2.31x slower and `make check` went from ~25 minutes to an hour. A range's interior is
+        // impassable throughout (linear falloff ⇒ constant slope), so "am I in a range" is a
+        // disc query, and the same field the movers use answers it in O(1).
+        let ridge_field = BlockField::with_ridges(Vec::new(), self.ridge_discs());
+        // Routing keeps a margin the way `ROUTE_SLOPE` is stricter than `WALKABLE_SLOPE`: the
+        // guaranteed route stays clear of the flank rather than grazing it.
+        let route_pad = self.path_clear_radius + self.player_radius;
+        let routable = |x: f32, z: f32| -> bool {
+            !ridge_field.ridge_blocks(&Position::new(x as f64, z as f64), route_pad)
+                && meld_proto::terrain::routable(x, z, ox, oz)
+        };
         let walk = |c: (i64, i64)| -> bool {
             let w = radial_tf(Position::new(c.0 as f64 * CELL, c.1 as f64 * CELL), half, lat);
-            meld_proto::terrain::routable(w.x as f32, w.y as f32, ox, oz)
-                && shore.is_land(w.x as f32, w.y as f32)
+            routable(w.x as f32, w.y as f32) && shore.is_land(w.x as f32, w.y as f32)
         };
         // The radial bend makes a 1-cell corridor step span many WORLD units tangentially
         // at large radius, so checking only cell centres would leap over buttes. Check the
@@ -5104,9 +5542,7 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
                 let t = s as f64 / steps as f64;
                 let c = Position::new(ca.x + (cb.x - ca.x) * t, ca.y + (cb.y - ca.y) * t);
                 let w = radial_tf(c, half, lat);
-                if !meld_proto::terrain::routable(w.x as f32, w.y as f32, ox, oz)
-                    || !shore.is_land(w.x as f32, w.y as f32)
-                {
+                if !routable(w.x as f32, w.y as f32) || !shore.is_land(w.x as f32, w.y as f32) {
                     return false;
                 }
             }
@@ -6629,6 +7065,10 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
         seed: u64,
     ) -> Vec<Id> {
         let wg = &balance.worldgen;
+        // Cloned so the scatter loop can hold `&mut self` while still asking what the ground
+        // is — the same shape the generation passes use.
+        let reroll_ridges: Vec<meld_proto::terrain::Ridge> = self.ridges.clone();
+        let reroll_off = self.terrain_off;
         let (inner, outer) = self.shift_band(first, last);
         let removed: Vec<Id> = self
             .obstacles
@@ -6701,6 +7141,18 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
                     near.insert(pos, radius);
                 }
                 let world = bend(pos);
+                // The RANGES too: a Shift re-strews a region's props, and a range standing in
+                // it is exactly the ground they must not land on.
+                if meld_proto::terrain::landform_slope(
+                    world.x as f32,
+                    world.y as f32,
+                    reroll_off.0,
+                    reroll_off.1,
+                    &reroll_ridges,
+                ) >= meld_proto::terrain::WALKABLE_SLOPE
+                {
+                    continue;
+                }
                 if self.monsters.iter().any(|m| m.position.distance_to(&world) < radius + 1.5)
                     || self.resources.iter().any(|r| r.position.distance_to(&world) < radius + 1.5)
                     || self.stations.iter().any(|s| s.position.distance_to(&world) < radius + 2.0)
@@ -6997,13 +7449,19 @@ fn nudge_to_walkable(
     p: Position,
     off: (f32, f32),
     shore: meld_proto::coast::Shore<'_>,
+    ridges: &[meld_proto::terrain::Ridge],
 ) -> Position {
     // "Walkable" has to mean DRY as well as gentle. It did not, and it did not matter while
     // the fan was one unbroken landmass — but a section that holds a strait (WG-7) has open
     // water in the middle of it, and a chest or a harvest node nudged off a cliff into the
     // sea is exactly the unreachable reward this function exists to prevent.
+    // ⚠️ **AND THE RANGES.** This is the function whose whole job is "put this somewhere
+    // standable", and it was answering with the base noise alone — which tops out at slope
+    // 0.254 and can therefore never refuse anything. So it happily nudged a harvest node ONTO
+    // a mountainside, undoing the scatter passes' own check a few lines later.
     let ok = |q: &Position| {
-        meld_proto::terrain::walkable(q.x as f32, q.y as f32, off.0, off.1)
+        meld_proto::terrain::landform_slope(q.x as f32, q.y as f32, off.0, off.1, ridges)
+            < meld_proto::terrain::WALKABLE_SLOPE
             && shore.is_land(q.x as f32, q.y as f32)
     };
     if ok(&p) {
@@ -9325,11 +9783,21 @@ mod tests {
             }
         }
         let mean = reach.iter().sum::<f64>() / reach.len() as f64;
-        // Half its own leash is a low bar deliberately: the destination is drawn inside
-        // the leash disc, so the EXPECTED excursion is well under the full radius, and
-        // terrain legitimately blocks some legs. The bug sat at 1.93.
+        // A THIRD of its own leash, and the margin is the point rather than the number.
+        //
+        // This exists to catch per-tick destination churn, which measured **1.93**. Half the
+        // leash (4.5) left it only 2.6% under the no-terrain baseline of 4.62 — so it was not
+        // really guarding against the churn bug at all, it was pinning a stochastic mean that
+        // any legitimate world change walks through. RANGES are exactly the legitimate change
+        // its own comment anticipates ("terrain legitimately blocks some legs"): they move
+        // where creatures are placed and put walls between them and their wander destination,
+        // and the mean settles at 4.20.
+        //
+        // A third keeps a 55% margin over the bug while surviving terrain, which is the trade
+        // this test was written to make. Measured: 4.62 with no ranges, 4.20 with them, 1.93
+        // when the destination churned.
         assert!(
-            mean > arena.leash_radius * 0.5,
+            mean > arena.leash_radius / 3.0,
             "a wandering creature should cover a real share of its leash \
              (mean furthest excursion {mean:.2} of leash {:.1})",
             arena.leash_radius
@@ -12950,12 +13418,28 @@ impl Arena {
 /// scan returned. `blocks` is a predicate, so bucket order cannot change the answer and the
 /// engine stays deterministic (CANON §S).
 pub struct BlockField {
+    props: Buckets,
+    /// **THE RANGES, IN THEIR OWN BUCKET SET.** ⚠️ They cannot share the props' one, and that
+    /// is the water-prop lesson repeating: `Buckets` sizes its cell from the LARGEST radius in
+    /// it, so a range's 26-52 unit half-width would push `cell` from 8 to ~104 — buckets 13x
+    /// wider, holding ~169x the props, swept on every creature's every tick. Water props at
+    /// r=10 already cost "6x the props on the creature tick, everywhere" for exactly this, and
+    /// they were a fifth the size.
+    ///
+    /// Two bucket sets, ONE `blocks()`. The rule this file enforces is that no call site can
+    /// forget what blocks — which is about the API, not about the storage.
+    ridges: Buckets,
+}
+
+/// One spatial hash of blocking discs. Split out of [`BlockField`] so props and ranges can
+/// each size their own cell.
+struct Buckets {
     cell: f64,
     max_radius: f64,
     buckets: HashMap<(i64, i64), Vec<(Position, f64)>>,
 }
 
-impl BlockField {
+impl Buckets {
     fn new(items: Vec<(Position, f64)>) -> Self {
         let max_radius = items.iter().map(|(_, r)| *r).fold(0.0_f64, f64::max);
         // Wide enough that a query sweeps few cells, narrow enough that a cell holds few
@@ -12963,19 +13447,17 @@ impl BlockField {
         let cell = (max_radius * 2.0).max(8.0);
         let mut buckets: HashMap<(i64, i64), Vec<(Position, f64)>> = HashMap::new();
         for it in items {
-            buckets.entry(Self::key(cell, &it.0)).or_default().push(it);
+            buckets.entry(BlockField::key(cell, &it.0)).or_default().push(it);
         }
         Self { cell, max_radius, buckets }
     }
 
-    fn key(cell: f64, p: &Position) -> (i64, i64) {
-        ((p.x / cell).floor() as i64, (p.y / cell).floor() as i64)
-    }
-
-    /// Does anything blocking overlap a disc of `radius` at `p`?
-    pub fn blocks(&self, p: &Position, radius: f64) -> bool {
+    fn blocks(&self, p: &Position, radius: f64) -> bool {
+        if self.buckets.is_empty() {
+            return false;
+        }
         let span = ((self.max_radius + radius) / self.cell).ceil() as i64;
-        let (cx, cy) = Self::key(self.cell, p);
+        let (cx, cy) = BlockField::key(self.cell, p);
         for dx in -span..=span {
             for dy in -span..=span {
                 if let Some(v) = self.buckets.get(&(cx + dx, cy + dy)) {
@@ -12988,9 +13470,44 @@ impl BlockField {
         false
     }
 
+    fn len(&self) -> usize {
+        self.buckets.values().map(|v| v.len()).sum()
+    }
+}
+
+impl BlockField {
+    fn new(items: Vec<(Position, f64)>) -> Self {
+        Self { props: Buckets::new(items), ridges: Buckets::new(Vec::new()) }
+    }
+
+    /// Props (and blocking structures) plus the RANGES, each in its own bucket set.
+    fn with_ridges(items: Vec<(Position, f64)>, ridges: Vec<(Position, f64)>) -> Self {
+        Self { props: Buckets::new(items), ridges: Buckets::new(ridges) }
+    }
+
+    /// Is anything blocking within `radius` of `p`, counting ONLY the ranges?
+    ///
+    /// A* wants this half on its own: it already answers for props through the clear-path
+    /// tube, and what it needs from a range is the O(1) question rather than a slope
+    /// evaluation at every node and every edge sample.
+    pub fn ridge_blocks(&self, p: &Position, radius: f64) -> bool {
+        self.ridges.blocks(p, radius)
+    }
+
+    fn key(cell: f64, p: &Position) -> (i64, i64) {
+        ((p.x / cell).floor() as i64, (p.y / cell).floor() as i64)
+    }
+
+
+    /// Does anything blocking overlap a disc of `radius` at `p`? Props AND ranges — one
+    /// question, so a call site cannot consult half of what blocks.
+    pub fn blocks(&self, p: &Position, radius: f64) -> bool {
+        self.props.blocks(p, radius) || self.ridges.blocks(p, radius)
+    }
+
     /// Everything in the field, for tests that want to reason about the whole set.
     pub fn len(&self) -> usize {
-        self.buckets.values().map(|v| v.len()).sum()
+        self.props.len() + self.ridges.len()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -13132,7 +13649,47 @@ impl Arena {
                 .filter(|s| s.blocks())
                 .map(|s| (s.position, self.structure_radius)),
         );
-        BlockField::new(out)
+        BlockField::with_ridges(out, self.ridge_discs())
+    }
+
+    /// A range as blocking DISCS along its spine.
+    ///
+    /// **A capsule is exactly the union of discs centred on its segment**, and a range's whole
+    /// interior is impassable — its falloff is linear, so the slope is `height / half_width`
+    /// at every point inside, not just near the crest. So this is not an approximation of the
+    /// shape, only of how finely the spine is sampled.
+    fn ridge_discs(&self) -> Vec<(Position, f64)> {
+        let mut out = Vec::new();
+        for r in &self.ridges {
+            let hw = r[4] as f64;
+            if hw <= 0.0 {
+                continue;
+            }
+            let (a, b) = (
+                Position::new(r[0] as f64, r[1] as f64),
+                Position::new(r[2] as f64, r[3] as f64),
+            );
+            // ⚠️ **THE GRID MUST BE A SUPERSET OF THE CAPSULE, NEVER A SUBSET.** Sampling the
+            // spine at spacing `s` with discs of exactly `hw` leaves a sliver near the rim
+            // uncovered, and that sliver is where two answers to "what blocks" drift apart:
+            // A* asks this grid, the walker in `backbone_feasible` asks `landform_slope`, so
+            // A* routed through a gap the walker then refused and the clear path stopped
+            // reaching the portal (seed 16). Inflating the disc to cover the worst case —
+            // `sqrt(hw^2 + (s/2)^2)`, ~6% — makes the grid block everything the exact field
+            // blocks and a little more, so the two can only disagree in the SAFE direction.
+            let step = (hw * 0.7).max(1.0);
+            let disc = (hw * hw + (step * 0.5) * (step * 0.5)).sqrt();
+            let len = a.distance_to(&b);
+            let n = (len / step).ceil().max(1.0) as i32;
+            for k in 0..=n {
+                let t = k as f64 / n as f64;
+                out.push((
+                    Position::new(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t),
+                    disc,
+                ));
+            }
+        }
+        out
     }
 
     /// The structure `player_id` is standing at, within `radius` and on their level.

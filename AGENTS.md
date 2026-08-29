@@ -1863,6 +1863,33 @@ holds measured FLOORS for exactly that reason. Census before you believe a gener
   is named for. Creatures do not siege structures yet (`BD-4`), so the weather is currently
   an anchor's only enemy.
 
+⚠️ **THE GENERATOR HAS A DEPENDENCY ORDER, AND EVERY NEW WORLD FEATURE COLLIDES WITH IT.**
+A section is built in passes — terrain, peaks, straits, lobes, ranges, water, the clear path,
+props, creatures, chests — and each pass can invalidate what an earlier one placed, *including
+in an earlier section*, because a region ring is 250 units thick while an early section is
+20 + 7i. Adding `WG-7`'s ranges surfaced **seven** of these at once, and the rule is not "place
+things in the right order" (there isn't one) but **decide, per pair, which side yields**:
+
+| the collision | who yields | why |
+|---|---|---|
+| water over a drawn trail | the water (a river node becomes a **ford**) | the route is feasibility |
+| a strait over a drawn trail | the **strait is not cut** | it cannot yield locally; no barrier beats a sealed one |
+| a range over a drawn trail | the **segment is dropped** — and dropping it IS a pass | same rule as the ford |
+| a range over standing water | the range | a mountain full of lake is nonsense either way round |
+| a range over **props** | the **props are deleted** | a tree is scenery; when a mountain rises the trees on it are gone |
+| a range over creatures / nodes / chests | the range | a creature carries a pack and a difficulty gate, a chest is a reward |
+| a **peak** over a range | the peak is not raised | its summit reward is the only reason to climb, and `nudge_to_walkable` would shove it off |
+
+The tell that you have hit one is a guarantee that holds in isolation and fails in a full
+world. And the reason props resolve OPPOSITELY to creatures is the whole point: yielding is not
+a default, it is a judgement about which thing carries meaning.
+
+⚠️ **AND A CHECK THAT WALKS CAN BE SLID PAST.** `backbone_feasible` ran its probe for 100,000
+iterations, and `apply_move` slides along whatever refuses a step — so a route crossing open sea
+could be ground around a few units at a time until the probe reached the portal and the world
+was declared feasible. It samples the route's own vertices now, BEFORE walking it. A gate whose
+only instrument is a simulated walker measures persistence, not feasibility.
+
 **A BIOME IS A PROPERTY OF A CELL, NOT OF A RADIUS RING** ([`meld_proto::regions`]).
 One decomposition of the WG-4 fan into cells with adjacency, and everything that asks
 "which part of the world is this, and what is next to it" asks it: the biome a patch of

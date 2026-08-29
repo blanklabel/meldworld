@@ -1262,6 +1262,22 @@ pub struct WorldGen {
     /// filling an annular sector, pierced by isthmuses. The CONTINENT is the land between
     /// two of them. Deliberately under 1.0: a continent should be several sections across,
     /// and a world where every ring is a coast is an archipelago.
+    pub ridge_chance: f64,
+    pub ridge_min_section: usize,
+    pub ridge_arc_share: f64,
+    pub ridge_arc_share_min: f64,
+    pub ridge_arc_share_max: f64,
+    pub ridge_spoke_rings_min: u32,
+    pub ridge_spoke_rings_max: u32,
+    pub ridge_passes_min: usize,
+    pub ridge_passes_max: usize,
+    pub ridge_pass_share: f64,
+    pub ridge_half_width_min: f64,
+    pub ridge_half_width_max: f64,
+    pub ridge_aspect: f64,
+    pub ridge_pass_width: f64,
+    pub ridge_segments_min: usize,
+    pub ridge_segments_max: usize,
     pub strait_chance: f64,
     /// Earliest section index that may hold a strait. Sections grow with depth
     /// (`base_area_length + area_length_growth*i`), so this is simultaneously what makes a

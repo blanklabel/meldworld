@@ -191,6 +191,7 @@ pub(crate) fn pump_net(
                 // a RE-sent section (how a Shift retiles the ground) replaces its own
                 // mountains rather than growing a second one beside each of the first.
                 crate::world_render::set_section_peaks(section.index, &section.peaks);
+                crate::world_render::set_section_ridges(section.index, &section.ridges);
                 // …and its STRAITS (WG-7 continents), keyed the same way and for the same
                 // reason. ⚠️ A Shift does NOT re-cut the coastline (a continent does not
                 // wander), so the server re-sends a retiled section's straits unchanged —
@@ -242,6 +243,7 @@ pub(crate) fn pump_net(
             ServerMsg::RunStarted {
                 terrain_off,
                 peaks,
+                ridges,
                 straits,
                 world_seed,
                 lobes,
@@ -257,6 +259,9 @@ pub(crate) fn pump_net(
                 // Replace any prior run's mountains with this run's authored peaks (the
                 // initial-chain sections' peaks all ride here on run.started).
                 crate::world_render::set_peaks(peaks);
+                // …and the RANGES this world grew. Before the first frame, because the ground
+                // shader draws them and `terrain_height` stands every entity on them.
+                crate::world_render::set_ridges(ridges);
                 // …and this world's CONTINENTS (WG-7): the straits its ground shader ramps a
                 // beach over and its prop placement culls against. The initial chain's all
                 // ride here, as the peaks do.

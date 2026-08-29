@@ -97,6 +97,76 @@ pub fn routable(x: f32, z: f32, ox: f32, oz: f32) -> bool {
     slope(x, z, ox, oz) < ROUTE_SLOPE
 }
 
+/// **A RANGE — a capsule of steep ground with a carved route across it.**
+/// `[x0, z0, x1, z1, half_width, height]`.
+///
+/// One primitive for every landform that BLOCKS: a long capsule is a mountain range, a short
+/// one a massif, a degenerate one (both ends equal) a cone. Its falloff is LINEAR rather than
+/// the raised cosine a [`peak_height`] dome uses, and that is the whole point — straight
+/// flanks and a defined crest read as a mountain where a cosine reads as a hill, and the slope
+/// comes out as exactly `height / half_width`, one ratio anyone can check against
+/// [`WALKABLE_SLOPE`].
+///
+/// **A PASS IS THE GAP BETWEEN TWO RIDGES, not a property of one.** A range is laid as several
+/// segments along a cell boundary and the spaces between them are the ways through — the same
+/// shape a strait's isthmuses, a river's fords and a dungeon's doors already take, so passes
+/// need no code at all.
+pub type Ridge = [f32; 6];
+
+/// Max ranges the ground shader carries at once (windowed around the player, like [`MAX_PEAKS`]).
+pub const MAX_RIDGES: usize = 16;
+
+/// Distance from `(x, z)` to the segment `(x0,z0)-(x1,z1)`. A capsule is a segment plus a
+/// radius, so this is the whole of a ridge's shape.
+pub fn dist_to_segment(x: f32, z: f32, x0: f32, z0: f32, x1: f32, z1: f32) -> f32 {
+    let (dx, dz) = (x1 - x0, z1 - z0);
+    let len2 = dx * dx + dz * dz;
+    let t = if len2 <= 1e-6 { 0.0 } else { (((x - x0) * dx + (z - z0) * dz) / len2).clamp(0.0, 1.0) };
+    let (px, pz) = (x0 + dx * t, z0 + dz * t);
+    ((x - px) * (x - px) + (z - pz) * (z - pz)).sqrt()
+}
+
+/// Height the ranges add at `(x, z)`.
+///
+/// Combined with `max`, not a sum: a range is laid as overlapping segments, and summing them
+/// would stack a crest to several times its authored height at every joint. `max` gives one
+/// continuous massif at the height it was authored for — which is also what keeps the slope
+/// equal to `height / half_width` everywhere rather than only on an isolated segment.
+pub fn ridge_height(x: f32, z: f32, ridges: &[Ridge]) -> f32 {
+    let mut h: f32 = 0.0;
+    for r in ridges {
+        let hw = r[4];
+        if hw <= 0.0 {
+            continue;
+        }
+        let d = dist_to_segment(x, z, r[0], r[1], r[2], r[3]);
+        if d < hw {
+            h = h.max(r[5] * (1.0 - d / hw));
+        }
+    }
+    h
+}
+
+/// Slope of the ground INCLUDING the ranges, by the same central differences [`slope`] uses.
+///
+/// ⚠️ **PEAKS ARE DELIBERATELY NOT IN HERE.** An authored peak is raised *after* its section's
+/// route is laid and nudged off-trail on purpose — it is a climb you choose, and its summit
+/// carries the reward that makes the climb worth it. Its flanks run to slope 0.594, which is
+/// under [`WALKABLE_SLOPE`] but well over [`ROUTE_SLOPE`], so folding peaks in here would make
+/// the guaranteed route swerve around every mountain in every seeded world — a behaviour change
+/// riding along inside a feature that is about something else. A range is authored to block; a
+/// peak is authored to be climbed.
+pub fn landform_slope(x: f32, z: f32, ox: f32, oz: f32, ridges: &[Ridge]) -> f32 {
+    if ridges.is_empty() {
+        return slope(x, z, ox, oz);
+    }
+    const E: f32 = 1.5;
+    let h = |px: f32, pz: f32| height(px, pz, ox, oz) + ridge_height(px, pz, ridges);
+    let dx = (h(x + E, z) - h(x - E, z)) / (2.0 * E);
+    let dz = (h(x, z + E) - h(x, z - E)) / (2.0 * E);
+    (dx * dx + dz * dz).sqrt()
+}
+
 /// Max authored landmark peaks the ground shader blends at once (windowed around the
 /// player like the biome rings). The run may hold more across all sections.
 pub const MAX_PEAKS: usize = 24;

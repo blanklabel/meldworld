@@ -345,6 +345,22 @@ impl Grid {
     }
 }
 
+impl Regions {
+    /// The biome index at a world position — the harness override if one is set, otherwise the
+    /// decomposition's own answer. ONE resolver, because "forced or derived" answered in two
+    /// places is how the server and the client came to disagree about what biome the ground is.
+    pub fn biome_at(&self, x: f32, z: f32) -> usize {
+        if self.force >= 0 {
+            return (self.force as usize).min(BIOMES.len() - 1);
+        }
+        let mut gate = [0.0f32; BIOMES.len()];
+        for (i, g) in gate.iter_mut().enumerate() {
+            *g = self.gate.get(i).copied().unwrap_or(0.0);
+        }
+        self.grid.biome_at(x, z, &gate)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -587,6 +603,71 @@ mod tests {
         assert!(differ > 40, "two seeds only disagree about {differ} cells — the seed is inert");
     }
 
+    /// ⚠️ **`MELD_BIOME` HAS TO REACH WHOEVER DERIVES A BIOME, NOT JUST WHOEVER SPAWNS ONE.**
+    ///
+    /// The server honours the override when it picks creature rosters and scatters props; the
+    /// client and the ground shader DERIVE a cell's biome from the decomposition. When the
+    /// override did not cross the wire the two disagreed, and the result was ashfall lava rocks
+    /// strewn across green ground the HUD labelled Mire — the same mismatch the per-section
+    /// biome LUT was built to fix, one layer up.
+    ///
+    /// So the override lives on `Regions` and `Regions::biome_at` is the ONE resolver. This
+    /// holds it: forced means forced, at every position, whatever the grid would have said.
+    #[test]
+    fn a_forced_biome_answers_everywhere_the_grid_would_have() {
+        let g = grid(424242);
+        // Sized from BIOMES rather than written out, or this test silently stops covering
+        // whatever the roster grew (it went from 6 to 11 in one merge).
+        let mut gate = vec![0.0f32; BIOMES.len()];
+        for (i, g) in [(2usize, 400.0f32), (3, 250.0), (4, 550.0)] {
+            gate[i] = g;
+        }
+        let derived = Regions { grid: g, gate: gate.clone(), blend: 26.0, force: -1 };
+        // …and the override must be doing real work overall. Asked in AGGREGATE rather than
+        // per biome: with eleven themes one of them will legitimately be what the grid would
+        // have picked anyway across a sample, and failing on that coincidence tests nothing.
+        let mut total_differed = 0usize;
+        for (want, name) in BIOMES.iter().enumerate() {
+            let forced =
+                Regions { grid: g, gate: gate.clone(), blend: 26.0, force: want as i32 };
+            let mut differed = 0;
+            for k in 0..400 {
+                let r = 300.0 + k as f32 * 6.0;
+                let b = (k as f32 / 400.0 * 2.0 - 1.0) * g.arc_half * 0.9;
+                let (x, z) = (r * b.cos(), r * b.sin());
+                assert_eq!(
+                    forced.biome_at(x, z),
+                    want,
+                    "forced to {name} and answered {} at ({x:.0}, {z:.0})",
+                    BIOMES[forced.biome_at(x, z)]
+                );
+                if derived.biome_at(x, z) != want {
+                    differed += 1;
+                }
+            }
+            total_differed += differed;
+        }
+        assert!(
+            total_differed > 1_000,
+            "forcing a biome matched what the grid would have said almost everywhere \
+             ({total_differed} differences across {} biomes x 400 points) — this test would \
+             pass even with the override ignored",
+            BIOMES.len()
+        );
+    }
+
+    /// Absent on an older server, `force` must default to "no override" rather than to biome 0
+    /// — a `#[serde(default)]` of zero would silently force every world to `field`.
+    #[test]
+    fn a_missing_override_is_no_override_and_not_biome_zero() {
+        let r: Regions = serde_json::from_str(
+            r#"{"grid":{"arc_half":2.6,"ring_step":250.0,"cell_width":250.0,"warp":88.0,"seed":1},
+                "gate":[0,0,0,0,0,0],"blend":26.0}"#,
+        )
+        .expect("Regions without `force` still deserializes");
+        assert_eq!(r.force, -1, "a missing override must mean none, not `field`");
+    }
+
     /// Every biome must be reachable somewhere, or a theme is authored content nothing draws.
     #[test]
     fn every_biome_is_somewhere_in_the_world() {
@@ -620,6 +701,20 @@ pub struct Regions {
     pub gate: Vec<f32>,
     /// World units the ground cross-fades across a cell boundary.
     pub blend: f32,
+    /// **DEV/QA: the biome every cell is forced to** (`MELD_BIOME`), as an index into
+    /// [`BIOMES`], or `-1` in normal play.
+    ///
+    /// ⚠️ It has to cross the wire because the client DERIVES a cell's biome now rather than
+    /// being told it. The server honours the override when it spawns creatures and scatters
+    /// props; a client that has not been told paints the decomposition's own answer, and the
+    /// result was ashfall lava rocks strewn across green ground the HUD called Mire. Same
+    /// class of mismatch the per-section biome LUT was originally built to fix, one layer up.
+    #[serde(default = "no_force")]
+    pub force: i32,
+}
+
+fn no_force() -> i32 {
+    -1
 }
 
 impl Default for Regions {
@@ -630,6 +725,7 @@ impl Default for Regions {
             grid: Grid { arc_half: 0.0, ring_step: 0.0, cell_width: 250.0, warp: 0.0, seed: 0 },
             gate: vec![0.0; BIOMES.len()],
             blend: 26.0,
+            force: -1,
         }
     }
 }

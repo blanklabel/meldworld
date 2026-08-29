@@ -338,7 +338,7 @@ pub const STRAIT_MIN_REACH: f32 = 180.0;
 
 /// Signed difference between two bearings, wrapped to `[-π, π]`, so a strait centred near
 /// due west is not silently a strait spanning the entire world the other way round.
-fn ang_diff(a: f32, b: f32) -> f32 {
+pub fn ang_diff(a: f32, b: f32) -> f32 {
     let mut d = a - b;
     while d > std::f32::consts::PI {
         d -= std::f32::consts::TAU;
