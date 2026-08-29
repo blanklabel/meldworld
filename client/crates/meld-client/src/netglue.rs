@@ -244,6 +244,7 @@ pub(crate) fn pump_net(
                 terrain_off,
                 peaks,
                 ridges,
+                bridges,
                 straits,
                 world_seed,
                 lobes,
@@ -262,6 +263,8 @@ pub(crate) fn pump_net(
                 // …and the RANGES this world grew. Before the first frame, because the ground
                 // shader draws them and `terrain_height` stands every entity on them.
                 crate::world_render::set_ridges(ridges);
+                // …and the SPANS carrying the trail over a strait.
+                crate::world_render::set_bridges(bridges);
                 // …and this world's CONTINENTS (WG-7): the straits its ground shader ramps a
                 // beach over and its prop placement culls against. The initial chain's all
                 // ride here, as the peaks do.

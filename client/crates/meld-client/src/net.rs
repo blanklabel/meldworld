@@ -292,6 +292,8 @@ pub struct TerrainSectionView {
     pub peaks: Vec<[f32; 4]>,
     /// **THE RANGES this streamed section raises** ([`meld_proto::terrain::Ridge`]).
     pub ridges: Vec<meld_proto::terrain::Ridge>,
+    /// **THE BRIDGES this streamed section carries.**
+    pub bridges: Vec<meld_proto::coast::Bridge>,
     /// **CONTINENTS (WG-7):** the STRAITS this section holds — the inland seas that separate
     /// one landmass from the next ([`meld_proto::coast::Strait`]). A re-sent section replaces
     /// its own, exactly as it replaces its own peaks.
@@ -668,6 +670,8 @@ pub enum ServerMsg {
         peaks: Vec<[f32; 4]>,
         /// **THE RANGES** ([`meld_proto::terrain::Ridge`]) — the walls the world grew.
         ridges: Vec<meld_proto::terrain::Ridge>,
+        /// **THE BRIDGES** ([`meld_proto::coast::Bridge`]) — spans over the water.
+        bridges: Vec<meld_proto::coast::Bridge>,
         /// **CONTINENTS (WG-7):** this world's straits ([`meld_proto::coast::Strait`]).
         straits: Vec<meld_proto::coast::Strait>,
         /// **This WORLD's seed — its public name** (CANON D19). The world's own fact, never
@@ -2362,6 +2366,22 @@ impl Inner {
                     ),
                     _ => (0.0, 0.0),
                 };
+                // THE BRIDGES — five floats each `[x0, z0, x1, z1, half_width]`.
+                let bridges: Vec<meld_proto::coast::Bridge> = raw.payload["bridges"]
+                    .as_array()
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|p| {
+                                let a = p.as_array()?;
+                                let mut out = [0.0f32; 5];
+                                for (k, slot) in out.iter_mut().enumerate() {
+                                    *slot = a.get(k)?.as_f64()? as f32;
+                                }
+                                Some(out)
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
                 // THE RANGES — six floats each `[x0, z0, x1, z1, half_width, height]`, so they
                 // do not fit the four-float helper the peaks and lobes share.
                 let ridges: Vec<meld_proto::terrain::Ridge> = raw.payload["ridges"]
@@ -2466,6 +2486,7 @@ impl Inner {
                     terrain_off,
                     peaks,
                     ridges,
+                    bridges,
                     straits,
                     world_seed,
                     lobes,
@@ -3053,6 +3074,7 @@ impl Inner {
                         corridor_lateral: t.corridor_lateral,
                         peaks: t.peaks,
                         ridges: t.ridges,
+                        bridges: t.bridges,
                         straits: t.straits,
                         lobes: t.lobes,
                         basins: t.basins,

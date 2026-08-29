@@ -2603,6 +2603,9 @@ pub struct Arena {
     /// WORLD-space like `straits`, so `radialize` does NOT bend them. Rides the wire and is
     /// selected per section by the same radius-band filter.
     pub lobes: Vec<meld_proto::coast::Lobe>,
+    /// **THE BRIDGES** ([`meld_proto::coast::Bridge`]) — spans of forced land carrying the
+    /// clear trail across a strait, so a continent can still be divided where the route runs.
+    pub bridges: Vec<meld_proto::coast::Bridge>,
     /// **THE RANGES** ([`meld_proto::terrain::Ridge`]) — capsules of steep ground that BLOCK,
     /// laid along cell boundaries with the gaps between segments as the passes through. World
     /// space, like `peaks`, and bent by `radialize` with the rest of the section's content.
@@ -2905,6 +2908,7 @@ impl Arena {
             lobes: &self.lobes,
             basins: &self.basins,
             rivers: &self.rivers,
+            bridges: &self.bridges,
         }
     }
 
@@ -3047,6 +3051,7 @@ impl Arena {
             basins: Vec::new(),
             rivers: Vec::new(),
             ridges: Vec::new(),
+            bridges: Vec::new(),
             regions: meld_proto::regions::Grid {
                 arc_half: (wg.radial_arc_degrees.to_radians() * 0.5) as f32,
                 ring_step: balance.region.ring_step as f32,
@@ -3126,6 +3131,7 @@ impl Arena {
         // below can read.
         let (straits, lobes) = (self.straits.clone(), self.lobes.clone());
         let (basins, rivers) = (self.basins.clone(), self.rivers.clone());
+        let bridge_snap: Vec<meld_proto::coast::Bridge> = self.bridges.clone();
         let peak_list = self.peaks.clone();
         let ridge_snap: Vec<meld_proto::terrain::Ridge> = self.ridges.clone();
         let shore = meld_proto::coast::Shore {
@@ -3136,6 +3142,7 @@ impl Arena {
             lobes: &lobes,
             basins: &basins,
             rivers: &rivers,
+            bridges: &bridge_snap,
         };
         let tf = |p: Position| -> Position {
             let r = p.x.max(0.0);
@@ -3255,6 +3262,7 @@ impl Arena {
         let web = self.web.clone();
         let (straits, lobes) = (self.straits.clone(), self.lobes.clone());
         let (basins, rivers) = (self.basins.clone(), self.rivers.clone());
+        let bridge_snap: Vec<meld_proto::coast::Bridge> = self.bridges.clone();
         let peak_list = self.peaks.clone();
         let shore = meld_proto::coast::Shore {
             arc_half: self.radial_half as f32,
@@ -3264,6 +3272,7 @@ impl Arena {
             lobes: &lobes,
             basins: &basins,
             rivers: &rivers,
+            bridges: &bridge_snap,
         };
         // ⚠️ **A RANGE RAISED LATER SWALLOWS PROPS PLACED EARLIER, AND THE PROPS GO.**
         //
@@ -3363,6 +3372,7 @@ impl Arena {
         // everything the bend touches is checked against them (see `radialize`).
         let (straits, lobes) = (self.straits.clone(), self.lobes.clone());
         let (basins, rivers) = (self.basins.clone(), self.rivers.clone());
+        let bridge_snap: Vec<meld_proto::coast::Bridge> = self.bridges.clone();
         let peak_list = self.peaks.clone();
         let ridge_snap: Vec<meld_proto::terrain::Ridge> = self.ridges.clone();
         let shore = meld_proto::coast::Shore {
@@ -3373,6 +3383,7 @@ impl Arena {
             lobes: &lobes,
             basins: &basins,
             rivers: &rivers,
+            bridges: &bridge_snap,
         };
         let tf = |p: Position| -> Position {
             let r = p.x.max(0.0);
@@ -3634,6 +3645,7 @@ impl Arena {
         // it appends to `self.monsters`.
         let (sea, sea_lobes) = (self.straits.clone(), self.lobes.clone());
         let (sea_basins, sea_rivers) = (self.basins.clone(), self.rivers.clone());
+        let bridge_snap: Vec<meld_proto::coast::Bridge> = self.bridges.clone();
         let wet_peaks = self.peaks.clone();
         let toff_wet = self.terrain_off;
         // ⚠️ **A COMPANION SPOT MUST BE USABLE, NOT MERELY DRY.** `dry_companion` places every
@@ -3651,6 +3663,7 @@ impl Arena {
                 lobes: &sea_lobes,
                 basins: &sea_basins,
                 rivers: &sea_rivers,
+                bridges: &bridge_snap,
             }
             .is_ocean(w.x as f32, w.y as f32)
         };
@@ -3737,6 +3750,16 @@ impl Arena {
             Position::new(end_x, wg.path_meander * rng.signed())
         };
         let entry = *self.corridor_path.last().unwrap_or(&Position::new(0.0, 0.0));
+        // ⚠️ **A CROSSING IS CHOSEN, NOT WAITED FOR.** Straits are cut before the route is
+        // laid, so A* simply walks around them and the trail never meets one — which made the
+        // whole bridge feature inert: straits in every world, zero trail vertices inside any of
+        // them, and the invariants passing vacuously because there was nothing to check.
+        //
+        // So span the DIRECT line first. Where the straight run from this section's entry to
+        // its exit crosses a strait, a bridge is laid there, and A* then takes it because a
+        // bridge is land. That is also the content the feature is for: you walk the route and
+        // arrive at a bridge, rather than the world quietly bending you around the sea.
+        self.bridge_the_direct_line(balance, entry, exit_target);
         let mut route = self.astar_route(entry, exit_target);
         // ⚠️ **A RANGE THAT MAKES ITS OWN SECTION UNROUTABLE IS NOT RAISED.**
         //
@@ -4877,14 +4900,46 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
         if !meld_proto::coast::strait_is_crossable(&s, self.radial_half as f32) {
             return;
         }
-        // …and one that would drown trail already drawn is not cut either. Asked with the
-        // strait's OWN depth function, isthmuses included, so a crossing that genuinely lands
-        // on a bridge is still allowed.
-        if drawn
+        // …and where it would drown trail already drawn, it is BRIDGED rather than refused.
+        //
+        // Refusing was the first fix, and it bought feasibility by paying in content: near the
+        // clear path continents simply stopped being divided. A bridge buys the strait back.
+        // The preference order is
+        //   1. the trail already crosses at an ISTHMUS — free, the strait's own mechanism
+        //   2. else SPAN the crossing with a bridge
+        //   3. else do not cut the strait — kept as the floor, because a sealed world is worse
+        //      than a missing barrier.
+        //
+        // A bridge is forced LAND (`coast::Bridge`), so the route stays walkable by the same
+        // `is_land` every mover and the pathfinder already ask. Nothing here needs to know a
+        // bridge exists.
+        let wet: Vec<Position> = drawn
             .iter()
-            .any(|w| meld_proto::coast::strait_depth(w.x as f32, w.y as f32, &s) > 0.0)
-        {
-            return;
+            .copied()
+            .filter(|w| meld_proto::coast::strait_depth(w.x as f32, w.y as f32, &s) > 0.0)
+            .collect();
+        let mut spans: Vec<meld_proto::coast::Bridge> = Vec::new();
+        if !wet.is_empty() {
+            // One span per contiguous run of drowned trail: a crossing is a place, and two
+            // separate crossings must not be joined into one causeway across the whole sea.
+            let mut run: Vec<Position> = vec![wet[0]];
+            for w in wet.iter().skip(1) {
+                if w.distance_to(run.last().unwrap()) <= wg.bridge_join_gap {
+                    run.push(*w);
+                } else {
+                    spans.push(Self::bridge_span(&run, wg.bridge_half_width, r_half));
+                    run = vec![*w];
+                }
+            }
+            spans.push(Self::bridge_span(&run, wg.bridge_half_width, r_half));
+            // A crossing longer than this is not a bridge, it is a causeway — and a causeway
+            // is just the strait not being cut. Fall back to that rather than paving the sea.
+            if spans.iter().any(|b| {
+                let len = ((b[2] - b[0]) as f64).hypot((b[3] - b[1]) as f64);
+                len > wg.bridge_max_span
+            }) {
+                return;
+            }
         }
         // …and never over a PEAK already standing (see `clear_of_peaks`). Sampled along the
         // strait's own centre-line arc, because a strait is a sector, not a disc.
@@ -4898,6 +4953,7 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
             }
         }
         self.straits.push(s);
+        self.bridges.extend(spans);
     }
 
     /// **Shape this section's coast — a BAY biting into the rim, an ISLE standing off it.**
@@ -5012,6 +5068,72 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
     /// Fords are placed on a fixed cadence, not rolled: connectedness is what a river IS,
     /// and a connected impassable line is exactly the thing that disconnects a world. Same
     /// contract as a strait's isthmus — a guarantee, never a repair.
+    /// Lay a bridge wherever the straight run `entry -> exit` crosses a strait.
+    ///
+    /// Sampled rather than solved: a strait is an annular sector and the run is a corridor
+    /// chord, so the intersection has no closed form worth writing. Walking it at the A* cell
+    /// size is both cheap and exactly the resolution the router will see.
+    fn bridge_the_direct_line(&mut self, balance: &Balance, entry: Position, exit: Position) {
+        if self.straits.is_empty() || self.radial_half <= 0.0 {
+            return;
+        }
+        let wg = &balance.worldgen;
+        let (half, lat) = (self.radial_half, self.corridor_lateral.max(1.0));
+        let bent = |p: Position| radial_tf(p, half, lat);
+        let len = entry.distance_to(&exit).max(1.0);
+        let steps = (len / 1.5).ceil() as i32;
+        let straits = self.straits.clone();
+        let wet_at = |p: Position| {
+            let w = bent(p);
+            straits
+                .iter()
+                .any(|st| meld_proto::coast::strait_depth(w.x as f32, w.y as f32, st) > 0.0)
+        };
+
+        // Contiguous runs of drowned line, each becoming its own span — two crossings must not
+        // be joined into one causeway across the whole sea.
+        let mut run: Vec<Position> = Vec::new();
+        let mut spans: Vec<meld_proto::coast::Bridge> = Vec::new();
+        for k in 0..=steps {
+            let t = k as f64 / steps as f64;
+            let p = Position::new(
+                entry.x + (exit.x - entry.x) * t,
+                entry.y + (exit.y - entry.y) * t,
+            );
+            if wet_at(p) {
+                run.push(bent(p));
+            } else if !run.is_empty() {
+                spans.push(Self::bridge_span(&run, wg.bridge_half_width, 6.0));
+                run.clear();
+            }
+        }
+        if !run.is_empty() {
+            spans.push(Self::bridge_span(&run, wg.bridge_half_width, 6.0));
+        }
+        // Longer than a bridge is a causeway, and a causeway is just the strait not being cut —
+        // leave those to A*, which will round the strait's end as it always has.
+        spans.retain(|b| {
+            ((b[2] - b[0]) as f64).hypot((b[3] - b[1]) as f64) <= wg.bridge_max_span
+        });
+        self.bridges.extend(spans);
+    }
+
+    /// A span carrying one contiguous run of drowned trail, extended past both ends so it
+    /// makes LANDFALL rather than stopping at the waterline with a step into the sea.
+    fn bridge_span(run: &[Position], half_width: f64, overhang: f64) -> meld_proto::coast::Bridge {
+        let (a, b) = (run[0], *run.last().unwrap());
+        let (dx, dz) = (b.x - a.x, b.y - a.y);
+        let n = (dx * dx + dz * dz).sqrt();
+        let (ux, uz) = if n > 1e-6 { (dx / n, dz / n) } else { (1.0, 0.0) };
+        [
+            (a.x - ux * overhang) as f32,
+            (a.y - uz * overhang) as f32,
+            (b.x + ux * overhang) as f32,
+            (b.y + uz * overhang) as f32,
+            half_width as f32,
+        ]
+    }
+
     /// **RAISE A RANGE ACROSS A RUN OF REGION CELLS** (`WG-7`, the routes half).
     ///
     /// Runs where [`Arena::push_strait`] and [`Arena::push_lobes`] run, and for the same
@@ -5790,6 +5912,7 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
         // section it became a boar wading across open sea.
         let (straits, lobes) = (self.straits.clone(), self.lobes.clone());
         let (basins, rivers) = (self.basins.clone(), self.rivers.clone());
+        let bridge_snap: Vec<meld_proto::coast::Bridge> = self.bridges.clone();
         let dry_peaks = self.peaks.clone();
         let toff_dry = self.terrain_off;
         let dry = |p: &Position| -> bool {
@@ -5801,6 +5924,7 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
                 lobes: &lobes,
                 basins: &basins,
                 rivers: &rivers,
+                bridges: &bridge_snap,
             }
             .is_land(p.x as f32, p.y as f32)
         };

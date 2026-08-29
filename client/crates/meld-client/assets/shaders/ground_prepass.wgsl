@@ -68,6 +68,11 @@ struct BiomeParams {
     // THE RANGES (`terrain::Ridge`): TWO vec4s each — slot 2k is (x0, z0, x1, z1)
     // and slot 2k+1 is (half_width, height, 0, 0). A range is a WALL, and the ground
     // has to draw it or it is an invisible one.
+    // THE BRIDGES (`coast::Bridge`): two vec4s each — slot 2k is (x0, z0, x1, z1) and
+    // 2k+1 is (half_width, 0, 0, 0).
+    bridges: array<vec4<f32>, 16>,
+    bridge_count: u32,
+    _pad_bc0: u32, _pad_bc1: u32, _pad_bc2: u32,
     ridges: array<vec4<f32>, 32>,
     ridge_count: u32,
     _pad_rc0: u32, _pad_rc1: u32, _pad_rc2: u32,
@@ -271,6 +276,41 @@ fn rg_seg_dist(p: vec2<f32>, a: vec2<f32>, b: vec2<f32>) -> f32 {
     return distance(p, a + d * t);
 }
 
+// A BRIDGE's surface, mirroring `terrain::bridge_surface`. Returns (height above sea level,
+// 1.0 on a parapet, 1.0 if on a span at all).
+//
+// ⚠️ **THIS IS WHAT SEPARATES A BRIDGE FROM AN ISTHMUS.** `coast::Bridge` makes the span LAND,
+// which is what keeps `is_land` a pure function of position for the pathfinder and every
+// mover — but land alone renders as the sea simply not being there. The deck standing ABOVE
+// the waterline, with water still drawn under its parapets, is what makes it read as a bridge,
+// and that lives here.
+fn bridge_at(wxz: vec2<f32>) -> vec3<f32> {
+    var best = vec3<f32>(0.0, 0.0, 0.0);
+    let n = i32(params.bridge_count);
+    for (var i = 0; i < n; i = i + 1) {
+        let b0 = params.bridges[2 * i];
+        let hw = params.bridges[2 * i + 1].x;
+        if (hw <= 0.0) {
+            continue;
+        }
+        let d = rg_seg_dist(wxz, b0.xy, b0.zw);
+        if (d >= hw) {
+            continue;
+        }
+        let inner = hw * (1.0 - 0.28);
+        var h = 2.6;
+        var par = 0.0;
+        if (d > inner) {
+            h = h + 1.8;
+            par = 1.0;
+        }
+        if (h > best.x) {
+            best = vec3<f32>(h, par, 1.0);
+        }
+    }
+    return best;
+}
+
 fn ridge_wedge(wxz: vec2<f32>) -> f32 {
     var h = 0.0;
     let n = i32(params.ridge_count);
@@ -337,6 +377,11 @@ fn total_height(wxz: vec2<f32>) -> f32 {
     // a level plaza) and wrong for the water: at amp 0 the sea level got multiplied to zero
     // too, so the city's ground could not dip and its water had to be laid ON TOP of the
     // grass. Flatten the land, let the water find its level, and the City gets a real bay.
+    let span = bridge_at(wxz);
+    if (span.z > 0.5) {
+        // A flat deck at its own level, so the span does not inherit the sea floor's dip.
+        return level + span.x;
+    }
     return mix(params.terrain_amp * land, level + swell, t);
 }
 

@@ -981,6 +981,7 @@ fn broadcast_ser<'a>(
 /// is what makes that rule statable in one place instead of five.
 #[derive(Default)]
 struct SectionGeometry {
+    bridges: Vec<meld_proto::coast::Bridge>,
     ridges: Vec<meld_proto::terrain::Ridge>,
     peaks: Vec<[f32; 4]>,
     straits: Vec<meld_proto::coast::Strait>,
@@ -1008,6 +1009,9 @@ impl SectionGeometry {
             // SPOKE range spans several rings by design. Selected on its FIRST endpoint alone,
             // so a segment reaching into the next band is carried exactly once rather than by
             // both sections — a capsule drawn twice is a mountain twice as tall.
+            // A bridge, like a ridge and a river, can cross a band boundary — selected on its
+            // first endpoint so a span is carried exactly once.
+            bridges: arena.bridges.iter().filter(|b| holds(b[0], b[1])).copied().collect(),
             ridges: arena.ridges.iter().filter(|r| holds(r[0], r[1])).copied().collect(),
             peaks: arena.peaks.iter().filter(|p| holds(p[0], p[1])).copied().collect(),
             straits: arena.straits.iter().filter(|s| holds(s[0], s[1])).copied().collect(),
@@ -1050,6 +1054,7 @@ fn terrain_section_msg(
         biome: area.biome.to_string(),
         radial_half,
         corridor_lateral,
+        bridges: geom.bridges,
         ridges: geom.ridges,
         peaks: geom.peaks,
         straits: geom.straits,
@@ -5516,6 +5521,7 @@ impl GameState {
                         let (ox, oz) = inst.arena.terrain_offset();
                         [ox, oz]
                     },
+                    bridges: inst.arena.bridges.clone(),
                     ridges: inst.arena.ridges.clone(),
                     peaks: inst.arena.peaks.clone(),
                     // CONTINENTS (WG-7): the client's ground shader ramps a beach over the
