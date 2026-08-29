@@ -616,8 +616,17 @@ mod tests {
     #[test]
     fn a_forced_biome_answers_everywhere_the_grid_would_have() {
         let g = grid(424242);
-        let gate = vec![0.0f32, 0.0, 400.0, 250.0, 550.0, 0.0];
+        // Sized from BIOMES rather than written out, or this test silently stops covering
+        // whatever the roster grew (it went from 6 to 11 in one merge).
+        let mut gate = vec![0.0f32; BIOMES.len()];
+        for (i, g) in [(2usize, 400.0f32), (3, 250.0), (4, 550.0)] {
+            gate[i] = g;
+        }
         let derived = Regions { grid: g, gate: gate.clone(), blend: 26.0, force: -1 };
+        // …and the override must be doing real work overall. Asked in AGGREGATE rather than
+        // per biome: with eleven themes one of them will legitimately be what the grid would
+        // have picked anyway across a sample, and failing on that coincidence tests nothing.
+        let mut total_differed = 0usize;
         for (want, name) in BIOMES.iter().enumerate() {
             let forced =
                 Regions { grid: g, gate: gate.clone(), blend: 26.0, force: want as i32 };
@@ -636,14 +645,15 @@ mod tests {
                     differed += 1;
                 }
             }
-            // …and the override is doing real work: the grid disagrees nearly everywhere.
-            assert!(
-                differed > 200,
-                "forcing {name} matched the derived answer at {} of 400 points, so this test \
-                 would pass even with the override ignored",
-                400 - differed
-            );
+            total_differed += differed;
         }
+        assert!(
+            total_differed > 1_000,
+            "forcing a biome matched what the grid would have said almost everywhere \
+             ({total_differed} differences across {} biomes x 400 points) — this test would \
+             pass even with the override ignored",
+            BIOMES.len()
+        );
     }
 
     /// Absent on an older server, `force` must default to "no override" rather than to biome 0
