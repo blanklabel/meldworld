@@ -3888,7 +3888,18 @@ impl Arena {
                 // Only the PEAK is skipped: an earlier attempt `return`ed and gutted the
                 // section's obstacles and terraces too.
                 let bent = radial_tf(summit, self.radial_half, self.corridor_lateral.max(1.0));
-                if self.on_land(bent.x, bent.y) {
+                // …and never INSIDE A RANGE, for the same reason it is never under water: the
+                // summit's reward is the only thing that makes the climb worth it. A range is
+                // raised before this pass, and a peak built on its flank has unwalkable ground
+                // at the top — so `nudge_to_walkable` shoves the summit chest off the peak
+                // looking for somewhere standable, and the landmark ends up crowned with
+                // nothing. Skip only the PEAK, as the water check above does.
+                let in_range = meld_proto::terrain::ridge_height(
+                    bent.x as f32,
+                    bent.y as f32,
+                    &self.ridges,
+                ) > 0.0;
+                if self.on_land(bent.x, bent.y) && !in_range {
                 self.peaks
                     .push([summit.x as f32, summit.y as f32, radius as f32, height as f32]);
                 // `hub_safe_radius` alone put a 10x-HP Gatekeeper 14 units from the
@@ -5166,6 +5177,13 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
                 dist_to_path(&q, &drawn) <= clear + half_width
                     || placed_water.iter().any(|(c, r)| c.distance_to(&q) <= r + half_width)
                     || standing.iter().any(|(c, r)| c.distance_to(&q) <= r + half_width)
+                    // …and never over an authored PEAK. A peak is crowned with a gate boss or
+                    // a guaranteed chest, and that reward is the entire reason the climb
+                    // exists — a range swallowing the summit makes its ground unwalkable, the
+                    // scatter pass then refuses to put the reward there, and the landmark
+                    // becomes a hill with nothing on it. `push_strait` and `push_water` both
+                    // refuse a peak for the same reason.
+                    || !self.clear_of_peaks(q, half_width)
             });
             if crosses {
                 continue;
