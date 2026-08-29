@@ -2948,6 +2948,25 @@ impl Arena {
         if self.path.len() < 2 {
             return false;
         }
+        // ⚠️ **THE PROBE SLIDES, SO WALKING IT WAS NEVER THE WHOLE CHECK.** `apply_move`
+        // slides along whatever refuses a step, and this gate runs the probe for 100,000
+        // iterations — so a route crossing open sea could be ground around, a few units at a
+        // time, until the probe reached the portal anyway and the world was declared feasible.
+        // Measured on seed 16: the trail held 18 vertices in water at depths up to 7.85 and
+        // this returned true, while `the_clear_path_actually_reaches_the_portal` — which walks
+        // it honestly — failed. The guarantee is that the ROUTE is walkable, not that a
+        // determined prober can eventually get there.
+        //
+        // So ask the route directly, before walking it at all. This is cheap (one shoreline
+        // sample per vertex) and it is the half of the check that cannot be slid past.
+        let shore = self.shore();
+        if self
+            .path
+            .iter()
+            .any(|w| !shore.is_land(w.x as f32, w.y as f32))
+        {
+            return false;
+        }
         let waypoints = self.path.clone();
         let portal = self.portal;
         let probe = "__feasibility_probe__".to_string();
@@ -3523,6 +3542,7 @@ impl Arena {
         // river is the one water body that can genuinely sever the world.
         // BEFORE the water, so a lake yields to a mountain the way it already yields to a
         // peak — `off_peaks` is what stops a basin flooding straight through one.
+        let ridges_before = self.ridges.len();
         self.push_ridges(balance, i, start_x, end_x);
         self.push_water(balance, i, start_x, end_x);
 
@@ -3681,7 +3701,28 @@ impl Arena {
             Position::new(end_x, wg.path_meander * rng.signed())
         };
         let entry = *self.corridor_path.last().unwrap_or(&Position::new(0.0, 0.0));
-        let route = self.astar_route(entry, exit_target);
+        let mut route = self.astar_route(entry, exit_target);
+        // ⚠️ **A RANGE THAT MAKES ITS OWN SECTION UNROUTABLE IS NOT RAISED.**
+        //
+        // `astar_route` never invents a crossing: when it cannot reach the exit it routes as
+        // far as it can and stops. That is correct on its own, but the chord joining this
+        // section's stub to the next section's start is then drawn straight — across whatever
+        // stopped it. Seed 16 shipped 16 of its 512 path vertices in open sea that way, and all
+        // twelve of `generate_with`'s feasibility re-rolls failed because every attempt raised
+        // the same range.
+        //
+        // So the range yields, exactly as it already yields to a drawn trail and to standing
+        // water. This is self-correcting rather than a rule about WHICH barriers may share a
+        // section: a strait's isthmus is barely wider than A*'s own cell, terrain and water and
+        // ranges interact differently at every radius, and guessing the pairs that conflict is
+        // what the last several attempts at this got wrong. Ask the pathfinder instead.
+        let reached = route
+            .last()
+            .is_some_and(|p| p.distance_to(&exit_target) < 6.0);
+        if !reached && self.ridges.len() > ridges_before {
+            self.ridges.truncate(ridges_before);
+            route = self.astar_route(entry, exit_target);
+        }
         for p in &route {
             self.corridor_path.push(*p);
         }
@@ -4747,6 +4788,26 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
             *slot = ((c + jit).clamp(-inner, inner), bw);
         }
 
+        // ⚠️ **A STRAIT IS NOT CUT ACROSS TRAIL THAT IS ALREADY DRAWN.**
+        //
+        // `push_water` yields to a drawn route — a basin refuses that ground, a river node on
+        // it becomes a ford — but the two largest water shapes never looked at the path at all.
+        // That matters because **A* is not bounded to its own section's radius band**: section
+        // 5's route wanders out past its own end, at a moment when no strait exists there and
+        // the ground reads as land. Section 6 then cuts its strait straight over those
+        // vertices. Measured on seed 16: 18 of the trail's 512 vertices ended in open sea at
+        // depths to 7.85, every feasibility re-roll failed, and the world could not be walked.
+        //
+        // Moving an isthmus to meet the crossing is not enough — the crossing there spans six
+        // consecutive route nodes and 77 world units of arc, where an isthmus is 34 wide. So
+        // the strait yields entirely, which is what this function already does when it cannot
+        // guarantee a crossing: no barrier is always better than a sealed one.
+        let drawn: Vec<Position> = self
+            .corridor_path
+            .iter()
+            .map(|p| radial_tf(*p, self.radial_half, self.corridor_lateral.max(1.0)))
+            .collect();
+
         let s: meld_proto::coast::Strait = [
             r_c as f32,
             r_half as f32,
@@ -4760,6 +4821,15 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
         // The contract, asked of the thing rather than assumed of the arithmetic. A strait
         // that cannot be crossed is not cut: no barrier is always better than a sealed one.
         if !meld_proto::coast::strait_is_crossable(&s, self.radial_half as f32) {
+            return;
+        }
+        // …and one that would drown trail already drawn is not cut either. Asked with the
+        // strait's OWN depth function, isthmuses included, so a crossing that genuinely lands
+        // on a bridge is still allowed.
+        if drawn
+            .iter()
+            .any(|w| meld_proto::coast::strait_depth(w.x as f32, w.y as f32, &s) > 0.0)
+        {
             return;
         }
         // …and never over a PEAK already standing (see `clear_of_peaks`). Sampled along the
@@ -13493,17 +13563,23 @@ impl Arena {
                 Position::new(r[0] as f64, r[1] as f64),
                 Position::new(r[2] as f64, r[3] as f64),
             );
-            // 0.7 of the half-width leaves an uncovered sliver of ~6% of it at the very rim —
-            // a couple of units on a 38-unit flank, where the next step inward is blocked
-            // anyway. Tighter buys nothing a mover can feel; looser starts leaking a gap.
+            // ⚠️ **THE GRID MUST BE A SUPERSET OF THE CAPSULE, NEVER A SUBSET.** Sampling the
+            // spine at spacing `s` with discs of exactly `hw` leaves a sliver near the rim
+            // uncovered, and that sliver is where two answers to "what blocks" drift apart:
+            // A* asks this grid, the walker in `backbone_feasible` asks `landform_slope`, so
+            // A* routed through a gap the walker then refused and the clear path stopped
+            // reaching the portal (seed 16). Inflating the disc to cover the worst case —
+            // `sqrt(hw^2 + (s/2)^2)`, ~6% — makes the grid block everything the exact field
+            // blocks and a little more, so the two can only disagree in the SAFE direction.
             let step = (hw * 0.7).max(1.0);
+            let disc = (hw * hw + (step * 0.5) * (step * 0.5)).sqrt();
             let len = a.distance_to(&b);
             let n = (len / step).ceil().max(1.0) as i32;
             for k in 0..=n {
                 let t = k as f64 / n as f64;
                 out.push((
                     Position::new(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t),
-                    hw,
+                    disc,
                 ));
             }
         }
