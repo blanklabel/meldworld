@@ -167,6 +167,53 @@ pub fn landform_slope(x: f32, z: f32, ox: f32, oz: f32, ridges: &[Ridge]) -> f32
     (dx * dx + dz * dz).sqrt()
 }
 
+/// How far a bridge's DECK stands above sea level. Small: a span you step onto, not a
+/// viaduct — and it has to clear `BEACH_BLEND`'s ramp so the deck reads flat rather than
+/// sloping into the water at each end.
+pub const BRIDGE_DECK_RISE: f32 = 2.6;
+
+/// How far a bridge's PARAPETS stand above its deck. Two blocks' worth, which is what makes
+/// the span read as a bridge from above rather than as a pale stripe on the sea.
+pub const BRIDGE_PARAPET_RISE: f32 = 1.8;
+
+/// Share of the half-width each parapet occupies, per side. The rest is walkable deck.
+pub const BRIDGE_PARAPET_SHARE: f32 = 0.28;
+
+/// The bridge surface at `(x, z)`: `(height above sea level, 1.0 on a parapet)`.
+///
+/// ⚠️ **A BRIDGE IS NOT AN ISTHMUS, AND THIS IS THE DIFFERENCE.** `coast::Bridge` makes the
+/// span LAND, which is what keeps `is_land` a pure function of position — but land alone
+/// renders as the sea simply not being there, painted with the biome's own ground. What makes
+/// it a bridge is the deck standing ABOVE the waterline with water still drawn under its
+/// parapets, and that is a question for the heightfield, here.
+///
+/// Returns `None` off every span so callers can leave the terrain untouched.
+pub fn bridge_surface(x: f32, z: f32, bridges: &[crate::coast::Bridge]) -> Option<(f32, f32)> {
+    let mut best: Option<(f32, f32)> = None;
+    for b in bridges {
+        let hw = b[4];
+        if hw <= 0.0 {
+            continue;
+        }
+        let d = crate::coast::dist_to_segment_pub(x, z, b[0], b[1], b[2], b[3]);
+        if d >= hw {
+            continue;
+        }
+        // The parapet is the outer band of the span; everything inside it is deck.
+        let inner = hw * (1.0 - BRIDGE_PARAPET_SHARE);
+        let on_parapet = d > inner;
+        let h = if on_parapet {
+            BRIDGE_DECK_RISE + BRIDGE_PARAPET_RISE
+        } else {
+            BRIDGE_DECK_RISE
+        };
+        if best.is_none_or(|(bh, _)| h > bh) {
+            best = Some((h, f32::from(on_parapet)));
+        }
+    }
+    best
+}
+
 /// Max authored landmark peaks the ground shader blends at once (windowed around the
 /// player like the biome rings). The run may hold more across all sections.
 pub const MAX_PEAKS: usize = 24;

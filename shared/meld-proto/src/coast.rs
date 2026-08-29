@@ -314,6 +314,60 @@ pub fn is_land(x: f32, z: f32, arc_half_rad: f32) -> bool {
 /// [`sea_depth`] already carries: a bridge measured as an ANGLE would be a few units wide
 /// near the hub and hundreds at the frontier, so the one number that has to stay walkable
 /// is stored as an arc length. A bridge with `half <= 0` is absent.
+/// **A BRIDGE** — `[x0, z0, x1, z1, half_width]`, a capsule of forced LAND spanning water.
+///
+/// It is the same mechanism as a strait's isthmus, localised and made visible: the water is
+/// simply not there along the span. That choice is the whole design. `is_land` stays a **pure
+/// function of position**, so `astar_route`, `apply_move`, `backbone_feasible` and the ground
+/// shader all understand a bridge with no code of their own.
+///
+/// ⚠️ **A "walkable over water" special case would be the first crack in that rule**, and four
+/// systems depend on it. Do not add one. A bridge is land; what makes it read as a bridge is
+/// the DECK sitting above the waterline with sea still drawn beneath its parapets, which is a
+/// question for the heightfield and the shader, not for the shoreline.
+pub type Bridge = [f32; 5];
+
+/// Bridges the ground shader carries at once (two `vec4`s each in the uniform).
+pub const MAX_BRIDGES: usize = 8;
+
+/// How much of a bridge's own half-width is solid deck before the water resumes. Below 1.0 so
+/// the span reads as a ribbon over water rather than a land isthmus with a road painted on it.
+pub const BRIDGE_DECK_SHARE: f32 = 1.0;
+
+/// Distance from `(x, z)` to a bridge's span, negative INSIDE it. The signed field the
+/// shoreline subtracts, so a bridge is land by the same arithmetic an isthmus is.
+pub fn bridge_clearance(x: f32, z: f32, bridges: &[Bridge]) -> f32 {
+    let mut best = f32::MAX;
+    for b in bridges {
+        let hw = b[4] * BRIDGE_DECK_SHARE;
+        if hw <= 0.0 {
+            continue;
+        }
+        let d = dist_to_segment(x, z, b[0], b[1], b[2], b[3]);
+        best = best.min(d - hw);
+    }
+    best
+}
+
+/// Distance from `(x, z)` to the nearest point of a segment. Mirrors
+/// [`crate::terrain::dist_to_segment`]; kept here so `coast` does not depend on `terrain` for
+/// one line of arithmetic.
+pub fn dist_to_segment_pub(x: f32, z: f32, x0: f32, z0: f32, x1: f32, z1: f32) -> f32 {
+    dist_to_segment(x, z, x0, z0, x1, z1)
+}
+
+fn dist_to_segment(x: f32, z: f32, x0: f32, z0: f32, x1: f32, z1: f32) -> f32 {
+    let (dx, dz) = (x1 - x0, z1 - z0);
+    let len2 = dx * dx + dz * dz;
+    let t = if len2 <= 1e-6 {
+        0.0
+    } else {
+        (((x - x0) * dx + (z - z0) * dz) / len2).clamp(0.0, 1.0)
+    };
+    let (px, pz) = (x0 + dx * t, z0 + dz * t);
+    ((x - px) * (x - px) + (z - pz) * (z - pz)).sqrt()
+}
+
 pub type Strait = [f32; 8];
 
 /// Max straits a ground shader blends at once — windowed around the player's radius, the
@@ -656,6 +710,8 @@ pub struct Shore<'a> {
     pub basins: &'a [Basin],
     /// Flowing inland water — rivers and creeks, as chains of [`RiverNode`].
     pub rivers: &'a [RiverNode],
+    /// **The BRIDGES** ([`Bridge`]) — spans of forced land over water.
+    pub bridges: &'a [Bridge],
 }
 
 impl<'a> Shore<'a> {
@@ -698,6 +754,12 @@ impl<'a> Shore<'a> {
             } else {
                 d = d.min(-inside); // ISLE: land, so it wins over whatever was sea
             }
+        }
+        // A BRIDGE beats every water term, and it is applied last for exactly that reason: it
+        // is the thing put there so a crossing exists, so nothing may drown it.
+        let span = bridge_clearance(x, z, self.bridges);
+        if span < 0.0 {
+            d = d.min(span);
         }
         d
     }

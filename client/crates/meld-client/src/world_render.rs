@@ -46,6 +46,8 @@ const PEAK_SLOTS: usize = 24;
 /// Two `vec4`s per range (endpoints, then half-width + height), so the shader array is twice
 /// [`meld_proto::terrain::MAX_RIDGES`] — the same packing the straits use.
 const RIDGE_SLOTS: usize = meld_proto::terrain::MAX_RIDGES * 2;
+/// Two `vec4`s per bridge (endpoints, then half-width).
+const BRIDGE_SLOTS: usize = meld_proto::coast::MAX_BRIDGES * 2;
 
 /// `vec4` slots the ground shader reserves for STRAITS (WG-7 continents) — **two per
 /// strait**, so this is `2 * coast::MAX_STRAITS`. Windowed around the player's radius the
@@ -69,7 +71,8 @@ const RIVER_SLOTS: usize = meld_proto::coast::MAX_RIVER_NODES;
 mod biome_params {
     #![allow(dead_code)]
     use super::{
-        BASIN_SLOTS, LOBE_SLOTS, PEAK_SLOTS, RIDGE_SLOTS, RIVER_SLOTS, STRAIT_SLOTS,
+        BASIN_SLOTS, BRIDGE_SLOTS, LOBE_SLOTS, PEAK_SLOTS, RIDGE_SLOTS, RIVER_SLOTS,
+        STRAIT_SLOTS,
     };
     use bevy::prelude::*;
     use bevy::render::render_resource::ShaderType;
@@ -133,6 +136,15 @@ mod biome_params {
         /// In the uniform for the same reason the coast is: a range is a WALL the server
         /// collides against, and a barrier the ground has not been told about is an invisible
         /// one — which is strictly worse than no barrier at all.
+        /// **THE BRIDGES** ([`meld_proto::coast::Bridge`]) — two `vec4`s each: slot `2k` is
+        /// `(x0, z0, x1, z1)` and `2k+1` is `(half_width, 0, 0, 0)`. The ground both RAISES the
+        /// deck here and paints it, because a bridge that is only forced land renders as the
+        /// sea not being there.
+        pub(crate) bridges: [Vec4; BRIDGE_SLOTS],
+        pub(crate) bridge_count: u32,
+        pub(crate) _pad_bc0: u32,
+        pub(crate) _pad_bc1: u32,
+        pub(crate) _pad_bc2: u32,
         pub(crate) ridges: [Vec4; RIDGE_SLOTS],
         pub(crate) ridge_count: u32,
         pub(crate) _pad_rc0: u32,
@@ -242,6 +254,11 @@ mod biome_params {
                 dungeon: 0,
                 _pad_pc1: 0,
                 _pad_pc2: 0,
+                bridges: [Vec4::ZERO; BRIDGE_SLOTS],
+                bridge_count: 0,
+                _pad_bc0: 0,
+                _pad_bc1: 0,
+                _pad_bc2: 0,
                 ridges: [Vec4::ZERO; RIDGE_SLOTS],
                 ridge_count: 0,
                 _pad_rc0: 0,
@@ -324,6 +341,12 @@ pub(crate) struct GroundBiome {
     cliff_hearth_plains: Handle<Image>,
     #[texture(125)]
     cliff_seraphic_oubliette: Handle<Image>,
+    /// A bridge's DECK — worn flagstone, and its PARAPETS — a rampart wall. Both are ground
+    /// textures the tiling work already shipped; a bridge needs no art of its own.
+    #[texture(126)]
+    bridge_deck: Handle<Image>,
+    #[texture(127)]
+    bridge_parapet: Handle<Image>,
     #[uniform(106)]
     params: BiomeParams,
 }
@@ -856,6 +879,12 @@ pub(crate) fn setup(
     .iter()
     .map(|p| load_tiled(&assets, p))
     .collect();
+    // A bridge's deck and parapets. Existing ground art, tiled the same way — the span needed
+    // no assets of its own, which is why it could ship with the rest of the feature.
+    let bridge_tex = (
+        load_tiled(&assets, "ground/tile_path.png"),
+        load_tiled(&assets, "ground/wall_rampart.png"),
+    );
     // The ground is ONE plane wearing a biome-blending shader (`GroundBiome`): it
     // picks the biome from each fragment's world position and cross-fades between
     // adjacent biome textures across a band around every boundary, so the next biome
@@ -871,6 +900,8 @@ pub(crate) fn setup(
             ..default()
         },
         extension: GroundBiome {
+            bridge_deck: bridge_tex.0.clone(),
+            bridge_parapet: bridge_tex.1.clone(),
             forest: ground_tex[0].clone(),
             desert: ground_tex[1].clone(),
             ashfall: ground_tex[2].clone(),
@@ -2482,6 +2513,7 @@ pub(crate) struct ShoreData {
     pub(crate) lobes: Vec<meld_proto::coast::Lobe>,
     pub(crate) basins: Vec<meld_proto::coast::Basin>,
     pub(crate) rivers: Vec<meld_proto::coast::RiverNode>,
+    pub(crate) bridges: Vec<meld_proto::coast::Bridge>,
 }
 
 impl ShoreData {
@@ -2495,6 +2527,7 @@ impl ShoreData {
             arc_half,
             terrain_off: self.terrain_off,
             peaks: &self.peaks,
+            bridges: &self.bridges,
             straits: &self.straits,
             lobes: &self.lobes,
             basins: &self.basins,
@@ -2512,6 +2545,7 @@ pub(crate) fn shore_data() -> ShoreData {
         lobes: LOBES.read().map(|l| l.clone()).unwrap_or_default(),
         basins: BASINS.read().map(|b| b.clone()).unwrap_or_default(),
         rivers: RIVERS.read().map(|r| r.clone()).unwrap_or_default(),
+        bridges: bridges(),
     }
 }
 
@@ -2586,6 +2620,11 @@ pub(crate) fn terrain_height(x: f32, z: f32) -> f32 {
     // with a mountain drawn through it — the same bug this function already shipped once for
     // the ocean and once for the straits.
     let land = base + peak + meld_proto::terrain::ridge_height(x, z, &ridges());
+    // On a span, the ground IS the deck — a flat surface at its own level over the water, so
+    // anything standing there stands on the bridge rather than in the sea beneath it.
+    if let Some((rise, _)) = meld_proto::terrain::bridge_surface(x, z, &bridges()) {
+        return -SEA_DEPTH + rise;
+    }
     let (arc_half, city, amp) = ground_coast();
     let sea = if city {
         meld_proto::coast::city_sea_depth(x, z)
@@ -2793,6 +2832,18 @@ pub(crate) fn update_ground_biome_rings(
         };
     }
     mat.extension.params.ridge_count = rn as u32;
+    // THE BRIDGES, two vec4s each, same packing as the ranges.
+    let bg = bridges();
+    let bn = bg.len().min(BRIDGE_SLOTS / 2);
+    for (i, slot) in mat.extension.params.bridges.iter_mut().enumerate() {
+        let (seg, half) = (i / 2, i % 2);
+        *slot = match bg.get(seg) {
+            Some(b) if seg < bn && half == 0 => Vec4::new(b[0], b[1], b[2], b[3]),
+            Some(b) if seg < bn => Vec4::new(b[4], 0.0, 0.0, 0.0),
+            _ => Vec4::ZERO,
+        };
+    }
+    mat.extension.params.bridge_count = bn as u32;
     // The player's own ring — the centre of both windows below (straits and biome rings).
     let pr = world
         .entities
@@ -2905,6 +2956,24 @@ pub(crate) fn update_ground_biome_rings(
 /// them would paint a world the server does not hold.
 static REGIONS: std::sync::RwLock<Option<meld_proto::regions::Regions>> =
     std::sync::RwLock::new(None);
+
+/// **THIS WORLD'S BRIDGES** — spans of forced land carrying the trail across a strait. Held
+/// beside the ranges for the same reason: a per-world landform table the ground shader draws
+/// and [`terrain_height`] stands entities on.
+static BRIDGES: std::sync::RwLock<Vec<meld_proto::coast::Bridge>> =
+    std::sync::RwLock::new(Vec::new());
+
+/// Replace this world's bridges (call on `run.started`).
+pub(crate) fn set_bridges(b: Vec<meld_proto::coast::Bridge>) {
+    if let Ok(mut all) = BRIDGES.write() {
+        *all = b;
+    }
+}
+
+/// This world's bridges.
+pub(crate) fn bridges() -> Vec<meld_proto::coast::Bridge> {
+    BRIDGES.read().map(|b| b.clone()).unwrap_or_default()
+}
 
 /// **THIS WORLD'S RANGES.** Held beside the peaks because it is the same kind of thing: a
 /// per-world landform table the server hands down and both the ground shader and
@@ -4027,6 +4096,7 @@ mod ground_uniform_tests {
             .expect("…and closes it")
             .0;
         for field in [
+            "bridges", "bridge_count",
             "region", "gate", "gate_hi", "gate_hi2", "region_blend", "region_seed",
             "region_force", "uv_scale",
             "terrain_amp", "terrain_off",

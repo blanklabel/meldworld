@@ -1278,6 +1278,9 @@ pub struct WorldGen {
     pub ridge_pass_width: f64,
     pub ridge_segments_min: usize,
     pub ridge_segments_max: usize,
+    pub bridge_half_width: f64,
+    pub bridge_join_gap: f64,
+    pub bridge_max_span: f64,
     pub strait_chance: f64,
     /// Earliest section index that may hold a strait. Sections grow with depth
     /// (`base_area_length + area_length_growth*i`), so this is simultaneously what makes a

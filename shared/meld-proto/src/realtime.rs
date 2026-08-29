@@ -225,6 +225,11 @@ pub mod world {
         /// bearing ∈ [−radial_half, radial_half]). Pairs with `radial_half` for the bend.
         #[serde(default)]
         pub corridor_lateral: f64,
+        /// **THE BRIDGES** ([`crate::coast::Bridge`]) — spans of forced land carrying the
+        /// trail across a strait. The client both raises the deck and paints it, so a span the
+        /// renderer has not been told about is an invisible causeway.
+        #[serde(default)]
+        pub bridges: Vec<crate::coast::Bridge>,
         /// **THE RANGES this section raises** ([`crate::terrain::Ridge`]) — world-space
         /// `[x0, z0, x1, z1, half_width, height]`. Replaced per section exactly like `peaks`,
         /// so a Shift retile must carry them forward unchanged.
@@ -732,6 +737,11 @@ pub mod run {
         /// randomized dive. Say it, and the client can stop guessing.
         #[serde(default)]
         pub tutorial: bool,
+        /// **THE BRIDGES** ([`crate::coast::Bridge`]) — spans of forced land carrying the
+        /// trail across a strait. The client both raises the deck and paints it, so a span the
+        /// renderer has not been told about is an invisible causeway.
+        #[serde(default)]
+        pub bridges: Vec<crate::coast::Bridge>,
         /// **THE RANGES of the initial chain** ([`crate::terrain::Ridge`]), as `peaks` ride
         /// here — world-space `[x0, z0, x1, z1, half_width, height]`.
         #[serde(default)]

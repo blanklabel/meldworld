@@ -77,6 +77,11 @@ struct BiomeParams {
     // THE RANGES (`terrain::Ridge`): TWO vec4s each — slot 2k is (x0, z0, x1, z1)
     // and slot 2k+1 is (half_width, height, 0, 0). A range is a WALL, and the ground
     // has to draw it or it is an invisible one.
+    // THE BRIDGES (`coast::Bridge`): two vec4s each — slot 2k is (x0, z0, x1, z1) and
+    // 2k+1 is (half_width, 0, 0, 0).
+    bridges: array<vec4<f32>, 16>,
+    bridge_count: u32,
+    _pad_bc0: u32, _pad_bc1: u32, _pad_bc2: u32,
     ridges: array<vec4<f32>, 32>,
     ridge_count: u32,
     _pad_rc0: u32, _pad_rc1: u32, _pad_rc2: u32,
@@ -151,6 +156,10 @@ struct BiomeParams {
 @group(#{MATERIAL_BIND_GROUP}) @binding(123) var t_cliff_nestiphian_cradle: texture_2d<f32>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(124) var t_cliff_hearth_plains: texture_2d<f32>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(125) var t_cliff_seraphic_oubliette: texture_2d<f32>;
+// A bridge's deck (worn flagstone) and its parapets (a rampart wall) — both ground textures
+// the tiling work already shipped, so a bridge needs no art of its own.
+@group(#{MATERIAL_BIND_GROUP}) @binding(126) var t_bridge_deck: texture_2d<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(127) var t_bridge_parapet: texture_2d<f32>;
 
 // The sea's tile for the biome it borders — the same mapping the pond/bog-pool/
 // frozen-pond props use (`WorldAssets::water_mats`), so a tundra shore is ice and a mire
@@ -294,6 +303,41 @@ fn rg_seg_dist(p: vec2<f32>, a: vec2<f32>, b: vec2<f32>) -> f32 {
         t = clamp(dot(p - a, d) / len2, 0.0, 1.0);
     }
     return distance(p, a + d * t);
+}
+
+// A BRIDGE's surface, mirroring `terrain::bridge_surface`. Returns (height above sea level,
+// 1.0 on a parapet, 1.0 if on a span at all).
+//
+// ⚠️ **THIS IS WHAT SEPARATES A BRIDGE FROM AN ISTHMUS.** `coast::Bridge` makes the span LAND,
+// which is what keeps `is_land` a pure function of position for the pathfinder and every
+// mover — but land alone renders as the sea simply not being there. The deck standing ABOVE
+// the waterline, with water still drawn under its parapets, is what makes it read as a bridge,
+// and that lives here.
+fn bridge_at(wxz: vec2<f32>) -> vec3<f32> {
+    var best = vec3<f32>(0.0, 0.0, 0.0);
+    let n = i32(params.bridge_count);
+    for (var i = 0; i < n; i = i + 1) {
+        let b0 = params.bridges[2 * i];
+        let hw = params.bridges[2 * i + 1].x;
+        if (hw <= 0.0) {
+            continue;
+        }
+        let d = rg_seg_dist(wxz, b0.xy, b0.zw);
+        if (d >= hw) {
+            continue;
+        }
+        let inner = hw * (1.0 - 0.28);
+        var h = 2.6;
+        var par = 0.0;
+        if (d > inner) {
+            h = h + 1.8;
+            par = 1.0;
+        }
+        if (h > best.x) {
+            best = vec3<f32>(h, par, 1.0);
+        }
+    }
+    return best;
 }
 
 fn ridge_wedge(wxz: vec2<f32>) -> f32 {
@@ -467,6 +511,11 @@ fn total_height(wxz: vec2<f32>) -> f32 {
     // a level plaza) and wrong for the water: at amp 0 the sea level got multiplied to zero
     // too, so the city's ground could not dip and its water had to be laid ON TOP of the
     // grass. Flatten the land, let the water find its level, and the City gets a real bay.
+    let span = bridge_at(wxz);
+    if (span.z > 0.5) {
+        // A flat deck at its own level, so the span does not inherit the sea floor's dip.
+        return level + span.x;
+    }
     return mix(params.terrain_amp * land, level + swell, t);
 }
 
@@ -1085,6 +1134,10 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         cliff_weight(normalize(in.world_normal)),
     );
 
+    // THE BRIDGE, painted before the shore and the water get their say only in the sense that
+    // it wins outright: a span is a built thing standing over both. Deck at a fixed scale so
+    // the flagstones read as flagstones rather than stretching with the biome's uv.
+    let span_paint = bridge_at(in.world_position.xz);
     blended = mix(blended, shore_color(here_biome, uv), smoothstep(-14.0, -1.0, sea));
     if (sea > -0.5) {
         // The real water TILE, not a flat colour — the same art the city's sea and every
@@ -1214,6 +1267,16 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     let tone = mix(macro_tone(in.world_position.xz), 1.0, clamp(smoothstep(-1.0, 2.0, sea), 0.0, 1.0));
     blended = vec4<f32>(blended.rgb * tone, blended.a);
 
+    // ⚠️ THE SPAN WINS OUTRIGHT, and it is applied LAST for that reason: a bridge is a built
+    // thing standing over the water, so neither the shore blend nor the sea tint may show
+    // through it. Sampled at a fixed scale rather than the biome's `uv_scale`, so flagstones
+    // read as flagstones instead of stretching with whatever ground they cross.
+    if (span_paint.z > 0.5) {
+        let deck_uv = in.world_position.xz * 0.34;
+        let deck = ground_sample(t_bridge_deck, deck_uv);
+        let rail = ground_sample(t_bridge_parapet, deck_uv);
+        blended = mix(deck, rail, span_paint.y);
+    }
     pbr_input.material.base_color = pbr_input.material.base_color * blended;
 
     var out: FragmentOutput;

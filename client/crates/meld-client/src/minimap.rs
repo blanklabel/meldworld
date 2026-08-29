@@ -505,6 +505,7 @@ mod tests {
         levels[0] = 3; // the corner cell is three terraces up
         meld_client::net::TerrainSectionView {
             ridges: Vec::new(),
+            bridges: Vec::new(),
             index: 0,
             start_x: start,
             end_x: end,
