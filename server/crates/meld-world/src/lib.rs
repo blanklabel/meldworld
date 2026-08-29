@@ -3127,6 +3127,7 @@ impl Arena {
         let (straits, lobes) = (self.straits.clone(), self.lobes.clone());
         let (basins, rivers) = (self.basins.clone(), self.rivers.clone());
         let peak_list = self.peaks.clone();
+        let ridge_snap: Vec<meld_proto::terrain::Ridge> = self.ridges.clone();
         let shore = meld_proto::coast::Shore {
             arc_half: half as f32,
             terrain_off: toff,
@@ -3162,13 +3163,13 @@ impl Arena {
         // reachable. (Summit chests already sit on the walkable route, so it's a no-op
         // for them.) Obstacles are left on cliffs — impassable scenery is fine there.
         for r in &mut self.resources {
-            r.position = nudge_to_walkable(tf(r.position), toff, shore);
+            r.position = nudge_to_walkable(tf(r.position), toff, shore, &ridge_snap);
         }
         for o in &mut self.obstacles {
             o.position = tf(o.position);
         }
         for c in &mut self.chests {
-            c.position = nudge_to_walkable(tf(c.position), toff, shore);
+            c.position = nudge_to_walkable(tf(c.position), toff, shore, &ridge_snap);
         }
         // Bend each authored peak's CENTRE into the fan (radius/height are world-space
         // scalars — the dome is a world circle at the bent centre, matching its summit
@@ -3205,10 +3206,10 @@ impl Arena {
         // the web trails + portal onto walkable ground (the web isn't A*-routed), and
         // re-anchor the portal to the routed path's walkable end.
         for (a, b) in self.web.iter_mut() {
-            *a = nudge_to_walkable(*a, toff, shore);
-            *b = nudge_to_walkable(*b, toff, shore);
+            *a = nudge_to_walkable(*a, toff, shore, &ridge_snap);
+            *b = nudge_to_walkable(*b, toff, shore, &ridge_snap);
         }
-        self.portal = nudge_to_walkable(self.portal, toff, shore);
+        self.portal = nudge_to_walkable(self.portal, toff, shore, &ridge_snap);
         // The initial chain bends every entity at once against the finished shoreline, so
         // the loops above already saw the water; this is only the portal's own check.
         if let Some(last) = self.path.last_mut() {
@@ -3264,10 +3265,32 @@ impl Arena {
             basins: &basins,
             rivers: &rivers,
         };
+        // ⚠️ **A RANGE RAISED LATER SWALLOWS PROPS PLACED EARLIER, AND THE PROPS GO.**
+        //
+        // A region ring spans many sections, so a range raised for section N+2 stands over
+        // ground section N already scattered — the same ordering that put water on a drawn
+        // trail. But props resolve the OPPOSITE way to water, and deliberately: the reason
+        // water yields is that moving a creature crosses a difficulty gate and deleting one
+        // silently removes summit rewards and the members of a rite. A tree is scenery. When
+        // a mountain rises, the trees on it are gone, and that is what a mountain rising
+        // means.
+        //
+        // It belongs here rather than in each scatter pass because this is already the one
+        // place that culls obstacles the world can no longer host, and the passes cannot see
+        // a range that does not exist yet.
+        let ridges = self.ridges.clone();
+        let off = self.terrain_off;
         self.obstacles.retain(|o| {
             dist_to_path(&o.position, &path) > clear_r + o.radius
                 && dist_to_web(&o.position, &web) > web_r + o.radius
                 && shore.is_land(o.position.x as f32, o.position.y as f32)
+                && meld_proto::terrain::landform_slope(
+                    o.position.x as f32,
+                    o.position.y as f32,
+                    off.0,
+                    off.1,
+                    &ridges,
+                ) < meld_proto::terrain::WALKABLE_SLOPE
         });
     }
 
@@ -3341,6 +3364,7 @@ impl Arena {
         let (straits, lobes) = (self.straits.clone(), self.lobes.clone());
         let (basins, rivers) = (self.basins.clone(), self.rivers.clone());
         let peak_list = self.peaks.clone();
+        let ridge_snap: Vec<meld_proto::terrain::Ridge> = self.ridges.clone();
         let shore = meld_proto::coast::Shore {
             arc_half: half as f32,
             terrain_off: toff,
@@ -3371,13 +3395,13 @@ impl Arena {
         }
         // Keep streamed chests + harvest nodes off cliffs too (see `radialize`).
         for r in &mut self.resources[r0..] {
-            r.position = nudge_to_walkable(tf(r.position), toff, shore);
+            r.position = nudge_to_walkable(tf(r.position), toff, shore, &ridge_snap);
         }
         for o in &mut self.obstacles[o0..] {
             o.position = tf(o.position);
         }
         for c in &mut self.chests[c0..] {
-            c.position = nudge_to_walkable(tf(c.position), toff, shore);
+            c.position = nudge_to_walkable(tf(c.position), toff, shore, &ridge_snap);
         }
         // Bend this streamed section's new peak centres into the fan (see `radialize`).
         for k in pk0..self.peaks.len() {
@@ -3400,8 +3424,8 @@ impl Arena {
         for e in w0..self.corridor_web.len() {
             let (a, b) = self.corridor_web[e];
             self.web.push((
-                nudge_to_walkable(tf(a), toff, shore),
-                nudge_to_walkable(tf(b), toff, shore),
+                nudge_to_walkable(tf(a), toff, shore, &ridge_snap),
+                nudge_to_walkable(tf(b), toff, shore, &ridge_snap),
             ));
         }
         // Straight-wall biome seams don't survive the bend — drop the ones just added.
@@ -3612,6 +3636,12 @@ impl Arena {
         let (sea_basins, sea_rivers) = (self.basins.clone(), self.rivers.clone());
         let wet_peaks = self.peaks.clone();
         let toff_wet = self.terrain_off;
+        // ⚠️ **A COMPANION SPOT MUST BE USABLE, NOT MERELY DRY.** `dry_companion` places every
+        // retinue member, pack minion and end-fight peer by offset from its leader, avoiding
+        // water — and water alone. A range raised earlier in the same section is just as
+        // unusable, and a minion dropped on its flank cannot leave: measured at seed 7 as a
+        // creature standing on ground steeper than `WALKABLE_SLOPE`. Folding the slope in here
+        // fixes all three spawn sites at once, which is the point of them sharing a helper.
         let wet = move |w: &Position| -> bool {
             meld_proto::coast::Shore {
                 arc_half: bend_half as f32,
@@ -3655,6 +3685,12 @@ impl Arena {
                 let w = if bend_half > 0.0 { radial_tf(*p, bend_half, bend_lat) } else { *p };
                 standable(&w)
             }
+        };
+
+        let usable = {
+            let wet = wet.clone();
+            let standable = standable.clone();
+            move |w: &Position| -> bool { wet(w) || !standable(w) }
         };
 
         // Scatter harvestable resource nodes through the section (2D). What a node YIELDS
@@ -4057,7 +4093,7 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
                                 &mut erng,
                                 self.radial_half,
                                 self.corridor_lateral.max(1.0),
-                                &wet,
+                                &usable,
                             );
                             let j = self.monsters.len();
                             let bseed = erng.next_u64();
@@ -4119,7 +4155,7 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
                             &mut erng,
                             self.radial_half,
                             self.corridor_lateral.max(1.0),
-                            &wet,
+                            &usable,
                         );
                         let midx = self.monsters.len();
                         let mseed = erng.next_u64();
@@ -4207,7 +4243,7 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
                                 &mut erng,
                                 self.radial_half,
                                 self.corridor_lateral.max(1.0),
-                                &wet,
+                                &usable,
                             );
                             let midx = self.monsters.len();
                             let mseed = erng.next_u64();
@@ -4590,6 +4626,13 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
                     // A door gap wherever the (A*-routed, possibly winding) clear path
                     // crosses this wall — so every path crossing has an opening, not just
                     // one, and connectivity survives the cliff detours.
+                    // A wall marches straight across the corridor, so a range crossing its
+                    // line would get a row of props laid up the flank — the same "scenery on
+                    // ground nobody can reach" the scatter passes already refuse.
+                    if !standable_c(&pos) {
+                        y += r * 1.8;
+                        continue;
+                    }
                     let in_door = dist_to_path(&pos, &self.corridor_path) < wg.dungeon_door_half + r;
                     let occupied = self.monsters.iter().any(|m| m.position.distance_to(&pos) < r + 1.0)
                         || self.resources.iter().any(|rn| rn.position.distance_to(&pos) < r + 1.0)
@@ -5079,6 +5122,18 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
         let drawn: Vec<Position> =
             self.corridor_path.iter().map(|p| radial_tf(*p, half, lat)).collect();
         let clear = self.path_clear_radius + self.player_radius;
+        // …and it yields to anything ALREADY STANDING, which resolves the opposite way to a
+        // prop. `retain_placeable_obstacles` deletes trees a range swallows because a tree is
+        // scenery; a creature carries a pack and a difficulty gate (CANON §B), a node is a
+        // crafter's reason to be here and a chest is a reward. Those are not scenery, so the
+        // MOUNTAIN gives way — the same argument `push_water`'s `off_creatures` makes.
+        let standing: Vec<(Position, f64)> = self
+            .monsters
+            .iter()
+            .map(|m| (m.position, 4.0))
+            .chain(self.resources.iter().map(|r| (r.position, 3.0)))
+            .chain(self.chests.iter().map(|c| (c.position, 3.0)))
+            .collect();
         // …and it yields to WATER already placed, for the same reason and by the same rule.
         // Within a section `push_ridges` runs before `push_water`, so water yields to a range
         // there — but a region ring spans many sections, so a range raised for section N+2 can
@@ -5110,6 +5165,7 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
                 let q = Position::new(p0.x + (p1.x - p0.x) * f, p0.y + (p1.y - p0.y) * f);
                 dist_to_path(&q, &drawn) <= clear + half_width
                     || placed_water.iter().any(|(c, r)| c.distance_to(&q) <= r + half_width)
+                    || standing.iter().any(|(c, r)| c.distance_to(&q) <= r + half_width)
             });
             if crosses {
                 continue;
@@ -6991,6 +7047,10 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
         seed: u64,
     ) -> Vec<Id> {
         let wg = &balance.worldgen;
+        // Cloned so the scatter loop can hold `&mut self` while still asking what the ground
+        // is — the same shape the generation passes use.
+        let reroll_ridges: Vec<meld_proto::terrain::Ridge> = self.ridges.clone();
+        let reroll_off = self.terrain_off;
         let (inner, outer) = self.shift_band(first, last);
         let removed: Vec<Id> = self
             .obstacles
@@ -7063,6 +7123,18 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
                     near.insert(pos, radius);
                 }
                 let world = bend(pos);
+                // The RANGES too: a Shift re-strews a region's props, and a range standing in
+                // it is exactly the ground they must not land on.
+                if meld_proto::terrain::landform_slope(
+                    world.x as f32,
+                    world.y as f32,
+                    reroll_off.0,
+                    reroll_off.1,
+                    &reroll_ridges,
+                ) >= meld_proto::terrain::WALKABLE_SLOPE
+                {
+                    continue;
+                }
                 if self.monsters.iter().any(|m| m.position.distance_to(&world) < radius + 1.5)
                     || self.resources.iter().any(|r| r.position.distance_to(&world) < radius + 1.5)
                     || self.stations.iter().any(|s| s.position.distance_to(&world) < radius + 2.0)
@@ -7359,13 +7431,19 @@ fn nudge_to_walkable(
     p: Position,
     off: (f32, f32),
     shore: meld_proto::coast::Shore<'_>,
+    ridges: &[meld_proto::terrain::Ridge],
 ) -> Position {
     // "Walkable" has to mean DRY as well as gentle. It did not, and it did not matter while
     // the fan was one unbroken landmass — but a section that holds a strait (WG-7) has open
     // water in the middle of it, and a chest or a harvest node nudged off a cliff into the
     // sea is exactly the unreachable reward this function exists to prevent.
+    // ⚠️ **AND THE RANGES.** This is the function whose whole job is "put this somewhere
+    // standable", and it was answering with the base noise alone — which tops out at slope
+    // 0.254 and can therefore never refuse anything. So it happily nudged a harvest node ONTO
+    // a mountainside, undoing the scatter passes' own check a few lines later.
     let ok = |q: &Position| {
-        meld_proto::terrain::walkable(q.x as f32, q.y as f32, off.0, off.1)
+        meld_proto::terrain::landform_slope(q.x as f32, q.y as f32, off.0, off.1, ridges)
+            < meld_proto::terrain::WALKABLE_SLOPE
             && shore.is_land(q.x as f32, q.y as f32)
     };
     if ok(&p) {
