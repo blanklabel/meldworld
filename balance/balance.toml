@@ -2212,6 +2212,31 @@ xp = 34
 material = "cinder_ore"
 skill = "forging"
 xp = 34
+# --- The deep world. XP climbs with the band, like every gatherable before it. ---
+[resource.coolant_bloom]
+material = "coolant_bloom"
+skill = "alchemy"
+xp = 70
+[resource.brass_scrap]
+material = "brass_scrap"
+skill = "forging"
+xp = 70
+[resource.pale_shoot]
+material = "pale_shoot"
+skill = "alchemy"
+xp = 88
+[resource.bone_iron]
+material = "bone_iron"
+skill = "forging"
+xp = 88
+[resource.rose_attar]
+material = "rose_attar"
+skill = "alchemy"
+xp = 108
+[resource.gilt_sand]
+material = "gilt_sand"
+skill = "forging"
+xp = 108
 # --- Tundra ---
 [resource.frost_lichen]
 material = "frost_lichen"
@@ -2460,13 +2485,176 @@ cell_width = 250.0       # target arc width of one cell. The sector COUNT rides 
 boundary_warp = 88.0     # how far a ring boundary wanders with bearing. Its whole job is to stop the boundary reading as an ARC; it depends on bearing alone, which is what keeps the ring index monotone along every ray and the partition well-defined at any magnitude.
 blend_width = 26.0       # world units the ground cross-fades across a cell boundary. A boundary is 2D now, so this is a distance rather than the old per-ring band — and the fade is symmetric from both sides, or a boundary seams.
 
+# ============================ THE DEEP WORLD'S BESTIARY ============================
+# One roster per new biome, and each species lives in EXACTLY ONE of them
+# (`meld_world::creatures_for_biome`). All tuned to the same distance-0 power budget as
+# every other creature — depth is carried by `stat_mult(distance)`, never by the base
+# numbers — so a Hearth-Plains hound is not innately stronger than a forest boar; it is
+# simply only ever met 2400 units out. Each biome keeps ONE faction, so a biome is at
+# peace with itself and at war with its neighbours (CR-13). All [TUNABLE].
+
+[creature.amber_stag]      # amber_wood BRUISER — antlers like bare branches
+base_hp = 150
+base_atk = 13
+base_def = 3
+speed_stat = 58
+xp_reward = 70
+encounter_class = "standard"
+faction = "beast"
+aggression = "passive"
+flees = false
+loot_kind = "stag_antler"
+
+[creature.tinder_wolf]      # amber_wood SWARMER — lean, smoke-grey, starving
+base_hp = 40
+base_atk = 9
+base_def = 0
+speed_stat = 122
+xp_reward = 44
+encounter_class = "standard"
+faction = "beast"
+aggression = "aggressive"
+flees = false
+loot_kind = "tinder_pelt"
+
+[creature.leaf_rook]      # amber_wood — carrion bird, quick and brittle
+base_hp = 70
+base_atk = 11
+base_def = 1
+speed_stat = 96
+xp_reward = 55
+encounter_class = "standard"
+faction = "beast"
+aggression = "aggressive"
+flees = false
+loot_kind = "rook_quill"
+
+[creature.cog_sentry]      # seized_engine BRUISER — a warden that never stood down
+base_hp = 170
+base_atk = 12
+base_def = 6
+speed_stat = 46
+xp_reward = 74
+encounter_class = "standard"
+faction = "construct"
+aggression = "passive"
+flees = false
+loot_kind = "sentry_cog"
+
+[creature.rail_hound]      # seized_engine SWARMER — rails and pistons, running
+base_hp = 44
+base_atk = 9
+base_def = 1
+speed_stat = 126
+xp_reward = 46
+encounter_class = "standard"
+faction = "construct"
+aggression = "aggressive"
+flees = false
+loot_kind = "coupler_fang"
+
+[creature.arc_phantom]      # seized_engine — glass cannon: it hits hard and holds nothing
+base_hp = 66
+base_atk = 14
+base_def = 0
+speed_stat = 100
+xp_reward = 58
+encounter_class = "standard"
+faction = "construct"
+aggression = "aggressive"
+flees = false
+loot_kind = "arc_residue"
+
+[creature.rot_grub]      # nestiphian_cradle SWARMER — a great pale maggot
+base_hp = 46
+base_atk = 8
+base_def = 1
+speed_stat = 118
+xp_reward = 44
+encounter_class = "standard"
+faction = "fungal"
+aggression = "aggressive"
+flees = false
+loot_kind = "grub_fat"
+
+[creature.bloat_carrier]      # nestiphian_cradle BRUISER — a corpse still carrying
+base_hp = 165
+base_atk = 12
+base_def = 4
+speed_stat = 48
+xp_reward = 72
+encounter_class = "standard"
+faction = "fungal"
+aggression = "passive"
+flees = false
+loot_kind = "bloat_sac"
+
+[creature.spore_midwife]      # nestiphian_cradle — gaunt attendant of the cradle
+base_hp = 74
+base_atk = 12
+base_def = 2
+speed_stat = 88
+xp_reward = 58
+encounter_class = "standard"
+faction = "fungal"
+aggression = "passive"
+flees = false
+loot_kind = "midwife_cap"
+
+[creature.velvet_lure]      # hearth_plains — it beckons, and it is faster than it looks
+base_hp = 72
+base_atk = 13
+base_def = 1
+speed_stat = 94
+xp_reward = 60
+encounter_class = "standard"
+faction = "fiend"
+aggression = "aggressive"
+flees = false
+loot_kind = "velvet_strand"
+
+[creature.thorn_paramour]      # hearth_plains BRUISER — briar-bound, and it does not let go
+base_hp = 155
+base_atk = 14
+base_def = 3
+speed_stat = 56
+xp_reward = 74
+encounter_class = "standard"
+faction = "fiend"
+aggression = "aggressive"
+flees = false
+loot_kind = "rose_thorn"
+
+[creature.gilded_hound]      # hearth_plains SWARMER — sleek, collared, and quick
+base_hp = 42
+base_atk = 10
+base_def = 0
+speed_stat = 130
+xp_reward = 46
+encounter_class = "standard"
+faction = "fiend"
+aggression = "aggressive"
+flees = false
+loot_kind = "gilded_collar"
+
 [biome_gate]
 field = 0
 forest = 0
 mire = 0
+amber_wood = 0
 ashfall = 250
 desert = 400
 tundra = 550
+# THE DEEP WORLD. Each of these is a world boss's arena (docs/proposals/endgame-bosses.md),
+# so they are gated to where a party has any business meeting one.
+seized_engine = 1200        # Termina
+nestiphian_cradle = 1800    # Nestiph
+hearth_plains = 2400        # Slake
+# THE CAPSTONE, and the only EXCLUSIVE biome (`meld_proto::regions::EXCLUSIVE`): past this
+# it is the ONLY thing that draws, so the last stretch of the world is one place rather than
+# a patchwork. Set below `[encounters] end_fight_min_distance` (3200) on purpose — the end
+# fight has to stand INSIDE it, not at its doorstep.
+seraphic_oubliette = 3000   # Ometus
 
 # THE HUNT BOARD (AD-4): what the board pays for a completed hunt. A hunt is a
 # directed goal, not a grind loop — each one is claimable ONCE, so these are one-off

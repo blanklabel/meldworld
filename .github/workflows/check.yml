@@ -34,16 +34,25 @@ concurrency:
 jobs:
   check:
     runs-on: ubuntu-latest
-    # Both workspaces from cold, including Bevy. Well clear of the ~20 min this takes
-    # uncached, without letting a hung run burn an hour.
-    timeout-minutes: 45
+    # Both workspaces from cold, including Bevy, plus the server suite — which is the
+    # half that grows. `meld-world` alone is ~16 min locally and most of its tests sweep
+    # every biome and every seed, so widening the world widens them: going from six
+    # biomes to eleven took the local suite 831s -> 949s and pushed this job past 45,
+    # where it was killed mid-run with everything passing.
+    timeout-minutes: 75
     steps:
       - uses: actions/checkout@v4
 
       # Bevy's Linux build needs ALSA + udev dev headers to COMPILE (X11 is dlopen'd at
       # runtime, so no dev lib is needed just to build). Same list as the dist workflow.
+      #
+      # ⚠️ WAYLAND IS NOT dlopen'd THE WAY X11 IS. `wayland-sys` resolves `wayland-client`
+      # through pkg-config in its BUILD SCRIPT, so without the dev package the client
+      # workspace cannot compile at all — "Package 'wayland-client' ... not found", ~48
+      # minutes into a cold build. It reads as a slow, mysterious CI failure rather than a
+      # missing apt line, and it had already been failing on `main` for days.
       - name: Install Linux build deps
-        run: sudo apt-get update && sudo apt-get install -y libasound2-dev libudev-dev
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev
 
       - uses: dtolnay/rust-toolchain@stable
         with:

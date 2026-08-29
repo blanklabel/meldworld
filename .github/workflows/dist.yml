@@ -43,9 +43,13 @@ jobs:
 
       # Bevy's Linux build needs ALSA + udev dev headers to compile (X11 is
       # loaded at runtime via dlopen, so no dev lib needed just to build).
+      #
+      # ⚠️ WAYLAND IS NOT dlopen'd THE WAY X11 IS: `wayland-sys` resolves `wayland-client`
+      # through pkg-config in its build script, so the dev package is required to COMPILE.
+      # Same list as the check workflow, which failed exactly this way.
       - name: Install Linux build deps
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libasound2-dev libudev-dev
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev
 
       - uses: dtolnay/rust-toolchain@stable
 

@@ -85,6 +85,7 @@ mod biome_params {
         /// been told the gate paints a theme the server does not spawn.
         pub(crate) gate: Vec4,
         pub(crate) gate_hi: Vec4,
+        pub(crate) gate_hi2: Vec4,
         /// World units the ground cross-fades across a cell boundary. A distance from the
         /// nearest edge, because a boundary is 2D now rather than a radial band.
         pub(crate) region_blend: f32,
@@ -182,6 +183,7 @@ mod biome_params {
                 region: Vec4::ZERO,
                 gate: Vec4::ZERO,
                 gate_hi: Vec4::ZERO,
+                gate_hi2: Vec4::ZERO,
                 region_blend: 26.0,
                 region_seed: 0,
                 uv_scale: 1.0 / 3.0,
@@ -276,6 +278,27 @@ pub(crate) struct GroundBiome {
     /// applies, rather than five near-identical flagstones.
     #[texture(115)]
     dungeon_floor: Handle<Image>,
+    /// The deep world (`meld_proto::regions::BIOMES` 6..), each one a world boss's arena.
+    #[texture(116)]
+    amber_wood: Handle<Image>,
+    #[texture(117)]
+    seized_engine: Handle<Image>,
+    #[texture(118)]
+    nestiphian_cradle: Handle<Image>,
+    #[texture(119)]
+    hearth_plains: Handle<Image>,
+    #[texture(120)]
+    seraphic_oubliette: Handle<Image>,
+    #[texture(121)]
+    cliff_amber_wood: Handle<Image>,
+    #[texture(122)]
+    cliff_seized_engine: Handle<Image>,
+    #[texture(123)]
+    cliff_nestiphian_cradle: Handle<Image>,
+    #[texture(124)]
+    cliff_hearth_plains: Handle<Image>,
+    #[texture(125)]
+    cliff_seraphic_oubliette: Handle<Image>,
     #[uniform(106)]
     params: BiomeParams,
 }
@@ -395,7 +418,10 @@ pub(crate) type GroundMat = ExtendedMaterial<StandardMaterial, GroundBiome>;
 /// client titles them from — a hand-copied list here is a list that goes stale against
 /// the `boss:<key>` tags actually arriving on the wire.
 pub(crate) fn boss_keys() -> impl Iterator<Item = &'static str> {
-    meld_proto::bosses::keys().chain(DUNGEON_SPRITES.iter().copied())
+    meld_proto::bosses::keys()
+        .chain(meld_proto::bosses::WORLD_BOSSES.iter().map(|(k, _)| *k))
+        .chain(meld_proto::bosses::LIEUTENANTS.iter().map(|(k, _, _)| *k))
+        .chain(DUNGEON_SPRITES.iter().copied())
 }
 
 /// Bespoke dungeon sprites that get an animated set but are NOT named bosses.
@@ -430,6 +456,12 @@ pub(crate) const DUNGEON_SPRITES: &[&str] = &["twingolem"];
 /// Held against what is actually on disk by `every_finished_creature_set_is_loaded_and_no_unfinished_one_is`,
 /// so art that lands unlisted — art nobody would ever see — fails rather than sitting unused.
 pub(crate) const CREATURE_CHARS: &[(&str, usize)] = &[
+    ("amber_stag", 8),
+    ("amber_stag_pack_leader", 8),
+    ("arc_phantom", 8),
+    ("arc_phantom_pack_leader", 8),
+    ("bloat_carrier", 8),
+    ("bloat_carrier_pack_leader", 8),
     ("bog_ooze", 8),
     ("bog_ooze_baby", 8),
     ("bog_ooze_belcher", 8),
@@ -455,6 +487,8 @@ pub(crate) const CREATURE_CHARS: &[(&str, usize)] = &[
     ("cinder_imp_fire_mage", 8),
     ("cinder_imp_pack_leader", 8),
     ("cinder_imp_wolf", 8),
+    ("cog_sentry", 8),
+    ("cog_sentry_pack_leader", 8),
     ("dune_colossus", 8),
     ("dune_colossus_pack_leader", 8),
     ("dune_colossus_shardling", 8),
@@ -479,6 +513,8 @@ pub(crate) const CREATURE_CHARS: &[(&str, usize)] = &[
     ("frost_lurker_pack_leader", 8),
     ("frost_lurker_pup", 8),
     ("frost_lurker_rimefang", 8),
+    ("gilded_hound", 8),
+    ("gilded_hound_pack_leader", 8),
     ("glacier_maw", 8),
     ("glacier_maw_cub", 8),
     ("glacier_maw_frostjaw", 8),
@@ -487,6 +523,8 @@ pub(crate) const CREATURE_CHARS: &[(&str, usize)] = &[
     ("ice_revenant_pack_leader", 8),
     ("ice_revenant_shieldbound", 8),
     ("ice_revenant_thrall", 8),
+    ("leaf_rook", 8),
+    ("leaf_rook_pack_leader", 8),
     ("magma_golem", 8),
     ("magma_golem_cinderling", 6),
     ("magma_golem_pack_leader", 8),
@@ -496,21 +534,33 @@ pub(crate) const CREATURE_CHARS: &[(&str, usize)] = &[
     ("myconid_mage", 8),
     ("myconid_minion", 8),
     ("myconid_warrior", 6),
+    ("rail_hound", 8),
+    ("rail_hound_pack_leader", 8),
+    ("rot_grub", 8),
+    ("rot_grub_pack_leader", 8),
     ("sand_shade", 8),
     ("sand_shade_gravebound", 8),
     ("sand_shade_pack_leader", 8),
     ("sand_shade_wisp", 8),
+    ("spore_midwife", 8),
+    ("spore_midwife_pack_leader", 8),
     ("sporeling", 8),
     ("sporeling_baby", 8),
     ("sporeling_healer", 8),
     ("sporeling_pack_leader", 8),
     ("sporeling_sprout", 8),
+    ("thorn_paramour", 8),
+    ("thorn_paramour_pack_leader", 8),
     ("thornback_boar", 8),
     ("thornback_boar_beta", 8),
     ("thornback_boar_charger", 8),
     ("thornback_boar_goarer", 8),
     ("thornback_boar_pack_leader", 8),
+    ("tinder_wolf", 8),
+    ("tinder_wolf_pack_leader", 8),
     ("twingolem", 8),
+    ("velvet_lure", 8),
+    ("velvet_lure_pack_leader", 8),
     ("verdant_ooze", 8),
     ("verdant_ooze_blob", 8),
     ("verdant_ooze_blopper", 8),
@@ -812,6 +862,16 @@ pub(crate) fn setup(
             cliff_ashfall: load_tiled(&assets, "ground/cliff_ashfall.png"),
             cliff_tundra: load_tiled(&assets, "ground/cliff_tundra.png"),
             cliff_mire: load_tiled(&assets, "ground/cliff_mire.png"),
+            amber_wood: load_tiled(&assets, "ground/atlas/amber_wood.png"),
+            seized_engine: load_tiled(&assets, "ground/atlas/seized_engine.png"),
+            nestiphian_cradle: load_tiled(&assets, "ground/atlas/nestiphian_cradle.png"),
+            hearth_plains: load_tiled(&assets, "ground/atlas/hearth_plains.png"),
+            seraphic_oubliette: load_tiled(&assets, "ground/atlas/seraphic_oubliette.png"),
+            cliff_amber_wood: load_tiled(&assets, "ground/cliff_amber_wood.png"),
+            cliff_seized_engine: load_tiled(&assets, "ground/cliff_seized_engine.png"),
+            cliff_nestiphian_cradle: load_tiled(&assets, "ground/cliff_nestiphian_cradle.png"),
+            cliff_hearth_plains: load_tiled(&assets, "ground/cliff_hearth_plains.png"),
+            cliff_seraphic_oubliette: load_tiled(&assets, "ground/cliff_seraphic_oubliette.png"),
             dungeon_floor: load_tiled(&assets, "ground/atlas/dungeon.png"),
             // Rings start empty; `update_ground_biome_rings` fills them from the
             // streamed sections each frame (count 0 ⇒ shader falls back to forest).
@@ -1118,6 +1178,16 @@ pub(crate) fn setup(
             // frames behind it is asset errors on every launch.
             // Its attack is drawn SOUTH-ONLY; its walk is not drawn at all yet.
             "twingolem" => &[("attack", 8, false)],
+            // ⚠️ THE WORLD BOSSES DO NOT WALK, so they declare an IDLE and nothing else.
+            // The fallback below asks for `walk` and `attack` across all eight facings —
+            // sixteen folders nobody drew, which is a wall of missing-asset errors every
+            // launch. Their idle is drawn SOUTH-ONLY (they are met head-on, in an arena,
+            // and never seen from behind), hence the `false`.
+            "termina" | "nestiph" | "slake" | "ometus" | "velvetmaw" | "cogwright"
+            | "vatmother" => &[("idle", 8, false)],
+            // The All-Father is an OBJECT rather than a character: eight rotations and no
+            // clips at all, because a mountain has no animation to give.
+            "allfather" => &[],
             _ => &[("walk", 8, true), ("attack", 8, true)],
         }
     }
@@ -2557,6 +2627,11 @@ pub(crate) fn biome_ring_index(name: &str) -> usize {
         "ashfall" => 2,
         "tundra" => 3,
         "mire" => 4,
+        "amber_wood" => 5,
+        "seized_engine" => 6,
+        "nestiphian_cradle" => 7,
+        "hearth_plains" => 8,
+        "seraphic_oubliette" => 9,
         // "field" shares the forest's grass: a meadow and a wood stand on the same ground,
         // and the only thing that separates them is how many trees are in the way.
         _ => 0, // field / forest / unknown
@@ -2750,7 +2825,8 @@ pub(crate) fn update_ground_biome_rings(
     // `BIOMES` order, four then two — the split is only that a uniform wants `vec4`s.
     let g = |i: usize| rg.gate.get(i).copied().unwrap_or(0.0);
     p.gate = Vec4::new(g(0), g(1), g(2), g(3));
-    p.gate_hi = Vec4::new(g(4), g(5), 0.0, 0.0);
+    p.gate_hi = Vec4::new(g(4), g(5), g(6), g(7));
+    p.gate_hi2 = Vec4::new(g(8), g(9), g(10), 0.0);
 }
 
 /// **THIS WORLD'S REGION DECOMPOSITION**, as the server sent it on `run.started`.
@@ -3770,7 +3846,7 @@ mod ground_uniform_tests {
             .expect("…and closes it")
             .0;
         for field in [
-            "region", "gate", "gate_hi", "region_blend", "region_seed", "uv_scale",
+            "region", "gate", "gate_hi", "gate_hi2", "region_blend", "region_seed", "uv_scale",
             "terrain_amp", "terrain_off",
             "_pad_peaks", "peaks", "peak_count", "straits", "strait_count", "lobes",
             "lobe_count", "basins", "rivers", "basin_count", "river_count", "shift",

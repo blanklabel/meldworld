@@ -1,0 +1,49 @@
+{
+  "group_id": "7fcdfc76-b19a-42ab-9c2d-df25db31685b",
+  "states": [
+    {
+      "character": {
+        "id": "d0a053d1-61a4-4dfc-987a-86ae40c2edc1",
+        "name": "Idle",
+        "prompt": "Ometus, the forgotten Arch-Devil behind every Shift: an immense ancient evil that spans space and time, a cracked obsidian and bone colossus whose body is coming apart into drifting fragments held in place by pale light, countless unblinking eyes weeping glowing mercury across its chest, broken golden prison rings and heavy iron chains orbiting its shoulders",
+        "size": {
+          "width": 256,
+          "height": 256
+        },
+        "template_id": "mannequin",
+        "directions": 8,
+        "view": "low top-down",
+        "created_at": "2026-08-28T18:52:04.124211+00:00"
+      },
+      "folder": "Idle",
+      "frames": {
+        "rotations": {
+          "south": "Idle/rotations/south.png",
+          "south-east": "Idle/rotations/south-east.png",
+          "east": "Idle/rotations/east.png",
+          "north-east": "Idle/rotations/north-east.png",
+          "north": "Idle/rotations/north.png",
+          "north-west": "Idle/rotations/north-west.png",
+          "west": "Idle/rotations/west.png",
+          "south-west": "Idle/rotations/south-west.png"
+        },
+        "animations": {
+          "Idle": {
+            "south": [
+              "Idle/animations/Idle/south/frame_000.png",
+              "Idle/animations/Idle/south/frame_001.png",
+              "Idle/animations/Idle/south/frame_002.png",
+              "Idle/animations/Idle/south/frame_003.png",
+              "Idle/animations/Idle/south/frame_004.png",
+              "Idle/animations/Idle/south/frame_005.png",
+              "Idle/animations/Idle/south/frame_006.png",
+              "Idle/animations/Idle/south/frame_007.png"
+            ]
+          }
+        }
+      }
+    }
+  ],
+  "export_version": "3.1",
+  "export_date": "2026-08-28T19:58:44.716253"
+}

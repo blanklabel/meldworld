@@ -289,6 +289,157 @@ pub const MATERIALS: &[MaterialDef] = &[
         description: "Layered flat under the bog. Lift one sheet and the next is waiting.",
     },
 
+    // --- The Amber Wood (tier 0; the band already has its reagent and ore) ---
+    MaterialDef {
+        key: "stag_antler",
+        name: "Stag Antler",
+        class: MaterialClass::Trophy,
+        tier: 0,
+        description: "A shed tine, still smelling of frost and dry leaves.",
+    },
+    MaterialDef {
+        key: "tinder_pelt",
+        name: "Tinder Pelt",
+        class: MaterialClass::Trophy,
+        tier: 0,
+        description: "Ash-grey fur that smells faintly of smoke.",
+    },
+    MaterialDef {
+        key: "rook_quill",
+        name: "Rook Quill",
+        class: MaterialClass::Trophy,
+        tier: 0,
+        description: "A long flight feather the colour of a dead leaf.",
+    },
+    // --- The Seized Engine (tier 5) ---
+    MaterialDef {
+        key: "coolant_bloom",
+        name: "Coolant Bloom",
+        class: MaterialClass::Reagent,
+        tier: 5,
+        description: "Crystals grown in a cracked coolant line, bitter and cold.",
+    },
+    MaterialDef {
+        key: "brass_scrap",
+        name: "Brass Scrap",
+        class: MaterialClass::Ore,
+        tier: 5,
+        description: "Torn plating off a dead machine, still bright under the verdigris.",
+    },
+    MaterialDef {
+        key: "brass_ingot",
+        name: "Brass Ingot",
+        class: MaterialClass::Refined,
+        tier: 5,
+        description: "Scrap melted back into something a smith can use.",
+    },
+    MaterialDef {
+        key: "sentry_cog",
+        name: "Sentry Cog",
+        class: MaterialClass::Trophy,
+        tier: 5,
+        description: "A toothed wheel prised from a warden's chest, still warm.",
+    },
+    MaterialDef {
+        key: "coupler_fang",
+        name: "Coupler Fang",
+        class: MaterialClass::Trophy,
+        tier: 5,
+        description: "A hooked steel jaw, sheared off at the pin.",
+    },
+    MaterialDef {
+        key: "arc_residue",
+        name: "Arc Residue",
+        class: MaterialClass::Trophy,
+        tier: 5,
+        description: "Fused glass where lightning stood still for a moment.",
+    },
+    // --- The Nestiphian Cradle (tier 6) ---
+    MaterialDef {
+        key: "pale_shoot",
+        name: "Pale Shoot",
+        class: MaterialClass::Reagent,
+        tier: 6,
+        description: "A new green thing growing out of something that died.",
+    },
+    MaterialDef {
+        key: "bone_iron",
+        name: "Bone Iron",
+        class: MaterialClass::Ore,
+        tier: 6,
+        description: "Ore the rot has grown through until the two cannot be told apart.",
+    },
+    MaterialDef {
+        key: "bone_ingot",
+        name: "Bone Ingot",
+        class: MaterialClass::Refined,
+        tier: 6,
+        description: "Smelted pale, and warmer in the hand than metal should be.",
+    },
+    MaterialDef {
+        key: "grub_fat",
+        name: "Grub Fat",
+        class: MaterialClass::Trophy,
+        tier: 6,
+        description: "Pale rendered fat. It keeps, which is the unsettling part.",
+    },
+    MaterialDef {
+        key: "bloat_sac",
+        name: "Bloat Sac",
+        class: MaterialClass::Trophy,
+        tier: 6,
+        description: "A tough membrane still tight with spores.",
+    },
+    MaterialDef {
+        key: "midwife_cap",
+        name: "Midwife's Cap",
+        class: MaterialClass::Trophy,
+        tier: 6,
+        description: "A soft grey cap, cool to the touch, faintly breathing.",
+    },
+    // --- Hearth-Plains (tier 7) ---
+    MaterialDef {
+        key: "rose_attar",
+        name: "Rose Attar",
+        class: MaterialClass::Reagent,
+        tier: 7,
+        description: "Oil pressed from petals that were warm when picked.",
+    },
+    MaterialDef {
+        key: "gilt_sand",
+        name: "Gilt Sand",
+        class: MaterialClass::Ore,
+        tier: 7,
+        description: "Rose-gold grit that drifts against the briars.",
+    },
+    MaterialDef {
+        key: "gilt_ingot",
+        name: "Gilt Ingot",
+        class: MaterialClass::Refined,
+        tier: 7,
+        description: "Soft, bright, and worth rather less than it looks.",
+    },
+    MaterialDef {
+        key: "velvet_strand",
+        name: "Velvet Strand",
+        class: MaterialClass::Trophy,
+        tier: 7,
+        description: "A thread of wine-red silk that will not be cut.",
+    },
+    MaterialDef {
+        key: "rose_thorn",
+        name: "Rose Thorn",
+        class: MaterialClass::Trophy,
+        tier: 7,
+        description: "Black, finger-long, and warm as skin.",
+    },
+    MaterialDef {
+        key: "gilded_collar",
+        name: "Gilded Collar",
+        class: MaterialClass::Trophy,
+        tier: 7,
+        description: "Rose-gold links, sized for something that liked wearing them.",
+    },
 ];
 
 /// The **refined** form of a raw ore, or `None` for anything that isn't smeltable.
@@ -300,6 +451,9 @@ pub fn refined_form(ore: &str) -> Option<&'static str> {
         "cinder_ore" => "cinder_ingot",
         "rime_ore" => "rime_ingot",
         "peat_iron" => "peat_ingot",
+        "brass_scrap" => "brass_ingot",
+        "bone_iron" => "bone_ingot",
+        "gilt_sand" => "gilt_ingot",
         _ => return None,
     })
 }
@@ -333,7 +487,7 @@ mod tests {
         for m in MATERIALS {
             assert!(seen.insert(m.key), "duplicate material {}", m.key);
             assert!(!m.name.is_empty() && !m.description.is_empty(), "{}", m.key);
-            assert!((0..=4).contains(&m.tier), "{} has tier {}", m.key, m.tier);
+            assert!((0..=7).contains(&m.tier), "{} has tier {}", m.key, m.tier);
             assert_eq!(material(m.key).map(|d| d.key), Some(m.key));
         }
         assert!(!is_material("bloom_salve"), "a potion is not a material");
@@ -345,7 +499,7 @@ mod tests {
         // The three classes are the three ways a band pays you: harvest a reagent,
         // harvest an ore, or kill something. A band missing one is a hole in a
         // whole tier of recipes.
-        for tier in 0..=4 {
+        for tier in 0..=7 {
             for class in [MaterialClass::Reagent, MaterialClass::Ore, MaterialClass::Trophy] {
                 assert!(
                     MATERIALS.iter().any(|m| m.tier == tier && m.class == class),
@@ -354,7 +508,9 @@ mod tests {
                 );
             }
         }
-        assert_eq!(materials_of_class(MaterialClass::Trophy).len(), 5);
+        // One per band up to the mire, then THREE per deep band: the deep biomes are one
+        // creature roster each rather than a shared one, so each species drops its own.
+        assert_eq!(materials_of_class(MaterialClass::Trophy).len(), 5 + 3 + 9);
     }
 
     #[test]

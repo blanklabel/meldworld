@@ -44,12 +44,15 @@ struct BiomeParams {
     // asks which cell a fragment stands in rather than which band, and the world paints as a
     // patchwork. This replaces the 32-slot radial biome LUT that used to head this struct.
     region: vec4<f32>,
-    // `[biome_gate]` in `BIOMES` order: gate.xyzw = field, forest, desert, ashfall and
-    // gate_hi.xy = tundra, mire. In the uniform because the gate decides WHICH themes a
+    // `[biome_gate]` in `BIOMES` order, four at a time because a uniform wants `vec4`s:
+    // gate = field, forest, desert, ashfall; gate_hi = tundra, mire, amber_wood,
+    // seized_engine; gate_hi2 = nestiphian_cradle, hearth_plains, seraphic_oubliette.
+    // In the uniform because the gate decides WHICH themes a
     // cell may draw, and a shader that does not know it paints a biome the server does not
     // spawn — the same failure the coast constants are passed in to avoid.
     gate: vec4<f32>,
     gate_hi: vec4<f32>,
+    gate_hi2: vec4<f32>,
     // World units the ground cross-fades across a cell boundary. A boundary is 2D now, so
     // this is a distance from the nearest edge rather than a radial band.
     region_blend: f32,
@@ -128,6 +131,16 @@ struct BiomeParams {
 @group(#{MATERIAL_BIND_GROUP}) @binding(113) var t_cliff_tundra: texture_2d<f32>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(114) var t_cliff_mire: texture_2d<f32>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(115) var t_dungeon_floor: texture_2d<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(116) var t_amber_wood: texture_2d<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(117) var t_seized_engine: texture_2d<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(118) var t_nestiphian_cradle: texture_2d<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(119) var t_hearth_plains: texture_2d<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(120) var t_seraphic_oubliette: texture_2d<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(121) var t_cliff_amber_wood: texture_2d<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(122) var t_cliff_seized_engine: texture_2d<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(123) var t_cliff_nestiphian_cradle: texture_2d<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(124) var t_cliff_hearth_plains: texture_2d<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(125) var t_cliff_seraphic_oubliette: texture_2d<f32>;
 
 // The sea's tile for the biome it borders — the same mapping the pond/bog-pool/
 // frozen-pond props use (`WorldAssets::water_mats`), so a tundra shore is ice and a mire
@@ -714,7 +727,12 @@ fn cliff_tex(bi: i32, uv: vec2<f32>) -> vec4<f32> {
     if (bi == 1) { return ground_sample(t_cliff_desert, uv); }
     if (bi == 2) { return ground_sample(t_cliff_ashfall, uv); }
     if (bi == 3) { return ground_sample(t_cliff_tundra, uv); }
-    return ground_sample(t_cliff_mire, uv);
+    if (bi == 4) { return ground_sample(t_cliff_mire, uv); }
+    if (bi == 5) { return ground_sample(t_cliff_amber_wood, uv); }
+    if (bi == 6) { return ground_sample(t_cliff_seized_engine, uv); }
+    if (bi == 7) { return ground_sample(t_cliff_nestiphian_cradle, uv); }
+    if (bi == 8) { return ground_sample(t_cliff_hearth_plains, uv); }
+    return ground_sample(t_cliff_seraphic_oubliette, uv);
 }
 
 // Rock projected from the two SIDE axes and mixed by which one the face points along, so
@@ -765,7 +783,27 @@ fn biome_color(bi: i32, uv: vec2<f32>) -> vec4<f32> {
     // SHADOWING ITSELF (see `NotShadowCaster` on `WorldGround`), not the tint. Lifting a
     // tint to pay for a lighting bug is how a biome ends up looking like a sunny meadow the
     // moment the real bug is fixed.
-    return ground_sample(t_mire, uv) * vec4<f32>(0.75, 0.95, 0.7, 1.0);
+    if (bi == 4) {
+        return ground_sample(t_mire, uv) * vec4<f32>(0.75, 0.95, 0.7, 1.0);
+    }
+    if (bi == 5) {
+        return ground_sample(t_amber_wood, uv);
+    }
+    if (bi == 6) {
+        return ground_sample(t_seized_engine, uv);
+    }
+    if (bi == 7) {
+        return ground_sample(t_nestiphian_cradle, uv);
+    }
+    if (bi == 8) {
+        return ground_sample(t_hearth_plains, uv);
+    }
+    // ⚠️ TINT THE OUBLIETTE DOWN, NOT UP. Its art is already near-white ceramic, so the
+    // "casts no shadows" idea — which I first wrote as a brightening multiply — blew the
+    // whole biome out against the sky's own white fog and lost the eyes and the gold
+    // entirely. Pulling it down and slightly blue keeps it cold and legible, and the
+    // shadowless feel has to come from the lighting rather than from the albedo.
+    return ground_sample(t_seraphic_oubliette, uv) * vec4<f32>(0.82, 0.83, 0.90, 1.0);
 }
 
 // ---------------------------------------------------------------------------------------
@@ -842,12 +880,20 @@ fn rg_sector_in(ring: u32, bearing: f32) -> u32 {
 // straddling a gate is held until it is wholly past — matching `regions::biome_of`.
 fn rg_biome_of(ring: u32, sector: u32) -> i32 {
     let inner = f32(ring) * params.region.y;
-    let gates = array<f32, 6>(
+    let gates = array<f32, 11>(
         params.gate.x, params.gate.y, params.gate.z, params.gate.w,
-        params.gate_hi.x, params.gate_hi.y);
-    var open = array<i32, 6>(0, 0, 0, 0, 0, 0);
+        params.gate_hi.x, params.gate_hi.y, params.gate_hi.z, params.gate_hi.w,
+        params.gate_hi2.x, params.gate_hi2.y, params.gate_hi2.z);
+    // ⚠️ THE CAPSTONE TAKES THE WHOLE BAND — mirrors `regions::EXCLUSIVE`. Past its gate
+    // the roll below is skipped entirely, so the last stretch of the world is ONE place.
+    // Index 10 is `seraphic_oubliette`; hard-coded here because WGSL has no list to walk
+    // and the Rust side owns the contract.
+    if (gates[10] <= inner) {
+        return 10;
+    }
+    var open = array<i32, 11>(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
     var count = 0u;
-    for (var i = 0u; i < 6u; i = i + 1u) {
+    for (var i = 0u; i < 11u; i = i + 1u) {
         if (gates[i] <= inner) {
             open[count] = i32(i);
             count = count + 1u;

@@ -40,10 +40,45 @@ pub const BOSSES: [(&str, &str); 11] = [
 /// in its `[boss.B1] sprite`.
 pub const DUNGEON_ONLY: &[&str] = &["briarlord"];
 
+/// The **world bosses** (`EW`): Termina, Nestiph, Slake, Ometus, and the hidden apex the
+/// non-combat personas get. Art only, for now.
+///
+/// ⚠️ DELIBERATELY NOT IN [`BOSSES`]. That list is the pool the open world draws from —
+/// elite champions, Gatekeepers, undead rites, and the three peers at the end fight — so
+/// putting a world boss in it would stand Ometus in a field at d3200 as a random named
+/// elite, ahead of the unlock ladder that is supposed to gate it (`proposals/endgame-bosses.md`:
+/// all three known bosses fall before Ometus is reachable at all). They are here so the
+/// sprites are loaded and named rather than sitting unreferenced on disk; the encounter
+/// that places them is `EW-1` and does not exist yet.
+pub const WORLD_BOSSES: [(&str, &str); 5] = [
+    ("termina", "Termina"),
+    ("nestiph", "Nestiph"),
+    ("slake", "Slake"),
+    ("ometus", "Ometus"),
+    ("allfather", "The All-Father"),
+];
+
+/// A world boss's LIEUTENANT, and the biome it is bound to.
+///
+/// Each of these is a generation that was superseded when its master was re-rolled — the
+/// first Termina before she was female, the bloated Nestiph before she was gaunt, the
+/// Slake that lost to a better one. They are good art for a fight that will need more than
+/// one body in it, so they keep their master's arena rather than being deleted.
+///
+/// The BIOME is recorded here rather than in the placement code because that is the whole
+/// point of them: a lieutenant belongs to one arena and must never turn up anywhere else.
+pub const LIEUTENANTS: [(&str, &str, &str); 3] = [
+    ("cogwright", "The Cogwright", "seized_engine"),
+    ("vatmother", "The Vatmother", "nestiphian_cradle"),
+    ("velvetmaw", "Velvetmaw", "hearth_plains"),
+];
+
 /// Can this boss be placed in the OPEN WORLD — an elite champion, a Gatekeeper in a
 /// pass, an undead rite, a peer at the end fight? False for a dungeon's own boss.
 pub fn wanders_the_overworld(key: &str) -> bool {
     !DUNGEON_ONLY.contains(&key)
+        && !WORLD_BOSSES.iter().any(|(k, _)| *k == key)
+        && !LIEUTENANTS.iter().any(|(k, _, _)| *k == key)
 }
 
 /// The title a named boss is shown under, or `None` for anything that is not one of
@@ -51,7 +86,12 @@ pub fn wanders_the_overworld(key: &str) -> bool {
 /// identity behind it. `None` means "draw no name plate" rather than "draw a guess":
 /// a plate reading `Unknown Horror` over ordinary scenery is worse than no plate.
 pub fn display_name(key: &str) -> Option<&'static str> {
-    BOSSES.iter().find(|(k, _)| *k == key).map(|(_, title)| *title)
+    BOSSES
+        .iter()
+        .chain(WORLD_BOSSES.iter())
+        .find(|(k, _)| *k == key)
+        .map(|(_, title)| *title)
+        .or_else(|| LIEUTENANTS.iter().find(|(k, _, _)| *k == key).map(|(_, t, _)| *t))
 }
 
 /// Is this one of the ten named bosses?
@@ -85,6 +125,20 @@ mod tests {
 
     /// A dungeon-only boss has to BE a boss — the flag narrows where it is placed, it
     /// does not make it a second kind of thing with its own half of the registry.
+    /// A lieutenant names the arena it belongs to, and a name with no biome behind it is
+    /// a body that can never be placed anywhere. Held against `regions::BIOMES` because
+    /// that list is the world's own, and a typo here would fail silently forever.
+    #[test]
+    fn every_lieutenant_is_bound_to_a_real_biome() {
+        for (key, _, biome) in LIEUTENANTS {
+            assert!(
+                crate::regions::biome_index(biome).is_some(),
+                "{key} is bound to {biome}, which is not a biome"
+            );
+            assert!(!wanders_the_overworld(key), "{key} must not be in the open-world pool");
+        }
+    }
+
     #[test]
     fn a_dungeon_only_boss_is_still_a_named_boss() {
         for key in DUNGEON_ONLY {

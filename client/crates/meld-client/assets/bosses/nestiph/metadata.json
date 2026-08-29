@@ -1,0 +1,49 @@
+{
+  "group_id": "2469fb4e-0f54-4cf9-8383-1def2368f544",
+  "states": [
+    {
+      "character": {
+        "id": "298febc7-702c-4367-9aec-3f4d99349a34",
+        "name": "Idle",
+        "prompt": "Nestiph, Goddess of Unlife and Rebirth: a tall gaunt female figure, skeletally slender, ash-pale bare skin marked with dark rot, almost unclothed except for trailing strands of moss and root, a crown of pale fungal caps growing from her head and down her spine, thin spore-mist rising from her shoulders, fresh green shoots sprouting from the decay along her arms",
+        "size": {
+          "width": 256,
+          "height": 256
+        },
+        "template_id": "mannequin",
+        "directions": 8,
+        "view": "low top-down",
+        "created_at": "2026-08-28T19:02:29.687544+00:00"
+      },
+      "folder": "Idle",
+      "frames": {
+        "rotations": {
+          "south": "Idle/rotations/south.png",
+          "south-east": "Idle/rotations/south-east.png",
+          "east": "Idle/rotations/east.png",
+          "north-east": "Idle/rotations/north-east.png",
+          "north": "Idle/rotations/north.png",
+          "north-west": "Idle/rotations/north-west.png",
+          "west": "Idle/rotations/west.png",
+          "south-west": "Idle/rotations/south-west.png"
+        },
+        "animations": {
+          "Idle": {
+            "south": [
+              "Idle/animations/Idle/south/frame_000.png",
+              "Idle/animations/Idle/south/frame_001.png",
+              "Idle/animations/Idle/south/frame_002.png",
+              "Idle/animations/Idle/south/frame_003.png",
+              "Idle/animations/Idle/south/frame_004.png",
+              "Idle/animations/Idle/south/frame_005.png",
+              "Idle/animations/Idle/south/frame_006.png",
+              "Idle/animations/Idle/south/frame_007.png"
+            ]
+          }
+        }
+      }
+    }
+  ],
+  "export_version": "3.1",
+  "export_date": "2026-08-28T19:57:20.475372"
+}

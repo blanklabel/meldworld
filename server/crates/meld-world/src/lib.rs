@@ -161,7 +161,7 @@ pub fn biome_for_distance(d: i64) -> &'static str {
 /// Re-exported from [`meld_proto::regions`] rather than declared here: the ORDER is a
 /// wire contract, since a cell's biome crosses the wire as an index into it and the ground
 /// shader indexes its textures the same way.
-pub const BIOMES: [&str; 6] = meld_proto::regions::BIOMES;
+pub const BIOMES: [&str; meld_proto::regions::BIOMES.len()] = meld_proto::regions::BIOMES;
 
 /// Independent per-section biome stream, salted off the section seed so the theme
 /// choice is stable even if unrelated placement draws change.
@@ -222,8 +222,8 @@ pub fn biome_gate_slice(balance: &Balance) -> Vec<f32> {
     biome_gate_array(balance).to_vec()
 }
 
-fn biome_gate_array(balance: &Balance) -> [f32; 6] {
-    let mut out = [0.0f32; 6];
+fn biome_gate_array(balance: &Balance) -> [f32; BIOMES.len()] {
+    let mut out = [0.0f32; BIOMES.len()];
     for (i, b) in BIOMES.iter().enumerate() {
         out[i] = balance.biome_gate.get(*b).copied().unwrap_or(0) as f32;
     }
@@ -262,7 +262,17 @@ fn creatures_for_biome(biome: &str) -> &'static [&'static str] {
         "desert" => &["dune_wyrm", "sand_shade", "dune_colossus"],
         "ashfall" => &["cinder_imp", "magma_golem", "ember_wisp"],
         "tundra" => &["frost_lurker", "ice_revenant", "glacier_maw"],
-        _ => &["bog_serpent", "myconid", "bog_stinger", "bog_ooze", "frog_tribesman"],
+        "mire" => &["bog_serpent", "myconid", "bog_stinger", "bog_ooze", "frog_tribesman"],
+        "amber_wood" => &["amber_stag", "tinder_wolf", "leaf_rook"],
+        "seized_engine" => &["cog_sentry", "rail_hound", "arc_phantom"],
+        "nestiphian_cradle" => &["rot_grub", "bloat_carrier", "spore_midwife"],
+        "hearth_plains" => &["velvet_lure", "thorn_paramour", "gilded_hound"],
+        // ⚠️ NOTHING LIVES IN THE OUBLIETTE. It is a prison built to hold one thing, and
+        // it exists to hold Ometus — the emptiness IS the content, and it is why the
+        // capstone is the one EXCLUSIVE biome. Every caller must cope with an empty
+        // roster rather than indexing blindly; `spawns_wildlife` is how you ask.
+        "seraphic_oubliette" => &[],
+        other => creatures_for_biome(stand_in_biome(other)),
     }
 }
 
@@ -293,6 +303,43 @@ pub fn biomes_of_creature(kind: &str) -> Vec<&'static str> {
         .collect()
 }
 
+/// The classic biome a NEW biome borrows its bestiary and its harvest nodes from, until it
+/// has its own.
+///
+/// ⚠️ A STAND-IN, AND SAID OUT LOUD IN ONE PLACE. The five biomes added for the deep world
+/// have their own ground, their own cliffs and their own terrain weights — but a bestiary
+/// is eight sprite sets per creature, so they borrow rosters for now. Without this they
+/// would fall through the `_ =>` arm to the MIRE, and the end of the world would spawn bog
+/// serpents and hand out peat: not a placeholder, just wrong. Each mapping is a lineage
+/// argument, so replacing one is a local change rather than a hunt.
+fn stand_in_biome(biome: &str) -> &str {
+    match biome {
+        // An autumn wood is a wood, and it shares the forest's band: the same harvest
+        // nodes and the same tier-0 materials. Its BESTIARY is its own.
+        "amber_wood" => "forest",
+        other => other,
+    }
+}
+
+/// The body the END FIGHT wears where nothing lives.
+///
+/// The fight is placed by promoting an existing spawn, and `become_boss` overwrites the
+/// kit and the name anyway — the host only supplies a species for a creature that is
+/// about to stop being one. It is a forest kind on purpose: the shallowest, most ordinary
+/// thing in the game, so if it is ever seen UNPROMOTED it reads as an obvious bug rather
+/// than as deep-world content.
+const END_FIGHT_HOST: &str = "forest_bloom_stalker";
+
+/// Does anything live here at all?
+///
+/// ⚠️ ASK THIS BEFORE INDEXING A ROSTER. `creatures_for_biome` can be EMPTY — the
+/// Oubliette holds one thing and it is not wildlife — and the placement and quarry paths
+/// both used to pick with `pool[rng.below(pool.len())]`, which on an empty pool is an
+/// index out of bounds rather than a quiet nothing.
+pub fn spawns_wildlife(biome: &str) -> bool {
+    !creatures_for_biome(biome).is_empty()
+}
+
 /// Harvestable resource node ids that spawn in a biome (one alchemy reagent + one
 /// forging ore/wood per biome). Structural; stats live under `[resource.<key>]`.
 fn resources_for_biome(biome: &str) -> &'static [&'static str] {
@@ -306,7 +353,16 @@ fn resources_for_biome(biome: &str) -> &'static [&'static str] {
         "desert" => &["sun_salts", "dune_iron", "sun_sandstone"],
         "ashfall" => &["ember_ash", "cinder_ore", "basalt_slab"],
         "tundra" => &["frost_lichen", "rime_ore", "rime_stone"],
-        _ => &["bog_myrrh", "peat_iron", "peat_shale", "bog_root_timber"],
+        "mire" => &["bog_myrrh", "peat_iron", "peat_shale", "bog_root_timber"],
+        // The deep bands each pay all three ways (reagent, ore, trophy) — a band missing
+        // one is a hole in a whole tier of recipes. Stone comes from a neighbour: these
+        // are places, not quarries, and a builder still has to be able to raise a wall.
+        "seized_engine" => &["coolant_bloom", "brass_scrap", "basalt_slab"],
+        "nestiphian_cradle" => &["pale_shoot", "bone_iron", "peat_shale"],
+        "hearth_plains" => &["rose_attar", "gilt_sand", "sun_sandstone"],
+        // Nothing grows in a prison, and nothing is buried under it either.
+        "seraphic_oubliette" => &[],
+        other => resources_for_biome(stand_in_biome(other)),
     }
 }
 
@@ -436,6 +492,11 @@ fn biome_water_mult(biome: &str) -> f64 {
         "field" | "forest" => 1.0,
         "ashfall" => 0.5,
         "desert" => 0.25,
+        "nestiphian_cradle" => 2.4, // rot needs standing wet
+        "amber_wood" => 0.9,
+        "hearth_plains" => 0.6,
+        "seraphic_oubliette" => 0.2, // it weeps mercury, not water
+        "seized_engine" => 0.15,     // oil and coolant, and neither pools as a lake
         _ => 1.0,
     }
 }
@@ -453,7 +514,13 @@ fn biome_terrace_mult(biome: &str) -> f64 {
         "field" => 0.3,   // open meadow — you can see across it
         "tundra" => 0.7,  // rolling
         "mire" => 0.35,   // flooded, not mountainous
-        _ => 0.15,        // desert: the open breather — nearly flat
+        // The Oubliette IS a crater — the land drops into it, so it climbs hardest of all.
+        "seraphic_oubliette" => 1.7,
+        "seized_engine" => 1.1, // decks and gantries, stepped like the machine it was
+        "amber_wood" => 0.8,    // a wood, mazed by trees like its green twin
+        "nestiphian_cradle" => 0.4,
+        "hearth_plains" => 0.25, // rolling and open, and that openness is the trap
+        _ => 0.15,               // desert: the open breather — nearly flat
     }
 }
 
@@ -2049,6 +2116,7 @@ pub fn roll_bounty(
     let distance = ((b.sighting(rank) as f64) * jitter).round().max(1.0) as i32;
     let biome = biome_for_distance(distance as i64);
     let pool = creatures_for_biome(biome);
+    let pool = if pool.is_empty() { creatures_for_biome("forest") } else { pool };
     let creature = pool[rng.below(pool.len())].to_string();
     let venue = if rng.unit() < b.dungeon_chance {
         Venue::Dungeon
@@ -2528,7 +2596,7 @@ pub struct Arena {
     regions: meld_proto::regions::Grid,
     /// `[biome_gate]` flattened into `BIOMES` order, so a cell's biome can be resolved
     /// without reaching for `Balance` — the lookup runs per placed prop.
-    biome_gate: [f32; 6],
+    biome_gate: [f32; BIOMES.len()],
     terrain_cell: f64,
     terraces_per_area: f64,
     max_level: u8,
@@ -3324,15 +3392,21 @@ impl Arena {
             let pos = Position::new(wg.first_monster_x, 0.0);
             let idx = self.monsters.len();
             let mseed = rng.next_u64();
+            let Some(first) = kinds.first() else {
+                return;
+            };
             self.monsters
-                .push(MonsterSpawn::build(balance, format!("mob-{idx}"), kinds[0], pos, mseed));
+                .push(MonsterSpawn::build(balance, format!("mob-{idx}"), first, pos, mseed));
             let portal_x = wg.first_monster_x + wg.first_area_portal_gap;
             let end_x = portal_x + wg.portal_setback;
             self.monsters[idx].area_min_x = start_x;
             self.monsters[idx].area_max_x = end_x;
             // A guaranteed starter resource node just off the tutorial path, so
             // the first thing a new player can safely do is harvest (no fight).
-            let starter_kind = resources_for_biome(biome)[0].to_string();
+            let Some(starter) = resources_for_biome(biome).first() else {
+                return;
+            };
+            let starter_kind = starter.to_string();
             self.resources.push(ResourceNode {
                 spent_tick: 0,
                 entity_id: format!("res-{}", self.resources.len()),
@@ -3491,6 +3565,11 @@ impl Arena {
             let rx = start_x + 2.0 + rng.unit() * (length - 4.0).max(1.0);
             let ry = wg.resource_lateral_spread * rng.signed();
             let rkinds = resources_for_biome(self.biome_in_corridor(Position::new(rx, ry)));
+            // Nothing grows in the Oubliette and nothing is buried under it, so a node
+            // rolled onto that ground is simply not placed.
+            if rkinds.is_empty() {
+                continue;
+            }
             let rk = rkinds[rng.below(rkinds.len())];
             let nid = self.resources.len();
             self.resources.push(ResourceNode {
@@ -3653,9 +3732,12 @@ impl Arena {
                     .push([summit.x as f32, summit.y as f32, radius as f32, height as f32]);
                 // `hub_safe_radius` alone put a 10x-HP Gatekeeper 14 units from the
                 // hub — a new party's first contact, and the end of the dive.
+                // A biome with no wildlife has nothing to promote into a Gatekeeper, so
+                // the peak simply carries no boss.
                 if summit.x > wg.hub_safe_radius
                     && summit.distance_floor() >= enc.gatekeeper_min_distance
                     && prng.unit() < wg.peak_boss_chance
+                    && !kinds.is_empty()
                 {
                     let gidx = self.monsters.len();
                     let gseed = section_seed(self.seed_base, i) ^ 0x9EA1_B055_0000_0000;
@@ -3753,7 +3835,28 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
                 // share with sixty others. Difficulty is untouched: that rides `distance`
                 // (CANON §B) and a biome is a difficulty-neutral skin.
                 let local = creatures_for_biome(self.biome_at(world));
-                let kind = local[rng.below(local.len())];
+                // ⚠️ NOTHING LIVES IN THE OUBLIETTE — EXCEPT THE THING IT WAS BUILT TO HOLD.
+                //
+                // An empty roster means no wildlife, and the scatter simply skips. But the
+                // END FIGHT is placed by PROMOTING a spawn, so with nothing to promote it
+                // would never be placed at all — the capstone would be an empty room and
+                // the walk out would end in nothing, which the suite reports as "no seed
+                // placed the end fight past its floor at all".
+                //
+                // So a barren band still lays down the ONE body the fight needs, and only
+                // while the fight is still owed. It becomes three named bosses on the very
+                // next lines, so the Oubliette still contains nothing but them.
+                let owes_end_fight = !self.tutorial
+                    && !self.end_fight_placed
+                    && world.x >= enc.end_fight_min_distance;
+                let kind = if local.is_empty() {
+                    if !owes_end_fight {
+                        continue;
+                    }
+                    END_FIGHT_HOST
+                } else {
+                    local[rng.below(local.len())]
+                };
                 let idx = self.monsters.len();
                 let mseed = rng.next_u64();
                 self.monsters
@@ -3960,7 +4063,7 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
                         for k in 0..band.size - 1 {
                             // Mixed groups: past the duo band, some of the littles are a
                             // different species than what they follow.
-                            let mkind = if erng.unit() < band.mixed_chance {
+                            let mkind = if erng.unit() < band.mixed_chance && !local.is_empty() {
                                 local[erng.below(local.len())]
                             } else {
                                 kind
@@ -4019,6 +4122,9 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
             let ox = start_x + rng.unit() * length;
             let oy = rng.signed() * (self.corridor_lateral - 1.0);
             let okinds = obstacles_for_biome(self.biome_in_corridor(Position::new(ox, oy)));
+            if okinds.is_empty() {
+                continue;
+            }
             let okind = okinds[rng.below(okinds.len())];
             let radius = obstacle_radius_for(wg, okind, rng.unit());
             let pos = Position::new(ox, oy);
@@ -6313,6 +6419,9 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
                 let m = &self.monsters[i];
                 (m.entity_id.clone(), m.position, m.area_min_x, m.area_max_x)
             };
+            if kinds.is_empty() {
+                continue;
+            }
             let kind = kinds[rng.below(kinds.len())];
             let seed = rng.next_u64();
             // Re-seeded IN PLACE rather than re-scattered: placement already proved
@@ -6334,6 +6443,9 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
                 continue;
             }
             let slot = old_nodes.iter().position(|k| *k == self.resources[i].kind).unwrap_or(0);
+            if new_nodes.is_empty() {
+                continue;
+            }
             let kind = new_nodes[slot.min(new_nodes.len() - 1)].to_string();
             self.resources[i].remaining = node_stock(balance, &kind);
             self.resources[i].kind = kind;
@@ -8624,8 +8736,77 @@ mod tests {
         assert!(biomes_of_creature("no_such_creature").is_empty());
         // Field and forest are the same fauna on different tree counts, so a forest
         // creature answers with both — the advice has to name both or it is wrong half
-        // the time.
+        // the time. It is only those two again now that the deep biomes have their own
+        // rosters and no longer borrow this one.
         assert_eq!(biomes_of_creature("forest_bloom_stalker"), vec!["field", "forest"]);
+    }
+
+    /// ⚠️ AN EXCLUSIVE BIOME GATED SHALLOW EATS THE ENTIRE WORLD.
+    ///
+    /// `regions::EXCLUSIVE` means "past this gate, nothing else draws" — so a capstone at
+    /// distance 0 is open at every radius and every cell in the world answers with it. The
+    /// world would be one biome from the hub outward and the seed would stop mattering.
+    /// It is a one-character edit in `balance.toml` away, and nothing else would fail:
+    /// the game would boot, render, and be wrong everywhere.
+    ///
+    /// So the capstone must be the DEEPEST gate there is, and deep enough that the end
+    /// fight stands inside it rather than at its doorstep.
+    #[test]
+    fn the_capstone_is_the_deepest_gate_and_holds_the_end_fight() {
+        let balance = Balance::load_default().unwrap();
+        let gate = |b: &str| balance.biome_gate.get(b).copied().unwrap_or(0);
+        for name in meld_proto::regions::EXCLUSIVE {
+            let mine = gate(name);
+            assert!(mine > 0, "{name} is exclusive and gated at {mine}: it would be the whole world");
+            for other in meld_proto::regions::BIOMES {
+                if other != *name {
+                    assert!(
+                        gate(other) < mine,
+                        "{other} is gated at {}, past the exclusive {name} at {mine} — it can never appear",
+                        gate(other)
+                    );
+                }
+            }
+            assert!(
+                (mine as f64) <= balance.encounters.end_fight_min_distance,
+                "{name} opens at {mine}, past the end fight at {} — the fight would stand \
+                 outside the biome it is the climax of",
+                balance.encounters.end_fight_min_distance
+            );
+        }
+    }
+
+    /// Every new biome's roster is its OWN, and the Oubliette has none.
+    ///
+    /// "Only in their biomes" is not enforced by a rule somewhere — it IS the placement
+    /// table: a species listed under exactly one biome is placed in exactly one biome, and
+    /// `biomes_of_creature` derives the inverse so the hunt board's advice cannot drift
+    /// from it. This pins that the twelve deep species stayed exclusive, which a careless
+    /// copy-paste into a second roster would quietly undo.
+    #[test]
+    fn the_deep_bestiary_is_exclusive_and_the_oubliette_is_empty() {
+        for (biome, expected) in [
+            ("amber_wood", 3),
+            ("seized_engine", 3),
+            ("nestiphian_cradle", 3),
+            ("hearth_plains", 3),
+        ] {
+            let roster = creatures_for_biome(biome);
+            assert_eq!(roster.len(), expected, "{biome} roster changed size");
+            for kind in roster {
+                assert_eq!(
+                    biomes_of_creature(kind),
+                    vec![biome],
+                    "{kind} is meant to live only in {biome}"
+                );
+            }
+        }
+        assert!(
+            creatures_for_biome("seraphic_oubliette").is_empty(),
+            "the Oubliette holds one thing and it is not wildlife"
+        );
+        assert!(!spawns_wildlife("seraphic_oubliette"));
+        assert!(spawns_wildlife("hearth_plains"));
     }
 
     // AD-4: a hunt that names a creature nothing spawns is a contract that can never
@@ -10641,11 +10822,18 @@ mod tests {
         );
         // Index 0 stays the tutorial creature: area 0 is the deterministic first fight.
         assert_eq!(creatures_for_biome("forest")[0], "forest_bloom_stalker");
-        // Every roster is non-empty and holds no duplicates - a repeated kind is a
-        // biome that reads as less varied than its length claims.
+        // Every roster holds no duplicates - a repeated kind is a biome that reads as
+        // less varied than its length claims - and every biome that has wildlife AT ALL
+        // has some. The exception is deliberate and is exactly one: the Oubliette is a
+        // prison built to hold one thing, so its emptiness is the content rather than an
+        // unfilled table. `spawns_wildlife` is the question every caller must ask.
         for biome in BIOMES {
             let pool = creatures_for_biome(biome);
-            assert!(!pool.is_empty(), "{biome} has no creatures");
+            assert_eq!(
+                spawns_wildlife(biome),
+                biome != "seraphic_oubliette",
+                "{biome}: only the capstone may be barren"
+            );
             for (i, k) in pool.iter().enumerate() {
                 assert!(!pool[i + 1..].contains(k), "{biome} lists {k} twice");
             }

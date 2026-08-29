@@ -28,7 +28,32 @@
 /// The biome label set, and its ORDER — which is a wire contract, not a detail: a cell's
 /// biome is an index into this list on both sides of the wire and inside the ground
 /// shader. `meld_world::BIOMES` re-exports it rather than declaring its own.
-pub const BIOMES: [&str; 6] = ["field", "forest", "desert", "ashfall", "tundra", "mire"];
+pub const BIOMES: [&str; 11] = [
+    "field",
+    "forest",
+    "desert",
+    "ashfall",
+    "tundra",
+    "mire",
+    "amber_wood",
+    "seized_engine",
+    "nestiphian_cradle",
+    "hearth_plains",
+    "seraphic_oubliette",
+];
+
+/// Biomes that, once open, are the ONLY thing that draws — see [`Grid::biome_of`].
+///
+/// The world's deepest band is one biome, not a patchwork, because it is the END of the
+/// world: the arena the whole walk out is pointed at. Everything else about this
+/// decomposition exists to make the map read as varied blobs, and the one place that must
+/// NOT be varied is the last one.
+pub const EXCLUSIVE: &[&str] = &["seraphic_oubliette"];
+
+/// Index of `name` in [`BIOMES`], or `None`.
+pub fn biome_index(name: &str) -> Option<usize> {
+    BIOMES.iter().position(|b| *b == name)
+}
 
 /// Sector indices are packed into 7 bits alongside the ring, so a cell is one `u32` key
 /// that a Shift log or a persisted anchor can store. Past the radius where the arc wants
@@ -284,6 +309,21 @@ impl Grid {
     /// pure function of position.
     pub fn biome_of(&self, c: Cell, gate: &[f32; BIOMES.len()]) -> usize {
         let inner = c.ring as f32 * self.ring_step;
+        // ⚠️ AN EXCLUSIVE BIOME TAKES THE WHOLE BAND. Past its gate the roll is skipped
+        // entirely rather than weighted, because "mostly the end of the world, with the
+        // occasional meadow" is not an ending. The DEEPEST open one wins, so exclusives
+        // can be layered later without this rule changing.
+        let mut capstone: Option<(usize, f32)> = None;
+        for name in EXCLUSIVE {
+            if let Some(i) = biome_index(name) {
+                if gate[i] <= inner && capstone.is_none_or(|(_, g)| gate[i] >= g) {
+                    capstone = Some((i, gate[i]));
+                }
+            }
+        }
+        if let Some((i, _)) = capstone {
+            return i;
+        }
         let mut open = [0usize; BIOMES.len()];
         let mut count = 0usize;
         for (i, g) in gate.iter().enumerate() {
@@ -373,7 +413,9 @@ mod tests {
     /// one biome, which is the claim that was false before.
     #[test]
     fn a_circle_around_the_world_crosses_many_biomes() {
-        let gate = [0.0f32, 0.0, 400.0, 250.0, 550.0, 0.0];
+        let gate = [
+            0.0f32, 0.0, 400.0, 250.0, 550.0, 0.0, 0.0, 1200.0, 1800.0, 2400.0, 3000.0,
+        ];
         for seed in [1u32, 7, 424242, 99, 1_000_003, 5, 31, 777] {
             let g = grid(seed);
             for r in [400.0f32, 900.0, 1800.0, 3000.0] {
@@ -490,7 +532,9 @@ mod tests {
     /// wear a theme its own inner radius has earned.
     #[test]
     fn no_cell_wears_a_biome_its_depth_has_not_earned() {
-        let gate = [0.0f32, 0.0, 400.0, 250.0, 550.0, 0.0];
+        let gate = [
+            0.0f32, 0.0, 400.0, 250.0, 550.0, 0.0, 0.0, 1200.0, 1800.0, 2400.0, 3000.0,
+        ];
         for seed in [1u32, 7, 424242, 99] {
             let g = grid(seed);
             for ring in 0..16u32 {
@@ -513,7 +557,16 @@ mod tests {
     /// has to be a pure function of that seed, and two seeds have to disagree.
     #[test]
     fn the_decomposition_is_the_seed_and_nothing_else() {
-        let gate = [0.0f32; BIOMES.len()];
+        // ⚠️ NOT an all-zero gate. An EXCLUSIVE biome open at radius 0 is open EVERYWHERE,
+        // so every cell answers with it and the seed stops mattering at all — which is
+        // exactly what this test then reports, as "the seed is inert". Gate the capstone
+        // out past this fixture's rings so the roll below is a roll.
+        let mut gate = [0.0f32; BIOMES.len()];
+        for name in EXCLUSIVE {
+            if let Some(i) = biome_index(name) {
+                gate[i] = 100_000.0;
+            }
+        }
         let a = grid(424242);
         let b = grid(424242);
         let c = grid(424243);
@@ -537,7 +590,9 @@ mod tests {
     /// Every biome must be reachable somewhere, or a theme is authored content nothing draws.
     #[test]
     fn every_biome_is_somewhere_in_the_world() {
-        let gate = [0.0f32, 0.0, 400.0, 250.0, 550.0, 0.0];
+        let gate = [
+            0.0f32, 0.0, 400.0, 250.0, 550.0, 0.0, 0.0, 1200.0, 1800.0, 2400.0, 3000.0,
+        ];
         let g = grid(424242);
         let mut seen = [false; BIOMES.len()];
         for ring in 0..16u32 {

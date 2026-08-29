@@ -1,0 +1,49 @@
+{
+  "group_id": "66641060-6792-4e20-8d34-d2ddcf1b3c71",
+  "states": [
+    {
+      "character": {
+        "id": "53a50e6e-9f37-4e9b-80db-f795d2b34011",
+        "name": "Idle",
+        "prompt": "Slake, Demon Lord of Desire: a tall languid demon of indulgence, soft flushed rose-pale flesh heavy with excess, draped in slipping wine-red silk and heavy gold chains, gilded horns curling back like a crown, too many slow beckoning arms offering cups and fruit, a beautiful serene face with several half-lidded eyes, long dark hair streaming as if caught in a warm wind",
+        "size": {
+          "width": 256,
+          "height": 256
+        },
+        "template_id": "mannequin",
+        "directions": 8,
+        "view": "low top-down",
+        "created_at": "2026-08-28T19:20:30.288145+00:00"
+      },
+      "folder": "Idle",
+      "frames": {
+        "rotations": {
+          "south": "Idle/rotations/south.png",
+          "south-east": "Idle/rotations/south-east.png",
+          "east": "Idle/rotations/east.png",
+          "north-east": "Idle/rotations/north-east.png",
+          "north": "Idle/rotations/north.png",
+          "north-west": "Idle/rotations/north-west.png",
+          "west": "Idle/rotations/west.png",
+          "south-west": "Idle/rotations/south-west.png"
+        },
+        "animations": {
+          "Idle": {
+            "south": [
+              "Idle/animations/Idle/south/frame_000.png",
+              "Idle/animations/Idle/south/frame_001.png",
+              "Idle/animations/Idle/south/frame_002.png",
+              "Idle/animations/Idle/south/frame_003.png",
+              "Idle/animations/Idle/south/frame_004.png",
+              "Idle/animations/Idle/south/frame_005.png",
+              "Idle/animations/Idle/south/frame_006.png",
+              "Idle/animations/Idle/south/frame_007.png"
+            ]
+          }
+        }
+      }
+    }
+  ],
+  "export_version": "3.1",
+  "export_date": "2026-08-28T19:57:24.226091"
+}

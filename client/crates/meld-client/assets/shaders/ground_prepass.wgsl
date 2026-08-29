@@ -35,12 +35,15 @@ struct BiomeParams {
     // asks which cell a fragment stands in rather than which band, and the world paints as a
     // patchwork. This replaces the 32-slot radial biome LUT that used to head this struct.
     region: vec4<f32>,
-    // `[biome_gate]` in `BIOMES` order: gate.xyzw = field, forest, desert, ashfall and
-    // gate_hi.xy = tundra, mire. In the uniform because the gate decides WHICH themes a
+    // `[biome_gate]` in `BIOMES` order, four at a time because a uniform wants `vec4`s:
+    // gate = field, forest, desert, ashfall; gate_hi = tundra, mire, amber_wood,
+    // seized_engine; gate_hi2 = nestiphian_cradle, hearth_plains, seraphic_oubliette.
+    // In the uniform because the gate decides WHICH themes a
     // cell may draw, and a shader that does not know it paints a biome the server does not
     // spawn — the same failure the coast constants are passed in to avoid.
     gate: vec4<f32>,
     gate_hi: vec4<f32>,
+    gate_hi2: vec4<f32>,
     // World units the ground cross-fades across a cell boundary. A boundary is 2D now, so
     // this is a distance from the nearest edge rather than a radial band.
     region_blend: f32,
