@@ -448,12 +448,27 @@ fn obstacle_radius_for(wg: &meld_balance::WorldGen, kind: &str, u: f64) -> f64 {
 ///   water sitting in ground instead of a coin dropped on it.
 /// * **And it was drawn by a second renderer** (mesh water with drifting UVs) beside the
 ///   ground shader's analytic coast, so the same substance had two looks.
-fn obstacles_for_biome(biome: &str) -> &'static [&'static str] {
+pub fn obstacles_for_biome(biome: &str) -> &'static [&'static str] {
     match biome {
         "field" | "forest" => &["tree", "boulder"],
         "desert" => &["dune", "rock_spire", "cactus"],
         "ashfall" => &["cliff", "lava", "cinder_rock"],
-        "tundra" => &["ice_spire", "snow_drift"],
+        // ⚠️ A BIOME GROWS ITS OWN TREES. The tundra and the mire had none at all — an
+        // ice spire and a bog root, and nothing standing — because `tree` meant one
+        // hardcoded pool of temperate trees and dropping it into a swamp looked wrong. So
+        // each has its own KIND now (the client keeps a pool per kind), which is what
+        // makes a snowed-in conifer wood and a cypress swamp possible at all.
+        "tundra" => &["snow_tree", "ice_spire", "snow_drift", "boulder"],
+        "mire" => &["mire_tree", "mire_root", "fungal_wall"],
+        "amber_wood" => &["amber_tree", "boulder"],
+        // The deep world. These reuse existing art deliberately — there are no
+        // generations left to draw a gantry or a briar — so each is the nearest honest
+        // stand-in rather than a bog root standing in a machine hall, which is what the
+        // fallthrough below used to give them.
+        "seized_engine" => &["cliff", "rock_spire", "boulder"],
+        "nestiphian_cradle" => &["fungal_wall", "mire_root", "mire_tree"],
+        "hearth_plains" => &["boulder", "tree"],
+        "seraphic_oubliette" => &["cliff", "rock_spire"],
         _ => &["mire_root", "fungal_wall"],
     }
 }
@@ -468,7 +483,14 @@ fn fill_kind_for_biome(biome: &str) -> &'static str {
         "field" | "forest" => "tree",
         "desert" => "cactus",
         "ashfall" => "cinder_rock",
-        "tundra" => "ice_spire",
+        // The SIGNATURE fill is what a biome reads as from a distance, so each wooded one
+        // is its own tree rather than its rocks: a tundra is a snowed-in conifer wood with
+        // spires in it, not a field of spires.
+        "tundra" => "snow_tree",
+        "amber_wood" => "amber_tree",
+        "nestiphian_cradle" => "fungal_wall",
+        "hearth_plains" => "tree",
+        "seized_engine" | "seraphic_oubliette" => "rock_spire",
         // ⚠️ The mire's fill used to be `bog_pool` — water AS the maze, "land is the trail".
         // Its water is [`meld_proto::coast::Basin`] now, so the fill is its roots and fungal
         // walls and the flooding is real: large ragged meres following the terrain's contour,
@@ -8807,6 +8829,31 @@ mod tests {
         );
         assert!(!spawns_wildlife("seraphic_oubliette"));
         assert!(spawns_wildlife("hearth_plains"));
+    }
+
+    /// Every biome names obstacle kinds the registry knows, and no biome is left with
+    /// somebody else's terrain.
+    ///
+    /// The second half is the one that bit: `obstacles_for_biome` ends in a catch-all, so
+    /// a new biome inherits the MIRE's bog roots and fungal walls until someone remembers
+    /// to give it its own. That is not a crash and not a missing asset — it is an autumn
+    /// wood full of swamp, which only a person looking at it would ever notice.
+    #[test]
+    fn every_biome_chooses_its_own_obstacles_from_the_registry() {
+        let mire = obstacles_for_biome("mire");
+        for biome in BIOMES {
+            let kinds = obstacles_for_biome(biome);
+            assert!(!kinds.is_empty(), "{biome} places nothing at all");
+            for k in kinds {
+                assert!(
+                    meld_proto::obstacles::is_kind(k),
+                    "{biome} places `{k}`, which is not an obstacle kind"
+                );
+            }
+            if biome != "mire" {
+                assert_ne!(kinds, mire, "{biome} fell through to the mire's terrain");
+            }
+        }
     }
 
     // AD-4: a hunt that names a creature nothing spawns is a contract that can never

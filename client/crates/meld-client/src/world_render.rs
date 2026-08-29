@@ -1954,6 +1954,11 @@ pub(crate) fn sway_amp(kind: &str) -> Option<f32> {
     // and a botanically-correct two-degree sway is indistinguishable from a still frame.
     match kind {
         "tree" => Some(0.17),
+        // A bare autumn canopy has less to catch the wind than a full one; a snow-laden
+        // conifer is weighed down and barely moves. Same wind, different mass.
+        "amber_tree" => Some(0.14),
+        "mire_tree" => Some(0.10),
+        "snow_tree" => Some(0.05),
         "fungal_wall" => Some(0.15),
         // A cactus is a water tank on a stalk. It moves, barely, and that contrast is worth
         // keeping — a desert where nothing stirs reads as a painting.
@@ -2588,16 +2593,36 @@ pub(crate) fn title_case(s: &str) -> String {
 /// A const rather than a literal inside `setup`, because the menus reach for the same
 /// sprites (`icons`) and a name that only exists at the call site cannot be checked — a
 /// menu asking for art nobody loads draws a hole where the icon should be.
-pub(crate) const PROP_KEYS: [&str; 64] = [
+pub(crate) const PROP_KEYS: [&str; 93] = [
     "obstacle_tree", "obstacle_tree_pine", "obstacle_tree_birch", "obstacle_tree_dead",
     "obstacle_tree_willow", "obstacle_tree_bushy",
     "obstacle_boulder", "obstacle_pond", "obstacle_dune",
     "obstacle_rock_spire", "obstacle_cactus", "obstacle_cliff", "obstacle_lava",
     "obstacle_cinder_rock", "obstacle_ice_spire", "obstacle_frozen_pond",
     "obstacle_snow_drift", "obstacle_bog_pool", "obstacle_mire_root", "obstacle_fungal_wall",
+    // A WOOD IS THE BIOME IT GROWS IN. One `tree` kind drawn from one pool put the same
+    // five trees in a swamp, a tundra and an autumn wood — so the thing you walk through,
+    // which is most of what a biome LOOKS like, was the one part that never changed.
+    // Each of these is its own obstacle kind with its own pool of four.
+    "obstacle_amber_tree_1", "obstacle_amber_tree_2", "obstacle_amber_tree_3",
+    "obstacle_amber_tree_4",
+    "obstacle_mire_tree_1", "obstacle_mire_tree_2", "obstacle_mire_tree_3",
+    "obstacle_mire_tree_4",
+    "obstacle_snow_tree_1", "obstacle_snow_tree_2", "obstacle_snow_tree_3",
+    "obstacle_snow_tree_4",
+    // The boulder had exactly one rock. Four now, so a scree slope stops being one stone
+    // stamped forty times.
+    "obstacle_boulder_1", "obstacle_boulder_2", "obstacle_boulder_3", "obstacle_boulder_4",
     "resource_bloom_herb", "resource_heartoak_bark", "resource_sun_salts",
     "resource_dune_iron", "resource_ember_ash", "resource_cinder_ore",
     "resource_frost_lichen", "resource_rime_ore", "resource_bog_myrrh", "resource_peat_iron",
+    // The deep world's nodes, and the STRUCTURAL stock every band already had but had no
+    // model for — a gatherable with no art spawns nothing and is invisible in the world.
+    "resource_coolant_bloom", "resource_brass_scrap", "resource_pale_shoot",
+    "resource_bone_iron", "resource_rose_attar", "resource_gilt_sand",
+    "resource_basalt_slab", "resource_bog_root_timber", "resource_heartoak_log",
+    "resource_peat_shale", "resource_rime_stone", "resource_river_granite",
+    "resource_sun_sandstone",
     "connector_ladder", "connector_rope", "connector_ramp",
     "item_chest_common", "item_chest_rare", "item_chest_open", "item_gold_pile", "item_loot_gem",
     "marker_target_marker",
@@ -4047,6 +4072,33 @@ mod node_art_tests {
     /// it spawns nothing at all — so a material with neither is invisible stock. BD-1
     /// shipped seven of them that way for one commit.
     ///
+    /// Every obstacle kind the world may place has art on this side.
+    ///
+    /// Held against `meld_proto::obstacles::KINDS` rather than a list here, because the two
+    /// sides cannot see each other: the server picks the kinds, this draws them, and the
+    /// registry is the only place both read. A wooded kind needs a whole POOL — one missing
+    /// variant is a tree that silently never appears in the rotation.
+    #[test]
+    fn every_obstacle_kind_has_art() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/props");
+        for kind in meld_proto::obstacles::KINDS {
+            if let Some(pool) = crate::overworld::tree_pool(kind) {
+                assert!(!pool.is_empty(), "{kind} is wooded but its pool is empty");
+                for k in pool {
+                    assert!(dir.join(format!("{k}.png")).is_file(), "{kind}: {k}.png missing");
+                }
+            } else {
+                assert!(
+                    dir.join(format!("obstacle_{kind}.png")).is_file(),
+                    "{kind} has no obstacle_{kind}.png — it would spawn nothing"
+                );
+            }
+        }
+        for kind in meld_proto::obstacles::WOODED {
+            assert!(crate::overworld::tree_pool(kind).is_some(), "{kind} is wooded but has no pool");
+        }
+    }
+
     /// Checked against the material REGISTRY rather than a list, because the failure mode is
     /// adding a material and forgetting the art, and a hand-written list is a list the new
     /// material gets left off.
