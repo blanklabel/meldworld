@@ -542,12 +542,35 @@ pub(crate) const OW_SMOOTH_RATE: f32 = 16.0;
 /// bound. So the client only *renders* what's near: an entity beyond `_FAR` is
 /// despawned (freeing its sprite atlas / model), and one is (re)spawned from the
 /// snapshot once within `_NEAR` — the gap is hysteresis so nothing flickers at the
-/// edge. Both radii sit BEYOND the fog wall (`Look::fog_end` ~118), so culling is
-/// visually invisible; it purely bounds render + memory. This is a rendering concern
-/// only — the server still tracks and simulates every creature regardless. The local
-/// player and the deep portal (a landmark beacon) are never culled.
-pub(crate) const RENDER_UNLOAD_NEAR: f32 = 120.0;
-pub(crate) const RENDER_UNLOAD_FAR: f32 = 150.0;
+/// edge. This is a rendering concern only — the server still tracks and simulates every
+/// creature regardless. The local player and the deep portal (a landmark beacon) are never
+/// culled.
+///
+/// ⚠️ **THESE MUST REACH AT LEAST AS FAR AS THE FOG IS STILL CLEAR, AND FOR A LONG TIME
+/// THEY DID NOT.** The note here used to read *"both radii sit BEYOND the fog wall
+/// (`Look::fog_end` ~118), so culling is visually invisible"* — and that was TRUE when the
+/// fog wall was 118. The fog was then pushed out to 700 and these never followed, so props,
+/// trees and creatures stopped being drawn at **21%** of the distance the ground was visible
+/// for. Reported from play: *"the forest and mire I just went through had almost no forest
+/// or water"* — a wood reads as a field when four fifths of the visible radius is bare
+/// terrain. Two numbers answering one question, drifted 4.7x apart, with the comment still
+/// asserting the old relationship.
+///
+/// The rule is now `RENDER_UNLOAD_NEAR >= Look::fog_start` — populated at least as far as
+/// the world is SHARP, held by `props_are_drawn_as_far_as_the_world_is_sharp`. Past
+/// `fog_start` the fog is progressively hiding things, so culling there is a fair trade;
+/// inside it, culling is a visible hole. Cost is bounded and small: at a forest's measured
+/// route density (0.00321/u²) a 240-unit radius holds ~580 props against ~230 at 150 — a few
+/// hundred extra billboards, not a different order of magnitude. **If the frame rate ever
+/// drops, this pair is the first thing to pull back in** — and the fog must come in with it.
+pub(crate) const RENDER_UNLOAD_NEAR: f32 = 200.0;
+pub(crate) const RENDER_UNLOAD_FAR: f32 = 240.0;
+
+/// The NEAR/FAR gap is the hysteresis that stops entities flickering at the boundary, so
+/// FAR must exceed NEAR. Checked at COMPILE time rather than in a test: it is a relationship
+/// between two constants, so a violation should refuse to build rather than wait for
+/// `cargo test` — and clippy is right that asserting it at runtime is asserting a constant.
+const _: () = assert!(RENDER_UNLOAD_FAR > RENDER_UNLOAD_NEAR);
 
 /// Drive the HD-2D camera each frame: orbit-follow the player, push the live
 /// `Look` post params into the camera, aim the sun, and recolour the ground to the
@@ -3940,6 +3963,31 @@ mod tests {
 
     use super::*;
     use super::creature_kind;
+
+    /// **PROPS MUST BE DRAWN AS FAR AS THE WORLD IS SHARP.** The render-unload radii and the
+    /// fog distance are one question answered twice, and they drifted: the radii were set
+    /// when `fog_end` was ~118, the fog went out to 700, and nothing moved them — so a wood
+    /// stopped having trees in it past 150 units while the ground stayed visible to 700.
+    /// This is the relationship, so the next person to move the fog cannot leave the props
+    /// behind.
+    #[test]
+    fn props_are_drawn_as_far_as_the_world_is_sharp() {
+        let look = hd2d::Look::default();
+        assert!(
+            RENDER_UNLOAD_NEAR >= look.fog_start,
+            "props stop at {RENDER_UNLOAD_NEAR} but the world is still sharp out to {} — that \
+             band renders as bare terrain, which is what made a forest read as a field",
+            look.fog_start
+        );
+        // And the fog must actually reach past where we stop drawing, or the cull is a hole
+        // in plain sight rather than something the haze is covering.
+        assert!(
+            look.fog_end > RENDER_UNLOAD_FAR,
+            "fog_end {} must be beyond the cull at {RENDER_UNLOAD_FAR}, or entities pop out \
+             of existence against fully-visible ground",
+            look.fog_end
+        );
+    }
 
     /// **A PLATE MUST NOT OUTLIVE THE CREATURE IT NAMES.** The behind-camera and
     /// inside-the-viewport guards both pass for a mob well past the hill crest, whose plate

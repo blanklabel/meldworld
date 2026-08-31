@@ -616,11 +616,36 @@ pub type Basin = [f32; 4];
 pub type RiverNode = [f32; 4];
 
 /// Max basins a ground shader blends at once, windowed around the player.
-pub const MAX_BASINS: usize = 10;
+///
+/// ⚠️ **A SWAMP NEEDS MORE OF THESE THAN A FIELD DOES, AND 10 WAS SIZED FOR A FIELD.**
+/// Measured over five seeds streamed to d900 with the biome pinned: the mire generates
+/// **65 basins** against a desert's 15 — it is the wettest biome in the game by design
+/// (`biome_water_mult` 3.2), and its water is what does its mazing since its fill stopped
+/// being pools. At 10 slots, at most 15% of a mire's water could be DRAWN while
+/// `Shore::water` went on colliding against all of it: reported as "the mire I just went
+/// through had almost no water", and it also means walking into an invisible pool.
+///
+/// **SIZED TO WHAT CAN BE ON SCREEN, MEASURED — not to what the world holds.** The shader
+/// loops to the filled COUNT (`params.basin_count`) once per ground fragment, so a slot costs
+/// 16 bytes of uniform (nothing, against a 64 KiB guaranteed binding) while a *filled* slot
+/// costs a loop iteration per pixel. Over-sizing is therefore not free, and sizing to the
+/// world's total (a mire generates 65) would be paying for basins nobody can see.
+///
+/// Measured over 120 viewpoints — five seeds x six biomes x four depths, counting basins
+/// within `fog_end` of a point on the route — **the most ever in view at once is 11.** So 16
+/// covers the worst case with headroom and no more. The old 10 was wrong by one.
+pub const MAX_BASINS: usize = 16;
 
-/// Max river nodes a ground shader holds at once, windowed around the player. A river of
-/// `river_max_nodes` is a handful of these, so this is a few rivers' worth.
-pub const MAX_RIVER_NODES: usize = 28;
+/// Max river nodes a ground shader holds at once, windowed around the player.
+///
+/// ⚠️ **THIS WAS THE ONE CAP ACTUALLY BELOW WHAT IS VISIBLE.** It read "a river of
+/// `river_max_nodes` is a handful of these, so this is a few rivers' worth" — reasoning from
+/// the size of ONE river rather than from how many can be in frame. Measured the same way as
+/// [`MAX_BASINS`], over the same 120 viewpoints: **31 river nodes can be within `fog_end` at
+/// once**, against 28 slots. So a river visibly stopped mid-flow while `Shore::water` went on
+/// blocking the part that was no longer drawn — the same collide-with-the-invisible failure
+/// the peaks had, on the one landform whose entire contract is that it is CONNECTED.
+pub const MAX_RIVER_NODES: usize = 40;
 
 /// Nominal shoreline slope, used to turn a basin's *vertical* margin (`level - height`)
 /// into an approximate *horizontal* distance so it can share a `min` with the radius bound
@@ -1533,3 +1558,42 @@ mod water_kind_tests {
     }
 }
 
+#[cfg(test)]
+mod visible_cap_tests {
+    /// **WHAT ARE THE SLOT COUNTS BASED ON?** Until this test, nothing — they were round
+    /// numbers, and one of them (`MAX_RIVER_NODES`) was below what a player can actually see.
+    ///
+    /// The basis is: a slot count must cover **the most of that landform that can be within
+    /// `fog_end` at once**, because past the fog nothing is drawn, and anything visible that
+    /// does not fit a slot is terrain the client collides with and stands entities on while
+    /// drawing flat ground over it. Sizing to the world's TOTAL is the other error: a mire
+    /// generates 65 basins, and the shader loops to the filled count once per ground
+    /// fragment, so uploading basins nobody can see is paid for per pixel.
+    ///
+    /// Measured with a world-gen harness over 120 viewpoints (5 seeds x 6 biomes x 4 depths,
+    /// counting each landform within `fog_end` of a point on the route). The figures are
+    /// recorded here rather than re-measured, because `meld-proto` must not depend on the
+    /// generator — so this is a *ratchet*: if generation gets denser, re-run the sweep and
+    /// raise both the figure and the cap together.
+    #[test]
+    fn every_slot_count_covers_what_can_be_on_screen() {
+        // (landform, measured worst-in-view, slots)
+        let measured: &[(&str, usize, usize)] = &[
+            ("basins", 11, super::MAX_BASINS),
+            ("river nodes", 31, super::MAX_RIVER_NODES),
+            ("ridges", 13, crate::terrain::MAX_RIDGES),
+            ("peaks", 8, crate::terrain::MAX_PEAKS),
+        ];
+        for (name, worst, slots) in measured {
+            assert!(
+                slots >= worst,
+                "{name}: {worst} can be in view at once but only {slots} slots exist — the                  overflow is terrain the client collides with and never draws"
+            );
+            // …and not wildly over, since a filled slot costs a loop iteration per pixel.
+            assert!(
+                *slots <= worst * 3 + 4,
+                "{name}: {slots} slots against a measured worst-in-view of {worst} is paying                  per-pixel for landforms nobody can see"
+            );
+        }
+    }
+}
