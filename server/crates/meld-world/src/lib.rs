@@ -529,21 +529,36 @@ fn biome_water_mult(biome: &str) -> f64 {
 /// mazing with trees; Tundra rolls gently; the Mire is flooded (little to climb, it's
 /// mostly water); the Desert is the OPEN breather — nearly flat. Keeps the desert open
 /// (#8) while the forest/ashfall become real mazes.
+/// ⚠️ **A TABLE RATHER THAN A `match` WITH A FALLBACK, BECAUSE THE FALLBACK IS SILENT.**
+/// This weight decides how much MOUNTAIN a biome grows — terraces, path-climb chance, and
+/// (since `WG-7`) whether a range is rolled there at all. A `_ =>` arm meant a biome added
+/// to [`BIOMES`] and forgotten here quietly became the flattest ground in the game, with
+/// nothing anywhere saying so: the five biomes `#327` added went in against a six-arm match
+/// and inherited desert for a release. As a table it can be ENUMERATED, which is what lets
+/// `every_biome_says_how_much_mountain_it_grows` refuse the next one.
+const TERRACE_MULT: &[(&str, f64)] = &[
+    ("ashfall", 1.6), // a maze of mountain terraces — the path climbs constantly
+    ("forest", 0.8),  // trees do the mazing; a few rises
+    ("field", 0.3),   // open meadow — you can see across it
+    ("desert", 0.15), // the open breather — nearly flat
+    ("tundra", 0.7),  // rolling
+    ("mire", 0.35),   // flooded, not mountainous
+    // The Oubliette IS a crater — the land drops into it, so it climbs hardest of all.
+    ("seraphic_oubliette", 1.7),
+    ("seized_engine", 1.1), // decks and gantries, stepped like the machine it was
+    ("amber_wood", 0.8),    // a wood, mazed by trees like its green twin
+    ("nestiphian_cradle", 0.4),
+    ("hearth_plains", 0.25), // rolling and open, and that openness is the trap
+];
+
 fn biome_terrace_mult(biome: &str) -> f64 {
-    match biome {
-        "ashfall" => 1.6, // a maze of mountain terraces — the path climbs constantly
-        "forest" => 0.8,  // trees do the mazing; a few rises
-        "field" => 0.3,   // open meadow — you can see across it
-        "tundra" => 0.7,  // rolling
-        "mire" => 0.35,   // flooded, not mountainous
-        // The Oubliette IS a crater — the land drops into it, so it climbs hardest of all.
-        "seraphic_oubliette" => 1.7,
-        "seized_engine" => 1.1, // decks and gantries, stepped like the machine it was
-        "amber_wood" => 0.8,    // a wood, mazed by trees like its green twin
-        "nestiphian_cradle" => 0.4,
-        "hearth_plains" => 0.25, // rolling and open, and that openness is the trap
-        _ => 0.15,               // desert: the open breather — nearly flat
-    }
+    TERRACE_MULT
+        .iter()
+        .find(|(k, _)| *k == biome)
+        .map(|(_, v)| *v)
+        // Unreachable for a biome in `BIOMES` (held by test); a caller passing something else
+        // gets the flattest ground rather than a panic in world generation.
+        .unwrap_or(0.15)
 }
 
 /// A biome's maze-fill density multiplier (× `obstacles_per_area`). Each biome has its
@@ -7812,6 +7827,32 @@ mod bd1_structural_stock {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **EVERY BIOME MUST SAY HOW MUCH MOUNTAIN IT GROWS.** `biome_terrace_mult` decides a
+    /// biome's terrace count, its path-climb chance and — since `WG-7` — whether a RANGE is
+    /// rolled on that ground at all. It was a `match` with a `_ =>` arm, so a biome added to
+    /// [`BIOMES`] and forgotten here silently became the flattest ground in the game: the
+    /// five `#327` added went in against a six-arm match and inherited desert.
+    ///
+    /// This is the repo's standing rule that a hand-written list is a list the next entry
+    /// gets left off — held by reading the ROSTER rather than by remembering.
+    #[test]
+    fn every_biome_says_how_much_mountain_it_grows() {
+        for b in BIOMES {
+            assert!(
+                TERRACE_MULT.iter().any(|(k, _)| *k == b),
+                "`{b}` is in BIOMES with no TERRACE_MULT entry — it grows almost no mountain \
+                 and nothing says so"
+            );
+        }
+        for (k, v) in TERRACE_MULT {
+            assert!(
+                BIOMES.contains(k),
+                "TERRACE_MULT names `{k}`, which is not a biome"
+            );
+            assert!(*v > 0.0, "`{k}`: a biome that grows nothing is not a weight");
+        }
+    }
 
 
 

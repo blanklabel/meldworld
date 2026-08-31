@@ -197,6 +197,11 @@ pub(crate) fn pump_net(
                 // wander), so the server re-sends a retiled section's straits unchanged —
                 // if it ever stops, this drops a sea it is still colliding against.
                 crate::world_render::set_section_straits(section.index, &section.straits);
+                // …and the SPANS carrying the trail over one. `run.started` only ever holds
+                // the initial chain's, so without this every bridge past section 7 was a
+                // crossing the client did not know existed — open water underfoot, walked
+                // over because the SERVER's `is_land` says the span is there.
+                crate::world_render::set_section_bridges(section.index, &section.bridges);
                 crate::world_render::set_section_lobes(section.index, &section.lobes);
                 crate::world_render::set_section_water(
                     section.index,
@@ -885,5 +890,39 @@ pub(crate) fn demo_driver(
     if hp <= 0 && *state.get() == Screen::Battle {
         end.outcome = "victory".to_string();
         next.set(Screen::Ended);
+    }
+}
+
+#[cfg(test)]
+mod landform_delivery {
+    /// ⚠️ **A LANDFORM THAT ARRIVES AND IS NEVER CONSUMED DOES NOT EXIST TO THE PLAYER.**
+    ///
+    /// `world.terrain_section` carries every landform a streamed section adds, and each one
+    /// needs a `set_section_*` call here to reach the ground shader and `terrain_height`.
+    /// `bridges` was plumbed the whole way — proto, wire, `TerrainSectionView`, stored into
+    /// `terrain.sections` — and then dropped on the floor in this handler. `run.started`
+    /// only carries the INITIAL CHAIN (`area_count` 8) while `strait_min_section` is 6, so
+    /// every bridge past section 7 was a span the client never heard about: the shader drew
+    /// open water, nothing stood on the deck, and the server's `is_land` walked the party
+    /// across it anyway.
+    ///
+    /// Nothing failed. The server-side suite is green because a bridge is *generated*
+    /// correctly; the client half was never asserted. So assert the WIRING, by reading this
+    /// file — the same trick `the_region_decomposition_matches_the_shader` uses on the WGSL.
+    #[test]
+    fn every_streamed_landform_is_consumed() {
+        let src = include_str!("netglue.rs");
+        // Read the handler body, not the whole file, or a mention in a comment counts.
+        let start = src.find("ServerMsg::TerrainSection").expect("the handler moved");
+        let end = src[start..].find("ServerMsg::DungeonScene").expect("the next arm moved");
+        let body = &src[start..start + end];
+        for field in ["peaks", "ridges", "bridges", "straits", "lobes", "basins", "rivers"] {
+            assert!(
+                body.contains(&format!("&section.{field}")),
+                "`TerrainSection.{field}` reaches the client and this handler never passes it \
+                 to a `set_section_*` — it is a landform the server collides against and the \
+                 client cannot draw"
+            );
+        }
     }
 }

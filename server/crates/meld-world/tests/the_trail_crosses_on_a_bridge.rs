@@ -11,6 +11,17 @@ fn worlds(b: &Balance) -> Vec<Arena> {
 
 /// **THE POINT OF THE FEATURE.** The trail must never run through water — that is the
 /// guarantee bridges exist to keep while still letting a strait be cut across the route.
+///
+/// ⚠️ **THIS HOLDS FOR `Arena::generate` AND HAS ONE KNOWN HOLE ONCE THE WORLD STREAMS.**
+/// Every test in this file builds the INITIAL CHAIN only, which is eight sections — and the
+/// world is unbounded. Streamed out to d2000: seeds 1, 7, 42, 99 and 424242 are clean
+/// (0 wet of ~4,200-5,000 trail vertices each), and **seed 16 lands 1 wet vertex of 5,197**.
+/// So the guarantee is not universal, and the number is here rather than in a commit message
+/// because the shallow-only version of this test cannot see it at all.
+///
+/// Streaming is also where the feature mostly LIVES: across those six seeds the initial chain
+/// holds 6 bridges and the streamed world holds 21, so a test that stops at section 8 is
+/// measuring under a third of what it thinks it is.
 #[test]
 fn the_trail_is_never_in_the_water() {
     let b = Balance::load_default().unwrap();
