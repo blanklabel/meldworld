@@ -1730,7 +1730,11 @@ pub(crate) fn setup(
     for gz in -DETAIL_K..=DETAIL_K {
         for gx in -DETAIL_K..=DETAIL_K {
             commands.spawn((
-                GroundDetail { slot: IVec2::new(gx, gz), last: IVec2::splat(i32::MIN) },
+                GroundDetail {
+                    slot: IVec2::new(gx, gz),
+                    last: IVec2::splat(i32::MIN),
+                    epoch: u64::MAX,
+                },
                 WorldAssetRoot(placeholder.clone()),
                 Transform::default(),
                 Visibility::Hidden,
@@ -1917,6 +1921,36 @@ pub(crate) struct DetailKit {
     scenes: Vec<(Handle<WorldAsset>, f32)>,
 }
 
+/// **THE TERRAIN EPOCH** — bumped whenever anything [`terrain_height`] reads changes.
+///
+/// ⚠️ **GROUND DETAIL IS GROUNDED ONCE PER CELL, AND TERRAIN ARRIVES LATER THAN THE DETAIL
+/// STANDING ON IT.** `tile_ground_detail` re-derives a slot only when its world CELL
+/// changes, and the height is computed inside that branch — so a mushroom placed before its
+/// section's peaks, ranges, bridges or coastline arrived keeps the height it was given, for
+/// as long as the player stays in the same cell. A Shift is the same story from the other
+/// end: it re-cuts a region's peaks under detail that is already standing.
+///
+/// The result is scenery that does not follow the ground it is drawn on — reported as "no
+/// sprites are following the heightmap", with mushrooms sitting on open water. Note it also
+/// stales the WATER cull in the same branch, so a prop hidden for standing on the sea stays
+/// hidden after a bridge makes that spot land.
+///
+/// Streaming made this reachable and it has been latent since detail existed: before ranges
+/// and bridges were sent per section, far less of the height field arrived after the fact.
+static TERRAIN_EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Mark the height field changed. Every setter feeding [`terrain_height`] must call this —
+/// held by `every_terrain_setter_invalidates_the_ground_detail`, because a landform added
+/// later and not wired here is scenery floating over it with nothing saying so.
+fn bump_terrain_epoch() {
+    TERRAIN_EPOCH.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// The current terrain epoch, stamped onto each detail slot when it is grounded.
+pub(crate) fn terrain_epoch() -> u64 {
+    TERRAIN_EPOCH.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// One recyclable cosmetic ground-detail prop. `slot` is its fixed offset (in cells)
 /// from the player's current cell; `last` is the world cell it currently shows, so a
 /// prop only re-derives (and swaps scene) when it actually moves to a new cell.
@@ -1924,6 +1958,9 @@ pub(crate) struct DetailKit {
 pub(crate) struct GroundDetail {
     slot: IVec2,
     last: IVec2,
+    /// The epoch this slot's height was computed against. Differing from [`terrain_epoch`]
+    /// means the ground moved under it and it must be re-derived even in the same cell.
+    epoch: u64,
 }
 
 impl GroundDetail {
@@ -1931,7 +1968,7 @@ impl GroundDetail {
     /// can be hidden.
     #[cfg(test)]
     pub(crate) fn for_test() -> Self {
-        Self { slot: IVec2::ZERO, last: IVec2::ZERO }
+        Self { slot: IVec2::ZERO, last: IVec2::ZERO, epoch: u64::MAX }
     }
 }
 
@@ -2215,12 +2252,16 @@ pub(crate) fn tile_ground_detail(
         (focus.x / DETAIL_CELL).floor() as i32,
         (focus.z / DETAIL_CELL).floor() as i32,
     );
+    // The height field's version, so a slot re-derives when the ground under it changes as
+    // well as when the player walks it into a new cell.
+    let epoch = terrain_epoch();
     for (mut d, mut tf, mut vis, mut root) in &mut q {
         let cell = cc + d.slot;
-        if cell == d.last {
-            continue; // still the same world cell — nothing to re-derive
+        if cell == d.last && d.epoch == epoch {
+            continue; // same world cell AND the same ground — nothing to re-derive
         }
         d.last = cell;
+        d.epoch = epoch;
         let h = detail_hash(cell);
         // Density gate: only ~45% of cells carry detail, so it scatters instead of
         // reading as a rigid grid.
@@ -2288,6 +2329,8 @@ pub(crate) fn set_terrain_offset(ox: f32, oz: f32) {
     use std::sync::atomic::Ordering::Relaxed;
     TERRAIN_OFF_X.store(ox.to_bits(), Relaxed);
     TERRAIN_OFF_Z.store(oz.to_bits(), Relaxed);
+    // The height field moved: re-ground the scenery standing on it.
+    bump_terrain_epoch();
 }
 /// The current run's terrain offset.
 pub(crate) fn terrain_offset() -> (f32, f32) {
@@ -2321,6 +2364,8 @@ pub(crate) fn set_peaks(peaks: Vec<[f32; 4]>) {
     if let Ok(mut p) = PEAKS.write() {
         *p = peaks;
     }
+    // The height field moved: re-ground the scenery standing on it.
+    bump_terrain_epoch();
 }
 /// Set one SECTION's peaks (call on `world.terrain_section`), replacing whatever that
 /// section contributed before.
@@ -2339,6 +2384,8 @@ pub(crate) fn set_section_peaks(index: u32, peaks: &[[f32; 4]]) {
     if let (Ok(mut p), Ok(base)) = (PEAKS.write(), BASE_PEAKS.read()) {
         *p = base.iter().copied().chain(streamed).collect();
     }
+    // The height field moved: re-ground the scenery standing on it.
+    bump_terrain_epoch();
 }
 /// A snapshot of the current peaks (for the ground shader uniform).
 pub(crate) fn peaks_snapshot() -> Vec<[f32; 4]> {
@@ -2374,6 +2421,8 @@ pub(crate) fn set_straits(straits: Vec<meld_proto::coast::Strait>) {
     if let Ok(mut s) = STRAITS.write() {
         *s = straits;
     }
+    // The height field moved: re-ground the scenery standing on it.
+    bump_terrain_epoch();
 }
 
 /// Set one SECTION's straits (call on `world.terrain_section`), replacing whatever that
@@ -2388,6 +2437,8 @@ pub(crate) fn set_section_straits(index: u32, straits: &[meld_proto::coast::Stra
     if let (Ok(mut s), Ok(base)) = (STRAITS.write(), BASE_STRAITS.read()) {
         *s = base.iter().copied().chain(streamed).collect();
     }
+    // The height field moved: re-ground the scenery standing on it.
+    bump_terrain_epoch();
 }
 
 /// A snapshot of the current straits — for the ground shader uniform, for
@@ -2419,6 +2470,8 @@ pub(crate) fn set_lobes(lobes: Vec<meld_proto::coast::Lobe>) {
     if let Ok(mut l) = LOBES.write() {
         *l = lobes;
     }
+    // The height field moved: re-ground the scenery standing on it.
+    bump_terrain_epoch();
 }
 
 /// Set one SECTION's lobes (call on `world.terrain_section`).
@@ -2432,6 +2485,8 @@ pub(crate) fn set_section_lobes(index: u32, lobes: &[meld_proto::coast::Lobe]) {
     if let (Ok(mut l), Ok(base)) = (LOBES.write(), BASE_LOBES.read()) {
         *l = base.iter().copied().chain(streamed).collect();
     }
+    // The height field moved: re-ground the scenery standing on it.
+    bump_terrain_epoch();
 }
 
 /// Inland water: standing bodies and the chains of flowing ones. Same base/per-section
@@ -2464,6 +2519,8 @@ pub(crate) fn set_water(
     if let Ok(mut x) = RIVERS.write() {
         *x = rivers;
     }
+    // The height field moved: re-ground the scenery standing on it.
+    bump_terrain_epoch();
 }
 
 /// Set one SECTION's inland water (call on `world.terrain_section`).
@@ -2497,6 +2554,8 @@ pub(crate) fn set_section_water(
             *x = base.1.iter().copied().chain(sr).collect();
         }
     }
+    // The height field moved: re-ground the scenery standing on it.
+    bump_terrain_epoch();
 }
 
 /// **Every piece of this world's shoreline, owned** — so a caller can build a borrowed
@@ -2581,9 +2640,19 @@ static GROUND_AMP: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::
 /// two cannot drift.
 pub(crate) fn set_ground_coast(arc_half: f32, city: bool, amp: f32) {
     use std::sync::atomic::Ordering::Relaxed;
-    COAST_ARC.store(arc_half.to_bits(), Relaxed);
-    COAST_CITY.store(u32::from(city), Relaxed);
-    GROUND_AMP.store(amp.to_bits(), Relaxed);
+    // ⚠️ **ON CHANGE ONLY — THIS ONE RUNS EVERY FRAME.** `terrain_height` reads all three,
+    // so a change here does move the ground (entering the City flattens it, `amp` 0). But
+    // this is called from the per-frame uniform update rather than on a message, so bumping
+    // unconditionally would invalidate every detail slot every frame and turn the cache
+    // into a full re-derivation — the opposite of what the epoch is for.
+    // Each `swap` must run — separate bindings rather than one short-circuiting
+    // expression, or a later store is skipped once an earlier one reports a change.
+    let arc_moved = COAST_ARC.swap(arc_half.to_bits(), Relaxed) != arc_half.to_bits();
+    let city_moved = COAST_CITY.swap(u32::from(city), Relaxed) != u32::from(city);
+    let amp_moved = GROUND_AMP.swap(amp.to_bits(), Relaxed) != amp.to_bits();
+    if arc_moved || city_moved || amp_moved {
+        bump_terrain_epoch();
+    }
 }
 
 fn ground_coast() -> (f32, bool, f32) {
@@ -3005,6 +3074,8 @@ pub(crate) fn set_bridges(b: Vec<meld_proto::coast::Bridge>) {
     if let Ok(mut all) = BRIDGES.write() {
         *all = b;
     }
+    // The height field moved: re-ground the scenery standing on it.
+    bump_terrain_epoch();
 }
 
 /// Replace one section's bridges (call on `world.terrain_section`).
@@ -3031,6 +3102,8 @@ pub(crate) fn set_section_bridges(index: u32, bridges: &[meld_proto::coast::Brid
     if let (Ok(mut b), Ok(base)) = (BRIDGES.write(), BASE_BRIDGES.read()) {
         *b = base.iter().copied().chain(streamed).collect();
     }
+    // The height field moved: re-ground the scenery standing on it.
+    bump_terrain_epoch();
 }
 
 /// This world's bridges.
@@ -3055,6 +3128,8 @@ pub(crate) fn set_ridges(r: Vec<meld_proto::terrain::Ridge>) {
     if let Ok(mut all) = RIDGES.write() {
         *all = r;
     }
+    // The height field moved: re-ground the scenery standing on it.
+    bump_terrain_epoch();
 }
 
 /// The ranges that came with `run.started` — the initial chain's, which no section message
@@ -3084,6 +3159,8 @@ pub(crate) fn set_section_ridges(index: u32, ridges: &[meld_proto::terrain::Ridg
     if let (Ok(mut r), Ok(base)) = (RIDGES.write(), BASE_RIDGES.read()) {
         *r = base.iter().copied().chain(streamed).collect();
     }
+    // The height field moved: re-ground the scenery standing on it.
+    bump_terrain_epoch();
 }
 
 /// This world's ranges.
@@ -3913,6 +3990,63 @@ mod ground_uniform_tests {
     use super::*;
     use bevy::render::render_resource::ShaderType;
 
+    /// **EVERY TERRAIN SETTER MUST INVALIDATE THE SCENERY STANDING ON IT.**
+    ///
+    /// `tile_ground_detail` grounds a slot once per world CELL, so anything that moves the
+    /// height field after the fact leaves scenery at the old height — mushrooms on open
+    /// water, props sunk into a range. The epoch is what re-derives them, and it only works
+    /// if every setter feeding `terrain_height` bumps it.
+    ///
+    /// So this reads the SOURCE rather than trusting a list: a new landform setter added
+    /// here either bumps the epoch or names itself in `EXEMPT`, with a reason. A
+    /// hand-written roster is the thing this repo has been bitten by repeatedly — the whole
+    /// point is that forgetting is what fails, not remembering.
+    #[test]
+    fn every_terrain_setter_invalidates_the_ground_detail() {
+    // Setters that genuinely do not move the ground or the waterline.
+    const EXEMPT: &[(&str, &str)] = &[
+        ("set_world_seed", "a name, not geometry"),
+        ("set_regions", "paints the biome; height is the same field either way"),
+        ("set_ground_coast", "bumps on CHANGE — it runs every frame (see its comment)"),
+    ];
+    let src = include_str!("world_render.rs");
+    let mut checked = 0;
+    for (idx, _) in src.match_indices("pub(crate) fn set_") {
+        let name: String = src[idx + "pub(crate) fn ".len()..]
+            .chars()
+            .take_while(|c| c.is_alphanumeric() || *c == '_')
+            .collect();
+        if EXEMPT.iter().any(|(e, _)| *e == name) {
+            continue;
+        }
+        // The function body, by brace matching from its signature.
+        let open = idx + src[idx..].find('{').expect("a body");
+        let (mut depth, mut end) = (0usize, open);
+        for (o, c) in src[open..].char_indices() {
+            match c {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        end = open + o;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        assert!(
+            src[open..end].contains("bump_terrain_epoch"),
+            "`{name}` sets terrain state without bumping the epoch, so ground detail \
+             placed before it keeps the height it was given — scenery floating over the \
+             world. Bump it, or add it to EXEMPT with a reason."
+        );
+        checked += 1;
+    }
+    assert!(checked >= 13, "only {checked} setters checked — the scan is not finding them");
+    }
+
+
     /// The Rust `BiomeParams` and the WGSL one are two hand-written declarations of the
     /// same buffer, and nothing checks them against each other at build time — a
     /// mismatch surfaces as a wgpu validation failure at material-load, i.e. a black
@@ -3936,7 +4070,7 @@ mod ground_uniform_tests {
 
         /// One top-level item, from its `fn name(` (or `struct name {`) to the closing brace
         /// in column 0, whitespace-normalised so reformatting is not a false alarm.
-        fn item(src: &str, head: &str) -> String {
+    fn item(src: &str, head: &str) -> String {
             let a = src.find(head).unwrap_or_else(|| panic!("missing `{head}`"));
             let b = src[a..].find("\n}").unwrap_or_else(|| panic!("`{head}` never closes")) + a + 2;
             src[a..b].split_whitespace().collect::<Vec<_>>().join(" ")

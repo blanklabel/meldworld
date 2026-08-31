@@ -2633,6 +2633,8 @@ pub(crate) fn update_mob_nameplates(
     mut commands: Commands,
     perks: Res<PerksRes>,
     world: Res<Overworld>,
+    session: Res<Session>,
+    look: Res<hd2d::Look>,
     cam_q: Query<(&Camera, &GlobalTransform)>,
     root_q: Query<Entity, With<NameplateRoot>>,
     mob_q: Query<(&WorldEntity, &GlobalTransform)>,
@@ -2660,6 +2662,26 @@ pub(crate) fn update_mob_nameplates(
             };
             if !matches!(ent.kind, EntityKind::Monster) {
                 continue;
+            }
+            // ⚠️ **DO NOT LABEL WHAT THE FOG HIDES.** Being in front of the camera and
+            // inside the viewport is not the same as being VISIBLE. A creature past the
+            // hill crest still projects — to a point just above the terrain silhouette —
+            // so its plate hangs in the empty sky with no creature under it, and because it
+            // is far away it barely moves as the player walks. Reported exactly that way:
+            // "those creatures stayed in the top left of my screen the whole time", with
+            // several plates overlapping into one unreadable clump, because distant mobs
+            // project to nearly the same pixel.
+            //
+            // This is the other half of the behind-the-camera bug fixed below — that guard
+            // answered "is it behind me", and this one answers "can it be seen at all". The
+            // cap is the FOG, which is the distance the renderer itself stops showing the
+            // world at, so the plate and the creature appear and disappear together instead
+            // of the label outliving the thing it names.
+            if let Some(me) = world.entities.get(&session.player_id) {
+                let away = Vec2::new(ent.x - me.x, ent.y - me.y).length();
+                if !plate_is_close_enough_to_see(away, look.fog_on, look.fog_end) {
+                    continue;
+                }
             }
             // Project a point above the mob's head to the screen.
             let head = gtf.translation() + Vec3::Y * 2.6;
@@ -2821,6 +2843,24 @@ pub(crate) fn update_mob_nameplates(
             });
         }
     });
+}
+
+/// Is a creature near enough that a plate over it means anything?
+///
+/// ⚠️ **BEING ON SCREEN IS NOT BEING VISIBLE.** `update_mob_nameplates` already refuses a
+/// point behind the camera and one outside the viewport, and that is still not enough: a
+/// creature past the hill crest projects to just above the terrain silhouette, so its plate
+/// hangs in empty sky with nothing under it, and being far away it barely moves as the
+/// player walks. Reported as "those creatures stayed in the top left of my screen the whole
+/// time" — several distant mobs projecting to nearly the same pixel and stacking into one
+/// unreadable clump.
+///
+/// The cap is the FOG, because that is the distance the renderer itself stops showing the
+/// world at: the label and the thing it names then appear and disappear together. With fog
+/// off (look-dev) there is no horizon to speak of, so nothing is culled — that is a
+/// deliberate escape hatch for inspecting the world, not an oversight.
+pub(crate) fn plate_is_close_enough_to_see(away: f32, fog_on: bool, fog_end: f32) -> bool {
+    !fog_on || away <= fog_end
 }
 
 /// Is there anything over a creature's head to draw right now?
@@ -3900,6 +3940,22 @@ mod tests {
 
     use super::*;
     use super::creature_kind;
+
+    /// **A PLATE MUST NOT OUTLIVE THE CREATURE IT NAMES.** The behind-camera and
+    /// inside-the-viewport guards both pass for a mob well past the hill crest, whose plate
+    /// then hangs in empty sky and — being distant — barely moves, which is how a clump of
+    /// them ended up parked in a screen corner for a whole session.
+    #[test]
+    fn a_plate_stops_where_the_fog_does() {
+        // Inside the fog: named.
+        assert!(plate_is_close_enough_to_see(10.0, true, 320.0));
+        assert!(plate_is_close_enough_to_see(320.0, true, 320.0), "the boundary is inclusive");
+        // Past it: the creature is not visible, so neither is its label.
+        assert!(!plate_is_close_enough_to_see(320.1, true, 320.0));
+        assert!(!plate_is_close_enough_to_see(4_000.0, true, 320.0));
+        // Fog off is look-dev: show the whole world, deliberately.
+        assert!(plate_is_close_enough_to_see(4_000.0, false, 320.0));
+    }
 
     fn ent(kind: EntityKind, x: f32, y: f32) -> OwEntity {
         OwEntity {
