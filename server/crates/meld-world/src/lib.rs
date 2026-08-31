@@ -537,11 +537,17 @@ fn biome_water_mult(biome: &str) -> f64 {
 /// and inherited desert for a release. As a table it can be ENUMERATED, which is what lets
 /// `every_biome_says_how_much_mountain_it_grows` refuse the next one.
 const TERRACE_MULT: &[(&str, f64)] = &[
-    ("ashfall", 1.6), // a maze of mountain terraces — the path climbs constantly
+    // ⚠️ **ASHFALL MAZES WITH MOUNTAINS, NOT WITH SCATTER.** This is the volcanic region,
+    // so its walls are RANGES: this weight gates the range roll (`push_ridges` multiplies
+    // `[worldgen] ridge_chance` by it), and its prop scatter was thinned to match — a
+    // choked field of cinder rock and a wall of mountain are two different biomes.
+    ("ashfall", 2.2),
     ("forest", 0.8),  // trees do the mazing; a few rises
     ("field", 0.3),   // open meadow — you can see across it
     ("desert", 0.15), // the open breather — nearly flat
-    ("tundra", 0.7),  // rolling
+    // Trees AND mountains: the fill grows a snowed conifer wood, this raises the ranges
+    // behind it. The one biome that mazes with both primitives at once.
+    ("tundra", 1.3),
     ("mire", 0.35),   // flooded, not mountainous
     // The Oubliette IS a crater — the land drops into it, so it climbs hardest of all.
     ("seraphic_oubliette", 1.7),
@@ -7913,6 +7919,75 @@ mod tests {
     ///
     /// This is the repo's standing rule that a hand-written list is a list the next entry
     /// gets left off — held by reading the ROSTER rather than by remembering.
+    /// **EACH BIOME MAZES WITH A DIFFERENT PRIMITIVE.** Reported as direction: *"Field and
+    /// Desert should feel wide open… Ashfall should basically feel like ranges of mountains…
+    /// forest style should use their trees… mires should use water and trees… tundras should
+    /// use trees and mountains."*
+    ///
+    /// The point is not that a biome is dense or sparse — it is WHICH of the three
+    /// mechanisms does its walling: scattered fill (`biome_obstacle_mult`), impassable
+    /// RANGES (`TERRACE_MULT`, which gates the range roll — `terraces_per_area` is 0, so
+    /// raising a range is what this weight actually buys today), or standing WATER
+    /// (`biome_water_mult`). Two biomes with the same obstacle count read completely
+    /// differently if one of them got mountains instead.
+    ///
+    /// Held as ORDERINGS, never values: every number here is a `[TUNABLE]`, and the
+    /// character is the rule.
+    #[test]
+    fn each_biome_mazes_with_its_own_primitive() {
+        let b = Balance::load_default().unwrap();
+        let fill = |k: &str| biome_obstacle_mult(&b.worldgen, k);
+        let mtn = biome_terrace_mult;
+        let wet = biome_water_mult;
+
+        // WIDE OPEN: the two breathers must be beatable on every axis by the biomes whose
+        // job is to obstruct you. A "breather" that grew mountains is not a breather.
+        for open in ["field", "desert"] {
+            assert!(fill("forest") > fill(open), "{open} must be more open than a wood");
+            assert!(mtn("ashfall") > mtn(open), "{open} must be flatter than the volcano");
+            assert!(wet("mire") > wet(open), "{open} must be drier than the swamp");
+        }
+
+        // ASHFALL MAZES WITH MOUNTAINS. Its ranges must beat every other classic biome's,
+        // and — the half that is easy to miss — its own SCATTER must not be what walls it,
+        // or it is a choked rock field that happens to be steep.
+        for other in ["field", "forest", "desert", "tundra", "mire"] {
+            assert!(
+                mtn("ashfall") > mtn(other),
+                "ashfall is the volcanic region — it must raise more mountain than {other}"
+            );
+        }
+        assert!(
+            fill("ashfall") < fill("forest"),
+            "ashfall's walls are its RANGES; a denser scatter than a wood's makes it a rock maze"
+        );
+
+        // FOREST MAZES WITH TREES: fill is its mechanism, and it must not be doing it with
+        // mountains or water instead.
+        assert!(fill("forest") > fill("ashfall"), "a wood is the densest scatter in the game");
+        assert!(mtn("forest") < mtn("ashfall") && wet("forest") < wet("mire"));
+
+        // MIRE MAZES WITH WATER — and still grows trees, so its fill stays high too.
+        for other in ["field", "forest", "desert", "ashfall", "tundra"] {
+            assert!(wet("mire") > wet(other), "the mire must be wetter than {other}");
+        }
+        assert!(
+            obstacles_for_biome("mire").iter().any(|k| k.contains("tree")),
+            "a mire mazes with water AND trees — it has to grow some"
+        );
+
+        // TUNDRA IS THE ONE THAT USES BOTH: trees and mountains. So its fill and its ranges
+        // must each clear the open biomes, which is what separates it from a snowfield.
+        for open in ["field", "desert"] {
+            assert!(fill("tundra") > fill(open), "a snowed wood is denser than open {open}");
+            assert!(mtn("tundra") > mtn(open), "the tundra raises more mountain than {open}");
+        }
+        assert!(
+            obstacles_for_biome("tundra").iter().any(|k| k.contains("tree")),
+            "the tundra mazes with trees as well as mountains"
+        );
+    }
+
     #[test]
     fn every_biome_says_how_much_mountain_it_grows() {
         for b in BIOMES {
