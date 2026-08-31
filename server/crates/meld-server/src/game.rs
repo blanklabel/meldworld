@@ -1560,6 +1560,57 @@ impl WorldActor {
 /// `shift_region` picks the least-recently-disturbed section half the time, and at
 /// restore every section exists at once, so re-deriving the span would pick differently
 /// than a world that grew into it did. The roll itself still comes from the seed.
+/// Where a hand-crafted dungeon entrance (`DG-3`) anchors inside section `[lo, hi]`: a
+/// route segment whose own RADIUS falls in that band, returned as the `(p0, p1)` pair
+/// [`meld_dungeon_run::place_entrance`] interpolates along.
+///
+/// ⚠️ **THIS WAS INDEXED BY VERTEX AND IT DELETED EVERY HAND-CRAFTED DUNGEON IN THE GAME.**
+/// The old line was `path.get(i)` with `i` a SECTION index, but `push_bent_segment`
+/// densifies the bent trail to roughly one vertex per world unit — 171-226 vertices PER
+/// SECTION, measured. `path[22]` is therefore not "where section 22 is"; it is the 22nd
+/// vertex, 33 units from the hub, while section 22's band sits 2,099 units out. The
+/// doorstep guard (`dungeon_min_distance`, 250) then rejected it for being too close, so a
+/// wrong-index bug was MASKED by a check doing its job on wrong coordinates and the symptom
+/// was silence. Measured across two seeds: **0 of 22 sections could ever place one.** The
+/// only dungeon anyone met was the tutorial's deliberate exception, which reads as rarity.
+///
+/// Prefers the WEB. Its spurs, loops and dead ends are where this kind of dungeon belongs —
+/// scattered around the world rather than lined up along the route, which is what makes one
+/// a reason to explore instead of a checklist. Falls back to the backbone for a section that
+/// weaves no web (a `WG-1` dungeon section does not).
+fn entrance_anchor(
+    arena: &Arena,
+    lo: f64,
+    hi: f64,
+    fallback: Position,
+    seed: u64,
+) -> Option<(Position, Position)> {
+    let in_band = |q: &Position| {
+        let d = (q.x * q.x + q.y * q.y).sqrt();
+        d >= lo && d <= hi
+    };
+    // Derived stream: which segment is picked must not correlate with `place_entrance`'s
+    // own dungeon roll, which is taken from `seed` directly.
+    let pick = seed ^ 0x9E37_79B9_7F4A_7C15;
+    let web: Vec<(Position, Position)> =
+        arena.web.iter().copied().filter(|(a, b)| in_band(a) && in_band(b)).collect();
+    if !web.is_empty() {
+        return Some(web[(pick % web.len() as u64) as usize]);
+    }
+    let band: Vec<usize> =
+        arena.path.iter().enumerate().filter(|(_, q)| in_band(q)).map(|(k, _)| k).collect();
+    match band.as_slice() {
+        // A section the trail does not visit anchors nothing — better no dungeon than one
+        // in the middle of nowhere.
+        [] => (fallback.x != 0.0 || fallback.y != 0.0).then_some((fallback, fallback)),
+        ks => {
+            let k = ks[(pick % ks.len() as u64) as usize];
+            let a = arena.path[k];
+            Some((a, arena.path.get(k + 1).copied().unwrap_or(a)))
+        }
+    }
+}
+
 fn restore_world(balance: &Balance, save: &meld_db::WorldSave) -> Arena {
     let mut arena = Arena::generate_with(balance, save.seed as u64, false, None);
     let want = save.sections.max(0) as usize;
@@ -9806,13 +9857,32 @@ impl WorldActor {
                 if i == 0 {
                     continue;
                 }
-                let (biome, portal) = {
+                let (biome, portal, lo, hi) = {
                     let Some(area) = self.arena.areas.get(i) else { continue };
-                    (area.biome, area.portal)
+                    (area.biome, area.portal, area.start_x, area.end_x)
                 };
-                let p0 = self.arena.path.get(i).copied().unwrap_or(portal);
-                let p1 = self.arena.path.get(i + 1).copied().unwrap_or(p0);
                 let seed = meld_world::section_seed(self.arena.seed, i);
+                // ⚠️ **THE PATH IS INDEXED BY VERTEX, NOT BY SECTION — AND THAT SILENTLY
+                // DELETED EVERY HAND-CRAFTED DUNGEON IN THE GAME.** This read
+                // `path.get(i)` with `i` a SECTION index, but `push_bent_segment`
+                // densifies the bent trail to roughly one vertex per world unit — 171-226
+                // vertices PER SECTION, measured. So `path[22]` is not "where section 22
+                // is", it is the 22nd vertex: 33 units from the hub, while section 22's
+                // band sits 2,099 units out.
+                //
+                // The doorstep guard below (`dungeon_min_distance`, 250) then rejected it
+                // for being too close — so the bug was MASKED by a check doing its job on
+                // coordinates that were wrong, and the symptom was silence. Measured
+                // across two seeds: **0 of 22 sections could ever place an entrance.** The
+                // only dungeon anyone ever met was the tutorial's deliberate exception,
+                // which reads as rarity rather than as a total outage.
+                //
+                // Select by DISTANCE instead: a vertex whose own radius falls inside this
+                // section's band. Seeded off a derived stream so which vertex is picked
+                // does not correlate with `place_entrance`'s own dungeon roll.
+                let Some((p0, p1)) = entrance_anchor(&self.arena, lo, hi, portal, seed) else {
+                    continue;
+                };
                 // Never on the doorstep: a dungeon takes no Town Portal, so one you
                 // can see from the city gate is a committed space a new player has no
                 // way to read as one.
@@ -12590,6 +12660,55 @@ mod shifting_lands_tests {
         assert!(
             w.hero_hp["p1"].iter().all(|h| *h < 9999),
             "the party stood in the Shift and took nothing"
+        );
+    }
+}
+
+#[cfg(test)]
+mod dungeon_entrance_tests {
+    use super::*;
+
+    /// **NO HAND-CRAFTED DUNGEON COULD EVER SPAWN, IN ANY WORLD.** `DG-3` entrances were
+    /// anchored with `path.get(i)` where `i` is a SECTION index, but the bent trail is
+    /// densified to ~171-226 vertices PER SECTION — so section 22's entrance was placed 33
+    /// units from the hub instead of 2,099, and `dungeon_min_distance` (250) then rejected
+    /// it as too close to town. A wrong index masked by a guard doing its job.
+    ///
+    /// This asserts the property that was violated: an anchor must sit inside the section's
+    /// own radial band. It fails on the old code for every section past the first few.
+    #[test]
+    fn an_entrance_anchors_inside_its_own_section() {
+        let b = Balance::load_default().unwrap();
+        let mut arena = meld_world::Arena::generate(&b, 424242, false);
+        let mut reach = 0.0f64;
+        while reach < 1200.0 {
+            reach += 60.0;
+            arena.ensure_frontier(&b, reach);
+        }
+        let min_d = b.worldgen.dungeon_min_distance;
+        let mut deep_enough = 0usize;
+        for i in 1..arena.areas.len() {
+            let (lo, hi, portal) =
+                (arena.areas[i].start_x, arena.areas[i].end_x, arena.areas[i].portal);
+            let seed = meld_world::section_seed(arena.seed, i);
+            let Some((p0, _)) = entrance_anchor(&arena, lo, hi, portal, seed) else { continue };
+            let d = (p0.x * p0.x + p0.y * p0.y).sqrt();
+            assert!(
+                d >= lo - 1.0 && d <= hi + 1.0,
+                "section {i} spans {lo:.0}..{hi:.0} but its entrance anchored {d:.0}u out — \
+                 that is the vertex-vs-section index bug"
+            );
+            if d >= min_d {
+                deep_enough += 1;
+            }
+        }
+        // …and the point of the fix: entrances now clear the doorstep guard, where before
+        // **0 of 22** sections could. Without this the property above passes on a world
+        // that still places nothing.
+        assert!(
+            deep_enough >= 5,
+            "only {deep_enough} sections anchor past dungeon_min_distance ({min_d}) — \
+             hand-crafted dungeons are still effectively absent"
         );
     }
 }
