@@ -2876,9 +2876,33 @@ pub(crate) fn update_ground_biome_rings(
     );
     let (ox, oz) = terrain_offset();
     mat.extension.params.terrain_off = Vec2::new(ox, oz);
-    // Feed the authored peaks to the shader (windowed to the slot count) so each mountain
-    // dome renders on the ground, matching `terrain_height`.
-    let peaks = peaks_snapshot();
+    // The player's own position — the centre of every landform window below. Read BEFORE
+    // the ranges rather than after, because they need it too.
+    let (px, pz) = world
+        .entities
+        .get(&session.player_id)
+        .map(|e| (e.x, e.y))
+        .unwrap_or((0.0, 0.0));
+
+    // THE AUTHORED PEAKS — **nearest-first**, for exactly the reason the ranges below are.
+    //
+    // ⚠️ **THIS WAS THE LAST FLAT TRUNCATION, AND IT MADE EVERYTHING FLY.** `PEAKS`
+    // accumulates the base chain plus every streamed section, so taking the first
+    // `PEAK_SLOTS` kept the SHALLOWEST domes in the world forever: walk past twenty-four of
+    // them and the peaks around you stopped being uploaded, while `terrain_height` — which
+    // reads the FULL list — went on lifting every entity onto them. A walkable dome is up to
+    // `radius * PEAK_MAX_ASPECT` tall, so a radius-60 peak stands a creature ~25 units up in
+    // the air over ground the shader draws flat. Reported as "everyone is flying".
+    //
+    // Every other landform here was already sorted (straits, lobes, basins) or was fixed
+    // when the same bug was found in the ranges; the peaks were missed **because they were
+    // written before the pattern existed**, and left alone when the ranges were corrected.
+    // `every_windowed_landform_is_sorted_nearest_first` is why they cannot be missed again.
+    let mut peaks = peaks_snapshot();
+    peaks.sort_by(|a, b| {
+        let d = |q: &[f32; 4]| (q[0] - px).hypot(q[1] - pz) - q[2];
+        d(a).total_cmp(&d(b))
+    });
     let n = peaks.len().min(PEAK_SLOTS);
     for (i, slot) in mat.extension.params.peaks.iter_mut().enumerate() {
         *slot = if i < n {
@@ -2888,13 +2912,6 @@ pub(crate) fn update_ground_biome_rings(
         };
     }
     mat.extension.params.peak_count = n as u32;
-    // The player's own position — the centre of every landform window below. Read BEFORE
-    // the ranges rather than after, because they need it too.
-    let (px, pz) = world
-        .entities
-        .get(&session.player_id)
-        .map(|e| (e.x, e.y))
-        .unwrap_or((0.0, 0.0));
     // THE RANGES, two vec4s each.
     //
     // ⚠️ **TRUNCATION IS NOT A WINDOW, AND THIS SAID "windowed" WHILE IT TRUNCATED.**
@@ -3989,6 +4006,70 @@ pub(crate) fn boss_band_tint(band: u8) -> Color {
 mod ground_uniform_tests {
     use super::*;
     use bevy::render::render_resource::ShaderType;
+
+    /// **EVERY WINDOWED LANDFORM MUST BE SORTED NEAREST-FIRST, NOT TRUNCATED.**
+    ///
+    /// Each landform rides a fixed-size uniform array while the world streams outward without
+    /// bound, so something must be dropped. WHICH ones is the whole question: sorted by
+    /// distance you lose what you cannot see; flat-truncated you keep whatever is first in the
+    /// list — and for every store here that is the SHALLOWEST in the world, forever.
+    ///
+    /// The failure is silent and severe, because the CPU does not truncate: `Shore` and
+    /// `terrain_height` read the FULL list. A dropped landform is one the client collides with
+    /// and stands entities on while drawing flat ground over it. It has happened twice — the
+    /// ranges (an invisible wall), then the peaks (**"everyone is flying"**: an entity lifted
+    /// ~25 units onto a dome that was never uploaded).
+    ///
+    /// Read off the SOURCE, because a human read this function twice and missed the peaks.
+    #[test]
+    fn every_windowed_landform_is_sorted_nearest_first() {
+        // ⚠️ **SCAN PRODUCTION CODE ONLY.** This test's own body contains `.truncate(` as a
+        // string literal, so scanning the whole file made the guard match ITSELF and then
+        // fail for having no `sort_by` above it. A source-reading test has to exclude the
+        // source that does the reading.
+        let full = include_str!("world_render.rs");
+        // Anchored on THIS module by name, not on `#[cfg(test)]` — that attribute also sits
+        // on `GroundDetail::for_test` a thousand lines earlier, and cutting there silently
+        // hid every real cut from the scan. The count assertion below is what caught that.
+        let src = &full[..full.find("mod ground_uniform_tests").unwrap_or(full.len())];
+        let lines: Vec<&str> = src.lines().collect();
+        let is_cut = |l: &str| {
+            (l.contains(".min(PEAK_SLOTS")
+                || l.contains(".min(RIDGE_SLOTS")
+                || l.contains(".min(BRIDGE_SLOTS")
+                || l.contains(".truncate("))
+                && !l.trim_start().starts_with("//")
+                && !l.trim_start().starts_with("///")
+        };
+        let cuts: Vec<usize> = lines
+            .iter()
+            .enumerate()
+            .filter(|(_, l)| is_cut(l))
+            .map(|(i, _)| i)
+            .collect();
+        assert!(
+            cuts.len() >= 6,
+            "found only {} windowed landforms — the scan is not guarding anything. (This \
+             assertion has already earned its keep once: the first version of this test \
+             found 2 of 6 and said so instead of passing.)",
+            cuts.len()
+        );
+        for cut in cuts {
+            // A sort belonging to this cut sits just above it — same statement group.
+            let lo = cut.saturating_sub(8);
+            let sorted = lines[lo..cut].iter().any(|l| l.contains("sort_by"));
+            assert!(
+                sorted,
+                "line {} cuts a landform to its slot count with no `sort_by` within 8 lines \
+                 above it. That is a flat truncation: it keeps the shallowest landforms in \
+                 the world and makes the client collide with, and stand entities on, terrain \
+                 it never draws — the \"everyone is flying\" bug.\n    {}",
+                cut + 1,
+                lines[cut].trim()
+            );
+        }
+    }
+
 
     /// **EVERY TERRAIN SETTER MUST INVALIDATE THE SCENERY STANDING ON IT.**
     ///

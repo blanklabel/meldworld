@@ -112,7 +112,7 @@ impl Default for Look {
             // Pushed out with the bloom, for the same reason: fog is near-white, and against
             // a properly-lit world it was hazing the mid-field that used to be too dark to
             // notice. The far distance still dissolves into the sky.
-            fog_start: 145.0,
+            fog_start: 200.0,
             // ⚠️ EVERYTHING PAST `fog_end` IS PURE FOG COLOUR — a near-white wall. At 260 that
             // wall stood just past the shoreline, so the sea dissolved into it a few dozen
             // metres out and the coast read as "the water is gone".
@@ -126,7 +126,7 @@ impl Default for Look {
             // and hit a wall for anyone playing the defaults. Same failure as pinning
             // `fair_secs` and never seeing the wind: the harness hid the bug it should have
             // exposed. Defaults are what ship — measure those.
-            fog_end: 700.0,
+            fog_end: 500.0,
             sun_pitch: 55.0,
             sun_yaw: 40.0,
             orbit: false,

@@ -103,8 +103,8 @@ struct BiomeParams {
     // surface elevation, is what makes inland water a different thing from the sea, whose
     // level is globally zero. `rivers` is a chain of [x, z, half_width, chain_start]; a node
     // with chain_start >= 0.5 begins a new chain and the gap before it is a FORD.
-    basins: array<vec4<f32>, 10>,
-    rivers: array<vec4<f32>, 28>,
+    basins: array<vec4<f32>, 16>,
+    rivers: array<vec4<f32>, 40>,
     basin_count: u32,
     river_count: u32,
     _pad_wc0: u32, _pad_wc1: u32,
