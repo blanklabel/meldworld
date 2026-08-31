@@ -7497,6 +7497,27 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
             ready
         };
         for f in due {
+            // ⚠️ **A WORLD OUTLIVES THE BESTIARY, SO A BANKED SPECIES MAY NO LONGER EXIST.**
+            // `fallen` stores a species by STRING and is rehydrated from a save (§W5) that
+            // older code wrote, so a renamed or retired creature reaches this loop as a kind
+            // balance has never heard of — and `MonsterSpawn::build` panics on that. It
+            // panics on the one task that owns all ephemeral state (CANON §S), which does
+            // not merely drop the creature: the whole world stops ticking, every player's
+            // movement stops being applied, and the process stays up so the client keeps
+            // drawing its last snapshot. Observed exactly that way — nine banked
+            // `myconid_brute` regrowing into a bestiary that had renamed the species took a
+            // live session down, and the report was "the creatures froze and I could still
+            // open my inventory".
+            //
+            // So a species the bestiary no longer holds is DROPPED here. This is the same
+            // rule `restore_world` already applies to a node or chest id it cannot match —
+            // persisted data is untrusted with respect to current content — and it is the
+            // regrowth half of it. Dropping is right rather than substituting: what stood
+            // there is gone from the game, and inventing a different creature in its place
+            // would be the world quietly restocking with something the player never killed.
+            if !balance.creature.contains_key(&f.monster_kind) {
+                continue;
+            }
             // Re-seeded off the world clock so the replacement is a different creature
             // than the one that died there, not the same wander pattern rerun.
             let seed = Rng(now).next_u64() ^ (f.home.x.to_bits() ^ f.home.y.to_bits());
@@ -7827,6 +7848,62 @@ mod bd1_structural_stock {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **THE WORLD FROZE AND THE INVENTORY STILL OPENED.** A live session went down like
+    /// this: nine `myconid_brute` had been felled and banked for regrowth, the bestiary then
+    /// renamed the species, and standing the saved world back up (§W5) put a kind balance
+    /// has never heard of into the regrowth bank. When it came due, `MonsterSpawn::build`
+    /// panicked — on the ONE task that owns every bit of ephemeral state (CANON §S). So the
+    /// world stopped ticking, no player's movement was applied again, and because the
+    /// process itself stayed up the client kept drawing its last snapshot: frozen creatures,
+    /// a dead WebSocket, and a working inventory, which is client-side.
+    ///
+    /// A world is explicitly allowed to outlive the content that made it, so a retired
+    /// species is DROPPED rather than fatal. The valid creature beside it is asserted in the
+    /// same test on purpose: "it did not panic" also describes a `regrow` that stopped
+    /// regrowing anything, which would quietly retire the whole mechanic.
+    #[test]
+    fn a_species_the_bestiary_retired_does_not_take_the_world_down_with_it() {
+        let b = Balance::load_default().unwrap();
+        let mut a = Arena::generate(&b, 909, false);
+        a.monsters.clear();
+        a.fallen.clear();
+
+        let live = b
+            .creature
+            .keys()
+            .next()
+            .expect("balance authors at least one creature")
+            .clone();
+        let fallen = |id: &str, kind: &str| Fallen {
+            entity_id: id.to_string(),
+            monster_kind: kind.to_string(),
+            home: Position::new(40.0, 0.0),
+            area_min_x: 0.0,
+            area_max_x: 200.0,
+            pack: String::new(),
+            pack_home: Position::new(40.0, 0.0),
+            back_row: false,
+            encounter_class: "standard".to_string(),
+            faction: "beast".to_string(),
+            felled_tick: 1,
+        };
+        // The exact shape of the outage: a species that no longer exists, banked beside one
+        // that does.
+        a.fallen.push(fallen("gone", "myconid_brute"));
+        a.fallen.push(fallen("here", &live));
+
+        let due = b.world_persist.creature_regrow_ticks + 2;
+        let back = a.regrow(&b, due);
+
+        assert_eq!(back, 1, "the living species must still come back");
+        assert_eq!(a.monsters.len(), 1);
+        assert_eq!(a.monsters[0].monster_kind, live);
+        assert!(
+            a.fallen.is_empty(),
+            "a retired species must be dropped, not left to come due forever"
+        );
+    }
 
     /// **EVERY BIOME MUST SAY HOW MUCH MOUNTAIN IT GROWS.** `biome_terrace_mult` decides a
     /// biome's terrace count, its path-climb chance and — since `WG-7` — whether a RANGE is

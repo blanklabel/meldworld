@@ -1595,9 +1595,30 @@ fn restore_world(balance: &Balance, save: &meld_db::WorldSave) -> Arena {
     // A creature the world remembers as dead must not also be standing there.
     let dead: std::collections::HashSet<&String> = delta.fallen.iter().map(|f| &f.id).collect();
     arena.monsters.retain(|m| !dead.contains(&m.entity_id));
+    // ⚠️ **THE BESTIARY IS CODE AND THIS SAVE IS OLDER THAN IT.** Every other field here
+    // already treats the delta as untrusted — a node or chest id that matches nothing is
+    // skipped, a shift past the streamed end is skipped — and `fallen` was the one that
+    // trusted it, rehydrating a species by string straight into the regrowth bank. A
+    // renamed or retired creature then panicked the game loop when it came due, taking the
+    // whole world down with it (see `Arena::regrow`). Dropped here as well as guarded there,
+    // so the save HEALS instead of carrying a creature that can never stand up again.
+    let retired = delta
+        .fallen
+        .iter()
+        .filter(|f| !balance.creature.contains_key(&f.kind))
+        .count();
+    if retired > 0 {
+        // Never silently: a save quietly losing content is how the next one of these goes
+        // unnoticed until it is a live outage again.
+        tracing::warn!(
+            retired,
+            "world.persist: dropped banked creatures whose species the bestiary no longer holds"
+        );
+    }
     arena.fallen = delta
         .fallen
         .iter()
+        .filter(|f| balance.creature.contains_key(&f.kind))
         .map(|f| meld_world::Fallen {
             entity_id: f.id.clone(),
             monster_kind: f.kind.clone(),
