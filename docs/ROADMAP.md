@@ -2118,6 +2118,45 @@ design for this epic: [`proposals/worldgen-wg.md`](proposals/worldgen-wg.md).
   inselberg → **tundra**. Note this gives the two *breather* biomes their identity without
   spending any of the openness that makes them breathers.
 
+- [ ] **WG-10 — Scatter that makes sense, and nodes that sit somewhere.** 🟡 *Backlog —
+  owner's direction, alongside `WG-9`.* Three parts; the status differs sharply between
+  them, and the middle one is already done.
+
+  - ⚠️ **The client's cosmetic ground detail has NO biome awareness at all, and it is the
+    scatter a player actually sees underfoot.** `DetailKit` is a single flat
+    `Vec<(Handle<WorldAsset>, f32)>` and `tile_ground_detail` never reads a biome — the pool
+    is *purple flowers, red flowers, two bushes, red and tan mushroom groups, two small
+    rocks, two flat stones*. So **temperate meadow decoration scatters on desert sand, on
+    ashfall lava and on tundra snow**. This is what "scatter per biome isn't done yet"
+    refers to, and it is the most visible half.
+    **No new art is needed to fix it.** The library already holds 12 rocks, 5 stones, 3
+    mushrooms, 2 stumps, 2 logs, 2 bushes, 2 flowers and 2 cacti, which is enough to author
+    a pool per biome today: desert = cacti + rock + flat stone (no flowers, no fungus);
+    ashfall = bare rock and stone only; mire = fungus, bushes, logs, stumps; tundra = rock
+    and stone, sparse; field/forest keep the current temperate pool, with stumps and logs
+    added to the wood. It is a data table and a lookup, not an art request.
+  - ✅ *The SERVER's props are already per biome* — `obstacles_for_biome` gives each biome
+    its own kinds (desert dune/rock_spire/cactus, mire mire_tree/mire_root/fungal_wall,
+    tundra snow_tree/ice_spire/snow_drift…), `#328` gave them per-biome ART (autumn, swamp
+    and snow trees, four rocks), and `#334` made the DENSITY per biome a design rule. So
+    "scatter per biome" is half shipped: the big props yes, the ground litter no.
+  - ⚠️ **A harvest node has no relationship to the ground it stands on.** Placement draws a
+    uniform random `x` along the section and a uniform random `y` inside
+    `resource_lateral_spread`, rejects only unstandable ground, then picks the KIND
+    **uniformly at random** from the biome's list. So `peat_iron` (an ore) and `bog_myrrh` (a
+    reagent) are equally likely on any square foot of the mire, and an ore vein is as likely
+    in an open meadow as against a rock face. Nothing is wrong, and nothing means anything.
+    **Direction: give each material CLASS an affinity for terrain the generator already
+    knows.** `meld_proto::materials` already classes every material (`reagent` / `ore` /
+    `refined` / `trophy`), and placement already has the height field and `Shore` in hand —
+    so **ore prefers high and steep ground** (a vein is exposed where rock is) and
+    **reagents prefer low and wet ground** (things grow near water). That is a weighting on
+    a position already being drawn, needs no new data, and would make a crafter's
+    node-sense perk read as knowledge of the land rather than a radar.
+    Ore against a range's flank is the evocative case and needs care: `#329` culls scatter
+    from unwalkable slopes, so the affinity must aim at *walkable* steep ground beside a
+    range rather than on it.
+
 ---
 
 ## Epic FS — Field survival & environment
