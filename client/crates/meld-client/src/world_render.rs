@@ -2819,9 +2819,28 @@ pub(crate) fn update_ground_biome_rings(
         };
     }
     mat.extension.params.peak_count = n as u32;
-    // THE RANGES, two vec4s each. Windowed like the peaks: the shader array is fixed and the
-    // world streams outward without bound.
-    let rg = ridges();
+    // The player's own position — the centre of every landform window below. Read BEFORE
+    // the ranges rather than after, because they need it too.
+    let (px, pz) = world
+        .entities
+        .get(&session.player_id)
+        .map(|e| (e.x, e.y))
+        .unwrap_or((0.0, 0.0));
+    // THE RANGES, two vec4s each.
+    //
+    // ⚠️ **TRUNCATION IS NOT A WINDOW, AND THIS SAID "windowed" WHILE IT TRUNCATED.**
+    // `SECTION_RIDGES` is a `BTreeMap` keyed by section and flattened in section ORDER, so
+    // taking the first `RIDGE_SLOTS / 2` kept the SHALLOWEST ranges in the world forever.
+    // Walk out past sixteen of them and every range after that stopped being drawn while
+    // `landform_slope` — server-side, and client-side in `terrain_height` — went on
+    // colliding against it: an invisible wall that refuses you, and raises you as you slide
+    // along a mountainside the ground renders as flat. The straits twenty lines below got
+    // this right; these two did not. Nearest-first, by real distance to the span.
+    let near_first = |s: &[f32; 6]| {
+        meld_proto::coast::dist_to_segment_pub(px, pz, s[0], s[1], s[2], s[3])
+    };
+    let mut rg = ridges();
+    rg.sort_by(|a, b| near_first(a).total_cmp(&near_first(b)));
     let rn = rg.len().min(RIDGE_SLOTS / 2);
     for (i, slot) in mat.extension.params.ridges.iter_mut().enumerate() {
         let (seg, half) = (i / 2, i % 2);
@@ -2832,8 +2851,14 @@ pub(crate) fn update_ground_biome_rings(
         };
     }
     mat.extension.params.ridge_count = rn as u32;
-    // THE BRIDGES, two vec4s each, same packing as the ranges.
-    let bg = bridges();
+    // THE BRIDGES, two vec4s each, same packing as the ranges — and nearest-first for the
+    // same reason. A bridge is the one landform you are guaranteed to be standing ON when it
+    // matters, so dropping the near one for a shallower one is the worst possible trade.
+    let span_near_first = |s: &[f32; 5]| {
+        meld_proto::coast::dist_to_segment_pub(px, pz, s[0], s[1], s[2], s[3])
+    };
+    let mut bg = bridges();
+    bg.sort_by(|a, b| span_near_first(a).total_cmp(&span_near_first(b)));
     let bn = bg.len().min(BRIDGE_SLOTS / 2);
     for (i, slot) in mat.extension.params.bridges.iter_mut().enumerate() {
         let (seg, half) = (i / 2, i % 2);
@@ -2845,11 +2870,7 @@ pub(crate) fn update_ground_biome_rings(
     }
     mat.extension.params.bridge_count = bn as u32;
     // The player's own ring — the centre of both windows below (straits and biome rings).
-    let pr = world
-        .entities
-        .get(&session.player_id)
-        .map(|e| e.x.hypot(e.y))
-        .unwrap_or(0.0);
+    let pr = px.hypot(pz);
     // …and the STRAITS (WG-7 continents), two vec4s each. WINDOWED by radius, unlike the
     // peaks above: the world streams outward without bound, so the only straits that can be
     // on screen are the ones near the player's own ring, and a flat truncation would drop
@@ -2963,10 +2984,52 @@ static REGIONS: std::sync::RwLock<Option<meld_proto::regions::Regions>> =
 static BRIDGES: std::sync::RwLock<Vec<meld_proto::coast::Bridge>> =
     std::sync::RwLock::new(Vec::new());
 
+/// The bridges that came with `run.started` — the initial chain's, which no section message
+/// re-sends. Held apart from the streamed ones exactly as `BASE_RIDGES` is.
+static BASE_BRIDGES: std::sync::RwLock<Vec<meld_proto::coast::Bridge>> =
+    std::sync::RwLock::new(Vec::new());
+
+/// Streamed bridges, keyed by the section that sent them.
+static SECTION_BRIDGES: std::sync::RwLock<
+    std::collections::BTreeMap<u32, Vec<meld_proto::coast::Bridge>>,
+> = std::sync::RwLock::new(std::collections::BTreeMap::new());
+
 /// Replace this world's bridges (call on `run.started`).
 pub(crate) fn set_bridges(b: Vec<meld_proto::coast::Bridge>) {
+    if let Ok(mut base) = BASE_BRIDGES.write() {
+        *base = b.clone();
+    }
+    if let Ok(mut by_section) = SECTION_BRIDGES.write() {
+        by_section.clear();
+    }
     if let Ok(mut all) = BRIDGES.write() {
         *all = b;
+    }
+}
+
+/// Replace one section's bridges (call on `world.terrain_section`).
+///
+/// ⚠️ **THIS WAS MISSING, AND IT MADE EVERY DEEP BRIDGE INVISIBLE.** `run.started` carries
+/// only the initial chain (`area_count` 8), while `strait_min_section` is 6 — so two of the
+/// eight sections a run starts with can hold a strait, and *every other strait in the world*
+/// is in a STREAMED section. `world.terrain_section` carried `bridges` all the way to the
+/// client, and nothing here consumed them: past the initial chain the shader drew open water,
+/// `terrain_height` stood nobody on a deck, and the server's `is_land` walked the party
+/// straight across it. A span you cross without seeing it is the isthmus failure in its worst
+/// form — the sea simply not being there, with no bridge even drawn.
+///
+/// REPLACE, never append — a Shift re-sends a section, and two copies of one span read as a
+/// wider deck nothing in the world model believes is there.
+pub(crate) fn set_section_bridges(index: u32, bridges: &[meld_proto::coast::Bridge]) {
+    let Ok(mut by_section) = SECTION_BRIDGES.write() else { return };
+    if bridges.is_empty() && !by_section.contains_key(&index) {
+        return;
+    }
+    by_section.insert(index, bridges.to_vec());
+    let streamed: Vec<meld_proto::coast::Bridge> =
+        by_section.values().flatten().copied().collect();
+    if let (Ok(mut b), Ok(base)) = (BRIDGES.write(), BASE_BRIDGES.read()) {
+        *b = base.iter().copied().chain(streamed).collect();
     }
 }
 
@@ -3885,6 +3948,12 @@ mod ground_uniform_tests {
             "fn spit_half_width(",
             "fn sea_depth_at(",
             "fn peak_dome(",
+            // The landforms WG-7 added. Both displace geometry, so both must be in the
+            // shadow pass too — a range that casts no shadow reads as painted-on, and a
+            // deck that casts none is a plank floating over its own water.
+            "fn rg_seg_dist(",
+            "fn ridge_wedge(",
+            "fn bridge_at(",
             "fn total_height(",
             "fn terrain_normal(",
         ] {
@@ -3922,7 +3991,16 @@ mod ground_uniform_tests {
     #[test]
     fn every_coast_helper_is_actually_called() {
         let wgsl = include_str!("../assets/shaders/ground_biome.wgsl");
-        for f in ["sea_depth_at", "inland_water_at", "strait_depth_at", "spit_half_width"] {
+        for f in [
+            "sea_depth_at",
+            "inland_water_at",
+            "strait_depth_at",
+            "spit_half_width",
+            // …and the two WG-7 landforms, for exactly the reason in the doc comment above:
+            // a helper nothing calls renders nothing, and no other test notices.
+            "ridge_wedge",
+            "bridge_at",
+        ] {
             let defined = wgsl.contains(&format!("fn {f}("));
             let calls = wgsl.matches(&format!("{f}(")).count();
             assert!(defined, "ground_biome.wgsl should define `{f}`");
@@ -4056,6 +4134,29 @@ mod ground_uniform_tests {
                 wgsl.matches(&format!("{f}(")).count() >= 2,
                 "`{f}` is defined in ground_biome.wgsl and never called — a shader helper \
                  with no call site renders nothing, and nothing else in this suite notices"
+            );
+        }
+    }
+
+    /// **A DECK'S HEIGHT IS WRITTEN TWICE, SO HOLD THE TWO TOGETHER.** `bridge_at` mirrors
+    /// `terrain::bridge_surface` into both ground shaders as bare literals, because WGSL
+    /// cannot import a Rust const — the same situation as `BASIN_SHORE_SLOPE` below, and the
+    /// same answer. Drift here does not fail anything on its own: the CPU stands entities on
+    /// one deck height while the GPU draws another, so the party walks a span at the wrong
+    /// level — sunk into it, or hovering over it — and every test stays green.
+    #[test]
+    fn a_bridge_deck_is_the_same_height_in_both_worlds() {
+        let wgsl = include_str!("../assets/shaders/ground_biome.wgsl");
+        for (name, v) in [
+            ("BRIDGE_DECK_RISE", meld_proto::terrain::BRIDGE_DECK_RISE),
+            ("BRIDGE_PARAPET_RISE", meld_proto::terrain::BRIDGE_PARAPET_RISE),
+            ("BRIDGE_PARAPET_SHARE", meld_proto::terrain::BRIDGE_PARAPET_SHARE),
+        ] {
+            assert!(
+                wgsl.contains(&format!("{v:?}")),
+                "`terrain::{name}` is {v:?} and `bridge_at` in ground_biome.wgsl does not \
+                 carry that literal — the deck the client DRAWS is not the deck \
+                 `terrain_height` stands the party on"
             );
         }
     }

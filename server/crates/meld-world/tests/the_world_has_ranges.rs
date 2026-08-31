@@ -205,10 +205,21 @@ fn nothing_the_world_scatters_stands_on_a_mountainside() {
         // ⚠️ **CREATURES ARE DELIBERATELY NOT ASSERTED HERE, AND THAT IS A KNOWN GAP.**
         //
         // Placement gates on the same predicate the props use, ranges yield to creatures
-        // already standing, and `dry_companion` falls back to its leader's own ground — yet
-        // seed 7 still lands one ordinary creature on a flank. Something raises a range over a
-        // creature placed earlier without the yield catching it, and I could not isolate it
-        // within a sane budget.
+        // already standing, and `dry_companion` falls back to its leader's own ground — and
+        // creatures land on flanks anyway. Something raises a range over a creature placed
+        // earlier without the yield catching it, and I could not isolate it within a sane
+        // budget.
+        //
+        // ⚠️ **AND THE SIZE OF IT WAS UNDERSTATED BY FIFTY TIMES.** This comment used to say
+        // "seed 7 still lands ONE ordinary creature on a flank", which was the one case that
+        // happened to get looked at. Counted rather than eyeballed, it is **49 creatures
+        // across six seeds** — 20 at seed 7 and 21 at 424242, three seeds clean — and the
+        // shape of it points somewhere the old sentence did not: they are mostly
+        // `encounter_class = standard`, not the pack members `dry_companion` places, so the
+        // companion fix closed the smaller half of the problem and the ordinary scatter path
+        // is where the rest lives. `census_how_many_creatures_stand_on_a_mountainside` prints
+        // the number every run, because a gap described in prose drifts and a gap that is
+        // COUNTED cannot.
         //
         // Asserting it and leaving the suite red would be worse than saying so: the harm a
         // stuck creature does is already measured by
@@ -220,4 +231,42 @@ fn nothing_the_world_scatters_stands_on_a_mountainside() {
         // visibly wrong in play: lava rocks carpeting a mountainside, and rewards on faces
         // nobody can climb.
     }
+}
+
+/// **THE COUNT, so the gap above cannot quietly grow.** Deliberately a census and not an
+/// assertion: a ceiling would normalise the bug and a floor would enshrine it, while leaving
+/// the suite red trains everyone to ignore the light. What this buys is that the number is
+/// re-measured on every run and printed with the seeds, so whoever picks this up starts from
+/// a fact instead of from a sentence somebody wrote once.
+#[test]
+fn census_how_many_creatures_stand_on_a_mountainside() {
+    let b = Balance::load_default().unwrap();
+    let mut total = 0;
+    for (i, a) in worlds(&b).into_iter().enumerate() {
+        let off = a.terrain_offset();
+        let on_a_flank: Vec<&str> = a
+            .monsters
+            .iter()
+            .filter(|m| {
+                meld_proto::terrain::landform_slope(
+                    m.position.x as f32,
+                    m.position.y as f32,
+                    off.0,
+                    off.1,
+                    &a.ridges,
+                ) >= meld_proto::terrain::WALKABLE_SLOPE
+            })
+            .map(|m| m.encounter_class.as_str())
+            .collect();
+        total += on_a_flank.len();
+        println!(
+            "seed {:>7}: {} creatures, {} ranges, {} on a flank {:?}",
+            SEEDS[i],
+            a.monsters.len(),
+            a.ridges.len(),
+            on_a_flank.len(),
+            on_a_flank
+        );
+    }
+    println!("TOTAL across {} seeds: {total}", SEEDS.len());
 }

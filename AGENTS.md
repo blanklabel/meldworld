@@ -1713,6 +1713,43 @@ ocean" is not a check that can fail. **Fords are a cadence, never a roll**
 (`river_ford_every`): connectedness is what a river is, and a connected impassable line is
 exactly what disconnects a world — the same contract as a strait's isthmus.
 
+**A BRIDGE IS FORCED LAND, WHICH IS WHY NOTHING HAD TO LEARN ABOUT IT.** Where the drawn
+trail would cross a strait, the crossing is SPANNED rather than the strait being refused
+(`coast::Bridge`, subtracted last in `Shore::sea`) — so `is_land` stays a pure function of
+position and `astar_route`, `apply_move`, `backbone_feasible` and the ground shader all
+understand a bridge with no code of their own. A "walkable over water" special case would be
+the first crack in a rule four systems depend on, and there isn't one. What separates it from
+an ISTHMUS — which is just the sea not being there — is that the deck stands ABOVE the
+waterline with water still drawn under its parapets (`terrain::bridge_surface`, mirrored into
+`ground_biome.wgsl` **and** `ground_prepass.wgsl`, because a deck displaces geometry and has
+to cast its own shadow). A crossing longer than `bridge_max_span` is a causeway rather than a
+bridge, and there the strait yields instead.
+
+⚠️ **AND THE FIRST CUT OF IT WAS INERT WHILE EVERY TEST PASSED.** Straits are laid BEFORE the
+route, so A* simply walks around one: every world had a strait, none had the trail inside one,
+**zero** bridges were built, and all four invariants went green over an empty set. A crossing
+has to be CHOSEN — the direct line from a section's entry to its exit is spanned first, and A*
+then takes the bridge because a bridge is land. `bridges_actually_get_built` holds the
+population for exactly this reason: **a feature with no instances passes every test it has.**
+
+⚠️ **AND A LANDFORM THE CLIENT NEVER CONSUMES DOES NOT EXIST TO THE PLAYER.** `run.started`
+carries only the INITIAL CHAIN (`area_count` 8); everything past it arrives on
+`world.terrain_section`, and each landform needs its own `set_section_*` on the client or it
+reaches `TerrainSectionView` and stops there. `bridges` was plumbed the entire way — proto,
+wire, view struct, stored into `terrain.sections` — with no consumer, and since
+`strait_min_section` is 6, **every bridge past section 7 was invisible**: the shader drew open
+water, `terrain_height` stood nobody on the deck, and the server's `is_land` walked the party
+across it regardless. The whole server-side suite was green, because a bridge is *generated*
+correctly and the client half was never asserted.
+`every_streamed_landform_is_consumed` reads the handler and holds the list.
+
+⚠️ **AND TRUNCATION IS NOT A WINDOW.** The shader arrays are fixed while the world streams
+outward without bound, so the ranges and bridges uploaded each frame must be the ones NEAREST
+THE PLAYER. Both took the first N of a `BTreeMap` flattened in SECTION order — the shallowest
+in the world, kept forever — while the comment above them said "windowed". Past sixteen ranges
+you walk into a wall the ground renders as flat and `landform_slope` still refuses. The straits
+twenty lines below had it right the whole time.
+
 ⚠️ **A BARRIER IS PLACED BEFORE THE ROUTE, BUT THE ROUTE ALREADY DRAWN ALWAYS WINS.** Straits
 and bays are placed where they are drawn, so cutting them before `astar_route` is enough.
 Rivers and lakes are *found* by walking downhill, up to ~364 and ~800 units, and that walk
@@ -1873,7 +1910,7 @@ things in the right order" (there isn't one) but **decide, per pair, which side 
 | the collision | who yields | why |
 |---|---|---|
 | water over a drawn trail | the water (a river node becomes a **ford**) | the route is feasibility |
-| a strait over a drawn trail | the **strait is not cut** | it cannot yield locally; no barrier beats a sealed one |
+| a strait over a drawn trail | **neither — the trail is SPANNED** (`coast::Bridge`); the strait is refused only when the crossing is too long to bridge | a strait cannot yield locally, but the route can be carried over it; a causeway is not a bridge |
 | a range over a drawn trail | the **segment is dropped** — and dropping it IS a pass | same rule as the ford |
 | a range over standing water | the range | a mountain full of lake is nonsense either way round |
 | a range over **props** | the **props are deleted** | a tree is scenery; when a mountain rises the trees on it are gone |
