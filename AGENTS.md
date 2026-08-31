@@ -1793,6 +1793,23 @@ holds measured FLOORS for exactly that reason. Census before you believe a gener
   vs 7.0) separates grassland you can see across from a wood you cannot. That contrast IS the
   content, and a test holds the ratio.
 
+- **EACH BIOME MAZES WITH A DIFFERENT PRIMITIVE, and that is the design rather than a set of
+  densities.** Three mechanisms can wall a player in — scattered fill
+  (`biome_obstacle_mult`), impassable **RANGES** (`TERRACE_MULT`, which gates the range roll)
+  and standing **WATER** (`biome_water_mult`) — and which one a biome uses is what makes it
+  feel like a place: **field and desert wide open; forest its trees; ashfall ranges of
+  mountains; the mire water and trees; the tundra trees AND mountains**, the one biome that
+  uses two. Two biomes with the same obstacle count read nothing alike if one of them got
+  mountains instead, so the character is asserted as ORDERINGS across the three levers
+  (`each_biome_mazes_with_its_own_primitive`) and never as values — every number involved is
+  a `[TUNABLE]`.
+  ⚠️ **Raising a biome's mountains means THINNING its scatter, not stacking both.** Ashfall
+  shipped at `ashfall_obstacle_mult` 6.0 *and* the highest terrace weight, which is a choked
+  rock field that happens to be steep — the opposite of a mountain pass you route around.
+  ⚠️ And `TERRACE_MULT` buys RANGES today, not terraces: `[worldgen] terraces_per_area` is
+  **0**, so the weight's only live effects are the range roll and the Shift's `reroll_peaks`.
+  Reading it as "how many terraces" is reading a retired mechanic.
+
 - **A WORLD OUTLIVES ITS DIVERS, AND THE SHIFT IS WHY IT CAN.** The `WorldActor` is no
   longer torn down when the last run ends (CANON §W1): it keeps its seed, its streamed
   sections, its cleared ground and its Shift schedule, and it keeps ticking with nobody

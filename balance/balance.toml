@@ -1551,8 +1551,8 @@ obstacles_per_area = 14          # avg impassable features per area (areas ≥ 1
 field_obstacle_mult = 1.3        # open grassland — trees in the distance, not around you
 forest_obstacle_mult = 7.0       # a THICK wood — a real maze of trees, only the trail is open
 desert_obstacle_mult = 0.8       # open desert — a scattering of cacti (the breather biome)
-ashfall_obstacle_mult = 6.0      # a choked volcanic mountain-pass maze of rock
-tundra_obstacle_mult = 1.6       # sparse frozen spires
+ashfall_obstacle_mult = 2.5      # scattered rock — the RANGES do this biome's mazing, not the scatter (see TERRACE_MULT)
+tundra_obstacle_mult = 4.0       # a snowed-in conifer wood: trees AND mountains, not bare spires
 mire_obstacle_mult = 7.5         # MOSTLY water: the swamp is a flooded maze, land is the trail
 maze_obstacle_mult = 2.0         # fallback for any unlisted biome
 # Radial density compensation: the WG-4 fan bends the fixed-width corridor into an arc

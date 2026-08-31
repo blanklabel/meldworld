@@ -1702,12 +1702,42 @@ design for this epic: [`proposals/worldgen-wg.md`](proposals/worldgen-wg.md).
     carved routes will read. **Still open, and why this stays unchecked: the ROUTES half** —
     ranges and ravines drawn along cell boundaries, with passes and through-dungeons, so you
     walk *around* terrain instead of over it.
-  - ⚠️ *The finding that reframes it: every source of impassable large-scale terrain is set
-    to zero.* `terrain::CLIFF_HEIGHT = 0.0`, `[worldgen] terraces_per_area = 0.0`,
-    `max_level = 0`. Nothing in the world can stop you or make you turn, and the authored
-    peaks that do exist are deliberately **walkable domes** (`PEAK_MAX_ASPECT`) — so a
-    mountain today is something you walk *over*, never *around*. With `WG-6`'s density
-    collapse that is the complete explanation of "every biome looks like a big open field."
+  - ⚠️ *The finding that reframed it — **now partly answered, and this note was stale for
+    several merges.*** It read: *every source of impassable large-scale terrain is set to
+    zero* (`terrain::CLIFF_HEIGHT = 0.0`, `[worldgen] terraces_per_area = 0.0`,
+    `max_level = 0`), so nothing could stop you or make you turn and a mountain was
+    something you walked *over*, never *around*. **Those three constants are still zero,
+    but the conclusion no longer holds:** `WG-7`'s first barriers ship — **RANGES** are
+    linear-falloff capsules steeper than `WALKABLE_SLOPE` by construction (so impassable,
+    and `astar_route` goes around them), and straits, bays, lakes and rivers block through
+    the same `Shore::is_land` every mover asks. What is still missing is not barriers but
+    their ORGANISATION: they are rolled per section rather than drawn along cell boundaries,
+    so the world obstructs you without yet offering *a small number of real routes* to the
+    end of the world.
+  - ✅ *And each biome now mazes with its own PRIMITIVE* (owner's direction: "Field and
+    Desert should feel wide open… Ashfall should basically feel like ranges of mountains…
+    forest style should use their trees… mires should use water and trees… tundras should
+    use trees and mountains"). Measured, five seeds streamed to d900, biome pinned:
+
+    | biome | ranges | props | basins | props/u² on route | walk ÷ depth |
+    |---|---|---|---|---|---|
+    | field | 17 | 17,983 | 20 | 0.00065 | 5.94 |
+    | desert | 7 | 11,420 | 15 | 0.00041 | 5.99 |
+    | forest | 37 | 90,605 | 17 | **0.00321** | 5.78 |
+    | ashfall | **93** | 33,965 | 11 | 0.00101 | 6.38 |
+    | tundra | **55** | 51,828 | 29 | 0.00183 | 5.99 |
+    | mire | 15 | **93,181** | **65** | **0.00336** | 5.89 |
+
+    Ashfall's scatter was *thinned* as its ranges rose, because a choked rock field and a
+    wall of mountain are two different biomes; the tundra is the one that mazes with both.
+    Held by `each_biome_mazes_with_its_own_primitive` as ORDERINGS, never values.
+  - ⚠️ *The detour budget (§4.3) is not the binding constraint it was written to be.* It
+    exists so barriers cannot tax the walk — measured, ashfall's ranges cost **+7%** route
+    length (6.38 against a 5.78-5.99 baseline). But **the baseline itself is ~5.9× the
+    radial depth in every biome, barriers or none**: the meander is what makes the walk
+    long, not the terrain. So a route network is affordable *only if it replaces part of
+    that meander rather than adding to it* — which is the difference between a maze and a
+    long corridor with walls, and wants deciding before the routes half is built.
   - *And the machinery is already built and already correct.* `terrain::height` is a pure
     function of world position with a per-run offset (**the terrain is already 2D, not
     radially banded** — only the biome skin and the props are); `routable`/`walkable` are
