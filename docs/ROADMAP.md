@@ -1550,6 +1550,43 @@ design for this epic: [`proposals/worldgen-wg.md`](proposals/worldgen-wg.md).
   - [x] **DG-7** — spec: **CANON D25** (dungeons — hand-authored committed
     sub-spaces) + `behaviors/dungeons.md` (full observable-behavior spec) + the
     `run.enter_dungeon` interface entry.
+  - [ ] **DG-8 — THERE ARE THREE KINDS OF DUNGEON, and they are in very different
+    states.** Owner's taxonomy, recorded because the code did not distinguish them and
+    two of the three are absent from play:
+    - **Through-dungeons** — a cave *through* a mountain: procedural, instanced, and the
+      PASSAGE past a barrier. Does not exist. The hard half shipped in `#329`: ranges are
+      genuinely impassable (steeper than `WALKABLE_SLOPE`; `astar_route` goes around), so
+      "a barrier with exactly one way through" is now expressible.
+    - **Hand-crafted instances** — scattered anywhere, *including dead ends*, because they
+      make the world interesting and carry great loot. This is `DG-3`, and it was **absent
+      from every world ever generated**: entrances were anchored with `path.get(i)` where
+      `i` is a SECTION index, but the bent trail densifies to ~171-226 vertices PER
+      SECTION, so section 22's entrance landed 33 units from the hub instead of 2,099 and
+      `dungeon_min_distance` (250) rejected it. Measured: **0 of 22 sections, both seeds.**
+      The only dungeon anyone ever met was the tutorial's deliberate exception, which reads
+      as rarity rather than as a total outage. ✅ *Fixed* — `entrance_anchor` selects by
+      DISTANCE and prefers the web's spurs and dead ends; held by
+      `an_entrance_anchors_inside_its_own_section`, verified to fail on the old code.
+    - **Overworld dungeons** — procedural for now (hand-crafted someday), placed **along
+      the correct route** to force a gate with a **gatekeeper that must be beaten**. Half
+      exists, and the missing half is the point: a `Seam` is created at every biome border
+      with a gap on the clear path and a gatekeeper standing in the door — but seams are
+      **cleared** in the radial world (`self.seams.clear()`, "straight-wall biome seams
+      don't survive the bend"), so nothing blocks. The code says it outright: *"the
+      boundary is just a cross-fade + a Gatekeeper **you can round**."* So the boss spawns
+      on your route and you walk past it; `AGENTS.md`'s "a Gatekeeper is guaranteed" is
+      true about SPAWNING, not about fighting.
+
+    ⚠️ **All three collapse into one mechanism, which is why this is a taxonomy and not
+    three features:** *an overworld dungeon is a range across the route whose only passage
+    is a through-dungeon, with the gatekeeper inside it.* That makes completion mandatory
+    **by construction** rather than by a rule — the same discipline as a strait's
+    guaranteed isthmus or a river's fords, except the guaranteed pass is a dungeon you have
+    to clear. It is also exactly what `proposals/world-shape-and-exploration.md` §4.0a
+    concluded a barrier must be: *"structured, not a threshold on noise — a range with a
+    spine, a river with a channel — and it must carry a guaranteed pass."* This also
+    answers what should become of `dungeon_every`'s whole-section procedural dungeon: not
+    "local" in some vague sense — it should become **the pass**.
 - [x] **WG-2 — Random starting biome (except the first run).** Every dive now starts
   in a random biome, *except* an account's very first dive — the gentle Forest-first
   onboarding (fixed biome order + centred area-0), gated on the persistent
@@ -1679,6 +1716,42 @@ design for this epic: [`proposals/worldgen-wg.md`](proposals/worldgen-wg.md).
     ring-scale "room" is a category error, and the decision (retire `dungeon_every`, or
     make a procedural dungeon a LOCAL enclosure placed on the route like a DG-3 entrance)
     belongs with `WG-7`.
+  - ⚠️ **RE-MEASURED, AND IT IS A MID-GAME PROBLEM, NOT A DEEP-END ONE.** Props on the
+    route, 240x240 box, seed 424242: **0.01026/u² at d200 → 0.00069 at d800 (6.7%) →
+    0.00005 at d3200 (0.5%)**. The maze is effectively gone within about an hour's walk.
+    Creatures decay the same way — 104% of designed at d200, **6% by d3200** — which is
+    `CR-4`'s half. The content exists (13,516 creatures and 42,812 props at d3800); it is
+    spread around a ring ~19,900 units of arc wide that a ~56-unit corridor walks through.
+  - ⚠️ **THE OWNER'S CONSTRAINT KILLS THE NAIVE VERSION: "you shouldn't be able to tell
+    you're off trail, otherwise it loses being a maze."** A dense band hugging the backbone
+    would OUTLINE the route — you would read the maze by seeing where props thin out, and
+    `path_clear_radius` is deliberately 1.9 so the trail is "one trail among the web", not a
+    visible lane. Two consequences:
+    - **The band is sized by VISIBILITY, not by budget.** It must be wider than the distance
+      you see *clearly* (`Look::fog_start`, 200) so its outer edge falls inside the fog and
+      no boundary is ever visible. The affordability argument survives that widening intact,
+      because the saving was never that the band is narrow — it is that the count grows with
+      **route length** instead of with the **arc**: a 400-wide band is ~10% of the ring at
+      d800 and ~2.4% at d3200. Linear instead of quadratic is what removes the cap.
+    - **It must follow the route NETWORK, not the backbone line**, so the real backbone is
+      indistinguishable from any other branch through the dense region.
+  - ⚠️ **AND THE WEB HAS THE SAME BUG AS THE FILL, WHICH WOULD HAVE MADE THIS LOOK LIKE A
+    NULL RESULT.** Web trail nodes are offset from the backbone by `wrng.range(6.0, lat)` in
+    **corridor** units — and corridor y is an ANGLE, the full ±28 mapping to the full ±150°
+    fan. The conversion is `r·half/lateral`: ~3.7 at the hub, ~75 at d800. So the *smallest*
+    fork, meant to be a branch you can see and take, is ~22 world units out near the hub and
+    **~450 at d800** — already past `fog_start`; the largest is a couple of thousand.
+    `web_trails_per_area`'s stated purpose ("an interconnected maze of routes, not one
+    lane") holds near the hub and quietly stops being true with depth, which is part of why
+    the deep world reads as a straight shot. **Convert web offsets through the arc stretch
+    as part of this item**, or "follow the network" samples a network that has already
+    spread across the ring.
+  - ⚠️ **The detour budget (§4.3) is not the binding constraint it was written to be**, and
+    that matters for `WG-7`: measured, ashfall's ranges cost **+7%** route length while the
+    baseline is **~5.9x the radial depth in EVERY biome, barriers or none**. The meander is
+    what makes the walk long. So a route network is affordable only if it **replaces** part
+    of that meander rather than adding to it — the difference between a maze and a long
+    corridor with walls.
 - [ ] **WG-7 — The world is radial; the regions and the routes should not be.** Not a bug
   — a decision about what the world *is*, which is why it is not folded into `WG-6`. Today
   a section is a radius band spanning the entire 340° arc and biome is drawn per section,
@@ -1702,6 +1775,16 @@ design for this epic: [`proposals/worldgen-wg.md`](proposals/worldgen-wg.md).
     carved routes will read. **Still open, and why this stays unchecked: the ROUTES half** —
     ranges and ravines drawn along cell boundaries, with passes and through-dungeons, so you
     walk *around* terrain instead of over it.
+  - ⚠️ **AND THE GATE DOES NOT EXIST — the gatekeeper is avoidable.** A `Seam` is created at
+    every biome border with a gap on the clear path and a gatekeeper standing in the door,
+    but seams are **cleared** in the radial world (`self.seams.clear()` — "straight-wall
+    biome seams don't survive the bend"). The source states the consequence plainly: *"the
+    boundary is just a cross-fade + a Gatekeeper **you can round**."* So the boss spawns on
+    your route and you walk past it, and `AGENTS.md`'s "a Gatekeeper is guaranteed" is true
+    about SPAWNING rather than about fighting. Making it mandatory is now buildable because
+    ranges are impassable — see **`DG-8`**, where the three dungeon kinds collapse into one
+    mechanism: a range across the route whose only passage is a through-dungeon with the
+    gatekeeper inside it. Mandatory by construction, not by a rule.
   - ⚠️ *The finding that reframed it — **now partly answered, and this note was stale for
     several merges.*** It read: *every source of impassable large-scale terrain is set to
     zero* (`terrain::CLIFF_HEIGHT = 0.0`, `[worldgen] terraces_per_area = 0.0`,
@@ -2117,6 +2200,61 @@ design for this epic: [`proposals/worldgen-wg.md`](proposals/worldgen-wg.md).
   **ashfall**; sea stack → any **coast** (straits and bays exist now); glacial erratic +
   inselberg → **tundra**. Note this gives the two *breather* biomes their identity without
   spending any of the openness that makes them breathers.
+
+- [ ] **WG-11 — The client render budget, and the instrument to see it.** 🟡 *Opened by
+  `#337`, which raised two of these numbers without being able to measure the effect.*
+
+  ⚠️ **THERE IS NO FRAME-TIME INSTRUMENT IN THE CLIENT AT ALL** — no
+  `FrameTimeDiagnosticsPlugin`, no FPS overlay, nothing. So every performance question is
+  currently answered with arithmetic. **Add it first, behind a `MELD_` flag**, before any
+  further render tuning. This repo has already paid twice for tuning through a broken
+  instrument (`MELD_GEAR_TIER` inert for a release while conclusions were drawn through it;
+  the MCP harness reporting an empty backpack whatever you carried).
+
+  **The known cost.** The ground shader runs SEVEN landform loops per fragment (bridges,
+  ridges, peaks, basins, rivers, straits, lobes), each iteration doing distance math, over
+  most of the screen. `#337` took the worst case from ~106 to ~124 iterations per ground
+  pixel, and render-unload from ~230 props in radius to ~580, on an integrated GPU.
+
+  **The fix that makes it net-faster, identified and not done:** the counts are
+  slot-FILLED, not view-CULLED. The uploads sort nearest-first and then truncate to the slot
+  count, so a mire uploads 16 basins when only **11** can be within `fog_end`, and 40 river
+  nodes when **31** can. Dropping anything past `fog_end` makes the count the *visible*
+  number and takes the worst case to **~70-75** — below where it started.
+
+  **And the reason a cap exists at all:** a WGSL *uniform* cannot hold an unbounded array. A
+  **storage buffer** can. Moving the landform tables there removes every slot count, and
+  with them the whole class of bug `#337` fixed — a landform the CPU collides with and the
+  GPU never draws. Bigger change; the right end state.
+
+  **Distance legibility (owner's ask: "a blur style effect… after 300 it looks blurry and
+  distant").** The effect is **depth of field** — the tilt-shift/miniature look HD-2D is
+  built on — not bloom, which is the glow around bright pixels. It is already fully wired
+  and ON by default in overworld, city and battle (`DepthOfFieldMode::Bokeh`, `aperture` 2.2,
+  `focus` tracking `cam_dist`, `dof_sensor` 0.05), so the work is not "add it" but "make it
+  bite". By arithmetic the current numbers produce almost no far blur: at fov 36° with sensor
+  0.05 the focal length is ~77 mm and the circle of confusion for something 300 units out
+  with focus at 26 is negligible — physically correct, visually nothing. Bigger `dof_sensor`
+  and lower `aperture` both increase it; both are live-tunable via `LOOK_FILE` /
+  `MELD_FEEL`, so this wants eyeballing on a real frame rather than deriving. Pairs with
+  `WG-6`: blurring the distance is far cheaper than populating it, and it is the other half
+  of why the unpopulated ring read as empty. `fog_start`/`fog_end` are now 200/500 (owner).
+
+- [ ] **WG-12 — Entering the world is a silent multi-second hang.** Reported from play:
+  the client sits on *"stepping through The Threshold…"* with no indication anything is
+  happening, and the owner's direction is **"we should not regenerate the world for seeds"**
+  plus **"we need some indicator that the world is being generated"**. Two halves:
+  - **Do not regenerate.** `restore_world` regenerates the baseline from the seed and
+    streams the frontier back out on every restore (§W5's claim is that the baseline is a
+    pure function of the seed, which is what makes persistence cheap) — and `generate_with`
+    re-rolls the terrain offset up to twelve times looking for a feasible world. Worth
+    measuring what a cold enter actually costs before choosing between caching the generated
+    sections and making feasibility structural enough not to need re-rolls.
+  - **Say something while it happens.** A static string is indistinguishable from a hang —
+    which is exactly how the frozen-game-loop bug in `#332` presented, and why it was
+    reported as a WebSocket error. A progress signal on the wire (sections generated /
+    expected) would make both legible.
+  ⚠️ **NOT INVESTIGATED AT ALL.** Recorded from the report; no measurement behind it yet.
 
 - [ ] **WG-10 — Scatter that makes sense, and nodes that sit somewhere.** 🟡 *Backlog —
   owner's direction, alongside `WG-9`.* Three parts; the status differs sharply between
@@ -2683,6 +2821,23 @@ budgeted so the creature sim never threatens the single-owner loop or the server
   ephemeral state, no locks; memory: game-loop-perf). Simulate only near active
   players; freeze/serialize distant areas. This item is the explicit answer to
   "keep it highly instanced so we don't crash servers." Add a QA load test.
+  - ⚠️ **MEASURED: creature density on the route falls to 6% of designed by d3200** (104%
+    at d200, 60% at d800, 18% at d1600). Same cause as `WG-6`'s props — spread across the
+    ring, capped by `creature_radial_lane_cap` — so a world with terrain fixed by `WG-6`
+    would still have almost nothing living in it. Route-relative placement is half the
+    answer.
+  - **Owner's direction for the other half: spawn, then CATCH UP.** *"we should only really
+    spawn those and then when a player gets close do a catch-up to the clock to see where
+    they are and what they're doing."* That is what makes dense creatures affordable — stop
+    stepping the whole world, and fast-forward only what a player comes near.
+    ⚠️ One wrinkle before it is designed: `step_creatures` is **stateful** (positions
+    accumulate tick by tick), so catch-up is not free arithmetic. Either make wander a
+    closed-form function of tick (evaluate position at any T directly) or REPLAY a bounded
+    number of ticks for creatures entering the interest radius — replay is simpler and
+    naturally bounded. The subtlety is that clashes (`CR-2`), regrowth and mending currently
+    tick globally, so unsimulated creatures stop fighting each other off-screen. That may be
+    an improvement: measured, most visible turf war was mixed packs killing themselves
+    (`CR-11`).
 - [ ] **CR-5 — Bestiary / codex & collectables.** A persistent, account-level
   record of creatures encountered/killed and **collectables** dropped by rarer/
   deeper creatures (CR-1) — discovery as its own progression and completionist hook,
@@ -3304,6 +3459,18 @@ spike that makes the whole economy cohere.
 - [ ] **EW-3 — Slake** (Hearth-Plains/Lotus-Engine arena; temptation/gluttony/will-save).
 - [ ] **EW-4 — The unlock gate + Ometus.** All-three → the path opens; **Ometus** the true
   end boss + its **Shift consequence** (quiet the Shift for the season? — doc §Open).
+  - ✅ **The desolation past d3000 is INTENDED — do not "fix" it.** Reported as a possible
+    bug ("no enemies out there") and confirmed deliberate: past `[biome_gate]`
+    `seraphic_oubliette = 3000` the world is one EXCLUSIVE biome whose creature roster and
+    resource roster are both empty, by authorial intent — *"NOTHING LIVES IN THE OUBLIETTE.
+    It is a prison built to hold one thing… the emptiness IS the content."* Owner concurs:
+    it should read as an end-of-the-world dungeon you enter. Note it sits on top of an
+    already-collapsed curve (`WG-6`/`CR-4`), so the emptiness begins long before d3000 for
+    reasons that are NOT intended.
+  - ✅ **And the loop the owner described already works:** winning the end fight fires an
+    immediate extraction — `Extraction { completes_at: now_ms(), method: "world_end" }`, no
+    channel — plus `end_fight_reward_pieces` rolled at `end_fight_reward_tier`. "Beat it and
+    end up back in town with sweet loot" is shipped, not aspirational.
 - [ ] **EW-5 — Hidden: All-Father.** Ecology-discovery unlock (CR migration/swarm); the
   Gatherer apex + rewards (rare mats, a slime companion, CR-5 completion).
 - [ ] **EW-6 — Hidden: Terim.** Craft/build-mastery unlock (MS/BD); the Builder-Crafter
