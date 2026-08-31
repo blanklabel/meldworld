@@ -2070,6 +2070,54 @@ design for this epic: [`proposals/worldgen-wg.md`](proposals/worldgen-wg.md).
   [`proposals/dungeons.md`](proposals/dungeons.md) when picked up. Depends on the DG
   space runtime (DG-3) for the encounter/space model.
 
+- [ ] **WG-9 — A vocabulary of landforms (mesa, butte, hoodoo, arch…).** 🟡 *Backlog —
+  captured from the owner's direction, explicitly for a future build.* Named rock
+  formations as terrain vocabulary: **mesa, butte, hoodoo, sea stack, arch/natural bridge,
+  wave rock, columnar basalt, volcanic plug, glacial erratic, inselberg.**
+
+  **Why it is not `WG-6`/`WG-7`, and why it matters:** those two are about *walls* and
+  *routes* — making you turn. This is about **silhouette and navigation**. Field and desert
+  are now deliberately the most open biomes in the game (measured 0.00065 and 0.00041
+  props/u² on the route, against a wood's 0.00321), and open country needs landmarks to be
+  *interesting* rather than merely *empty*. A mesa visible two sections away is a thing to
+  steer by and a place to remember; it must NOT become a maze wall, or it contradicts
+  "field and desert should feel wide open". Landmarks also already carry a reward
+  affordance — an authored peak is crowned with a boss or a chest on its summit.
+
+  **Ten names, four mechanisms** (the `Basin`/`RiverNode` discipline — do not build ten
+  systems):
+  - **Flat top + steep sides** — mesa (broad), butte (narrow). One primitive, different
+    footprint. This *is* the retired terrace, done properly.
+  - **Spire** — hoodoo, volcanic plug, columnar basalt (a *cluster* of spires), sea stack
+    (a spire standing offshore; `coast::LOBE_ISLE` already places offshore land).
+  - **Steep dome** — inselberg: the existing `terrain::peak_height` raised-cosine dome with
+    its walkable cap (`PEAK_MAX_ASPECT`) lifted, so it is climbed at a cost or not at all.
+  - **A placement rule, not geometry** — glacial erratic: an ordinary boulder prop authored
+    deliberately *out of biome* (granite sitting on tundra flat). Costs no new machinery at
+    all; it is a scatter table entry and a story.
+
+  ⚠️ **Two of the ten cannot be a heightmap, at any resolution.** `terrain::height` is
+  single-valued — one y per (x, z) — so an **arch** (a hole under it) and a **wave rock**
+  (an overhanging face) are not expressible as a height field. They need real geometry, or
+  a trick. The trick may be cheap for the arch specifically: `terrain::bridge_surface`
+  already draws a raised walkable deck with a void beneath it (water renders under the
+  parapets), so a natural arch is close to *a bridge whose abutments are terrain* — shipped
+  code, reused.
+
+  ⚠️ **The prerequisite is a RENDERING problem, and it is the same one that retired the
+  mesas.** Quoting the source: *"even sparse, they rendered as stair-stepped blocky WALLS
+  (the coarse ground grid can't smooth an 11u vertical face)."* Every flat-top and every
+  spire form hits exactly that. Measured (`proposals/world-shape-and-exploration.md` §4.0a),
+  the cliff mask, slope collision and A* routing **all still work** — so this is not "the
+  world needs new geometry", it is *how a vertical face is drawn*, which is a much smaller
+  problem. Settle that before authoring any of the forms above.
+
+  Biome fit, so each formation reads as somewhere: mesa/butte/hoodoo/wave rock → **desert**
+  (the high desert this vocabulary comes from); columnar basalt + volcanic plug →
+  **ashfall**; sea stack → any **coast** (straits and bays exist now); glacial erratic +
+  inselberg → **tundra**. Note this gives the two *breather* biomes their identity without
+  spending any of the openness that makes them breathers.
+
 ---
 
 ## Epic FS — Field survival & environment
