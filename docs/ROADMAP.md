@@ -1652,8 +1652,10 @@ design for this epic: [`proposals/worldgen-wg.md`](proposals/worldgen-wg.md).
   (see `proposals/worldgen-wg.md` "Known cosmetic follow-up").
   See [`proposals/worldgen-wg.md`](proposals/worldgen-wg.md); fold into
   [`behaviors/world-generation.md`](behaviors/world-generation.md) when built.
-- [ ] **WG-6 — The maze holds its terrain at depth.** 🟡 *The arithmetic half ships; the
-  structural half does not.* Reported from play: *"every biome just kinda looks like… a
+- [x] **WG-6 — The maze holds its terrain at depth: the FRAME fixes.** ✅ *Every bent-frame
+  bug in this item is closed. **Density at depth moved to `WG-11`**, where the cell unit and
+  the teardrop taper make it a different question with a better answer — see the note at the
+  end of this item.* Reported from play: *"every biome just kinda looks like… a
   big open field."* Measured, seed 424242, streamed to d1700 — obstacles per 1000 u² by
   ring: **7.38** at r=40-100 falling to **1.49** past r=800, a 4.5x collapse, mean prop
   spacing 5.9 → 13.0 tiles. Stated the way a player meets it — obstacles within 40 world
@@ -1735,8 +1737,18 @@ design for this epic: [`proposals/worldgen-wg.md`](proposals/worldgen-wg.md).
       d800 and ~2.4% at d3200. Linear instead of quadratic is what removes the cap.
     - **It must follow the route NETWORK, not the backbone line**, so the real backbone is
       indistinguishable from any other branch through the dense region.
-  - ⚠️ **AND THE WEB HAS THE SAME BUG AS THE FILL, WHICH WOULD HAVE MADE THIS LOOK LIKE A
-    NULL RESULT.** Web trail nodes are offset from the backbone by `wrng.range(6.0, lat)` in
+  - ✅ **AND THE WEB HAD THE SAME BUG AS THE FILL, WHICH WOULD HAVE MADE THIS LOOK LIKE A
+    NULL RESULT — now fixed.** Offsets are drawn in WORLD units (`[worldgen] web_offset_min`
+    / `web_offset_max` / `web_spur_offset`) and converted through `tangential_scale`, so a
+    fork is the same takeable branch at every radius. Measured: median web edge **43-81 world
+    units at every depth**, total web per ring **~600-1,024 against 18,000-24,000 before**.
+    Guarded by `a_fork_is_a_branch_you_can_see_at_every_depth`, which holds the RATIO across
+    depth rather than a length, and fails on the old frame. The spur's *x* kick needed no
+    conversion — x is the radial axis and is 1:1 with world. Fifth and last instance of the
+    trap in this item. ⚠️ *Noticed while measuring:* `dungeon_every = 4` gives a dungeon
+    section NO web at all (`n = 0 if is_dungeon`), so every fourth ring of the world still has
+    no branches — the same category error `WG-8`/`WG-11` already own.
+  - *The original finding, for the record:* Web trail nodes are offset from the backbone by `wrng.range(6.0, lat)` in
     **corridor** units — and corridor y is an ANGLE, the full ±28 mapping to the full ±150°
     fan. The conversion is `r·half/lateral`: ~3.7 at the hub, ~75 at d800. So the *smallest*
     fork, meant to be a branch you can see and take, is ~22 world units out near the hub and
@@ -1798,6 +1810,29 @@ design for this epic: [`proposals/worldgen-wg.md`](proposals/worldgen-wg.md).
     is 26% / 15% / 2% / 11% at d200 / d550 / d900 / d1200.** So the band is NOT redundant and
     this item stands — but any coverage number taken before the web offsets are converted is
     measuring the fan, not the trails.
+  - ➡️ **DENSITY AT DEPTH IS `WG-11`'S NOW, AND THE ANSWER CHANGES SHAPE.** This item specced
+    a **band** of fill along the route network, because the ring's interior is unreachable —
+    true of a *ring* world. Under `WG-11`'s cell graph it is the wrong unit twice over, and a
+    third thing removes the need for it:
+    - **The cell is the natural anchor.** "Fill the cells that are reachable, at biome
+      density" falls out of the graph for free, where a band needs a route-relative sampler
+      that `WG-11` would immediately replace.
+    - **More of the world becomes worth visiting**, so the premise weakens: dead ends hold
+      dungeons, three boss arenas sit at unknown bearings, and exploration is the point.
+      Thinning everything but the through-route would starve exactly the ground that design
+      wants people wandering into.
+    - **The taper attacks it from the other end.** Deep rings get SMALLER instead of
+      quadratically larger, so the density deficit and the `maze_radial_scale_cap` pressure
+      both shrink without spending a prop. The band was buying what the taper gives away.
+    ⚠️ **What survives intact is the owner's constraint** — *"you shouldn't be able to tell
+    you're off trail, otherwise it loses being a maze"* — and it gets EASIER: per-cell density
+    is not a corridor of props hugging a line, so there is nothing to outline the route with.
+    It is carried into `WG-11` as an invariant rather than left in this item's bullets.
+    ⚠️ And the ring is still ~8x thinner deep than shallow, with the cap at 24 gated on
+    `SC-2`/`CR-4` taking the `ensure_frontier` stall off the tick. That stays true; it is just
+    no longer this item's to answer. Creature density decaying the same way (104% of designed
+    at d200, 6% by d3200) is `CR-4`'s.
+
 - [ ] **WG-7 — The world is radial; the regions and the routes should not be.** Not a bug
   — a decision about what the world *is*, which is why it is not folded into `WG-6`. Today
   a section is a radius band spanning the entire 340° arc and biome is drawn per section,
@@ -2394,6 +2429,11 @@ Make time in the field a living, dangerous place worth screenshotting.
     taper through the mid-world, passes near the point deliberately off-axis, and a
     **tortuosity floor and ceiling** held by test.
 
+  - *It also inherits `WG-6`'s density-at-depth question*, and answers it differently: not a
+    band along the route, but **fill the cells that are reachable, at biome density**, with
+    the taper shrinking the deep rings that made the problem. The constraint that killed the
+    band comes with it as an invariant — **you must not be able to read the route from where
+    the props thin out**.
 - [ ] **FS-1 — Camping in the field.** An item or mechanic to make a temporary
   safe rest in the maze (heal/regroup/pass time, with risk — think
   Warding-Tent/Sanctuary-Campfire family from GDD §5, generalized to a solo rest).

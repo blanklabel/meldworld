@@ -1614,6 +1614,16 @@ water_max_radius = 10.0
 path_clear_radius = 1.9          # half-width of the guaranteed route's slit. NARROW (was a 4.0 "highway" that read as a corridor) — just wide enough to pass, so the backbone is one trail among the web, not an obvious cleared lane. A route always EXISTS; you have to find it.
 path_meander = 18.0              # how far ±y the clear path wanders between areas
 web_trails_per_area = 5.0        # extra WEB trails woven through each section (branches/loops/spurs) so the overworld is an interconnected maze of routes, not one lane (narrow slits — the dense terrain stays the walls)
+# HOW FAR A FORK LEAVES THE BACKBONE, IN **WORLD** UNITS. These were corridor-y units
+# (`6.0..lateral`) and corridor y is an ANGLE, so a fork's real offset grew with depth: the
+# SMALLEST one was ~17 world units out near the hub and ~450 by d800 — past `fog_start`, so
+# the branch `web_trails_per_area` exists to offer was over the horizon and the deep world
+# read as one lane. Held in world units so a fork is the same takeable branch at every
+# radius; `tangential_scale` converts. Keep the max well inside `[look] fog_start` (200) or
+# you cannot see the choice you are being offered. [TUNABLE]
+web_offset_min = 18.0            # nearest a loop node sits to the backbone
+web_offset_max = 80.0            # furthest — a real alternative, still in sight
+web_spur_offset = 22.0           # half-extent of the dead-end spur's lateral kick
 player_radius = 0.5              # the avatar's collision radius vs obstacles
 
 # Verticality: raised terraces joined to the ground by connectors (ladders/ropes/
