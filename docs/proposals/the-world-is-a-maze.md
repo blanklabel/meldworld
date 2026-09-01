@@ -99,6 +99,32 @@ what movement, routing, placement and the shader all ask.
 It also pays for itself: deep rings get **smaller** instead of quadratically larger, so the
 density cap stops binding and the deep biomes can hold their designed terrain.
 
+⚠️ **AND IT IS NOT ONE TERM. THIS SECTION SAID IT WAS, AND THAT WAS WRONG — tried, measured,
+reverted.** Making `arc_half_rad` a function of radius inside `coast::sea_depth` is indeed a
+single line, and the shape it produces is right: full 150° out to d1200, widening to ~7,500
+units at d1600, then closing to 200 at d3200 and holding. **The world then stops generating.**
+
+The cause is that **the coast is not what decides where content goes — the BEND is.**
+`radial_tf` maps corridor `y` across the *constant* ±150° at every radius, so with a tapered
+shoreline a section at d2800 still scatters its creatures, props, chests and route waypoints
+across the full fan while only ±17.4° of it is land. Roughly **88% of everything placed out
+there lands in the sea**, and `generate_with`'s feasibility re-rolls burn themselves against a
+section that is almost entirely water — the same failure the ranges hit once (*"2.2s without
+ranges and over 60s WITH"*), for the same reason.
+
+So the taper is really: `sea_depth` **plus the bend** — `radial_tf`, its inverse
+`corridorize`, and `tangential_scale` all have to ask `arc_half_at(r)` instead of the
+constant. That is three one-line changes and one real obstacle: **the bend is inlined in
+eight places** in `meld-world` (`let theta = (p.y / lat).clamp(-1.0, 1.0) * half`) rather than
+going through `radial_tf`. Eight copies of the most load-bearing transform in the generator is
+precisely the shape of every bent-frame bug this epic has already paid for, so the taper's
+real first step is **funnel the bend through one function**, exactly as `clear_of_routes` did
+for the clear tube. Do that first, then the taper is genuinely one term — in one place.
+
+*Good news for when it is done:* `tangential_scale` already exists and already expresses
+"world units per corridor y", and `WG-6` moved four call sites onto it. The abstraction is
+half-built already.
+
 ⚠️ **The taper fights the anti-east rule.** A funnel makes the centre line geometrically
 shortest, and the pull strengthens toward the point. The taper must stay gentle through the
 mid-world and the passes near the end must be deliberately off-axis, or the funnel
@@ -535,6 +561,9 @@ The contract, all testable:
 
 ## 8. Staging
 
+-1. **Funnel the bend through one function.** `radial_tf` is inlined in eight places, and the
+   taper cannot land until they all ask the same question — see §3.3. Mechanical, no
+   behaviour change, and it is the prerequisite for the prerequisite.
 0. ⚠️ **THE TAPER COMES FIRST — measured.** It was listed third as an independent win; it is
    a *prerequisite*. Wall density is the whole design, and the cost of walls scales with the
    number of cell boundaries in a section, which scales with the arc: ~63 sectors per ring at
