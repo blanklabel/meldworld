@@ -535,9 +535,36 @@ The contract, all testable:
 
 ## 8. Staging
 
-1. **Barriers on cell boundaries** with passes and a guaranteed spanning route. Additive,
-   reuses range/water placement, leaves streaming alone. The world becomes chambers and
-   passes — the biggest change in feel per unit of risk.
+0. ⚠️ **THE TAPER COMES FIRST — measured.** It was listed third as an independent win; it is
+   a *prerequisite*. Wall density is the whole design, and the cost of walls scales with the
+   number of cell boundaries in a section, which scales with the arc: ~63 sectors per ring at
+   r=3000 against 8 at r=400. Measured, generation to d900 across four seeds, best-of:
+   `ridge_chance` 0.0 → **2,395 ms**, 0.45 (shipped) → **3,001 ms**, 1.0 → **3,123 ms**, with
+   routability holding throughout and the drawn path lengthening 10-24%. So ONE range per
+   section is cheap — but the maze wants MANY, and the slope is per-wall, so a deep section
+   at 5 walls lands where the density cap already sits: over the `ensure_frontier` tick
+   budget, `SC-2`/`CR-4` territory. Closing the fan to ~1.8° at d3200 cuts deep cell count
+   roughly twentyfold and makes the barriers affordable exactly where they are not today.
+   **Build the taper, then measure the wall budget again.**
+1. **Barriers on cell boundaries** with passes. ⚠️ *Smaller than it looks — the mechanism is
+   already there.* `Arena::push_ridges` (`WG-7`'s routes half) already raises a range along a
+   cell boundary, weighted by the cell's own biome, cuts `ridge_passes` gaps into it, and
+   yields to the drawn trail — *"dropping it IS a pass, because passes are gaps"* — so
+   feasibility is structural rather than checked. What is missing is that it rolls **once per
+   section** instead of asking the graph. Drive it from `regions::pass_open` over the closed
+   boundaries and the maze falls out.
+   ⚠️ **And `WG-7` has a standing objection to answer**: it sized ranges as a share of the
+   FAN precisely because *"one cell boundary (~250 u by design) is something you round without
+   noticing it was there"*. That is true of ONE wall and false of a maze — a boundary is only
+   roundable while its neighbours are open. So this stage is not "add a wall", it is "close
+   boundaries in NUMBERS", which is exactly why the taper has to come first.
+   ⚠️ **A ridge is a MOUNTAIN**: it raises `ridge_height` and blocks by slope. So it is the
+   right primitive for ashfall and the tundra's range half, and the wrong one for a forest —
+   trees cannot be a raised spine. Prop-built walls need `spacing <= 2·obstacle_min_radius +
+   2·player_radius` (= 3.2) to actually block, which is ~80 colliders per 250-unit boundary
+   against a whole deep section's current 2,350. **Prop barriers must therefore REPLACE the
+   scattered maze fill rather than add to it** — the same "replaces the meander" constraint
+   the detour budget imposed.
 2. **Dead ends and content placement** on terminal branches.
 3. **The taper**, via one term in `coast`. Unlocks the density cap as a side effect.
 4. **Anchors hold passes; a held route is a road.**

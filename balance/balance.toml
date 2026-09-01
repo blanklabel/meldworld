@@ -2518,6 +2518,7 @@ wll_per_level = 2
 [region]
 ring_step = 250.0        # radial thickness of one ring of cells. With `cell_width` this is a cell's size: ~250 units on a side is a region you cross in well under a minute but never mistake for the one next door. Deliberately CONSTANT, unlike a section's length (20 + 7i), so a region means the same thing at the hub and at the frontier.
 cell_width = 250.0       # target arc width of one cell. The sector COUNT rides the radius to hold this roughly fixed — 8 cells around the arc at r=400, 65 at r=3000 — which is what stops a cell being a sliver near the hub and a province deep.
+
 boundary_warp = 88.0     # how far a ring boundary wanders with bearing. Its whole job is to stop the boundary reading as an ARC; it depends on bearing alone, which is what keeps the ring index monotone along every ray and the partition well-defined at any magnitude.
 blend_width = 26.0       # world units the ground cross-fades across a cell boundary. A boundary is 2D now, so this is a distance rather than the old per-ring band — and the fade is symmetric from both sides, or a boundary seams.
 
@@ -2528,6 +2529,37 @@ blend_width = 26.0       # world units the ground cross-fades across a cell boun
 # numbers — so a Hearth-Plains hound is not innately stronger than a forest boar; it is
 # simply only ever met 2400 units out. Each biome keeps ONE faction, so a biome is at
 # peace with itself and at war with its neighbours (CR-13). All [TUNABLE].
+
+# ── WG-11: THE CELL GRAPH IS THE MAZE ────────────────────────────────────────────────────
+# Each boundary between two adjacent cells is either a PASS you can walk or a BARRIER made
+# of the biome's own material. `porosity` is the SHARE OF A REGION'S BOUNDARIES THAT STAY
+# OPEN, which is what makes each biome maze in its own way rather than differ by density:
+# field and desert are the open crossings BETWEEN mazes, ashfall is where you hunt for a
+# pass. Ordering is the design and is held by test; the values are [TUNABLE].
+#
+# ⚠️ Feasibility is NOT bought here. A barrier is laid like any other prop and is refused
+# inside the route tube (`clear_of_routes`), so wherever the guaranteed clear path or a web
+# trail crosses a closed boundary it cuts its own gap. The way out stays feasible by
+# construction, exactly as it was before, and no barrier code needs to know about it.
+[region_barrier]
+porosity_field = 0.92            # a crossing: you are getting OVER this to the next biome
+porosity_desert = 0.90
+porosity_forest = 0.55           # a wood you have to find your way through
+porosity_amber_wood = 0.60
+porosity_tundra = 0.38           # trees AND ranges
+porosity_mire = 0.35             # trees AND water
+porosity_ashfall = 0.30          # ranges: the tightest, you are hunting a pass
+porosity_default = 0.55          # the deep authored biomes until they are tuned
+# How a barrier is drawn along the boundary it closes.
+band_half_width = 3.0            # half-thickness of the wall, world units
+prop_spacing = 3.0               # distance between barrier prop CENTRES along the line. Two
+                                 # props of radius r leave a gap of `spacing - 2r`, and a
+                                 # player of `player_radius` squeezes through when that gap
+                                 # exceeds `2 * player_radius`. So a wall requires
+                                 # `spacing <= 2*obstacle_min_radius + 2*player_radius` = 3.2,
+                                 # and this sits under it — otherwise the "wall" is a picket
+                                 # fence you walk straight through. Held by test: it is the
+                                 # one number that decides whether any of this is a maze.
 
 [creature.amber_stag]      # amber_wood BRUISER — antlers like bare branches
 base_hp = 150

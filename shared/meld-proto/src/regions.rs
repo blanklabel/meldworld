@@ -96,6 +96,34 @@ impl Cell {
     }
 }
 
+/// Is the boundary between two ADJACENT cells a **pass** (walkable) or a **barrier**?
+///
+/// `WG-11`'s maze is the cell graph: each shared boundary is either open or closed, and
+/// what closes it is the biome's own material — trees in a forest, ranges in the ashfall,
+/// trees and water in the mire. `porosity` is the share of a region's boundaries that stay
+/// open, so **field and desert sit near 1.0 (the crossings between mazes) and ashfall low
+/// (you are hunting a pass)**.
+///
+/// ⚠️ **ORDERLESS, and that is the whole contract.** A boundary is one thing seen from two
+/// sides, so `pass_open(a, b)` and `pass_open(b, a)` must agree — otherwise a cell's own
+/// neighbour list disagrees with its neighbour's and a wall exists from one side only. The
+/// keys are sorted before hashing rather than combined commutatively, because `a ^ b` and
+/// `a + b` both collide far too readily on a packed `(ring, sector)` key.
+///
+/// Pure in `(seed, a, b)` — no traversal, no state, no ordering — which is what lets the
+/// maze be **derived and never stored** (§W5: the baseline stays a function of the seed)
+/// while the world streams outward without bound. Connectivity is NOT this function's job:
+/// feasibility comes from the routes already carved through the world, which cut their own
+/// gaps through whatever this closes.
+pub fn pass_open(seed: u32, a: Cell, b: Cell, porosity: f32) -> bool {
+    let (lo, hi) = if a.key() <= b.key() { (a.key(), b.key()) } else { (b.key(), a.key()) };
+    let h = hash32(seed ^ hash32(lo.wrapping_mul(0x9E37_79B9) ^ hi));
+    // Top 24 bits to a 0..1 fraction: plenty of resolution, and it avoids the low bits that
+    // a multiply-shift hash leaves weakest.
+    let u = (h >> 8) as f32 / 16_777_216.0;
+    u < porosity.clamp(0.0, 1.0)
+}
+
 /// A cell's extent: a radius band and a bearing wedge. The radii are NOMINAL — the real
 /// boundary wobbles by up to `warp` with bearing, which is what stops it reading as an arc.
 #[derive(Clone, Copy, Debug)]
@@ -363,6 +391,66 @@ impl Regions {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_boundary_is_the_same_wall_from_either_side() {
+        // A boundary is ONE thing seen from two cells. If `pass_open` disagreed by argument
+        // order, a cell's own neighbour list would contradict its neighbour's and a wall
+        // would exist from one side only — you could walk through it one way and not back.
+        let g = Grid { arc_half: 2.618, ring_step: 250.0, cell_width: 250.0, warp: 40.0, seed: 7 };
+        let mut open = 0usize;
+        let mut total = 0usize;
+        for ring in 0..12u32 {
+            for sector in 0..g.sectors(ring) {
+                let c = Cell::new(ring, sector);
+                for n in g.neighbours(c) {
+                    assert_eq!(
+                        pass_open(g.seed, c, n, 0.5),
+                        pass_open(g.seed, n, c, 0.5),
+                        "the boundary {c:?}<->{n:?} is a wall from one side only"
+                    );
+                    total += 1;
+                    if pass_open(g.seed, c, n, 0.5) {
+                        open += 1;
+                    }
+                }
+            }
+        }
+        // ...and it actually splits: a hash that always answered the same way would pass the
+        // symmetry check above and produce either no maze at all or a solid world.
+        let share = open as f64 / total as f64;
+        assert!(
+            (0.4..0.6).contains(&share),
+            "porosity 0.5 should open about half the boundaries, opened {share:.2}"
+        );
+    }
+
+    #[test]
+    fn porosity_is_the_dial_between_a_crossing_and_a_maze() {
+        // field/desert are the open crossings between mazes; ashfall is where you hunt for a
+        // pass. That ordering is the design, so it is asserted as an ordering — the values
+        // themselves are `[TUNABLE]`.
+        let g = Grid { arc_half: 2.618, ring_step: 250.0, cell_width: 250.0, warp: 40.0, seed: 99 };
+        let share = |p: f32| {
+            let (mut open, mut total) = (0usize, 0usize);
+            for ring in 1..10u32 {
+                for sector in 0..g.sectors(ring) {
+                    let c = Cell::new(ring, sector);
+                    for n in g.neighbours(c) {
+                        total += 1;
+                        if pass_open(g.seed, c, n, p) {
+                            open += 1;
+                        }
+                    }
+                }
+            }
+            open as f64 / total as f64
+        };
+        let (open_biome, mazey) = (share(0.9), share(0.3));
+        assert!(open_biome > 0.8, "a crossing must stay crossable ({open_biome:.2})");
+        assert!(mazey < 0.4, "a maze must actually close ({mazey:.2})");
+        assert!(open_biome > mazey, "porosity has to be monotone or it is not a dial");
+    }
     use super::*;
 
     /// The shipped shape: a 300° fan, cells ~250 units on a side.
