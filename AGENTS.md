@@ -1692,7 +1692,12 @@ Backbone alone, coverage at 55 units is **26% / 15% / 2% / 11%** at d200 / d550 
 d1200 — so the ring's interior really is unreachable and the band is still the fix. **Convert
 the web offsets through the arc stretch before trusting any coverage number**, or you are
 measuring the fan rather than the trails. Third instrument in one sitting to hand back a
-confident number about something it was not looking at.
+confident number about something it was not looking at. **The offsets are world units now**
+(`web_offset_min`/`max`/`web_spur_offset`, converted through `tangential_scale`): median web
+edge 43-81 world units at every depth, ~600-1,024 of web per ring against 18,000-24,000
+before. ⚠️ **Density at depth is `WG-11`'s question now, not `WG-6`'s** — under a cell graph
+the answer is per-cell fill rather than a band, and the taper shrinks the deep rings that
+made the problem.
 
 - **AND `monster_spacing` IS NOT THE DENSITY KNOB WHERE IT MATTERS.** `lanes` is purely
 geometric — arc width over corridor width, capped by `creature_radial_lane_cap` — and never

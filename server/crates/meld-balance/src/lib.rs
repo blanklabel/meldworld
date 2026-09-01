@@ -1219,6 +1219,10 @@ pub struct WorldGen {
     /// so the overworld reads as an interconnected maze of routes with real junctions,
     /// not a single lane. The clear tube is carved around these too. 0 ⇒ just the backbone.
     pub web_trails_per_area: f64,
+    /// How far a web fork leaves the backbone, in WORLD units (see balance.toml).
+    pub web_offset_min: f64,
+    pub web_offset_max: f64,
+    pub web_spur_offset: f64,
     pub player_radius: f64,
     // --- Verticality (terraces + connectors), docs/proposals/verticality.md. ---
     /// Avg raised terraces per procedural section (area 0 stays flat).

@@ -187,8 +187,11 @@ further it drifts from what it is proxying for.
 > |---|---|---|---|---|
 > | coverage | 26% | 15% | 2% | 11% |
 >
-> So the ring's interior really is mostly unreachable, §3's premise holds, and the section
-> below stands — with the band sized by **visibility** rather than budget and following the
+> ➡️ **SUPERSEDED BY `WG-11`, not retired.** The ring's interior really is mostly
+> unreachable, so §3's premise holds — but under a cell graph the answer is **per-cell fill**
+> rather than a band along a polyline, and the teardrop taper shrinks the deep rings that made
+> the problem. The section
+> below stands as the reasoning — with the band sized by **visibility** rather than budget and following the
 > route **network**, per the owner's constraint recorded in `WG-6` ("you shouldn't be able to
 > tell you're off trail, otherwise it loses being a maze"). **Convert the web offsets through
 > the arc stretch first**, or any coverage number is measuring the fan rather than the trails.

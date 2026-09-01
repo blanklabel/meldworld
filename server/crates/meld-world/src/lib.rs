@@ -3898,7 +3898,19 @@ impl Arena {
                     let bx = entry.x + (exit.x - entry.x) * t;
                     let by = entry.y + (exit.y - entry.y) * t;
                     let side = if k % 2 == 0 { 1.0 } else { -1.0 };
-                    let off = wrng.range(6.0, lat) * side;
+                    // ⚠️ **A FORK'S OFFSET IS A WORLD DISTANCE.** This drew corridor y
+                    // directly (`6.0..lat`), and corridor y is an ANGLE — `r·half/lateral`,
+                    // ~3.7 at the hub and ~75 at d800 — so the SMALLEST fork, the one meant
+                    // to be a branch you can see and take, sat ~17 world units out near the
+                    // hub and **~450 by d800**, past `fog_start`; the largest ran to a
+                    // couple of thousand. `web_trails_per_area`'s stated purpose ("an
+                    // interconnected maze of routes, not one lane") therefore held near the
+                    // hub and quietly stopped being true with depth, which is part of why
+                    // the deep world reads as a straight shot. Fifth instance of the
+                    // bent-frame trap, after the tree spacing that asked for 392 and placed
+                    // 90, the creature grouping, the divider walls and the clear tube.
+                    let tan = tangential_scale(bx, self.radial_half, self.corridor_lateral);
+                    let off = wrng.range(wg.web_offset_min, wg.web_offset_max) / tan * side;
                     let nd = Position::new(bx, (by + off).clamp(-lat, lat));
                     self.corridor_web.push((prev, nd));
                     prev = nd;
@@ -3913,9 +3925,13 @@ impl Arena {
                 }
                 // A DEAD-END SPUR off the last node — an explore-for-it pocket.
                 if let Some(&last) = nodes.last() {
+                    // x is the RADIAL axis and is 1:1 with world, so it needs no conversion;
+                    // y is the bent one and does.
+                    let stan = tangential_scale(last.x, self.radial_half, self.corridor_lateral);
+                    let sy = wrng.range(-wg.web_spur_offset, wg.web_spur_offset) / stan;
                     let spur = Position::new(
                         (last.x + wrng.range(-6.0, 6.0)).clamp(start_x + 2.0, end_x - 2.0),
-                        (last.y + wrng.range(-8.0, 8.0)).clamp(-lat, lat),
+                        (last.y + sy).clamp(-lat, lat),
                     );
                     self.corridor_web.push((last, spur));
                 }
@@ -11963,6 +11979,55 @@ mod tests {
             "uncompensated, the deep ring is a plain (mean prop spacing {:.1} tiles)",
             spacing(d[2])
         );
+    }
+
+    #[test]
+    fn a_fork_is_a_branch_you_can_see_at_every_depth() {
+        // `web_trails_per_area` exists so the overworld is "an interconnected maze of routes
+        // with real junctions and choices, not one lane". That held near the hub and quietly
+        // stopped being true with depth: fork offsets were drawn in CORRIDOR y, which is an
+        // ANGLE, so the smallest fork — the one you are meant to see and take — sat ~17 world
+        // units out at the hub and ~450 by d800, past the fog. The branch was over the
+        // horizon, and the deep world read as a straight shot.
+        //
+        // Held as a RATIO across depth rather than as a length, because the offsets are
+        // `[TUNABLE]` and the property is that a fork is the SAME branch wherever you meet
+        // it. Measured after the fix: median web edge 43-81 world units at every depth
+        // against 18,000-24,000 units of total web per ring before it.
+        let b = Balance::load_default().unwrap();
+        let mut a = Arena::generate_with(&b, 424242, false, Some("forest"));
+        let mut reach = 0.0_f64;
+        while reach < 1300.0 {
+            reach += 40.0;
+            a.ensure_frontier(&b, reach);
+        }
+        let median_at = |lo: f64, hi: f64| -> Option<f64> {
+            let mut v: Vec<f64> = a
+                .web
+                .iter()
+                .filter(|(p, q)| {
+                    let r = (p.x.hypot(p.y) + q.x.hypot(q.y)) * 0.5;
+                    r >= lo && r < hi
+                })
+                .map(|(p, q)| (q.x - p.x).hypot(q.y - p.y))
+                .collect();
+            if v.is_empty() {
+                return None;
+            }
+            v.sort_by(|x, y| x.partial_cmp(y).unwrap());
+            Some(v[v.len() / 2])
+        };
+        let shallow = median_at(0.0, 200.0).expect("the hub ring webs");
+        for (lo, hi) in [(400.0, 600.0), (600.0, 800.0), (1000.0, 1200.0)] {
+            let Some(deep) = median_at(lo, hi) else { continue };
+            assert!(
+                deep < shallow * 3.0,
+                "a fork at r={lo}-{hi} is {deep:.0} world units off the trail against \
+                 {shallow:.0} at the hub — past the fog it is not a branch, it is a region"
+            );
+        }
+        // ...and not vacuous: the whole web must not have collapsed onto the backbone either.
+        assert!(shallow > 5.0, "a fork you cannot leave the trail for is not a fork");
     }
 
     #[test]

@@ -485,7 +485,15 @@ The contract, all testable:
 6. **A season lasts a season.** The gap between "the first group can reach Ometus" and "the
    season ends" is held to roughly the last month — modelled, not hoped. See §4a; the lever
    is expedition fragility and the three-boss search, never the XP curve.
-7. **The maze is derived, never stored.** Boundary state must be a pure function of
+7. **The route is not legible from the terrain.** You must not be able to read where the
+   through-route runs by seeing where the props thin out — the owner's constraint, inherited
+   from `WG-6`: *"you shouldn't be able to tell you're off trail, otherwise it loses being a
+   maze."* It is what killed that item's narrow band, and it binds every later attempt: no
+   density boundary may fall inside the distance a player sees clearly (`Look::fog_start`,
+   200) of a trail. Per-cell fill satisfies it almost by construction — a cell is not a
+   corridor of props hugging a line — which is one of the reasons the band became per-cell
+   fill rather than being ported.
+8. **The maze is derived, never stored.** Boundary state must be a pure function of
    `(seed, generation, cell)` plus the anchor set, or §W5's "the baseline is a pure function
    of the seed" stops being true and the world can no longer be replayed from four integers.
 
