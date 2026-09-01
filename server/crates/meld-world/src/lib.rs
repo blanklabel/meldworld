@@ -3223,11 +3223,7 @@ impl Arena {
             rivers: &rivers,
             bridges: &bridge_snap,
         };
-        let tf = |p: Position| -> Position {
-            let r = p.x.max(0.0);
-            let theta = (p.y / lat).clamp(-1.0, 1.0) * half;
-            Position::new(r * theta.cos(), r * theta.sin())
-        };
+        let tf = |p: Position| radial_tf(p, half, lat);
         for m in &mut self.monsters {
             // ⚠️ NOT nudged. See `drown_proof`: there is no displacement that preserves both
             // a creature's DISTANCE (which is its difficulty) and its ADJACENCY (which is its
@@ -3464,11 +3460,7 @@ impl Arena {
             rivers: &rivers,
             bridges: &bridge_snap,
         };
-        let tf = |p: Position| -> Position {
-            let r = p.x.max(0.0);
-            let theta = (p.y / lat).clamp(-1.0, 1.0) * half;
-            Position::new(r * theta.cos(), r * theta.sin())
-        };
+        let tf = |p: Position| radial_tf(p, half, lat);
         for m in &mut self.monsters[m0..] {
             // ⚠️ NOT nudged. See `drown_proof`: there is no displacement that preserves both
             // a creature's DISTANCE (which is its difficulty) and its ADJACENCY (which is its
@@ -3716,8 +3708,7 @@ impl Arena {
             if bend_half <= 0.0 {
                 return p;
             }
-            let theta = (p.y / bend_lat).clamp(-1.0, 1.0) * bend_half;
-            Position::new(p.x.max(0.0) * theta.cos(), p.x.max(0.0) * theta.sin())
+            bend_tf(p, bend_half, bend_lat)
         };
         // Is this BENT position open water? (WG-7 continents; empty until a strait is cut,
         // and always empty in corridor mode.) Cloned so the placement loop can read it while
@@ -7323,8 +7314,7 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
             if bend_half <= 0.0 {
                 return p;
             }
-            let theta = (p.y / bend_lat).clamp(-1.0, 1.0) * bend_half;
-            Position::new(p.x.max(0.0) * theta.cos(), p.x.max(0.0) * theta.sin())
+            bend_tf(p, bend_half, bend_lat)
         };
         let lat = self.corridor_lateral.max(2.0);
         let mut rng = Rng(seed ^ 0x0B57_AC1E_0000_0001);
@@ -7779,8 +7769,7 @@ fn dry_companion(
         let dist = spread * (0.4 + 0.6 * rng.unit());
         let p = corridor_offset(anchor, dist * angle.cos(), dist * angle.sin(), half, lat);
         let w = if half > 0.0 {
-            let theta = (p.y / lat.max(1.0)).clamp(-1.0, 1.0) * half;
-            Position::new(p.x.max(0.0) * theta.cos(), p.x.max(0.0) * theta.sin())
+            radial_tf(p, half, lat.max(1.0))
         } else {
             p
         };
@@ -7799,6 +7788,26 @@ fn corridor_offset(anchor: Position, radial: f64, tangential: f64, half: f64, la
         tangential
     };
     Position::new(anchor.x + radial, anchor.y + dy)
+}
+
+/// [`radial_tf`] with the CORRIDOR-MODE guard: a no-op when `half <= 0`, where the two
+/// frames already agree.
+///
+/// ⚠️ **THE BEND WAS WRITTEN OUT LONGHAND IN EIGHT PLACES.** `radial_tf` calls itself "the
+/// one true forward map, shared by every bend site so they all agree" — and seven call sites
+/// were not using it, each re-deriving `theta = (y/lat).clamp(-1,1) * half` by hand. They
+/// happened to agree, but this is the single most load-bearing transform in the generator
+/// and it is the exact shape of every bent-frame bug this repo has paid for: the clear tube,
+/// the web offsets, the tree spacing, the creature grouping, the divider walls. One rule,
+/// one function.
+///
+/// It also has to be one function before `WG-11`'s taper can land: the taper makes the
+/// half-angle a function of RADIUS, and eight copies would mean eight places to remember it.
+fn bend_tf(p: Position, half: f64, lat: f64) -> Position {
+    if half <= 0.0 {
+        return p;
+    }
+    radial_tf(p, half, lat.max(1.0))
 }
 
 fn radial_tf(p: Position, half: f64, lat: f64) -> Position {
@@ -8398,8 +8407,7 @@ mod tests {
             if half <= 0.0 {
                 return p;
             }
-            let theta = (p.y / a.corridor_lateral().max(1.0)).clamp(-1.0, 1.0) * half;
-            Position::new(p.x.max(0.0) * theta.cos(), p.x.max(0.0) * theta.sin())
+            radial_tf(p, half, a.corridor_lateral().max(1.0))
         }
 
         #[test]
@@ -11982,6 +11990,30 @@ mod tests {
     }
 
     #[test]
+    fn the_bend_has_exactly_one_definition() {
+        // `radial_tf` calls itself "the one true forward map, shared by `radialize` and
+        // streaming so every bend site agrees" — and seven call sites were not using it,
+        // each re-deriving `theta = (y/lat).clamp(-1,1) * half` by hand. They agreed, but
+        // this is the most load-bearing transform in the generator and an inlined copy is
+        // the exact shape of every bent-frame bug this repo has paid for: the clear tube
+        // (438-unit swath), the web offsets (450-unit "forks"), the tree spacing that asked
+        // for 392 and placed 90, the creature grouping, the divider walls.
+        //
+        // It also has to stay one function for `WG-11`: the teardrop taper makes the
+        // half-angle a function of RADIUS, and eight copies is eight places to forget it.
+        let src = include_str!("lib.rs");
+        // Assembled rather than written whole, or this test's own source is a second copy
+        // and the guard counts itself.
+        let needle = ["clamp(-1.0,", " 1.0)"].concat();
+        let copies = src.matches(&needle).count();
+        assert_eq!(
+            copies, 1,
+            "the bend is written out {copies} times — it belongs in `radial_tf`/`bend_tf` \
+             and nowhere else"
+        );
+    }
+
+    #[test]
     fn a_fork_is_a_branch_you_can_see_at_every_depth() {
         // `web_trails_per_area` exists so the overworld is "an interconnected maze of routes
         // with real junctions and choices, not one lane". That held near the hub and quietly
@@ -14261,8 +14293,7 @@ impl Arena {
             let bent = if half <= 0.0 {
                 p
             } else {
-                let theta = (p.y / lat.max(1.0)).clamp(-1.0, 1.0) * half;
-                Position::new(p.x.max(0.0) * theta.cos(), p.x.max(0.0) * theta.sin())
+                radial_tf(p, half, lat.max(1.0))
             };
             let Some(av) = self.avatar_mut(player_id) else { return false };
             av.position = bent;
