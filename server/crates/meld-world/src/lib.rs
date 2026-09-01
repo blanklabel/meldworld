@@ -2416,6 +2416,64 @@ pub struct Obstacle {
     pub radius: f64,
 }
 
+/// World units per unit of corridor `y` at corridor radius `x` — the arc stretch
+/// [`radial_tf`] applies when it turns a lateral offset into a BEARING. `1.0` in corridor
+/// mode (`half == 0`), where the two frames already agree.
+fn tangential_scale(x: f64, half: f64, lat: f64) -> f64 {
+    if half > 0.0 {
+        (x.max(0.0) * half / lat.max(1.0)).max(1e-6)
+    } else {
+        1.0
+    }
+}
+
+/// Distance from a **corridor** point to a **corridor** polyline, measured in WORLD units.
+///
+/// ⚠️ **A CORRIDOR-SPACE DISTANCE IS NOT A DISTANCE.** Corridor `y` is an ANGLE, so one
+/// lateral unit is `x · half / lat` world units — 0.9 at the hub ring and 112 at d1200.
+/// `dist_to_path` mixes a radial axis that is 1:1 with world against a lateral axis that
+/// is not, and every caller of it was asking "is this on the trail" in a frame where the
+/// answer fans out with depth.
+///
+/// **This is what made the deep world a plain, and it is the fourth instance of this trap**
+/// — after the tree spacing that asked for 392 and placed 90, the creature grouping, and the
+/// dungeon divider walls that are a line of rocks 250 units apart. `path_clear_radius` is
+/// authored at 1.9, deliberately NARROW ("was a 4.0 highway that read as a corridor"); read
+/// in the corridor frame it is a **438-unit-wide cleared swath at d1200**, swept along the
+/// one line every player walks, so the ring kept its designed trees and not one of them was
+/// within sight of the trail. Raising `maze_radial_scale_cap` could never have changed that
+/// — it adds props to a region the player's own neighbourhood is excluded from. The measured
+/// before/after lives with the guard that holds it
+/// (`the_trail_holds_its_terrain_at_every_depth`).
+///
+/// Scaling the lateral axis by `tan` before measuring is exact for the segments that matter
+/// (the near ones, where `x ≈ p.x`) and conservative for the rest, which are far away in any
+/// frame.
+fn world_dist_to_path(p: &Position, path: &[Position], tan: f64) -> f64 {
+    let flat = |q: &Position| Position::new(q.x, q.y * tan);
+    let fp = flat(p);
+    if path.is_empty() {
+        return f64::INFINITY;
+    }
+    if path.len() == 1 {
+        return fp.distance_to(&flat(&path[0]));
+    }
+    let mut best = f64::INFINITY;
+    for w in path.windows(2) {
+        best = best.min(dist_point_segment(&fp, &flat(&w[0]), &flat(&w[1])));
+    }
+    best
+}
+
+/// [`world_dist_to_path`] for the trail web — same frame, same reason.
+fn world_dist_to_web(p: &Position, web: &[(Position, Position)], tan: f64) -> f64 {
+    let flat = |q: &Position| Position::new(q.x, q.y * tan);
+    let fp = flat(p);
+    web.iter()
+        .map(|(a, b)| dist_point_segment(&fp, &flat(a), &flat(b)))
+        .fold(f64::INFINITY, f64::min)
+}
+
 /// Shortest distance from point `p` to the polyline `path` (min over segments).
 fn dist_to_path(p: &Position, path: &[Position]) -> f64 {
     if path.is_empty() {
@@ -4355,9 +4413,7 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
             let okind = okinds[rng.below(okinds.len())];
             let radius = obstacle_radius_for(wg, okind, rng.unit());
             let pos = Position::new(ox, oy);
-            if dist_to_path(&pos, &self.corridor_path) < self.path_clear_radius + radius
-                || dist_to_web(&pos, &self.corridor_web) < self.web_clear() + radius
-            {
+            if !self.clear_of_routes(&pos, radius) {
                 continue;
             }
             // Don't strand an obstacle on (or half-buried under) the raised path
@@ -4632,9 +4688,7 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
                 let fill_kind = fill_kind_for_biome(here);
                 let radius = obstacle_radius_for(wg, fill_kind, frng.unit());
                 let pos = Position::new(ox, oy);
-                if dist_to_path(&pos, &self.corridor_path) < self.path_clear_radius + radius
-                    || dist_to_web(&pos, &self.corridor_web) < self.web_clear() + radius
-                {
+                if !self.clear_of_routes(&pos, radius) {
                     continue;
                 }
                 if terrain.level_at(&pos) != 0 {
@@ -5802,11 +5856,35 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
         (self.path_clear_radius * 0.5).max(1.8)
     }
 
+    /// Is this **corridor** point clear of the route network — the backbone's tube and the
+    /// web's — by `pad` world units?
+    ///
+    /// ⚠️ **THE ONE PLACE THAT RULE IS ASKED.** It was four: the sparse scatter, the maze
+    /// fill, the Shift's re-scatter and the build refusal each wrote their own
+    /// `dist_to_path(..) < path_clear_radius + r || dist_to_web(..) < web_clear() + r`, all
+    /// four in the corridor frame (see [`world_dist_to_path`] for what that cost). This
+    /// repo has been bitten by one-rule-many-call-sites three times — the wall collision
+    /// that went into one mover, the creature damage pass that kept the O(n²) scan, and
+    /// `maze_fill_scale` itself — so the frame fix ships as a funnel rather than as four
+    /// edits that have to stay in agreement.
+    fn clear_of_routes(&self, p: &Position, pad: f64) -> bool {
+        let tan = tangential_scale(p.x, self.radial_half, self.corridor_lateral);
+        world_dist_to_path(p, &self.corridor_path, tan) >= self.path_clear_radius + pad
+            && world_dist_to_web(p, &self.corridor_web, tan) >= self.web_clear() + pad
+    }
+
     /// Does the axis-aligned terrace rectangle come within the clear-path tube OR a web
     /// trail? Samples the rect corners + centre + edge midpoints. Keeps raised cliffs off
     /// both the backbone and the woven trails, so every route stays walkable on level 0.
+    ///
+    /// ⚠️ **It was comparing CORRIDOR corners against the WORLD path** — the caller builds
+    /// the rect from `start_x` and `±corridor_lateral`, and this asked `self.path`, which
+    /// `radialize` has already bent. Two different spaces, so the guard answered nothing in
+    /// particular; the web half of the same line was in the corridor frame beside it. Inert
+    /// today (`terraces_per_area = 0` — discrete terraces are retired in favour of the
+    /// heightmap), which is exactly why it is worth fixing now rather than when Phase B/C
+    /// switches them back on and inherits a guard nobody has ever seen reject anything.
     fn rect_intrudes_path(&self, x0: f64, y0: f64, x1: f64, y1: f64) -> bool {
-        let margin = self.path_clear_radius + self.terrain_cell;
         let (cx, cy) = ((x0 + x1) * 0.5, (y0 + y1) * 0.5);
         let samples = [
             Position::new(x0, y0),
@@ -5819,10 +5897,7 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
             Position::new(x1, cy),
             Position::new(cx, cy),
         ];
-        let web_margin = self.web_clear() + self.terrain_cell;
-        samples.iter().any(|s| {
-            dist_to_path(s, &self.path) < margin || dist_to_web(s, &self.corridor_web) < web_margin
-        })
+        samples.iter().any(|s| !self.clear_of_routes(s, self.terrain_cell))
     }
 
     /// WG-4: half the fan arc in radians (0 ⇒ flat corridor). Exposed so the wire can
@@ -7268,9 +7343,7 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
                 let okind = if placed < sparse { scatter[rng.below(scatter.len())] } else { fill };
                 let radius = obstacle_radius_for(wg, okind, rng.unit());
                 let pos = Position::new(ox, oy);
-                if dist_to_path(&pos, &self.corridor_path) < self.path_clear_radius + radius
-                    || dist_to_web(&pos, &self.corridor_web) < self.web_clear() + radius
-                {
+                if !self.clear_of_routes(&pos, radius) {
                     continue;
                 }
                 if area_level_at(&self.areas, &pos) != 0 {
@@ -9129,6 +9202,16 @@ mod tests {
 
         /// Feasibility is the invariant a re-roll could break, and it is kept the same way
         /// generation keeps it: nothing is ever placed inside the clear-path tube.
+        ///
+        /// ⚠️ **Asked in the WORLD frame, like the generation-time twin
+        /// (`no_obstacle_intrudes_the_clear_path_and_the_ends_stay_grounded`).** This
+        /// assertion used to corridorize the prop and measure against `corridor_path`,
+        /// where `y` is an ANGLE — so it was not checking the tube a player walks, it was
+        /// checking a swath that fans out to hundreds of world units at depth. It passed
+        /// because placement made the same mistake, and the two wrongs agreed. A prop 1.5
+        /// corridor-units off the trail at r=55 stands **7.6 world units** away: clear
+        /// ground by any measure a player can take, and the old form called it a blocked
+        /// route.
         #[test]
         fn the_way_out_survives_every_shift() {
             let (b, mut a) = world();
@@ -9138,10 +9221,11 @@ mod tests {
                 a.apply_shift(&b, &roll, first, last);
             }
             for o in &a.obstacles {
-                let c = a.corridorize(&o.position);
+                let d = dist_to_path(&o.position, &a.path);
                 assert!(
-                    dist_to_path(&c, &a.corridor_path) >= a.path_clear_radius,
-                    "a shifted prop landed in the clear-path tube at {c:?}"
+                    d >= a.path_clear_radius,
+                    "a shifted prop landed in the clear-path tube at {:?} (d={d:.2})",
+                    o.position
                 );
             }
         }
@@ -11840,9 +11924,16 @@ mod tests {
         // The cap stays at 24 because `ensure_frontier` runs inside the authoritative tick
         // and streaming one deep section is already a 181 ms stall on a 100 ms tick — a
         // bigger cap doubles a stall that is over budget before we touch it. So the deep
-        // ring is knowingly still short of the shallow one, and the bar below is a FLOOR
-        // that has to hold until `WG-6` spends the fill along the route network instead of
-        // across the whole ring. The measured curve lives in balance.toml, once.
+        // ring is knowingly still short of the shallow one, and lifting that is
+        // `SC-2`/`CR-4`'s to enable, not a tuning decision. The measured curve lives in
+        // balance.toml, once.
+        //
+        // ⚠️ **THIS TEST PASSED FOR THE WHOLE LIFE OF THE BUG IT WAS WRITTEN TO CATCH**, and
+        // it was not wrong — the deep ring really did keep this much terrain. It was all
+        // beyond the horizon: the clear tube was asked in the corridor frame, so a cleared
+        // swath 438 world units wide followed the trail and the player saw none of it. A
+        // ring is not a neighbourhood. `the_trail_holds_its_terrain_at_every_depth` is the
+        // guard for what a player actually meets; this one owns how much the ring has.
         let b = Balance::load_default().unwrap();
         let rings = [(40.0, 100.0), (400.0, 700.0), (900.0, 1200.0)];
         // Mean nearest-neighbour spacing of a Poisson field of density `d` per u².
@@ -11872,6 +11963,74 @@ mod tests {
             "uncompensated, the deep ring is a plain (mean prop spacing {:.1} tiles)",
             spacing(d[2])
         );
+    }
+
+    #[test]
+    fn the_trail_holds_its_terrain_at_every_depth() {
+        // Reported from play: "every biome just kinda looks like… a big open field." The
+        // ring-density guard above passed the whole time, and it was not lying — the deep
+        // ring HAD its trees. None of them were anywhere near the one line every player
+        // walks.
+        //
+        // `path_clear_radius` is authored at 1.9, deliberately narrow ("was a 4.0 highway
+        // that read as a corridor"), and it was asked in the CORRIDOR frame, where `y` is
+        // an angle. So the cleared tube fanned out with depth — 22 world units at d60, 438
+        // at d1200 — and the fill was excluded from exactly the neighbourhood the player
+        // occupies. Measured before the fix, props per 1000 u² by tangential offset from
+        // the trail, pinned to forest at seed 424242:
+        //
+        //   d      <50u   <200u   <400u   ring
+        //   200     0.0    10.3    11.4   13.1
+        //   550     0.0     1.0     3.5    5.2
+        //   1200    0.0     0.0     0.1    2.5
+        //
+        // A ring measurement cannot see that, which is why this test is written the way a
+        // player meets the world: a band along the trail, held against that ring's OWN
+        // density. Ratio rather than magnitude — how dense a deep ring gets to be is
+        // `maze_radial_scale_cap`'s knowing compromise and belongs to the test above; this
+        // one asks only that the trail gets whatever its ring got.
+        let b = Balance::load_default().unwrap();
+        let wg = &b.worldgen;
+        let mut a = Arena::generate_with(&b, 424242, false, Some("forest"));
+        let mut reach = 0.0_f64;
+        while reach < 1300.0 {
+            reach += 40.0;
+            a.ensure_frontier(&b, reach);
+        }
+        let half = a.radial_half();
+        const BAND: f64 = 50.0;
+        for d in [200.0_f64, 550.0, 900.0, 1200.0] {
+            let (lo, hi) = (d - 50.0, d + 50.0);
+            // ⚠️ NON-VACUITY, and it needs no toggle: the band this test measures sits
+            // INSIDE the swath the corridor-frame rule cleared. Whatever it finds here is
+            // terrain that could not have existed before, by construction.
+            let old_tube = (wg.path_clear_radius + wg.obstacle_max_radius) * (d * half / wg.lateral_half_extent);
+            assert!(
+                BAND < old_tube,
+                "d{d}: the guard has to measure inside the old dead zone \
+                 (band {BAND} vs the corridor-frame tube's {old_tube:.0} world units)"
+            );
+            let (mut band, mut ring) = (0usize, 0usize);
+            for o in &a.obstacles {
+                let r = o.position.x.hypot(o.position.y);
+                if r < lo || r >= hi {
+                    continue;
+                }
+                ring += 1;
+                let route = a.route_point_at(r);
+                let bearing = o.position.y.atan2(o.position.x) - route.y.atan2(route.x);
+                if (bearing.abs() * r) < BAND {
+                    band += 1;
+                }
+            }
+            let band_density = band as f64 / (2.0 * BAND * (hi - lo)) * 1000.0;
+            let ring_density = ring as f64 / ((hi * hi - lo * lo) * half) * 1000.0;
+            assert!(
+                band_density > ring_density * 0.5,
+                "d{d}: the trail keeps its ring's terrain \
+                 (band {band_density:.2} vs ring {ring_density:.2} per 1000 u², {band} props)"
+            );
+        }
     }
 
     #[test]
@@ -13615,9 +13774,7 @@ impl Arena {
             return Err(PlaceRefusal::AtYourLimit);
         }
         let corridor = self.corridorize(&position);
-        if dist_to_path(&corridor, &self.corridor_path) < self.path_clear_radius
-            || dist_to_web(&corridor, &self.corridor_web) < self.web_clear()
-        {
+        if !self.clear_of_routes(&corridor, 0.0) {
             return Err(PlaceRefusal::OnTheTrail);
         }
         // Two BLOCKING structures may abut — that is what makes a wall RUN possible — while

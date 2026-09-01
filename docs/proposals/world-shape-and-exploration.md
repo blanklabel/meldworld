@@ -162,8 +162,39 @@ further it drifts from what it is proxying for.
 
 ## 3. `WG-6` — spend the fill where the player can actually be
 
-**Proposal: place the maze fill relative to the ROUTE NETWORK, not uniformly across the
-ring.** The design intent already says so — *"only the winding clear path (plus the
+> ⚠️ **PARTLY OVERTAKEN, BUT NOT RETIRED — and a measurement that said it WAS retired was
+> wrong.** Two corrections, in order.
+>
+> **1. The near-field symptom had a different cause, now fixed.** `path_clear_radius` was
+> asked in the CORRIDOR frame, where `y` is an angle, so the guaranteed route's slit —
+> authored at 1.9, deliberately narrow — fanned into a cleared swath 438 world units wide at
+> d1200, centred on the one line every player walks. Props per 1000 u² within 50 units of the
+> trail measured **0.0 at d200, d550 AND d1200**, against ring densities of 13.1 / 5.2 / 2.5.
+> Fixing the frame (`clear_of_routes`) took props-in-view on the route at d1200 from **0 to
+> 13** at identical prop count and no measurable perf cost. **Note §3 could not have worked
+> before that fix**: a 55-unit band placed inside a 438-unit exclusion produces a world with
+> no fill at all.
+>
+> **2. And the coverage number that appeared to kill §3 was measuring a DIFFERENT bug.** A
+> naive measurement said a 55-unit band around the route network already covers 100% of a ring
+> to d550 and 62-90% deep — i.e. the band *is* the ring, so banding buys nothing. That is an
+> artifact of the web: its trail nodes are offset by `wrng.range(6.0, lat)` in **corridor**
+> units, so at depth a single fork sweeps thousands of world units across the fan. Web length
+> summed **18,000-24,000 units per ring against the backbone's 222-2,430**. Measured on the
+> **backbone alone**, coverage at 55 units is:
+>
+> | d | 200 | 550 | 900 | 1200 |
+> |---|---|---|---|---|
+> | coverage | 26% | 15% | 2% | 11% |
+>
+> So the ring's interior really is mostly unreachable, §3's premise holds, and the section
+> below stands — with the band sized by **visibility** rather than budget and following the
+> route **network**, per the owner's constraint recorded in `WG-6` ("you shouldn't be able to
+> tell you're off trail, otherwise it loses being a maze"). **Convert the web offsets through
+> the arc stretch first**, or any coverage number is measuring the fan rather than the trails.
+
+**Proposal (as written, unbuilt): place the maze fill relative to the ROUTE NETWORK, not
+uniformly across the ring.** The design intent already says so — *"only the winding clear path (plus the
 branch detours) stays open"*. The fill is the **walls of the maze**. A maze's walls
 belong beside its corridors; scattered evenly over a ring that has no corridors in it,
 they simply vanish.
@@ -649,7 +680,8 @@ ring-dungeon and put prefab maze regions in its place.**
 
 - **`CR-10`** — the wander fix (§1c), with `[ai] wander_leg_seconds` /
   `wander_arrive_radius` / `wander_pause_chance` / `wander_pause_seconds`.
-- **`WG-6` (partial)** — the dungeon-ring fill skip removed (§1b) and the thickness axis
+- **`WG-6` (the clear-tube frame fix ships; §3 still stands — see the box there)** — the
+  dungeon-ring fill skip removed (§1b) and the thickness axis
   folded into the one `maze_fill_scale` (§1a), which together take the shallow ring from
   7.38 to 27.4 obstacles per 1000 u² and a quarter of the world from 0.167 to parity. The
   cap is documented with its measured cost curve but **held at 24** (§2). The density guard
