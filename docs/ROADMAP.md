@@ -1752,6 +1752,52 @@ design for this epic: [`proposals/worldgen-wg.md`](proposals/worldgen-wg.md).
     what makes the walk long. So a route network is affordable only if it **replaces** part
     of that meander rather than adding to it — the difference between a maze and a long
     corridor with walls.
+  - ✅ **AND THE NEAR HALF OF IT WAS A FRAME BUG, NOW FIXED.** The re-measurement above —
+    "props on the route, 0.5% of designed at d3200" — is measuring a **cleared swath**, not a
+    thin ring. `path_clear_radius` (1.9, deliberately narrow: "was a 4.0 highway that read as
+    a corridor") was asked in the CORRIDOR frame, where `y` is an ANGLE, so the tube fanned
+    out with depth: **22 world units wide at d60 and 438 at d1200**, swept along the one line
+    every player walks. A 240x240 box on the route at depth sits ENTIRELY inside it. Measured,
+    forest-pinned, props per 1000 u² by tangential offset from the trail:
+
+    | d | <50u | <200u | <400u | ring |
+    |---|---|---|---|---|
+    | 200 | **0.0** | 10.3 | 11.4 | 13.1 |
+    | 550 | **0.0** | 1.0 | 3.5 | 5.2 |
+    | 1200 | **0.0** | 0.0 | 0.1 | 2.5 |
+
+    Fixed by `clear_of_routes`, which measures the tube in WORLD units and is the ONE place
+    that rule is asked — it had four copies (sparse scatter, maze fill, the Shift's
+    re-scatter, the build refusal), all four wrong the same way. Props within 40 world units
+    of `route_point_at(d)`: **d60 38→51, d200 22→40, d550 0→31, d900 0→9, d1200 0→13**, at
+    the same prop count (23,901 against 23,913) and perf-neutral (3408 ms against 3371 ms to
+    stream to d1200, best-of-3 of best-of-5). Feasibility cannot regress by construction: the
+    tube's MINIMUM half-width is unchanged at 1.9, which is what it always was along the
+    radial axis; only the sideways excess is gone. Fourth instance of the bent-frame trap.
+    **This does NOT complete the item** — it restores the trail to its ring's own density, and
+    how much the ring has at depth is still the cap's question and still the band's.
+  - ⚠️ *And a TEST was written in the same wrong frame, which is why nothing caught it.*
+    `the_way_out_survives_every_shift` corridorized each prop and measured against
+    `corridor_path` — the fanned swath rather than the tube a player walks — so it agreed
+    with the broken placement and went green for as long as both were wrong. Its
+    generation-time twin (`no_obstacle_intrudes_the_clear_path_and_the_ends_stay_grounded`)
+    always measured world-against-world and stayed green throughout, which is what proves
+    feasibility was never actually broken. New guard
+    `the_trail_holds_its_terrain_at_every_depth` holds a band along the trail against that
+    ring's OWN density — a ring measurement passed for the whole life of the bug — and proves
+    its own non-vacuity by asserting the band it samples sits inside the swath the
+    corridor-frame rule cleared. `rect_intrudes_path` had the same mixed frame (corridor
+    terrace corners against the already-bent `self.path`) and is fixed too; inert today at
+    `terraces_per_area = 0`, which is exactly why it was worth closing before Phase B/C
+    inherits a guard that has never rejected anything.
+  - ⚠️ **A COVERAGE MEASUREMENT THAT SAID "THE BAND IS ALREADY THE RING" WAS MEASURING THE
+    WEB BUG.** Taken naively, a 55-unit band around the route network covers 100% of a ring
+    to d550 and 62-90% deep — which would retire the band entirely. It is an artifact: the
+    web edges summed into it are 18,000-24,000 units per ring against the backbone's
+    222-2,430, because of the corridor-frame web offset above. **Backbone only, the coverage
+    is 26% / 15% / 2% / 11% at d200 / d550 / d900 / d1200.** So the band is NOT redundant and
+    this item stands — but any coverage number taken before the web offsets are converted is
+    measuring the fan, not the trails.
 - [ ] **WG-7 — The world is radial; the regions and the routes should not be.** Not a bug
   — a decision about what the world *is*, which is why it is not folded into `WG-6`. Today
   a section is a radius band spanning the entire 340° arc and biome is drawn per section,
@@ -2088,7 +2134,11 @@ design for this epic: [`proposals/worldgen-wg.md`](proposals/worldgen-wg.md).
     like a place": the ground has things on it, and the ground makes you turn.
   - Full design in
     [`proposals/world-shape-and-exploration.md`](proposals/world-shape-and-exploration.md) §4.
-- [ ] **WG-8 — Overworld dungeons: maze regions assembled from authored parts.** A maze
+- [ ] **WG-8 — Overworld dungeons: maze regions assembled from authored parts.**
+  ⚠️ **ABSORBED BY `WG-11`** — this is the MICRO half of that design (authored parts inside a
+  pass), and its macro assumptions (bounded regions dropped into otherwise-open ground) are
+  superseded by the cell-graph maze. Build it as `WG-11` stage 6, not on its own.
+  A maze
   does not have to be a global property of a biome. Making dense fill *impassable*
   everywhere would turn the overworld into corridors — but that only follows if density is
   global. **Bounded regions with derived openings** answer it: a biome feels like a maze
@@ -2300,6 +2350,49 @@ design for this epic: [`proposals/worldgen-wg.md`](proposals/worldgen-wg.md).
 ## Epic FS — Field survival & environment
 
 Make time in the field a living, dangerous place worth screenshotting.
+
+- [ ] **WG-11 — The world is a maze you hold open.** 🔴 *Design drafted, nothing built —
+  [`proposals/the-world-is-a-maze.md`](proposals/the-world-is-a-maze.md). Owner's direction;
+  supersedes `WG-7`'s ROUTES half and absorbs `WG-8` wholesale.* Reported from play, after
+  `WG-6` landed: *"it doesn't feel maze like at all… just feels like weird rings on a map
+  with some paths through… nothing should really be a ring at all particularly now that
+  biomes are cells."* Correct on both counts, and the cause is structural: **cells decide
+  the biome LABEL and the prop KINDS, while `Area` — a radius band — is still the unit of
+  everything structural** (elevation, dungeon-ness, the Shift's region, streaming, the
+  terrain wire message, density compensation). Cells were painted onto a ring substrate.
+  - *The world:* forest mazes with trees, ashfall with mountain ranges, tundra with both,
+    mire with trees and water — while **field and desert maze with nothing** and are the
+    open crossings between. Everything funnels to **d3200, the end of the world and the
+    prison biome**. Only a couple of routes reach it; the rest of the branches are **dead
+    ends that end in dungeons and other things worth finding**, which is what makes going
+    north or south worth doing at all.
+  - *The macro maze is the CELL GRAPH* — each shared boundary a pass or a barrier,
+    connectivity guaranteed by construction, deliberately not a tree, with terminal
+    branches. *The micro maze is authored parts inside a pass* (the old `WG-8`), because a
+    cell is ~260 units across at r=400 and cannot make a 20-unit corridor.
+  - *The teardrop:* rather than choosing which portion of the deep band is the prison —
+    today `EXCLUSIVE` makes it the WHOLE annulus past d3000, ~15,700 units of arc you can
+    arrive at anywhere along — **taper the land** by making `arc_half_rad` a function of
+    radius in `coast::sea_depth`. Then "only the prison draws out here" and "the world
+    funnels to a point" are one sentence, with no special case: `is_land` is already what
+    movement, routing, placement and the shader ask. Deep rings get SMALLER, so
+    `maze_radial_scale_cap` stops binding as a side effect.
+  - *The loop:* the Shift erodes a found route → **anchor** it → an anchored route is a
+    **ROAD** (fast travel, so you never re-solve ground you paid for) → player towns on held
+    routes **link by teleport, and a link requires the route to still be held**. Town Portal
+    still only ever returns you to the Hub; warping to a player town **costs chits every
+    time** (a recurring sink), and you may only warp to a town **you have reached on foot**
+    — without that, the first crew to solve the maze builds a ladder to d3200 for the whole
+    server. ⚠️ `anchor_pin_radius = 90.0` pins a DISC; under a maze an anchor must hold
+    **passes**, so a route of N cells costs N anchors and N upkeep.
+  - ⚠️ *What it breaks:* a real route **doubles back**, and `route_point_at`/`path_y_at`
+    assume the route crosses each ring exactly once; `ensure_frontier` streams by max radius
+    and assumes outward progress; **"endless" ends** (CANON §B needs the amendment, not a
+    quiet test edit); and `Area` stops being the structural unit, which reaches the client.
+  - ⚠️ *The tension to watch:* a funnel makes the centre line geometrically shortest, so the
+    taper itself is a reason to just head east — the thing the maze exists to prevent. Gentle
+    taper through the mid-world, passes near the point deliberately off-axis, and a
+    **tortuosity floor and ceiling** held by test.
 
 - [ ] **FS-1 — Camping in the field.** An item or mechanic to make a temporary
   safe rest in the maze (heal/regroup/pass time, with risk — think

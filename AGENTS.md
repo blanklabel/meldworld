@@ -1650,6 +1650,50 @@ the snapshot tags entities on `avatar_state` — `mob:<kind>:<faction>`, `portal
   construction (unit-tested across seeds). The client draws the path as a faint trail
   (sent on `run.started`, field `path`).
 
+**A CLEAR PATH IS A WORLD DISTANCE, AND IT WAS ASKED IN THE CORRIDOR FRAME.**
+`path_clear_radius` is authored at 1.9 — deliberately narrow, "was a 4.0 highway that read as
+a corridor" — but "is this on the trail" was measured where corridor `y` is an ANGLE, so the
+cleared tube fanned out with depth: **22 world units wide at d60 and 438 at d1200**, swept
+along the one line every player walks. That, not density, is why *"every biome just kinda
+looks like a big open field"*: the deep ring kept its designed terrain and **not one prop of
+it was within sight of the trail** (measured, forest-pinned: 0.0 props per 1000 u² within 50
+units of the trail at d200, d550 AND d1200, against ring densities of 13.1 / 5.2 / 2.5).
+Raising `maze_radial_scale_cap` could never have fixed it — more props, all still excluded
+from the player's own neighbourhood — which is exactly why the earlier arithmetic fixes
+changed nothing past ~d550 and the cap got blamed. `clear_of_routes` measures it in WORLD
+units now and is the ONE place the rule is asked; it had **four** copies (sparse scatter, maze
+fill, the Shift's re-scatter, the build refusal), all four wrong the same way. Fourth instance
+of the bent-frame trap, after the tree spacing that asked for 392 and placed 90, the creature
+grouping, and the divider walls. ⚠️ **A RING MEASUREMENT CANNOT SEE THIS** — the ring-density
+guard passed for the whole life of the bug, because it was true. Density is held as a **band
+along the trail against that ring's own density** (`the_trail_holds_its_terrain_at_every
+_depth`), which is the quantity a player meets.
+
+⚠️ **AND A TEST WAS WRITTEN IN THE SAME WRONG FRAME, WHICH IS WHY NOTHING CAUGHT IT.**
+`the_way_out_survives_every_shift` corridorized each prop and measured against
+`corridor_path` — checking the fanned swath rather than the tube a player walks — so it
+agreed with the broken placement and went green for as long as both were wrong. Its
+generation-time twin (`no_obstacle_intrudes_the_clear_path_and_the_ends_stay_grounded`) had
+always measured world-against-world and stayed green throughout, which is what proves
+feasibility was never actually broken. **When a guard and the code it guards share a frame
+convention, the guard is not evidence** — find the assertion that measures the same property
+a different way and see whether IT agrees. Feasibility cannot regress from this fix by
+construction: the tube's MINIMUM half-width is unchanged at 1.9, which is what it always was
+along the radial axis; only the sideways excess is gone.
+
+⚠️ **AND A COVERAGE MEASUREMENT NEARLY RETIRED THE REAL FIX, BY MEASURING A DIFFERENT BUG.**
+`WG-6`'s other half is to concentrate the fill in a band along the route. A naive measurement
+said that was already pointless — a 55-unit band around the route network appeared to cover
+100% of a ring out to d550 and 62-90% deep, so the band *is* the ring. It is an artifact of
+the WEB: its trail nodes are offset by `wrng.range(6.0, lat)` in **corridor** units, and
+corridor y is an ANGLE, so at depth one fork sweeps thousands of world units across the fan.
+Summed per ring, the web runs **18,000-24,000 units against the backbone's 222-2,430**.
+Backbone alone, coverage at 55 units is **26% / 15% / 2% / 11%** at d200 / d550 / d900 /
+d1200 — so the ring's interior really is unreachable and the band is still the fix. **Convert
+the web offsets through the arc stretch before trusting any coverage number**, or you are
+measuring the fan rather than the trails. Third instrument in one sitting to hand back a
+confident number about something it was not looking at.
+
 - **AND `monster_spacing` IS NOT THE DENSITY KNOB WHERE IT MATTERS.** `lanes` is purely
 geometric — arc width over corridor width, capped by `creature_radial_lane_cap` — and never
 reads `monster_spacing`, so past the cap your nearest creature is in an ADJACENT LANE rather
