@@ -2022,6 +2022,21 @@ The tell that you have hit one is a guarantee that holds in isolation and fails 
 world. And the reason props resolve OPPOSITELY to creatures is the whole point: yielding is not
 a default, it is a judgement about which thing carries meaning.
 
+⚠️ **AND A DECK IS A STRAIGHT SEGMENT WHILE A CROSSING CAN BE A CURVE.** `bridge_span`
+collapses a run of drowned trail into ONE straight capsule from its first vertex to its last,
+so where the trail crosses at an angle — or bows around a range, a peak, a lake — the deck
+cuts the chord and misses the middle of its own run. Measured on seed 424242: one section
+found **89** drowned trail vertices, laid **one** span, and left **26** of them in open water
+at r=2283. That is `the_clear_path_crosses_at_an_isthmus_and_never_swims` failing, and
+**nothing downstream could have caught it**: A* had already drawn that trail and was never
+asked again, and `backbone_feasible` samples the route before the deeper section that cuts the
+strait even exists. **The bridging pass is the only place that knows both facts at once, so it
+has to check its own work** — it verifies the deck carries the trail at the party's width (the
+same clearance `astar_route` keeps from water, not a point test) and otherwise falls back to
+preference 3, *do not cut the strait*. Cost, measured: **one strait per world** (14 → 13 at
+d3000, 20 → 19 at d6000), so the fallback stays surgical rather than un-dividing the
+continents near the trail the way refusing every bridged crossing once did.
+
 ⚠️ **AND A CHECK THAT WALKS CAN BE SLID PAST.** `backbone_feasible` ran its probe for 100,000
 iterations, and `apply_move` slides along whatever refuses a step — so a route crossing open sea
 could be ground around a few units at a time until the probe reached the portal and the world

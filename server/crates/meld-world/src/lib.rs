@@ -5147,6 +5147,30 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
             }) {
                 return;
             }
+            // ⚠️ **A DECK IS A STRAIGHT SEGMENT AND A CROSSING CAN BE A CURVE.**
+            //
+            // `bridge_span` collapses a run of drowned trail into ONE straight capsule from
+            // its first vertex to its last. Where the trail crosses at an angle — or bows
+            // around a range, a peak, a lake — the deck cuts the chord and misses the middle
+            // of its own run. Measured on seed 424242: section 23 found **89** drowned
+            // vertices, laid **one** span, and left **26** of them in open water at r=2283,
+            // which is exactly `the_clear_path_crosses_at_an_isthmus_and_never_swims` failing.
+            //
+            // Nothing downstream could catch it, either: A* had already drawn that trail and
+            // was never asked again, and `backbone_feasible` samples the route BEFORE the
+            // deeper section that cuts this strait exists. The bridging pass is the only place
+            // that knows both facts at once, so it has to check its own work.
+            //
+            // Verified against the party's width, not a mathematical point — the same
+            // clearance `astar_route` keeps from water — and the fallback is preference 3
+            // from the order above: **do not cut the strait**. A sealed world is worse than a
+            // missing barrier, and a route that swims is worse than both.
+            let pad = (self.path_clear_radius + self.player_radius) as f32;
+            if wet.iter().any(|w| {
+                meld_proto::coast::bridge_clearance(w.x as f32, w.y as f32, &spans) >= -pad
+            }) {
+                return;
+            }
         }
         // …and never over a PEAK already standing (see `clear_of_peaks`). Sampled along the
         // strait's own centre-line arc, because a strait is a sector, not a disc.
@@ -9840,6 +9864,29 @@ mod tests {
                 landed += 1;
             }
             assert!(landed >= 5, "only {landed} Shifts actually changed the ground");
+        }
+
+        /// A repaint is stored as an INDEX into `regions::BIOMES`, and a name that is not in
+        /// that list resolves to index 0 — so a Shift whose biome came from some other list
+        /// would silently repaint the ground `field` while spawning its own creatures. Both
+        /// sides read one list today; this is what keeps it that way.
+        #[test]
+        fn every_biome_a_shift_can_land_has_an_index_to_repaint_with() {
+            let (b, a) = world();
+            let mut seen = 0;
+            for g in 0..80u64 {
+                let roll = shift::roll(&b, a.seed, g);
+                let Some((first, _)) = a.shift_region(&b, &roll) else { continue };
+                let to = a.incoming_biome_for(&b, &roll, first);
+                assert!(
+                    meld_proto::regions::biome_index(to).is_some(),
+                    "gen {g}: a Shift can land `{to}`, which is not in `regions::BIOMES` — \
+                     its repaint would paint {} instead",
+                    meld_proto::regions::BIOMES[0]
+                );
+                seen += 1;
+            }
+            assert!(seen >= 10, "only {seen} rolls exercised");
         }
 
         /// A region is a PATCH of cells, not an annulus. Repainting every bearing at a depth

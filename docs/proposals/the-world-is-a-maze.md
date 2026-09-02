@@ -580,6 +580,38 @@ peaks, and the creatures it spared are still their own biome's. Same shape as
 `the_way_out_survives_every_shift` measuring the fanned swath instead of the tube: **when a
 guard and the code it guards share a frame convention, the guard is not evidence.**
 
+### 3.9 The gate was red for a reason nobody had looked at
+
+⚠️ **The branch was red before any of stage 5's work, and I nearly merged it.** The earlier
+gate had reported `the_clear_path_crosses_at_an_isthmus_and_never_swims` failing and I never
+got a green verdict back before moving on — worth stating plainly, because "the gate is
+running" is not "the gate passed".
+
+**The cause: a deck is a straight segment and a crossing can be a curve.** `bridge_span`
+collapses a run of drowned trail into ONE straight capsule from its first vertex to its last.
+Where the trail crosses at an angle, or bows around a range or a lake, the deck cuts the chord
+and misses the middle of its own run. Seed 424242: one section found **89** drowned trail
+vertices, laid **one** span, and left **26** in open water at r=2283.
+
+**Why nothing caught it** is the part worth keeping. A\* draws a route that is dry by
+construction — it samples every bent edge at ≤1 world unit against the route's own pad — and
+it is never asked again. `backbone_feasible` samples the route before the deeper section that
+cuts the strait exists. The strait's own contract (`a_strait_is_cut_and_it_is_always
+_crossable`) holds in isolation, and held here. So the bridging pass is the only place in the
+generator that knows both "here is the trail" and "here is the new sea" at the same moment,
+and it was the one place not checking the result. **A pass that repairs something has to
+verify its own repair** — the same shape as the dependency-order table in `AGENTS.md`, one
+level down.
+
+It also took five wrong hypotheses to find, every one of them plausible and every one killed
+by an instrument rather than by argument: a later section drowning an earlier route (ruled out
+— identical wet set at every reach), a straight stub-to-next-section chord (ruled out — no gap
+in `corridor_path`), A\* accepting wet edges (ruled out — a debug print showed every route dry
+when drawn), the strait sealing its ring (ruled out — 1347 of 2401 bearings at that radius
+clear the pad), and two overlapping straits drowning each other's isthmus (ruled out by
+per-strait attribution). The thing that actually found it was printing `wet` and `spans` at
+the decision point: `wet=89 spans=1 DROWNED 26`.
+
 ## 5. Invariants
 
 The contract, all testable:

@@ -335,11 +335,13 @@ reconnects mid-window receives the next warning on schedule with no catch-up sta
 | Field | Type | Required | Nullable | Default | Description |
 |-------|------|----------|----------|---------|-------------|
 | generation | integer (int64, u64) | Yes | No | — | Which Shift this is. Monotonic per world; pairs the warning with its `world.shift`. |
-| inner_radius | number (f64) | Yes | No | — | Inner edge of the doomed ring, in world units from the hub. A region is a whole section span, and a section is a radius ring. |
-| outer_radius | number (f64) | Yes | No | — | Outer edge of the ring. |
+| inner_radius | number (f64) | Yes | No | — | Inner edge of the doomed region's radius band, in world units from the hub. |
+| outer_radius | number (f64) | Yes | No | — | Outer edge of the band. |
 | biome | string | Yes | No | — | What the ring is about to become (`forest`/`desert`/`ashfall`/`tundra`/`mire`/`field`). Never the biome it already is, and never one the `[biome_gate]` holds deeper than this radius. |
 | lands_in_ms | integer (int64, u64) | Yes | No | — | Milliseconds until it lands. `[shift] warning_ticks` is held by test to be long enough to actually walk out of the widest region the size table can roll — a Shift you cannot escape is a dice roll, not a hazard. |
-| caught | boolean | No | No | `false` | Whether *this* player is inside the ring right now. The server owns the fact; the client owns how loud to be about it. |
+| caught | boolean | No | No | `false` | Whether *this* player is inside the region right now. The server owns the fact; the client owns how loud to be about it. |
+| arc_center | number (f64) | No | No | `0` | Centre of the doomed **bearing wedge**, in radians. A region is a PATCH of cells, not a whole annulus — without this the tell lights a full ring around the part that actually goes, sending everyone at that depth running from weather that was never coming. |
+| arc_half | number (f64) | No | No | `0` | Half-width of that wedge, in radians. `0` means "no wedge given" and the whole ring is treated as doomed, which is what an older server's tell looks like. |
 
 **Example**
 
@@ -354,10 +356,22 @@ reconnects mid-window receives the next warning on schedule with no catch-up sta
 **Source:** CANON.md D20 / §W2.
 **Direction:** S2C — broadcast to every player in the world.
 
-Sent the tick the region swaps. A `world.terrain_section` for each retiled section
-follows immediately and is what actually repaints the ground: the client keys its
-biome ground shader and HUD label off per-section radius rings, so re-sending the
-sections *is* the retile. This message is the words and the damage.
+Sent the tick the region swaps.
+
+> ⚠️ **This section used to say the retiled `world.terrain_section` messages "are what
+> actually repaints the ground", because the client keyed its biome ground off per-section
+> radius rings.** That was true when it was written and false from `WG-7` on, which made a
+> cell's biome **analytic** — derived from the region grid, the world seed and the
+> `[biome_gate]`, so a world can stream outward with no lookup table. From then until
+> `WG-11` a Shift swapped the region's biome, re-scattered its props, dealt Force damage and
+> announced *"Mire became Desert"* — and the ground stayed mire for the life of the world,
+> because nothing on the wire could move a derivation that only reads the seed.
+
+The retiled `world.terrain_section` messages carry **geometry** (peaks and the rest of a
+section's landforms). The biome comes from **`repaints`** below: the cells that changed and
+what they became, which the client folds into its own copy of the decomposition so its ground
+shader, grass, minimap and HUD label all agree with the server. This message is also the words
+and the damage.
 
 **The region's props are re-scattered and its mountains re-cut**, not reskinned: the
 incoming biome strews its own count at its own density in its own places, and raises
@@ -377,9 +391,12 @@ resource nodes do not, and what grows back belongs to the new biome.
 | Field | Type | Required | Nullable | Default | Description |
 |-------|------|----------|----------|---------|-------------|
 | generation | integer (int64, u64) | Yes | No | — | Matches the `world.shift_warning` that announced it. |
-| inner_radius | number (f64) | Yes | No | — | Inner edge of the swapped ring. |
-| outer_radius | number (f64) | Yes | No | — | Outer edge of the swapped ring. |
-| biome | string | Yes | No | — | What the ring is now. |
+| inner_radius | number (f64) | Yes | No | — | Inner edge of the swapped region's radius band. |
+| outer_radius | number (f64) | Yes | No | — | Outer edge of that band. |
+| arc_center | number (f64) | No | No | `0` | Centre of the swapped **bearing wedge**, in radians — the region is a patch, so the band alone describes a ring around it. |
+| arc_half | number (f64) | No | No | `0` | Half-width of that wedge, in radians. |
+| repaints | array of object | No | No | `[]` | **The cells that changed, and what they became** — `{cell, biome}`, where `cell` is a packed `regions::Cell::key` and `biome` is an index into `regions::BIOMES`. ⚠️ **This is the only thing that moves the ground.** A cell's biome is derived identically on both sides of the wire, so a client that ignores this paints the world exactly as the seed left it while the server spawns the new biome's creatures on top of it. Fold each entry into the decomposition received on `run.started`; the resolution order there is capstone, then repaint, then the seed's own roll. |
+| biome | string | Yes | No | — | What the region is now. |
 | from_biome | string | No | No | `""` | What it stopped being, for the line the client prints. |
 | wiped | array of string (id) | No | No | `[]` | Entity ids the Shift removed, so a client drops them on the same frame the ground changes rather than one snapshot later. |
 | damage | array of integer (int32) | No | No | `[]` | HP each of **this** player's heroes lost to the Force blast, parallel to the party; empty for anyone who was outside the ring. The magnitude is a fraction of each hero's *own* max HP scaled by the region's size (`[shift] damage_fraction_min`/`max`) — a flat blast would be a death sentence at level 1 and a rounding error at 100. A party wiped by one ends its run `died`, exactly as a sprung trap does. |

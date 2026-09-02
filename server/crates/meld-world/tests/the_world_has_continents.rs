@@ -138,6 +138,47 @@ fn a_strait_leaves_dry_ground_on_both_of_its_shores() {
     }
 }
 
+/// **A DECK HAS TO CARRY THE TRAIL, NOT JUST CROSS THE SEA NEAR IT.**
+///
+/// `bridge_span` collapses a run of drowned trail into ONE straight capsule from its first
+/// vertex to its last, so where the trail crosses at an angle — or bows around a range, a
+/// peak, a lake — the deck cuts the chord and misses the middle of its own run. Measured on
+/// seed 424242: section 23 found **89** drowned vertices, laid **one** span, and left **26**
+/// of them in open water at r=2283.
+///
+/// Nothing else could have caught it. A* had already drawn that trail and was never asked
+/// again, and `backbone_feasible` samples the route before the deeper section that cuts the
+/// strait even exists — so the bridging pass is the only place that knows both facts at once.
+///
+/// Asserted with the ROUTE'S OWN CLEARANCE rather than a point test, because that is what
+/// `astar_route` guarantees and what a deck therefore has to preserve: a trail that clears
+/// water by a hair is one the party wades.
+#[test]
+fn a_bridged_crossing_carries_the_trail_at_a_partys_width() {
+    let b = Balance::load_default().unwrap();
+    // The clearance `astar_route` keeps from water (`path_clear_radius + player_radius`).
+    let pad = (b.worldgen.path_clear_radius + b.worldgen.player_radius) as f32;
+    for seed in [1u64, 7, 42, 99, 424242, 987654] {
+        let a = deep_world(seed);
+        let shore = a.shore();
+        let mut worst = (f32::MIN, 0.0f64, 0.0f64);
+        for w in a.path.iter() {
+            let d = shore.water(w.x as f32, w.y as f32);
+            if d > worst.0 {
+                worst = (d, w.x, w.y);
+            }
+        }
+        assert!(
+            worst.0 < -pad,
+            "seed {seed}: the trail comes within {:.2} of water at ({:.0}, {:.0}) — the route \
+             keeps {pad:.2} from it, so this is a wade the pathfinder never agreed to",
+            -worst.0,
+            worst.1,
+            worst.2
+        );
+    }
+}
+
 /// **The guaranteed route never swims.** The whole point of putting the strait in `coast` —
 /// and of cutting it BEFORE the path is routed — is that `astar_route` land-checks every bent
 /// edge and bends to an isthmus by itself. If this fails, the world has a barrier with no
