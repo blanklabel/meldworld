@@ -155,7 +155,15 @@ impl Grid {
     /// How many cells `ring` is divided into: its own arc length over the target width.
     pub fn sectors(&self, ring: u32) -> u32 {
         let r_mid = (ring as f32 + 0.5) * self.ring_step;
-        let arc = 2.0 * self.arc_half * r_mid;
+        // ⚠️ **THE TAPERED ARC, because a cell's size is the whole point of this number.**
+        // `WG-11` closes the world to a 200-unit corridor by d3200 (`coast::arc_half_at`),
+        // and asking the CONSTANT half-angle here cut that corridor into 65 sectors — cells
+        // **3 units across** where the design is ~250 on a side, so the biome map degenerates
+        // into noise at depth and the boundary count RISES with radius (129 per ring at
+        // d3200) exactly where the taper was meant to bring it down. The taper is a property
+        // of the world, so everything that asks "how wide is the world here" has to ask the
+        // tapered one: the sea, the bend, and this.
+        let arc = 2.0 * crate::coast::arc_half_at(r_mid, self.arc_half) * r_mid;
         let n = (arc / self.cell_width.max(1.0)).round();
         (n.max(1.0) as u32).min(MAX_SECTORS)
     }
@@ -267,6 +275,25 @@ impl Grid {
             }
         }
         out
+    }
+
+    /// How many of a cell's boundaries are PASSES — its degree in the maze graph (`WG-11`).
+    ///
+    /// `porosity_at` is asked per boundary rather than per cell, because porosity is a
+    /// property of the GROUND the boundary runs through and two cells of different biomes
+    /// share one: the caller hands back the porosity for the midpoint between the two, which
+    /// is exactly what the wall placement uses, so the degree a cell reports here and the
+    /// walls that actually stand are the same answer to the same question.
+    ///
+    /// **Degree 1 is a DEAD END** — a cell whose only way out is the way you came in. That is
+    /// what `WG-11` hangs content on: the through-route is for progress and the dead ends are
+    /// for reward, which is what makes wandering worth doing rather than a tax. Degree 0 is a
+    /// sealed cell, which no content should ever be placed in — nobody can reach it.
+    pub fn open_degree(&self, c: Cell, porosity_at: &dyn Fn(Cell, Cell) -> f32) -> usize {
+        self.neighbours(c)
+            .into_iter()
+            .filter(|n| pass_open(self.seed, c, *n, porosity_at(c, *n)))
+            .count()
     }
 
     /// Distance from `(x, z)` to the nearest cell boundary, in WORLD units, and the cell on
@@ -522,7 +549,13 @@ mod tests {
         ];
         for seed in [1u32, 7, 424242, 99, 1_000_003, 5, 31, 777] {
             let g = grid(seed);
-            for r in [400.0f32, 900.0, 1800.0, 3000.0] {
+            // ⚠️ **MEASURED WHERE THE WORLD HAS ROOM FOR VARIETY.** `r = 3000` was in this
+            // sweep and cannot be any more: `WG-11`'s teardrop closes the land to ~600 units
+            // there and 200 by d3200, so a full circle crosses one or two cells and demanding
+            // five biomes of it is demanding the wedge back. The property under test is that
+            // a circle is not ONE biome — that is the ring world this decomposition replaced —
+            // and it is tested across the radii where a circle is long enough to hold several.
+            for r in [400.0f32, 900.0, 1400.0, 1800.0] {
                 let mut seen = [false; BIOMES.len()];
                 let mut runs = 0;
                 let mut prev = usize::MAX;
@@ -552,27 +585,86 @@ mod tests {
 
     /// Cells must not become thin slivers or vast provinces as the fan widens, or "a region"
     /// means something different at the hub than at the frontier.
+    ///
+    /// ⚠️ **REWRITTEN FOR THE TEARDROP (`WG-11`), and the old form was measuring with the
+    /// wrong arc.** It computed a cell's width as `2·arc_half·r_mid / n` using the CONSTANT
+    /// half-angle while `sectors` had started dividing the TAPERED one — an untapered
+    /// numerator over a tapered denominator, which reports vast provinces at depth that do
+    /// not exist. Its second assertion (`sectors(12) > sectors(1) * 6`) encoded the older
+    /// world outright: that the arc is subdivided outward *forever*. The world now closes,
+    /// so the sector count RISES TO A PEAK AND FALLS, and demanding it keep climbing is
+    /// demanding the wedge back.
     #[test]
-    fn a_cell_stays_about_the_same_size_at_every_depth() {
+    fn a_cell_stays_about_the_same_size_where_the_world_has_room() {
         let g = grid(424242);
+        let width = |ring: u32| {
+            let r_mid = (ring as f32 + 0.5) * g.ring_step;
+            let n = g.sectors(ring).max(1);
+            2.0 * crate::coast::arc_half_at(r_mid, g.arc_half) * r_mid / n as f32
+        };
+        // Wherever the world is wider than one cell, a cell is about one cell wide.
         let mut widths = Vec::new();
         for ring in 1..14u32 {
-            let n = g.sectors(ring);
             let r_mid = (ring as f32 + 0.5) * g.ring_step;
-            widths.push(2.0 * g.arc_half * r_mid / n as f32);
+            let arc = 2.0 * crate::coast::arc_half_at(r_mid, g.arc_half) * r_mid;
+            if arc >= g.cell_width * 1.5 {
+                widths.push(width(ring));
+            }
         }
+        assert!(widths.len() > 6, "the sweep has to cover most of the world, got {}", widths.len());
         let (lo, hi) = widths.iter().fold((f32::MAX, 0.0f32), |(l, h), w| (l.min(*w), h.max(*w)));
         assert!(
             hi / lo < 1.6,
-            "cell arc width ranges {lo:.0}..{hi:.0} across the world — {:.2}x",
+            "cell arc width ranges {lo:.0}..{hi:.0} where the world has room — {:.2}x",
             hi / lo
         );
-        // And it is genuinely growing the sector COUNT rather than the cell.
-        assert!(g.sectors(12) > g.sectors(1) * 6, "the arc is not being subdivided outward");
+        // The arc IS subdivided outward while the world widens…
+        let mid = g.sectors(6);
+        assert!(mid > g.sectors(1) * 2, "the widening world must be subdivided: {mid} vs {}", g.sectors(1));
+        // …and then the teardrop closes and takes the subdivisions back with it, which is the
+        // whole reason the deep world became affordable to wall.
+        assert!(
+            g.sectors(13) < mid,
+            "the world must close again: {} sectors at the end against {mid} at the waist",
+            g.sectors(13)
+        );
     }
 
     /// Adjacency has to be mutual, or a Shift that spreads to a neighbour cannot be
     /// replayed from the other side and an anchor's hold has a direction.
+    /// A maze needs dead ends, and it needs them to be findable rather than theoretical.
+    #[test]
+    fn the_maze_has_dead_ends_and_no_sealed_cells() {
+        let g = grid(424242);
+        let porosity = |_a: Cell, _b: Cell| 0.45_f32; // a mazey biome
+        let (mut dead, mut sealed, mut total) = (0usize, 0usize, 0usize);
+        for ring in 1..10u32 {
+            for sector in 0..g.sectors(ring) {
+                let d = g.open_degree(Cell::new(ring, sector), &porosity);
+                total += 1;
+                if d == 0 {
+                    sealed += 1;
+                }
+                if d == 1 {
+                    dead += 1;
+                }
+            }
+        }
+        assert!(total > 50, "the sweep has to cover a real stretch of world, got {total}");
+        // Dead ends are the CONTENT of a maze, so a maze without any is a corridor.
+        assert!(
+            dead * 20 >= total,
+            "only {dead} dead ends in {total} cells — a maze needs somewhere to go that is \
+             worth going and does not lead onward"
+        );
+        // …and a SEALED cell is one nobody can enter, so nothing may be placed there. They
+        // are legal (the hash is free to close every side) and must simply be rare.
+        assert!(
+            sealed * 10 < total,
+            "{sealed} of {total} cells are sealed — that much of the world is unreachable"
+        );
+    }
+
     #[test]
     fn adjacency_is_symmetric() {
         let g = grid(424242);

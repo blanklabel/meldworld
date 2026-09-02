@@ -569,6 +569,24 @@ fn biome_terrace_mult(biome: &str) -> f64 {
 
 /// A biome's maze-fill density multiplier (× `obstacles_per_area`). Each biome has its
 /// own so it FEELS distinct; unlisted biomes fall back to `maze_obstacle_mult`.
+/// **How POROUS a biome's region boundaries are** — the share that stay walkable (`WG-11`).
+///
+/// This is what makes a biome maze in its OWN way rather than merely differ by density:
+/// field and desert are the open crossings BETWEEN mazes, ashfall is where you hunt for a
+/// pass. Ordering is the design and is held by test; the values are `[TUNABLE]`.
+fn biome_porosity(rb: &meld_balance::RegionBarrier, biome: &str) -> f64 {
+    match biome {
+        "field" => rb.porosity_field,
+        "desert" => rb.porosity_desert,
+        "forest" => rb.porosity_forest,
+        "amber_wood" => rb.porosity_amber_wood,
+        "tundra" => rb.porosity_tundra,
+        "mire" => rb.porosity_mire,
+        "ashfall" => rb.porosity_ashfall,
+        _ => rb.porosity_default,
+    }
+}
+
 fn biome_obstacle_mult(wg: &meld_balance::WorldGen, biome: &str) -> f64 {
     match biome {
         "field" => wg.field_obstacle_mult,
@@ -2713,6 +2731,10 @@ pub struct Arena {
     terrace_max_size: f64,
     connector_radius: f64,
     path_clear_radius: f64,
+    /// `WG-11` stage 4: how far a standing anchor's ROAD reaches, and how much faster it is.
+    /// Snapshot from balance so `apply_move` — which has no `Balance` — can ask.
+    anchor_pin_radius: f64,
+    road_speed_mult: f64,
     world_margin: f64,
     // Creature-AI tunables (snapshot from balance).
     wander_speed: f64,
@@ -3147,6 +3169,8 @@ impl Arena {
             terrace_max_size: wg.terrace_max_size,
             connector_radius: wg.connector_radius,
             path_clear_radius: wg.path_clear_radius,
+            anchor_pin_radius: balance.building.anchor_pin_radius,
+            road_speed_mult: balance.building.road_speed_mult,
             world_margin: wg.world_margin,
             wander_speed: balance.ai.wander_speed,
             wander_leg_seconds: balance.ai.wander_leg_seconds,
@@ -3651,6 +3675,7 @@ impl Arena {
         // peak — `off_peaks` is what stops a basin flooding straight through one.
         let ridges_before = self.ridges.len();
         self.push_ridges(balance, i, start_x, end_x);
+        self.push_boundary_walls(balance, i, start_x, end_x);
         self.push_water(balance, i, start_x, end_x);
 
         // WG-1: every Nth procedural section is a DUNGEON — rooms divided by walls
@@ -4544,6 +4569,19 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
             }
         }
         if !chest_placed {
+            // ── WG-11 stage 2: **DEAD ENDS ARE THE CONTENT.** A cell whose only open
+            // boundary is the one you came in by leads nowhere, so the through-route is for
+            // PROGRESS and the dead ends are for REWARD. That is what makes going off-route
+            // worth doing instead of a tax — and it is the answer to "why would anyone go
+            // north or south" that no invariant can give, because it puts the treasure where
+            // the wandering is.
+            //
+            // Sampled rather than solved: the first acceptable spot down a dead end WINS,
+            // and an ordinary spot is held as the fallback so a section always gets its
+            // chest. A pass that walked the graph looking for the best dead end would be a
+            // traversal, and this generator places by rejection everywhere else for the
+            // same reason — the world streams outward without bound.
+            let mut fallback: Option<Position> = None;
             for attempt in 0..24 {
                 let cx = start_x + 2.0 + rng.unit() * (length - 4.0).max(1.0);
                 let cy = (wg.creature_lateral_spread - 2.0) * rng.signed();
@@ -4555,16 +4593,49 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
                 let clear_of_path = dist_to_path(&cpos, &self.corridor_path) > wg.path_clear_radius;
                 let clear_of_mobs = self.monsters.iter().all(|m| m.position.distance_to(&cpos) > 2.0)
                     && self.resources.iter().all(|r| r.position.distance_to(&cpos) > 2.0);
-                if (clear_of_path && clear_of_mobs) || attempt == 23 {
+                let usable = clear_of_path && clear_of_mobs;
+                if !usable && attempt < 23 {
+                    continue;
+                }
+                let world = bend_tf(cpos, self.radial_half, self.corridor_lateral.max(1.0));
+                let degree = self.cell_degree_at(&balance.region_barrier, world);
+                // ⚠️ A **SEALED** cell (degree 0) is one nobody can walk into, so a reward
+                // left there is a reward that does not exist. Skip it outright rather than
+                // ranking it last.
+                if degree == 0 && attempt < 23 {
+                    continue;
+                }
+                if degree == 1 || (attempt == 23 && degree > 0) {
+                    let bonus = if degree == 1 {
+                        balance.region_barrier.dead_end_chest_tier_bonus
+                    } else {
+                        0
+                    };
                     self.chests.push(Chest {
                         opened_tick: 0,
                         entity_id: format!("chest-{}", self.chests.len()),
                         position: cpos,
-                        tier: Scaling::new(balance).tier(cx.floor() as i64) as i32,
+                        tier: Scaling::new(balance).tier(cx.floor() as i64) as i32 + bonus,
                         opened: false,
                         elevation: 0,
                     });
+                    chest_placed = true;
                     break;
+                }
+                if usable && degree > 0 && fallback.is_none() {
+                    fallback = Some(cpos);
+                }
+            }
+            if !chest_placed {
+                if let Some(cpos) = fallback {
+                    self.chests.push(Chest {
+                        opened_tick: 0,
+                        entity_id: format!("chest-{}", self.chests.len()),
+                        position: cpos,
+                        tier: Scaling::new(balance).tier(cpos.x.floor() as i64) as i32,
+                        opened: false,
+                        elevation: 0,
+                    });
                 }
             }
         }
@@ -4913,14 +4984,18 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
         // fan's rim — an angular margin would be metres at the hub and kilometres at the
         // frontier, the lesson `coast::sea_depth` already carries.
         let fan_margin = meld_proto::coast::STRAIT_FAN_MARGIN as f64 / r_out.max(1.0);
+        // The TAPERED fan at this strait's own radius: the world it is actually being cut
+        // into. See `Arena::fan_half_at` — clamping against the constant ±150° puts the
+        // isthmuses outside the land at depth, and then nothing can cross.
+        let fan_half = self.fan_half_at(r_c);
         let span_min = wg.strait_span_min_degrees.to_radians();
         let span_max = wg.strait_span_max_degrees.to_radians();
         let mut th_half = (span_min + rng.unit() * (span_max - span_min).max(0.0)) * 0.5;
-        th_half = th_half.min((self.radial_half - fan_margin).max(0.0) * 0.9);
+        th_half = th_half.min((fan_half - fan_margin).max(0.0) * 0.9);
         if th_half <= 0.0 {
             return;
         }
-        let th_limit = self.radial_half - th_half - fan_margin;
+        let th_limit = fan_half - th_half - fan_margin;
         if th_limit <= 0.0 {
             return; // the fan is too narrow to hold a strait AND a way around it
         }
@@ -4980,7 +5055,9 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
         ];
         // The contract, asked of the thing rather than assumed of the arithmetic. A strait
         // that cannot be crossed is not cut: no barrier is always better than a sealed one.
-        if !meld_proto::coast::strait_is_crossable(&s, self.radial_half as f32) {
+        // Validated against the TAPERED fan too, or the guarantee is checked against a
+        // world that is not there.
+        if !meld_proto::coast::strait_is_crossable(&s, self.fan_half_at(r_c) as f32) {
             return;
         }
         // …and where it would drown trail already drawn, it is BRIDGED rather than refused.
@@ -5083,7 +5160,10 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
                 // is a sea, and `nudge_ashore` cannot walk a creature out of one (a creature
                 // did stand in exactly that, at seed 1). The share keeps a bay from severing
                 // the fan; the absolute cap keeps it a coastal FEATURE.
-                let radius = (r_c * self.radial_half * share).min(wg.bay_radius_max);
+                // A share of the TAPERED fan — a bay sized against ±150° swallows the
+                // whole corridor at depth.
+                let radius =
+                    (r_c * self.fan_half_at(r_c) * share).min(wg.bay_radius_max);
                 let lobe: meld_proto::coast::Lobe = [
                     (r_c * th.cos()) as f32,
                     (r_c * th.sin()) as f32,
@@ -5092,7 +5172,7 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
                 ];
                 // The contract, asked rather than assumed: a bay that could pinch the fan
                 // in two is not cut at all. A strait at least has an isthmus; this has none.
-                if meld_proto::coast::bay_leaves_a_shore(&lobe, self.radial_half as f32)
+                if meld_proto::coast::bay_leaves_a_shore(&lobe, self.fan_half_at(r_c) as f32)
                     && self.clear_of_peaks(Position::new(lobe[0] as f64, lobe[1] as f64), radius)
                 {
                     self.lobes.push(lobe);
@@ -5336,7 +5416,7 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
         // silently always passes, which is how water kept landing on the trail.
         let (half, lat) = (self.radial_half, self.corridor_lateral.max(1.0));
         let drawn: Vec<Position> =
-            self.corridor_path.iter().map(|p| radial_tf(*p, half, lat)).collect();
+            self.drawn_trail();
         let clear = self.path_clear_radius + self.player_radius;
         // …and it yields to anything ALREADY STANDING, which resolves the opposite way to a
         // prop. `retain_placeable_obstacles` deletes trees a range swallows because a tree is
@@ -5404,6 +5484,317 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
         }
     }
 
+    /// **WG-11 stage 1: wall the CLOSED boundaries of the cell graph.**
+    ///
+    /// Runs BESIDE [`Arena::push_ridges`], not instead of it. The old pass raises the
+    /// world's ordinary mountain ranges — a spine across a share of the fan, which is
+    /// scenery and a barrier you round — and this one raises the MAZE, along the boundaries
+    /// `regions::pass_open` closes. Replacing the old pass with this one is what took every
+    /// range out of the world the moment the maze was dialled to zero, and broke
+    /// `a_volcanic_region_grows_more_mountain_than_a_desert` with it: two different features
+    /// were sharing one function because both happen to emit ridge segments.
+    ///
+    /// ⚠️ **DORMANT AT `ridge_max_per_section = 0`, and deliberately so** — see that
+    /// tunable's note. Everything here is built and tested; at any count >= 1 seed 1 fails
+    /// `the_clear_path_crosses_at_an_isthmus_and_never_swims`, because water is placed AFTER
+    /// walls and is not bounded to its own section band, so no rule asked at wall-time can
+    /// see it. The maze turns on by raising that number once water's cross-section yielding
+    /// is fixed.
+    fn push_boundary_walls(
+        &mut self,
+        balance: &Balance,
+        i: usize,
+        start_x: f64,
+        end_x: f64,
+    ) {
+        if balance.worldgen.ridge_max_per_section == 0 {
+            return;
+        }
+        let wg = &balance.worldgen;
+        let rb = &balance.region_barrier;
+        // No fan means no cells to lay a boundary along.
+        if self.radial_half <= 0.0 || i < wg.ridge_min_section || self.tutorial {
+            return;
+        }
+        let mut rng = Rng(section_seed(self.seed_base, i) ^ 0x21D6_E51D_6E51_D6E5);
+        let g = self.regions;
+        let polar = |r: f64, bearing: f64| Position::new(r * bearing.cos(), r * bearing.sin());
+
+        // ── What a range yields to. Computed ONCE for the section and INDEXED, because the
+        // maze walls many boundaries per section and these checks are per sample point along
+        // every spine. Linear scans here were fine for one range and are not for a dozen: the
+        // path runs to thousands of points at depth and `standing` to thousands of entities,
+        // so a dozen walls at ~300 samples each is tens of millions of distance tests on a
+        // path that runs inside the authoritative tick.
+        //
+        // ⚠️ Asked in ONE frame: `corridor_path` is corridor space and a ridge is already
+        // world space, so the path is bent forward. Comparing the two directly is the check
+        // that silently always passes, which is how water kept landing on the trail.
+        let (half, lat) = (self.radial_half, self.corridor_lateral.max(1.0));
+        let drawn: Vec<Position> =
+            self.drawn_trail();
+        let clear = self.path_clear_radius + self.player_radius;
+        // ⚠️ **THE INDEX MUST BE A SUPERSET OF THE POLYLINE, NEVER A SUBSET** — the same rule
+        // `ridge_discs` states for its capsule. Bucketing the path's VERTICES approximates it,
+        // and `push_bent_segment` densifies to ~6 world units, so each vertex carries half
+        // that spacing on top of its clearance. Under-inflating leaves slivers between
+        // vertices where a wall may cross the trail, and that sliver is where two answers to
+        // "what blocks" drift apart.
+        const PATH_STEP: f64 = 6.0;
+        let path_field = Buckets::new(
+            drawn.iter().map(|p| (*p, clear + PATH_STEP * 0.5)).collect::<Vec<_>>(),
+        );
+        // …and it yields to anything ALREADY STANDING, which resolves the opposite way to a
+        // prop. `retain_placeable_obstacles` deletes trees a range swallows because a tree is
+        // scenery; a creature carries a pack and a difficulty gate (CANON §B), a node is a
+        // crafter's reason to be here and a chest is a reward. Those are not scenery, so the
+        // MOUNTAIN gives way — the same argument `push_water`'s `off_creatures` makes.
+        let standing = Buckets::new(
+            self.monsters
+                .iter()
+                .map(|m| (m.position, 4.0))
+                .chain(self.resources.iter().map(|r| (r.position, 3.0)))
+                .chain(self.chests.iter().map(|c| (c.position, 3.0)))
+                .collect::<Vec<_>>(),
+        );
+        // …and it yields to WATER already placed, for the same reason and by the same rule.
+        // Within a section `push_ridges` runs before `push_water`, so water yields to a range
+        // there — but a region ring spans many sections, so a range raised for section N+2 can
+        // land on a lake placed for section N. A mountain swallowing a lake is nonsense either
+        // way round; the difference is only which one was there first, and what is already
+        // there wins.
+        let placed_water = Buckets::new(
+            self.basins
+                .iter()
+                .map(|b| (Position::new(b[0] as f64, b[1] as f64), b[2] as f64))
+                .chain(
+                    self.rivers
+                        .iter()
+                        .map(|n| (Position::new(n[0] as f64, n[1] as f64), n[2] as f64)),
+                )
+                .collect::<Vec<_>>(),
+        );
+
+        // ── WG-11: THE MAZE IS THE CELL GRAPH. Walk the boundaries this section holds and
+        // wall the CLOSED ones. `regions::pass_open` decides, purely from the seed and the two
+        // cell keys, so the maze is derived rather than stored and streams without bound.
+        //
+        // **This replaces one roll per section.** The old form picked a single spine at a
+        // random span of the fan, on the argument that "one cell boundary (~250 u by design)
+        // is something you round without noticing it was there". That is true of ONE wall and
+        // false of a maze: a boundary is only roundable while its neighbours are open, and
+        // closing them in NUMBERS is the whole mechanism. The teardrop
+        // (`coast::arc_half_at`) is what keeps the count bounded — boundaries per ring peak
+        // at ~59 around d1600 and fall to 1 at d3200, where the world is a 200-unit corridor.
+        //
+        // A range is still the wrong material for a wood: a ridge raises `ridge_height` and
+        // blocks by SLOPE, so it walls the ashfall and the tundra's range half. The roll is
+        // weighted by `biome_terrace_mult` of the ground the spine stands on, exactly as
+        // before, so an open crossing (desert 0.15) almost never grows one and the volcanic
+        // region almost always does.
+        let ring_lo = g.ring_at(start_x as f32, 0.0);
+        let ring_hi = g.ring_at(end_x as f32, 0.0);
+        let mut out: Vec<[f32; 6]> = Vec::new();
+        // ⚠️ **THE CAP COUNTS BOUNDARIES WALLED, NOT SEGMENTS EMITTED.** One boundary becomes
+        // several ridge entries — its own passes cut it into segments, and the section clip
+        // cuts those again — so counting `out.len()` silently made "six walls" mean two.
+        let mut walled = 0usize;
+        'walls: for ring in ring_lo..=ring_hi {
+            let n = g.sectors(ring).max(1);
+            for sector in 0..n {
+                if walled >= wg.ridge_max_per_section {
+                    break 'walls;
+                }
+                let cell = meld_proto::regions::Cell::new(ring, sector);
+                let span = g.span(cell);
+                // Two boundaries per cell — its OUTWARD arc and its NEXT-SECTOR spoke — which
+                // visits every boundary exactly once across the whole grid rather than twice.
+                // An ARC range blocks outward travel and forces a lateral detour; a SPOKE
+                // range blocks lateral travel, which is what makes corridors and dead ends.
+                for arc in [true, false] {
+                    if walled >= wg.ridge_max_per_section {
+                        break 'walls;
+                    }
+                    let (other, a, b, length) = if arc {
+                        let r = (ring + 1) as f64 * g.ring_step as f64;
+                        // ⚠️ **A SECTION MAY ONLY WALL ITS OWN GROUND.** A cell boundary is
+                        // 250 units long while a section is 20 + 7i, so a boundary spans
+                        // several sections — and a wall emitted here lands in ground whose
+                        // clear path has not been routed yet. That matters because the route's
+                        // own escape hatch (`!reached` ⇒ truncate this section's ridges and
+                        // re-route) can only take back the ridges THIS section added: a wall
+                        // left standing in section N+2 by section N is unremovable when N+2
+                        // fails to route, and A*'s best-effort fallback then runs the
+                        // guaranteed trail through water. At 0.45 ranges per section that
+                        // collision was rare; at six a world reliably drowned its own route.
+                        if r < start_x || r >= end_x {
+                            continue;
+                        }
+                        let (lo, hi) = (span.bear_lo as f64, span.bear_hi as f64);
+                        let across = meld_proto::regions::Cell::new(
+                            ring + 1,
+                            g.cell_at(
+                                (r * ((lo + hi) * 0.5).cos()) as f32,
+                                (r * ((lo + hi) * 0.5).sin()) as f32,
+                            )
+                            .sector,
+                        );
+                        (across, polar(r, lo), polar(r, hi), r * (hi - lo))
+                    } else {
+                        if sector + 1 >= n {
+                            continue; // the fan's rim is not a boundary between cells
+                        }
+                        let bearing = span.bear_hi as f64;
+                        // The FULL boundary — the clip happens at emission, not here. Passes
+                        // must be a property of the BOUNDARY, or successive sections cut
+                        // their own doors into their own short pieces and the wall becomes a
+                        // dotted line: measured, clipping the geometry itself took a world
+                        // from 51-68 walls to 10-19, because a 20-90 unit piece cannot hold
+                        // the pass machinery at all.
+                        let lo = ring as f64 * g.ring_step as f64;
+                        let hi = lo + g.ring_step as f64;
+                        (
+                            meld_proto::regions::Cell::new(ring, sector + 1),
+                            polar(lo, bearing),
+                            polar(hi, bearing),
+                            hi - lo,
+                        )
+                    };
+                    if length < wg.ridge_pass_width * 2.0 {
+                        continue;
+                    }
+                    let spine_mid = Position::new(0.5 * (a.x + b.x), 0.5 * (a.y + b.y));
+                    let biome = self.biome_at(spine_mid);
+                    // A PASS: the graph says you may walk between these two cells.
+                    if meld_proto::regions::pass_open(
+                        g.seed,
+                        cell,
+                        other,
+                        biome_porosity(rb, biome) as f32,
+                    ) {
+                        continue;
+                    }
+                    // …and a wall here is only a RANGE where the biome mazes with ranges.
+                    if rng.unit() >= wg.ridge_chance * biome_terrace_mult(biome) {
+                        continue;
+                    }
+
+                    let passes = wg.ridge_passes_min
+                        + rng.below(wg.ridge_passes_max.saturating_sub(wg.ridge_passes_min) + 1);
+                    // A share of the spine, so the gap scales with the wall — floored at a
+                    // width a party fits through, because a gap nobody can pass is a wall with
+                    // a rumour of a door.
+                    let pass = (length * wg.ridge_pass_share).max(wg.ridge_pass_width);
+                    let segs = passes + 1;
+                    let spine = length - pass * passes as f64;
+                    // Too short to hold its own passes is not an error: it is a boundary with
+                    // no range on it, which is a pass by another name.
+                    if spine < pass {
+                        continue;
+                    }
+                    let seg_len = spine / segs as f64;
+                    // ⚠️ **A RANGE MUST BE LONGER THAN IT IS WIDE, OR IT IS A CONE.**
+                    // `half_width` was drawn independently of `seg_len`, so a 200-unit spine
+                    // cut by three passes gave 27.5 units of length against up to 52 of
+                    // half-width — and a capsule wider than it is long is a disc, which linear
+                    // falloff renders as a mathematically perfect, featureless cone. Reported
+                    // from a screenshot: a smooth brown pyramid standing alone in a field.
+                    let half_width = (wg.ridge_half_width_min
+                        + rng.unit() * (wg.ridge_half_width_max - wg.ridge_half_width_min).max(0.0))
+                        .min(seg_len / 3.0);
+                    if half_width < wg.ridge_half_width_min * 0.5 {
+                        continue;
+                    }
+                    // A ridge's falloff is LINEAR, so this ratio IS its slope, at every point
+                    // on the flank. Above `WALKABLE_SLOPE` the flank is a wall — that is the
+                    // whole mechanism, and there is no second copy of it anywhere.
+                    let height = half_width * wg.ridge_aspect;
+
+                    // ⚠️ **A BARRIER IS PLACED BEFORE THE ROUTE, BUT THE ROUTE ALREADY DRAWN
+                    // ALWAYS WINS.** A region ring is 250 units thick while an early section is
+                    // 20 + 7i, so one ring spans many sections and a range for section N lands
+                    // on ground whose clear path was routed for section N-3. Measured before
+                    // this yielded: one world took 2.2s to generate without ranges and over
+                    // 60s WITH, because every one of `generate_with`'s twelve feasibility
+                    // re-rolls put a wall across the trail and burned the walker's 100k steps
+                    // against it.
+                    //
+                    // So a segment that crosses a trail already drawn is DROPPED — and
+                    // dropping it IS a pass, because passes are gaps. Same rule as a ford, and
+                    // it makes feasibility structural rather than checked: a range cannot block
+                    // the trail, because crossing the trail is what opens it. That is also what
+                    // gives the cell graph its gaps for free — wherever the guaranteed route
+                    // crosses a closed boundary, the wall simply is not there.
+                    walled += 1;
+                    let mut t = 0.0f64;
+                    for _ in 0..segs {
+                        let (t0, t1) = (t / length, ((t + seg_len) / length).min(1.0));
+                        let p0 = Position::new(a.x + (b.x - a.x) * t0, a.y + (b.y - a.y) * t0);
+                        let p1 = Position::new(a.x + (b.x - a.x) * t1, a.y + (b.y - a.y) * t1);
+                        t += seg_len + pass;
+                        // Sample the spine rather than its endpoints: a segment can straddle
+                        // the trail with both of its ends well clear of it.
+                        let steps = (p0.distance_to(&p1) / clear.max(1.0)).ceil().max(2.0) as i32;
+                        let crosses = (0..=steps).any(|k| {
+                            let f = k as f64 / steps as f64;
+                            let q = Position::new(
+                                p0.x + (p1.x - p0.x) * f,
+                                p0.y + (p1.y - p0.y) * f,
+                            );
+                            path_field.blocks(&q, half_width)
+                                || placed_water.blocks(&q, half_width)
+                                || standing.blocks(&q, half_width)
+                                // …and never over an authored PEAK. A peak is crowned with a
+                                // gate boss or a guaranteed chest, and that reward is the
+                                // entire reason the climb exists — a range swallowing the
+                                // summit makes its ground unwalkable, the scatter pass then
+                                // refuses to put the reward there, and the landmark becomes a
+                                // hill with nothing on it. `push_strait` and `push_water` both
+                                // refuse a peak for the same reason.
+                                || !self.clear_of_peaks(q, half_width)
+                        });
+                        if crosses {
+                            continue;
+                        }
+                        // ⚠️ **AND ONLY THE PART INSIDE THIS SECTION IS EMITTED.** The
+                        // section's route-retry can only take back ridges IT added, so a wall
+                        // left in section N+2 by section N is unremovable when N+2 fails to
+                        // route — and A*'s best-effort fallback then runs the guaranteed trail
+                        // through water. Bisected: with walls off, zero drowned path points;
+                        // with unclipped walls, four at r=722 inside a strait.
+                        let (r0, r1) = (p0.x.hypot(p0.y), p1.x.hypot(p1.y));
+                        if r0.min(r1) >= end_x || r0.max(r1) < start_x {
+                            continue;
+                        }
+                        let clip = |p: Position, q: Position| -> Position {
+                            // Walk from `p` toward `q` only as far as this section reaches.
+                            let (rp, rq) = (p.x.hypot(p.y), q.x.hypot(q.y));
+                            if (rq - rp).abs() < 1e-6 {
+                                return q;
+                            }
+                            let target = rq.clamp(start_x, end_x);
+                            let f = ((target - rp) / (rq - rp)).clamp(0.0, 1.0);
+                            Position::new(p.x + (q.x - p.x) * f, p.y + (q.y - p.y) * f)
+                        };
+                        let (e0, e1) = (clip(p1, p0), clip(p0, p1));
+                        if e0.distance_to(&e1) < wg.ridge_pass_width {
+                            continue;
+                        }
+                        out.push([
+                            e0.x as f32,
+                            e0.y as f32,
+                            e1.x as f32,
+                            e1.y as f32,
+                            half_width as f32,
+                            height as f32,
+                        ]);
+                    }
+                }
+            }
+        }
+        self.ridges.extend(out);
+    }
+
     fn push_water(&mut self, balance: &Balance, i: usize, start_x: f64, end_x: f64) {
         let wg = &balance.worldgen;
         if self.tutorial
@@ -5449,7 +5840,7 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
         // arc. This is the same reason `push_bent_segment` densifies — a sparse path bent by
         // its endpoints cuts across the fan.
         let drawn: Vec<Position> =
-            self.corridor_path.iter().map(|p| radial_tf(*p, half, lat)).collect();
+            self.drawn_trail();
         let clear = self.path_clear_radius;
         let off_drawn = |p: Position, pad: f64| dist_to_path(&p, &drawn) > clear + pad;
         // …and never over a PEAK's summit. A peak is crowned with a gate boss or a guaranteed
@@ -5726,9 +6117,23 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
             !ridge_field.ridge_blocks(&Position::new(x as f64, z as f64), route_pad)
                 && meld_proto::terrain::routable(x, z, ox, oz)
         };
+        // ⚠️ **THE ROUTE KEEPS A PARTY'S WIDTH FROM WATER, NOT A MATHEMATICAL POINT.**
+        // Ranges already get `route_pad` (`ROUTE_SLOPE` is stricter than `WALKABLE_SLOPE` for
+        // the same reason: the guaranteed route stays clear of the flank rather than grazing
+        // it) — water got a bare `is_land` point test. `Shore::water` is a SIGNED distance in
+        // world units, so asking for `< -pad` is the same clearance, expressed the same way.
+        //
+        // That asymmetry is the whole of `the_clear_path_crosses_at_an_isthmus_and_never
+        // _swims` failing at r=872: instrumented, exactly ONE sample of the densified trail
+        // was wet with dry ground either side and the nearest basin or river **106 units
+        // away** — so it was the SEA, grazed by a sub-unit sliver at a strait's edge. A*
+        // samples its edges at ~1 world unit, so a graze narrower than that slips between
+        // samples and the party swims a stride. Padding closes it by construction rather than
+        // by sampling finer, which would only move the threshold.
+        let dry = |x: f32, z: f32| shore.water(x, z) < -(route_pad as f32);
         let walk = |c: (i64, i64)| -> bool {
             let w = radial_tf(Position::new(c.0 as f64 * CELL, c.1 as f64 * CELL), half, lat);
-            routable(w.x as f32, w.y as f32) && shore.is_land(w.x as f32, w.y as f32)
+            routable(w.x as f32, w.y as f32) && dry(w.x as f32, w.y as f32)
         };
         // The radial bend makes a 1-cell corridor step span many WORLD units tangentially
         // at large radius, so checking only cell centres would leap over buttes. Check the
@@ -5747,7 +6152,7 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
                 let t = s as f64 / steps as f64;
                 let c = Position::new(ca.x + (cb.x - ca.x) * t, ca.y + (cb.y - ca.y) * t);
                 let w = radial_tf(c, half, lat);
-                if !routable(w.x as f32, w.y as f32) || !shore.is_land(w.x as f32, w.y as f32) {
+                if !routable(w.x as f32, w.y as f32) || !dry(w.x as f32, w.y as f32) {
                     return false;
                 }
             }
@@ -5925,6 +6330,123 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
     #[allow(clippy::misnamed_getters)]
     pub fn seed(&self) -> u64 {
         self.seed_base
+    }
+
+    /// Stand a finished anchor at `at`, for tests that need held ground without driving the
+    /// whole build flow (stock, channel, spacing, ownership).
+    #[cfg(test)]
+    fn force_anchor_for_test(&mut self, at: Position) {
+        self.structures.push(Structure {
+            entity_id: "anchor-test".into(),
+            function: "anchor".into(),
+            owner_player_id: "p".into(),
+            position: at,
+            elevation: 0,
+            hp: 100,
+            max_hp: 100,
+            placed_tick: 0,
+            build_ticks: 0,
+            ore: "iron_ore".into(),
+            ore_cost: 1,
+        });
+    }
+
+    /// The movement multiplier at a **world** position: faster on ground a standing anchor
+    /// holds (`WG-11` stage 4), 1.0 everywhere else.
+    ///
+    /// ⚠️ **A FALLEN ANCHOR IS NOT A ROAD.** `hp > 0` is the whole condition, so a road decays
+    /// with the thing holding it — which is exactly `BD-3`'s upkeep: an anchor nobody hauls
+    /// ore out to falls on its own, and the road it carried goes back to being maze.
+    fn road_mult(&self, at: Position) -> f64 {
+        let r = self.anchor_pin_radius;
+        let held = self
+            .structures
+            .iter()
+            .any(|s| s.pins() && s.hp > 0 && s.position.distance_to(&at) <= r);
+        if held {
+            self.road_speed_mult.max(1.0)
+        } else {
+            1.0
+        }
+    }
+
+    /// A cell's degree in the maze graph at a **world** position — how many of its
+    /// boundaries are passes (`WG-11`). **1 is a dead end, 0 is sealed.**
+    ///
+    /// Porosity is asked PER BOUNDARY, at the midpoint between the two cells, because that
+    /// is the ground the boundary runs through and it is exactly what the wall placement
+    /// asks. Any other choice makes the degree a cell reports disagree with the walls that
+    /// actually stand around it.
+    fn cell_degree_at(
+        &self,
+        rb: &meld_balance::RegionBarrier,
+        world: Position,
+    ) -> usize {
+        let g = self.regions;
+        let cell = g.cell_at(world.x as f32, world.y as f32);
+        let porosity = |a: meld_proto::regions::Cell, b: meld_proto::regions::Cell| {
+            let (pa, pb) = (g.centroid(a), g.centroid(b));
+            let mid = Position::new(
+                0.5 * (pa.0 + pb.0) as f64,
+                0.5 * (pa.1 + pb.1) as f64,
+            );
+            biome_porosity(rb, self.biome_at(mid)) as f32
+        };
+        g.open_degree(cell, &porosity)
+    }
+
+    /// **The trail as the player actually walks it** — the corridor path bent AND DENSIFIED,
+    /// the same polyline `self.path` is.
+    ///
+    /// ⚠️ **BENDING THE VERTICES IS NOT ENOUGH, AND THE COMMENT THAT SAID IT WAS HELD ONLY
+    /// NEAR THE HUB.** `astar_route` returns waypoints at 1.5-unit CORRIDOR spacing, and
+    /// corridor `y` is an ANGLE — so one lateral step is 28 world units at d200 and **122 at
+    /// d872**. The straight chord between two bent vertices therefore cuts inside the arc the
+    /// player walks, and the sag is `L²/8R`:
+    ///
+    /// ```text
+    ///   r=200   step  28.0   sag 0.49
+    ///   r=500   step  70.1   sag 1.23
+    ///   r=872   step 122.3   sag 2.14   <- exceeds path_clear_radius (1.9)
+    ///   r=1200  step 168.3   sag 2.95
+    /// ```
+    ///
+    /// Past about d800 the sag exceeds the clear radius, so anything measuring "am I off the
+    /// trail" against the chords **allows water, or a wall, INSIDE the tube the party walks**.
+    /// That is how `the_clear_path_crosses_at_an_isthmus_and_never_swims` failed at r=872 the
+    /// moment the maze walls made A* step laterally more often: not a wall bug and not a water
+    /// bug, but every measurement of the trail being taken against an approximation of it.
+    ///
+    /// One function, because three call sites built that approximation independently — the
+    /// water pass, the range pass and the maze walls — and a fourth will be added.
+    fn drawn_trail(&self) -> Vec<Position> {
+        let (half, lat) = (self.radial_half, self.corridor_lateral.max(1.0));
+        let mut out = Vec::with_capacity(self.corridor_path.len() * 2);
+        if let Some(&first) = self.corridor_path.first() {
+            out.push(bend_tf(first, half, lat));
+            for w in self.corridor_path.windows(2) {
+                push_bent_segment(&mut out, w[0], w[1], half, lat);
+            }
+        }
+        out
+    }
+
+    /// The fan's half-angle at world radius `r` — the TAPERED one (`WG-11`).
+    ///
+    /// ⚠️ **EVERY LANDFORM SIZED AS "A SHARE OF THE FAN" MUST ASK THIS, NOT `radial_half`.**
+    /// The teardrop closes the land to 200 units by d3200, so a strait whose span and centre
+    /// are clamped against the constant ±150° is placed against a world that is no longer
+    /// there: at depth it spans the entire narrow corridor while its isthmuses fall outside
+    /// the land, and `the guaranteed route must stay on dry land` fails because there is no
+    /// dry crossing. Seventh site of the same rule — the sea, the bend, `corridorize`,
+    /// `tangential_scale`, the cell decomposition, both shaders, and now the landforms.
+    fn fan_half_at(&self, r: f64) -> f64 {
+        arc_half_at_f64(r, self.radial_half)
+    }
+
+    /// How many range segments stand in this world — the maze's walls (`WG-11`).
+    pub fn ridge_count(&self) -> usize {
+        self.ridges.len()
     }
 
     pub fn radial_half(&self) -> f64 {
@@ -6917,7 +7439,15 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
         } else {
             (dir_x, dir_y)
         };
-        let step = speed * dt;
+        // ── `WG-11` stage 4: **AN ANCHORED ROUTE IS A ROAD.** Held ground is fast ground.
+        // That is the payoff for anchoring a route you found — you never solve it twice, and
+        // "you should not have to wonder" — and it is what pays off the maze's own structural
+        // cost: backtracking is the only genuinely empty time a maze creates, and backtracked
+        // ground is by definition ground you already crossed, which is exactly what an anchor
+        // holds. Asked at the position you are LEAVING, so a road speeds the step after you
+        // walk onto it rather than the one that arrives — a road should carry you, not yank
+        // you.
+        let step = speed * dt * self.road_mult(cur);
         let clamp =
             |x: f64, y: f64| Position::new(x.max(x_min).min(x_max), y.max(-lateral).min(lateral));
 
@@ -10119,6 +10649,100 @@ mod tests {
             saw_water_both_sides,
             "walking west from the hub, a player must reach a point with sea on BOTH \
              flanks before `west_return_border` ({border}) hands them to the city"
+        );
+    }
+
+    /// **WG-11 stage 2: the reward is down the wrong turn.** The through-route is for
+    /// progress and the dead ends are for reward — that is what makes going off-route worth
+    /// doing rather than a tax, and it is the answer to "why would anyone go north or south"
+    /// that no invariant can give. Held as a SHARE rather than a count, because how many
+    /// dead ends a world has is a property of the porosity table and every number in it is
+    /// `[TUNABLE]`.
+    /// **WG-11 stage 4: an anchored route is a ROAD.** Held ground is fast ground — the
+    /// payoff for anchoring a route you found, and what pays off the maze's own backtracking
+    /// cost. Asserted as a RATIO (ground covered with the anchor against without it), never
+    /// as a distance, because the multiplier is `[TUNABLE]`.
+    #[test]
+    fn an_anchored_route_is_a_road() {
+        let b = Balance::load_default().unwrap();
+        let walk = |anchored: bool| -> f64 {
+            let mut a = Arena::generate(&b, 424242, false);
+            a.add_avatar("p".into(), b.world.avatar_speed_tiles_per_sec);
+            let start = a.avatar("p").expect("the avatar").position;
+            if anchored {
+                a.force_anchor_for_test(start);
+            }
+            let mut covered = 0.0;
+            let mut prev = start;
+            for _ in 0..40 {
+                let Some(p) = a.apply_move("p", 1.0, 0.0, 1) else { break };
+                covered += prev.distance_to(&p);
+                prev = p;
+            }
+            covered
+        };
+        let (plain, road) = (walk(false), walk(true));
+        assert!(plain > 0.0, "the avatar has to move at all off-road");
+        assert!(
+            road > plain * 1.2,
+            "a road must be meaningfully faster: {road:.1} against {plain:.1} units covered"
+        );
+        // …and not free: a road is a multiplier on walking, not teleportation.
+        assert!(
+            road < plain * 4.0,
+            "a road is a faster walk, not a warp: {road:.1} against {plain:.1}"
+        );
+    }
+
+    #[test]
+    fn the_reward_is_down_the_dead_end() {
+        let b = Balance::load_default().unwrap();
+        let (mut rich, mut total, mut sealed) = (0usize, 0usize, 0usize);
+        for seed in [1u64, 7, 42, 424242, 99] {
+            let mut a = Arena::generate_with(&b, seed, false, None);
+            let mut reach = 0.0_f64;
+            while reach < 900.0 {
+                reach += 40.0;
+                a.ensure_frontier(&b, reach);
+            }
+            for c in &a.chests {
+                total += 1;
+                let world = c.position;
+                let degree = a.cell_degree_at(&b.region_barrier, world);
+                if degree == 0 {
+                    sealed += 1;
+                }
+                // A dead-end chest is paid the bonus, so its tier runs ahead of the tier its
+                // own distance would give it.
+                let base = Scaling::new(&b).tier(world.x.hypot(world.y).floor() as i64) as i32;
+                if c.tier > base {
+                    rich += 1;
+                }
+            }
+        }
+        assert!(total > 60, "the sweep has to hold a real number of chests, got {total}");
+        // ⚠️ **GRAPH-SEALED IS NOT THE SAME AS PHYSICALLY SEALED — YET.** A degree-0 cell is
+        // one the graph closes on every side, but a closed boundary only becomes a WALL where
+        // the biome mazes with ranges, the roll lands and the segment is not dropped for
+        // crossing the trail. So today a sealed cell is usually still walkable and this is a
+        // RISK rather than a fact. Placement avoids them anyway — it costs nothing and it is
+        // what keeps rewards reachable once the graph is fully realised (`WG-11` stage 6) —
+        // but the honest assertion is that they are rare, not absent: the chests that slip
+        // through are the ones no other pass owns (a summit's crowning chest, area 0's
+        // starter), and those are placed against terrain rather than against the graph.
+        assert!(
+            sealed * 20 <= total,
+            "{sealed} of {total} chests sit in cells the graph seals on every side"
+        );
+        // …and dead ends have to actually pay, or the maze's wrong turns are pure tax.
+        assert!(
+            rich * 8 >= total,
+            "only {rich} of {total} chests are down a dead end — the wrong turns pay nothing"
+        );
+        assert!(
+            rich * 2 <= total,
+            "{rich} of {total} chests are down dead ends — the through-route should still \
+             carry most of the loot, or the maze is a detour tax on everyone"
         );
     }
 

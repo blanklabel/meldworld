@@ -1688,6 +1688,20 @@ ridge_arc_share_min = 0.22      # a range's span as a share of the FAN, not in w
 ridge_arc_share_max = 0.46      # widest. CAPPED BELOW 1.0 ON PURPOSE, and that is what makes the world unsealable BY CONSTRUCTION rather than by check: a range always stops short of the fan's rim, so rounding its end is always possible. Same argument the strait uses.
 ridge_spoke_rings_min = 2       # a SPOKE range's radial extent, in region rings. Radial distance does not distort with depth, so this one is a straight multiple.
 ridge_spoke_rings_max = 4
+# WG-11: how many CLOSED cell boundaries one section may wall. The maze is the cell graph,
+# so walls come in numbers — a lone 250-unit wall is something you round without noticing,
+# and only its neighbours being closed too makes it a maze. Capped because every wall costs
+# placement work on a path that runs inside the authoritative tick; the teardrop is what keeps
+# the boundary count bounded (it peaks at ~59 per ring around d1600 and falls to 1 at d3200).
+# ⚠️ **HELD AT 0: THE GRAPH WALLS ARE LANDED BUT DORMANT.** Everything they need is here and
+# tested — `regions::pass_open`, the porosity table, the boundary walk, the section clip, the
+# yields — and at any count >= 1 seed 1 fails `the_clear_path_crosses_at_an_isthmus_and_never
+# _swims`: the trail cuts across water at r~872. It is NOT a density problem (it fails at one
+# wall) and NOT fixable from the wall side (a separation rule cannot see water that does not
+# exist yet — `push_water` runs after, and water is found by walking downhill up to ~800 units
+# and deliberately is not bounded to its own section band). The fix belongs with water's
+# cross-section yielding, and the maze turns on by raising this number once it lands.
+ridge_max_per_section = 6
 ridge_passes_min = 1            # interior passes per range. With the boundary's two ends that is at least three ways past — one door is the retired `Seam` again.
 ridge_passes_max = 3
 ridge_pass_share = 0.09         # a pass's width as a share of the range's own length, floored at `ridge_pass_width`. A share so the gap scales with the wall.
@@ -2551,6 +2565,12 @@ porosity_mire = 0.35             # trees AND water
 porosity_ashfall = 0.30          # ranges: the tightest, you are hunting a pass
 porosity_default = 0.55          # the deep authored biomes until they are tuned
 # How a barrier is drawn along the boundary it closes.
+# WG-11 stage 2: DEAD ENDS ARE THE CONTENT. A cell whose only open boundary is the one you
+# came in by leads nowhere — so the through-route is for PROGRESS and the dead ends are for
+# REWARD. That is what makes wandering worth doing rather than a tax, and it is the answer to
+# "why would anyone go north or south" that no invariant can give. A chest found down one is
+# worth more than a chest on the road. [TUNABLE]
+dead_end_chest_tier_bonus = 1    # extra loot tier for a chest at the end of a wrong turn
 band_half_width = 3.0            # half-thickness of the wall, world units
 prop_spacing = 3.0               # distance between barrier prop CENTRES along the line. Two
                                  # props of radius r leave a gap of `spacing - 2r`, and a
@@ -2895,6 +2915,12 @@ build_start_fraction = 0.15
 # How far an anchor's hold reaches, in world units. Wider than a section is deliberate:
 # the Shift is section-granular, so a pin narrower than a section could never hold a
 # whole one and the loop would never fire.
+# WG-11 stage 4: **AN ANCHORED ROUTE IS A ROAD.** Held ground is fast ground, so the payoff
+# for anchoring a route you found is that you never have to solve it twice — "you should not
+# have to wonder". It is also what pays off the maze's own structural cost: backtracking is
+# the only genuinely empty time a maze creates, and backtracked ground is by definition ground
+# you already crossed, which is exactly the ground an anchor holds. [TUNABLE]
+road_speed_mult = 1.6            # movement multiplier within `anchor_pin_radius` of a standing anchor
 anchor_pin_radius = 90.0
 # Repair: one unit of the structure's OWN material buys this much HP back. The counter to
 # attrition, and the reason a held region needs supply rather than just a builder. Paying in

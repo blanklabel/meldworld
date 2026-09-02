@@ -953,7 +953,9 @@ fn rg_hash32(seed: u32) -> u32 {
 
 fn rg_sectors(ring: u32) -> u32 {
     let r_mid = (f32(ring) + 0.5) * params.region.y;
-    let arc = 2.0 * params.region.x * r_mid;
+    // WG-11: the TAPERED arc — mirrors `regions::Grid::sectors`. Asking the constant
+    // half-angle here cuts the 200-unit end corridor into 65 three-unit slivers.
+    let arc = 2.0 * arc_half_at(r_mid, params.region.x) * r_mid;
     let n = round(arc / max(params.region.z, 1.0));
     return min(u32(max(n, 1.0)), 128u);
 }

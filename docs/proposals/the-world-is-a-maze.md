@@ -348,6 +348,20 @@ along a held pass so a road reads as a road from a distance. That is not decorat
   haul ore out to, and it survives its founder logging off. No new mechanic needed — and the
   per-warp chit cost on a *link* is the sink that keeps the network from being free.
 
+**What a road LOOKS like — decided.** A **worn dirt road: packed brown earth with wheel
+ruts**, and **at most two tiles wide**. Both halves matter:
+
+- *Packed earth with ruts* says **used**, which is the whole point — a road is not a paved
+  civic work, it is ground that enough people have walked and hauled over that the maze gave
+  up. It also reads as decaying gracefully: a road losing its anchors should thin back toward
+  wilderness, and worn earth has somewhere to go on the way (ruts fading, grass returning)
+  where flagstones would simply switch off.
+- *Two tiles at most* keeps it a **trail, not a highway** — the same argument
+  `path_clear_radius` already makes at 1.9 ("was a 4.0 highway that read as a corridor"). A
+  wide road would also outline the route from a distance, which is precisely what invariant 7
+  forbids: you must not be able to read where the through-route runs by looking at the ground.
+  At two tiles a road is legible when you are ON it and invisible from across a cell.
+
 ⚠️ **Two traps are already waiting for the visible road, both documented in blood.**
 `ground_biome.wgsl` mirrors the region decomposition analytically, but ranges and bridges ride
 as fixed-size uniform arrays — and *"TRUNCATION IS NOT A WINDOW"*: both shipped taking the
@@ -463,6 +477,33 @@ Three things follow, and the first corrects a worry stated above:
   answer as everywhere else** — backtracked ground is by definition ground you have already
   crossed, which is exactly the ground that becomes a road. That makes roads not a
   convenience but the mechanic that pays off the maze's own structural cost.
+
+### 3.7 The shoreline is a ruler edge, and it should not be
+
+⚠️ **MEASURED: the coast is a perfect RAY.** `sea_depth`'s fan term is
+`(theta - arc_half) * d`, so the ocean's edge sits at a constant bearing — **150.000° at
+every radius from d200 to d1200**, not approximately straight but exactly straight. Past
+`TAPER_START` it becomes a straight-sided 200-unit channel. The only things breaking it up
+are bays and isles, which are DISCS bitten out of a straight line, so the coast reads as a
+ruler edge with circular scallops.
+
+**The fix already exists one layer up.** `regions::Grid::warp_at` displaces ring boundaries
+using TWO harmonics of bearing, explicitly *"so the boundary is a wandering line rather than
+a lobed flower"* — and it is safe precisely because it depends on ONE variable, which keeps
+the partition well defined (the ring index stays monotone in radius along every ray). The
+same trick on `arc_half_at`, as a function of RADIUS, gives a meandering coast and inherits
+that property: the fan's width wanders, the field stays single-valued, and a walk outward can
+cross a cove and come back to land — which is what a coastline does.
+
+**The guard is a variance, not a shape.** Assert that the rim's bearing VARIES with radius
+past some floor. A coastline that is straight anywhere is a coastline somebody drew with a
+ruler, and "not straight" is the property; any particular wiggle is a tunable.
+
+⚠️ It moves every seeded world, and it is asked by the bend as well as by the sea
+(`arc_half_at` is both), so it wants its own change and its own gate rather than riding along
+with anything else. Every world-shape change in this epic has cost an interaction that was
+not predicted — the two shaders, the range/maze conflation, the trail crossing water — and
+all three were cheaper to find alone than in company.
 
 ## 5. Invariants
 

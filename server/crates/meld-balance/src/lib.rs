@@ -762,6 +762,7 @@ pub struct RegionBarrier {
     pub porosity_mire: f64,
     pub porosity_ashfall: f64,
     pub porosity_default: f64,
+    pub dead_end_chest_tier_bonus: i32,
     pub band_half_width: f64,
     pub prop_spacing: f64,
 }
@@ -792,6 +793,7 @@ pub struct Building {
     pub anchor_build_ms: u64,
     pub wall_build_ms: u64,
     pub build_start_fraction: f64,
+    pub road_speed_mult: f64,
     pub anchor_pin_radius: f64,
     pub repair_hp_per_material: i32,
     pub demolish_refund_fraction: f64,
@@ -1292,6 +1294,7 @@ pub struct WorldGen {
     pub ridge_arc_share_max: f64,
     pub ridge_spoke_rings_min: u32,
     pub ridge_spoke_rings_max: u32,
+    pub ridge_max_per_section: usize,
     pub ridge_passes_min: usize,
     pub ridge_passes_max: usize,
     pub ridge_pass_share: f64,
