@@ -162,8 +162,9 @@ mod biome_params {
         /// that cannot see each other (the arena and `Screen::City`), and two hand-placed
         /// shorelines drift the way every other duplicated rule in this repo has.
         pub(crate) coast: Vec4,
-        /// Peninsula widths, also from `coast`:
-        /// `(neck_half_width, city_half_width, tip_taper, sea_depth)`.
+        /// The WESTERN APPROACH's endpoints (both on the z = 0 axis) plus the sea's depth:
+        /// `(approach_x1, approach_x2, unused, sea_depth)`. It held the peninsula's widths
+        /// until the peninsula became a bridge — see `coast::APPROACH_HALF_WIDTH`.
         pub(crate) coast_w: Vec4,
         /// **CONTINENTS (WG-7): this world's STRAITS**, the inland seas that separate one
         /// landmass from the next. Two `vec4`s each, carrying the same eight numbers as
@@ -230,6 +231,14 @@ mod biome_params {
         pub(crate) _pad_rp0: u32,
         pub(crate) _pad_rp1: u32,
         pub(crate) _pad_rp2: u32,
+        /// **LAST CITY's OWN SPIT** — see [`city_sea_uniform`], which packs it. Zero
+        /// everywhere else, and `x > 0` is what gates the city branch of `sea_depth_at`.
+        ///
+        /// It rode `sea_anim.yzw` while the city's coast was three numbers. It is FOUR now
+        /// (the causeway out of town is its own width), and squeezing a fourth in beside the
+        /// clock is how a field ends up meaning two things — so the city's shoreline gets
+        /// the `Vec4` its own function fills.
+        pub(crate) city: Vec4,
     }
 
     impl Default for BiomeParams {
@@ -249,12 +258,7 @@ mod biome_params {
                 terrain_off: Vec2::ZERO,
                 _pad_peaks: Vec2::ZERO,
                 coast: Vec4::ZERO,
-                coast_w: Vec4::new(
-                    meld_proto::coast::NECK_HALF_WIDTH,
-                    meld_proto::coast::CITY_HALF_WIDTH,
-                    meld_proto::coast::TIP_TAPER,
-                    super::SEA_DEPTH,
-                ),
+                coast_w: Vec4::new(0.0, 0.0, 0.0, super::SEA_DEPTH),
                 repaints: [Vec4::ZERO; REPAINT_SLOTS],
                 repaint_count: 0,
                 _pad_rp0: 0,
@@ -279,6 +283,7 @@ mod biome_params {
                 shift: Vec4::ZERO,
                 sea_anim: Vec4::ZERO,
                 shift_arc: Vec4::ZERO,
+                city: Vec4::ZERO,
                 peaks: [Vec4::ZERO; PEAK_SLOTS],
                 peak_count: 0,
                 dungeon: 0,
@@ -2225,10 +2230,6 @@ pub(crate) fn drift_clouds(
 /// Only meaningful on the Overworld: Last City is a separate scene in its own coordinates
 /// (its `coast` uniform is zeroed for exactly that reason), and a zero arc means corridor
 /// mode, which has no sea at all.
-/// How far inland Last City's beach ramp reaches — must match the land-side half of the
-/// ground shader's `smoothstep(-14.0, 0.0, sea)` blend band.
-const CITY_BEACH: f32 = 14.0;
-
 pub(crate) fn on_open_water(frame: &crate::WorldFrame, screen: &Screen, wx: f32, wz: f32) -> bool {
     match screen {
         // The maze: ask the shoreline itself.
@@ -2250,13 +2251,12 @@ pub(crate) fn on_open_water(frame: &crate::WorldFrame, screen: &Screen, wx: f32,
         // and ahead past the tip. Reading the constants rather than repeating the numbers
         // is what keeps this from becoming a third hand-placed shoreline.
         Screen::City => {
-            // ⚠️ AND A MARGIN INLAND, WHICH THE OVERWORLD DOES NOT NEED. The city's ground
-            // now DIPS into its bay (see `sea_depth_at`), but city scenery is still placed
-            // at flat y=0 — `tile_ground_detail` rides the heightmap only where
-            // `terrain_amp` is 1. So a bush standing anywhere on the beach ramp would hang
-            // in the air over the slope. Culling the ramp as well as the water costs a few
-            // units of shoreline planting and avoids floating scenery entirely.
-            meld_proto::coast::city_sea_depth(wx, wz) > -CITY_BEACH
+            // The waterline, and nothing more. This carried a `BEACH_BLEND` margin inland
+            // as well, because city scenery was placed at a flat y=0 and a bush on the
+            // beach ramp hung in the air over the slope. `city_ground_height` grounds the
+            // whole scene now, so the strand can be planted like any other shore — which
+            // matters more than it used to, the beach having moved to the waterfront.
+            meld_proto::coast::city_sea_depth(wx, wz) > 0.0
         }
         _ => false,
     }
@@ -2694,6 +2694,48 @@ fn ground_coast() -> (f32, bool, f32) {
     )
 }
 
+/// **LAST CITY's SPIT, as the ground shader's `city` uniform** — every term
+/// [`meld_proto::coast::city_sea_depth`] reads, in the order the shader reads them.
+///
+/// ⚠️ IT WAS TWO OF THE FOUR, AND THE CITY DREW AS A PLANK FLOATING ON THE OCEAN. The
+/// shader carried the flank and the tip and not `CITY_MAINLAND_BACK` — the term that gives
+/// the spit a BACK, so it joins a coast somewhere instead of running to the horizon. That
+/// term was added to the Rust field to answer "there is a weird stretch of land behind it…
+/// it goes off forever as a small straight grass line", and the drawing side never got it:
+/// the placement half has said "mainland" behind the city ever since while the shader went
+/// on painting open sea seven units below it, so the whole scene read as a straight-edged
+/// tongue of grass afloat with no coast at either end.
+///
+/// One function rather than four constants at the call site, so a term added to
+/// `city_sea_depth` cannot reach placement and miss drawing again —
+/// `the_shaders_city_spit_is_the_coasts_city_spit` reconstructs the shader's own arithmetic
+/// from this and holds it against the field itself.
+pub(crate) fn city_sea_uniform() -> Vec4 {
+    Vec4::new(
+        meld_proto::coast::CITY_SHORE_HALF_WIDTH,
+        meld_proto::coast::CITY_TIP_REACH,
+        meld_proto::coast::CITY_MAINLAND_BACK,
+        meld_proto::coast::CAUSEWAY_HALF_WIDTH,
+    )
+}
+
+/// **THE GROUND SURFACE INSIDE LAST CITY** — what the plaza, every prop, every townsperson
+/// and the avatar's own feet stand on.
+///
+/// The City is hand-placed for a level plaza, so its LAND is flat (`terrain_amp` 0) and the
+/// only thing that shapes the ground here is its own bay: the beach ramp down to the
+/// waterline, [`meld_proto::terrain::BEACH_BLEND`] wide.
+///
+/// ⚠️ THE CITY USED TO PLACE EVERYTHING AT A CONSTANT `y`, AND GOT AWAY WITH IT BY BEING
+/// NOWHERE NEAR ITS OWN WATER. With the shore pulled in to the town's actual footprint the
+/// beach reaches the waterfront, so a constant `y` is a dock and a beached wreck hanging in
+/// the air over the slope — the same bug [`terrain_height`] was written to end for the
+/// overworld. Every city placement asks this instead, and [`terrain_height`] delegates to it
+/// so the two cannot answer differently.
+pub(crate) fn city_ground_height(x: f32, z: f32) -> f32 {
+    meld_proto::terrain::with_sea(0.0, meld_proto::coast::city_sea_depth(x, z), 0.0, -SEA_DEPTH)
+}
+
 /// **The ground surface at `(x, z)`** — what everything in the world stands on.
 ///
 /// ⚠️ IT USED TO RETURN THE LAND HEIGHT AND IGNORE THE SEA, SO EVERYTHING FLOATED. The
@@ -2725,9 +2767,14 @@ pub(crate) fn terrain_height(x: f32, z: f32) -> f32 {
         return -SEA_DEPTH + rise;
     }
     let (arc_half, city, amp) = ground_coast();
-    let sea = if city {
-        meld_proto::coast::city_sea_depth(x, z)
-    } else if arc_half > 0.0 {
+    // ONE answer for the City, shared with every hand-placed thing in the scene — see
+    // `city_ground_height`. `amp` is 0 here by construction (the same function that
+    // publishes the flatten publishes the city flag), which is what makes the delegation
+    // exact rather than approximate.
+    if city {
+        return city_ground_height(x, z);
+    }
+    let sea = if arc_half > 0.0 {
         // …including the STRAITS (WG-7). This function places every prop, tree, building,
         // creature and the player's own feet; a strait it did not know about would put the
         // whole world back up where the land used to be, over open water — the same bug this
@@ -2852,16 +2899,21 @@ pub(crate) fn update_ground_biome_rings(
     // separate scene laid out in its own coordinates, so painting the world's sea into it
     // would put water through the plaza. Giving the city its own shore is follow-up work —
     // the neck and the channel are walked HERE, in the arena.
+    let approach = western_approach();
     mat.extension.params.coast = if *state.get() == Screen::Overworld && frame.have {
         Vec4::new(
             (frame.radial_arc_degrees.to_radians() * 0.5).max(0.0),
             meld_proto::coast::NECK_REACH,
-            meld_proto::coast::PENINSULA_LENGTH,
-            meld_proto::coast::CHANNEL_LAND_SHARE,
+            0.0,
+            approach[4],
         )
     } else {
         Vec4::ZERO
     };
+    // The span's endpoints, from the same function that makes it land and raises its deck —
+    // `coast::approach_bridge`. Four consumers, one definition.
+    mat.extension.params.coast_w =
+        Vec4::new(approach[0], approach[2], 0.0, SEA_DEPTH);
     // The Shift's tell rides the same uniform as the biome rings because it IS a ring —
     // see `BiomeParams::shift`. Zero intensity is the resting state, so a world with no
     // Shift pending pays one compare per fragment.
@@ -2873,21 +2925,14 @@ pub(crate) fn update_ground_biome_rings(
     // precision in the thousands, and a session left running overnight would see the swell
     // quantise and then stop moving. 3600 is long enough that the wrap never lines up with
     // anything a player can perceive.
-    // `yz` is LAST CITY's own spit (shore half-width, tip reach), zero everywhere else —
-    // see `sea_depth_at`. The city is a separate scene in its own coordinates, so the
-    // world's shoreline cannot be reused there; handing the city's own down this uniform is
-    // what lets ONE shader draw both seas, instead of the city keeping three hand-placed
-    // water planes that quietly missed every fix the world's sea received.
-    let (city_shore, city_tip) = if *state.get() == Screen::City {
-        (
-            meld_proto::coast::CITY_SHORE_HALF_WIDTH,
-            meld_proto::coast::CITY_TIP_REACH,
-        )
-    } else {
-        (0.0, 0.0)
-    };
-    mat.extension.params.sea_anim =
-        Vec4::new((now % 3600.0) as f32, city_shore, city_tip, 0.0);
+    // `yzw` is LAST CITY's own spit (see `city_sea_uniform`), zero everywhere else — see
+    // `sea_depth_at`. The city is a separate scene in its own coordinates, so the world's
+    // shoreline cannot be reused there; handing the city's own down this uniform is what
+    // lets ONE shader draw both seas, instead of the city keeping three hand-placed water
+    // planes that quietly missed every fix the world's sea received.
+    mat.extension.params.sea_anim = Vec4::new((now % 3600.0) as f32, 0.0, 0.0, 0.0);
+    mat.extension.params.city =
+        if *state.get() == Screen::City { city_sea_uniform() } else { Vec4::ZERO };
     // Roll the ground into hills+cliffs ONLY in the Overworld. The City + menus are
     // hand-placed for FLAT ground (a level plaza), so displacing it there tilts every
     // prop and shades the troughs into blue "corridor" ribbons — flatten it (amp 0).
@@ -3165,9 +3210,41 @@ pub(crate) fn set_section_bridges(index: u32, bridges: &[meld_proto::coast::Brid
     bump_terrain_epoch();
 }
 
-/// This world's bridges.
+/// This world's bridges — **the WESTERN APPROACH first**, then whatever the sections
+/// streamed.
+///
+/// The approach is a property of the world's SHAPE rather than of any section, so it is
+/// derived here from [`meld_proto::coast::approach_bridge`] — the same function that makes
+/// the span land in `sea_depth` and rides its endpoints down the shader's uniform. Being in
+/// this list is what makes it a raised DECK rather than merely a strip where the sea is not:
+/// `terrain_height` stands everything on it through `bridge_surface`, and `bridge_at` paints
+/// it. Nearest-first sorting drops it again once you are far from the hub, which is correct —
+/// it can only ever be on screen near the coast it crosses.
+///
+/// ⚠️ ONLY WHERE THERE IS A FAN. `bridge_surface` does not consult the coastline, so in
+/// corridor mode (no arc, no sea anywhere) an unconditional approach would raise a deck over
+/// open ground near the hub of every tutorial and every test world.
 pub(crate) fn bridges() -> Vec<meld_proto::coast::Bridge> {
-    BRIDGES.read().map(|b| b.clone()).unwrap_or_default()
+    let streamed = BRIDGES.read().map(|b| b.clone()).unwrap_or_default();
+    let (arc_half, city, _) = ground_coast();
+    if arc_half <= 0.0 || city {
+        return streamed;
+    }
+    let mut v = vec![western_approach()];
+    v.extend(streamed);
+    v
+}
+
+/// **THE WESTERN APPROACH**, as this client sees it — the one span between the hub's shore
+/// and Last City's gate.
+///
+/// A single accessor because the same five numbers have to reach three places on this side
+/// alone and must not disagree: [`bridges`] (so the deck RISES and everything stands on it),
+/// the ground shaders' `coast`/`coast_w` uniform (so it is DRAWN), and
+/// `overworld`'s gatehouse (so the stonework sits on the deck rather than in the surf).
+/// `the_approach_reaches_every_side_that_draws_it` holds them together.
+pub(crate) fn western_approach() -> meld_proto::coast::Bridge {
+    meld_proto::coast::approach_bridge(meld_proto::coast::RETURN_BORDER_REACH)
 }
 
 /// **THIS WORLD'S RANGES.** Held beside the peaks because it is the same kind of thing: a
@@ -4239,7 +4316,8 @@ mod ground_uniform_tests {
         for head in [
             "struct BiomeParams {",
             "fn terrain_height_wgsl(",
-            "fn spit_half_width(",
+            "fn arc_half_at(",
+            "fn approach_dist(",
             "fn sea_depth_at(",
             "fn peak_dome(",
             // The landforms WG-7 added. Both displace geometry, so both must be in the
@@ -4262,6 +4340,191 @@ mod ground_uniform_tests {
         // Both must also carry the uniform at the same binding, or one pass reads nothing.
         let binding = "@binding(106) var<uniform> params: BiomeParams;";
         assert!(main.contains(binding) && prepass.contains(binding), "the uniform moved");
+    }
+
+    /// **ONE SPAN, FOUR CONSUMERS, AND ALL FOUR MUST BE LOOKING AT IT.**
+    ///
+    /// The western approach is the only land in the western gap, and it has to be four things
+    /// at once: LAND (so you can walk it and the sea does not drown it), a raised DECK (so
+    /// what stands on it stands on it), a DRAWN span (so you can see it), and the ground the
+    /// GATEHOUSE is built on. Those are four separate mechanisms reading the same five
+    /// numbers — exactly the shape of every drift this module has already shipped, from the
+    /// city's coast missing a term to a whole inland-water feature that was invisible because
+    /// nothing called it.
+    #[test]
+    fn the_approach_reaches_every_side_that_draws_it() {
+        let a = western_approach();
+        let (x1, x2, hw) = (a[0], a[2], a[4]);
+        assert!(hw > 0.0, "the span has no width: {a:?}");
+        assert!(x2 < x1, "the span runs the wrong way (from {x1} to {x2})");
+
+        // 1. LAND, the whole way along its centre line — `coast::sea_depth`'s own term.
+        let arc = 140.0_f32.to_radians();
+        let mut t = 0.0_f32;
+        while t <= 1.0 {
+            let x = x1 + (x2 - x1) * t;
+            assert!(
+                meld_proto::coast::sea_depth(x, 0.0, arc) < 0.0,
+                "the deck is under water at x={x}"
+            );
+            t += 0.01;
+        }
+
+        // 2. A RAISED DECK: in the bridge table (nearest-first sorting may drop it far from
+        // the hub, but it must be THERE), and standing above the waterline.
+        set_ground_coast(arc, false, 1.0);
+        assert!(
+            bridges().iter().any(|b| b == &a),
+            "the approach is not in this world's bridge table, so nothing stands on it"
+        );
+        let mid = 0.5 * (x1 + x2);
+        let (rise, _) = meld_proto::terrain::bridge_surface(mid, 0.0, &bridges())
+            .expect("the approach must be a bridge surface at its own midpoint");
+        assert!(rise > 0.0, "the deck does not stand above the waterline (rise {rise})");
+        assert!(
+            (terrain_height(mid, 0.0) - (-SEA_DEPTH + rise)).abs() < 1e-3,
+            "`terrain_height` does not put the world on the deck"
+        );
+        // …and NOT in corridor mode, where there is no sea for a bridge to cross.
+        set_ground_coast(0.0, false, 1.0);
+        assert!(
+            !bridges().iter().any(|b| b == &a),
+            "a corridor world has no coast, so an approach there is a deck over dry ground"
+        );
+        set_ground_coast(arc, false, 1.0);
+
+        // 3. DRAWN: both shaders read the endpoints and the half-width out of the uniform.
+        for (name, src) in [
+            ("ground_biome", include_str!("../assets/shaders/ground_biome.wgsl")),
+            ("ground_prepass", include_str!("../assets/shaders/ground_prepass.wgsl")),
+        ] {
+            let i = src.find("fn approach_dist(").expect("the approach helper");
+            let body = &src[i..i + src[i..].find("\n}").expect("it closes")];
+            for term in ["params.coast_w.x", "params.coast_w.y", "params.coast.w"] {
+                assert!(
+                    body.contains(term),
+                    "`{name}.wgsl` never reads `{term}` — it is drawing a different span"
+                );
+            }
+            assert!(
+                src.contains("approach_dist(wxz)"),
+                "`{name}.wgsl` defines the approach and never calls it"
+            );
+        }
+
+        // 4. THE GATEHOUSE stands on the deck, not beside it. The overworld bounds its
+        // rampart by this constant; a wall wider than the deck is stonework in the surf,
+        // which is exactly what shipped.
+        assert!(
+            meld_proto::coast::APPROACH_HALF_WIDTH == hw,
+            "the gate is bounded by a different half-width than the span it straddles"
+        );
+    }
+
+    /// **THE HAZE HAS TO START INSIDE THE POPULATED WORLD, NOT BEYOND IT.**
+    ///
+    /// Fog is the only thing that hides where the world stops being furnished, and it can
+    /// only hide what it reaches. Measured: obstacles and creatures arrive through the
+    /// snapshot's interest cull at `interest_radius_chunks x chunk_size` = **128 units**,
+    /// the client-side ground detail reaches **32** (`DETAIL_K` x `DETAIL_CELL`), and
+    /// `Look::fog_start` is **200** — so a 72-unit band of bare, fully-lit ground sits
+    /// between the last tree and the first wisp of haze, and pulling the camera back walks
+    /// you straight into it. Reported as "the camera can zoom out further than trees/water
+    /// are populated".
+    ///
+    /// This does not fix the look — closing the gap properly wants a client-side FAR-FIELD
+    /// scatter (the same hashed, recycled trick `tile_ground_detail` already uses, at a
+    /// coarser cell and a bigger ring, so the distance costs nothing on the wire) rather than
+    /// a bigger interest radius, which buys the same pixels with bandwidth on every tick. It
+    /// holds the RELATIONSHIP, so whichever way that is closed, the two numbers cannot drift
+    /// apart again silently.
+    #[test]
+    #[ignore = "documents a known gap: fog_start 200 sits beyond the 128-unit populated \
+                radius. Un-ignore with the far-field scatter that closes it."]
+    fn the_fog_starts_inside_the_populated_world() {
+        // `interest_radius_chunks` x `chunk_size`, from balance — the radius the server
+        // actually sends entities within.
+        let populated = 2.0 * 64.0;
+        let look = hd2d::Look::default();
+        assert!(
+            look.fog_start <= populated,
+            "fog starts at {} but the world is only furnished out to {populated} — the band \
+             between them is bare ground with nothing on it and nothing hiding it",
+            look.fog_start
+        );
+        // …and the detail ring has to reach the fog too, or the near field thins out first.
+        let detail = DETAIL_K as f32 * DETAIL_CELL;
+        assert!(
+            detail >= look.fog_start * 0.5,
+            "ground detail reaches {detail} against a fog that starts at {}",
+            look.fog_start
+        );
+    }
+
+    /// **LAST CITY's SHORELINE MUST BE THE ONE `coast` DESCRIBES, TERM FOR TERM.**
+    ///
+    /// The city is the one scene whose sea cannot be read off `is_ocean` (the world's
+    /// shoreline, expressed in city space, runs through the plaza), so its field is handed
+    /// down the uniform and re-derived in WGSL. That is duplication, and duplication in this
+    /// repo is only ever acceptable when it is CHECKED — the mirror test above compares the
+    /// two shaders to EACH OTHER, so it was perfectly happy while both of them were wrong.
+    ///
+    /// ⚠️ AND BOTH WERE WRONG FOR SEVERAL RELEASES. `city_sea_depth` grew its MAINLAND term
+    /// (a spit joins a coast somewhere) to answer "there is a weird stretch of land behind
+    /// it… it goes off forever as a small straight grass line", and only the placement side
+    /// got it. So the ground shader kept drawing the ribbon — a straight-edged tongue of
+    /// grass running to the horizon, ocean on every side, with `terrain_height` standing the
+    /// world on "mainland" seven units above the water the shader painted there. Reported,
+    /// correctly, as the city floating.
+    ///
+    /// So this reconstructs the shader's OWN arithmetic from the uniform and holds it against
+    /// the field, everywhere: a term added to `city_sea_depth` and not handed down fails here
+    /// rather than in a screenshot nobody takes.
+    #[test]
+    fn the_shaders_city_spit_is_the_coasts_city_spit() {
+        let spit = city_sea_uniform();
+        // Every component has to be LIVE, or the shader's `if (city.x > 0.0)` gate and its
+        // four terms silently read zero — which is the whole bug, one layer up.
+        assert!(spit.min_element() > 0.0, "the city's spit is {spit:?}");
+        // Well past the spit on every side, so the mainland behind it is inside the sweep.
+        let reach = spit.max_element() * 2.5;
+        let mut checked = 0;
+        for xi in -60..=60 {
+            for zi in -60..=60 {
+                let (x, z) = (xi as f32 / 60.0 * reach, zi as f32 / 60.0 * reach);
+                // `sea_depth_at`'s city branch, transcribed:
+                //   min(min(max(|x| - .x, |z| - .y), max(|x| - .w, z - .y)), z + .z)
+                let shelf = (x.abs() - spit.x).max(z.abs() - spit.y);
+                let causeway = (x.abs() - spit.w).max(z - spit.y);
+                let shader = shelf.min(causeway).min(z + spit.z);
+                let field = meld_proto::coast::city_sea_depth(x, z);
+                assert!(
+                    (shader - field).abs() < 1e-3,
+                    "at ({x}, {z}) the ground shader says {shader} and `city_sea_depth` says \
+                     {field} — the city is drawn on a different coast than it stands on"
+                );
+                checked += 1;
+            }
+        }
+        assert!(checked > 10_000, "the sweep covered almost nothing ({checked} points)");
+
+        // …and the transcription above is only evidence if the shaders really do read all
+        // four components. The mainland term is the one that went missing once already, and
+        // a shader that never mentions a component agrees with nothing.
+        for (name, src) in [
+            ("ground_biome", include_str!("../assets/shaders/ground_biome.wgsl")),
+            ("ground_prepass", include_str!("../assets/shaders/ground_prepass.wgsl")),
+        ] {
+            let a = src.find("if (params.city.x > 0.0) {").expect("the city branch");
+            let branch = &src[a..a + src[a..].find("\n    }").expect("the branch closes")];
+            for term in ["params.city.x", "params.city.y", "params.city.z", "params.city.w"] {
+                assert!(
+                    branch.contains(term),
+                    "`{name}.wgsl`'s city coast never reads `{term}` — it is drawing a \
+                     shoreline with one of the spit's edges missing"
+                );
+            }
+        }
     }
 
     /// `coast::BASIN_SHORE_SLOPE` is written as a literal in both shaders, because a WGSL
@@ -4289,7 +4552,7 @@ mod ground_uniform_tests {
             "sea_depth_at",
             "inland_water_at",
             "strait_depth_at",
-            "spit_half_width",
+            "approach_dist",
             // …and the two WG-7 landforms, for exactly the reason in the doc comment above:
             // a helper nothing calls renders nothing, and no other test notices.
             "ridge_wedge",
@@ -4526,7 +4789,7 @@ mod ground_uniform_tests {
             "terrain_amp", "terrain_off",
             "_pad_peaks", "peaks", "peak_count", "straits", "strait_count", "lobes",
             "lobe_count", "basins", "rivers", "basin_count", "river_count", "shift",
-            "shift_arc", "sea_anim", "repaints", "repaint_count",
+            "shift_arc", "sea_anim", "repaints", "repaint_count", "city",
         ] {
             assert!(body.contains(&format!("{field}:")), "the shader is missing `{field}`");
         }
@@ -4551,7 +4814,7 @@ mod ground_uniform_tests {
         );
         assert_eq!(
             order.last().copied(),
-            Some("_pad_rp2"),
+            Some("city"),
             "the last field is what the 16-byte tail rounds to: {order:?}"
         );
 

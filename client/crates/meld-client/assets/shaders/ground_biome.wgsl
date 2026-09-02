@@ -141,6 +141,7 @@ struct BiomeParams {
     _pad_rp0: u32,
     _pad_rp1: u32,
     _pad_rp2: u32,
+    city: vec4<f32>,
 }
 
 @group(#{MATERIAL_BIND_GROUP}) @binding(100) var t_forest: texture_2d<f32>;
@@ -238,22 +239,6 @@ fn water_color(bi: i32, uv: vec2<f32>) -> vec4<f32> {
 }
 
 // Half-width of the land on the western spit at `d` units west of the hub. MUST match
-// `meld_proto::coast::peninsula_half_width`.
-fn spit_half_width(d: f32) -> f32 {
-    let neck_reach = params.coast.y;
-    let penin_len = params.coast.z;
-    let neck_half = params.coast_w.x;
-    let city_half = params.coast_w.y;
-    let tip_taper = params.coast_w.z;
-    if (d <= neck_reach) { return neck_half; }
-    if (d >= penin_len) { return 0.0; }
-    let t = (d - neck_reach) / (penin_len - neck_reach);
-    let swell = sin(3.14159265 * t);
-    var w = neck_half + (city_half - neck_half) * swell;
-    w = w * smoothstep(1.0, 1.0 - tip_taper, t);
-    let gap_half = max(3.14159265 - params.coast.x, 0.0);
-    return min(w, d * tan(gap_half) * params.coast.w);
-}
 
 // Signed difference between two bearings, wrapped to [-PI, PI] — MUST match
 // `meld_proto::coast::ang_diff`. Without the wrap a strait centred near due west is
@@ -317,6 +302,20 @@ fn rg_seg_dist(p: vec2<f32>, a: vec2<f32>, b: vec2<f32>) -> f32 {
         t = clamp(dot(p - a, d) / len2, 0.0, 1.0);
     }
     return distance(p, a + d * t);
+}
+
+// THE WESTERN APPROACH — `meld_proto::coast::approach_bridge`, ridden down as its two
+// endpoints (`coast_w.xy`, both on the z = 0 axis) and its half-width (`coast.w`).
+//
+// ⚠️ THERE WAS A `spit_half_width` HERE, MIRRORING A PENINSULA, AND THE PENINSULA IS GONE.
+// Its binding term was `d · tan(gap_half) · share` — linear in radius, which in polar
+// coordinates draws two perfectly STRAIGHT rays, so the west end of the world rendered as a
+// machined triangle with a castle on it. A capsule's edges are parallel and its ends are
+// round by construction, which is the whole reason the crossing is a bridge now.
+fn approach_dist(wxz: vec2<f32>) -> f32 {
+    let a = vec2<f32>(params.coast_w.x, 0.0);
+    let b = vec2<f32>(params.coast_w.y, 0.0);
+    return rg_seg_dist(wxz, a, b) - params.coast.w;
 }
 
 // A BRIDGE's surface, mirroring `terrain::bridge_surface`. Returns (height above sea level,
@@ -458,17 +457,31 @@ fn sea_depth_at(wxz: vec2<f32>) -> f32 {
     // LAST CITY IS THE SAME SEA, DRAWN BY THE SAME SHADER. The city is its own scene in
     // its own coordinates and cannot use the world's radial fan (that shoreline, expressed
     // in city space, runs straight through the plaza), so it hands its OWN spit down:
-    // `sea_anim.yz` is (shore half-width, tip reach), nonzero only in the City.
+    // `city` is (shore half-width, shelf reach, mainland back, causeway half-width), nonzero
+    // only in the City — see `world_render::city_sea_uniform`.
     //
     // It used to be three hand-placed water planes instead, sitting a hair ABOVE the lawn
     // because the flat plaza had nothing to dip into — the exact "two hand-placed
     // shorelines that drift" this module was written to prevent, and it had already drifted
     // (the city's sea missed every fix the world's sea got, because they were not the same
     // water). One shoreline, one shader, both scenes.
-    if (params.sea_anim.y > 0.0) {
-        let past_flank = abs(wxz.x) - params.sea_anim.y;   // out past either flank
-        let past_tip = wxz.y - params.sea_anim.z;          // out past the tip (+z)
-        return max(past_flank, past_tip);
+    //
+    // ⚠️ AND IT DRIFTED AGAIN ON THE MAINLAND TERM, WHICH IS WHY THE CITY DREW AS A PLANK ON
+    // THE OCEAN. This was `max(past_flank, past_tip)`, which makes land the strip
+    // `|x| <= shore` for EVERY z — including z running to minus infinity behind the city.
+    // `city_sea_depth` grew its MAINLAND term to fix exactly that and the drawing side never
+    // got it, so the shader painted open sea over ground the game was standing things on.
+    //
+    // Land is the SHELF, the CAUSEWAY out of town, or the MAINLAND that causeway reaches, so
+    // the sea is however far you are from the nearest of the three — `min`, as the ocean's
+    // own branch below takes the min of its fan, spit and neck, and a `min` of signed
+    // distances is what keeps the field CONTINUOUS so every smoothstep over it still gets a
+    // beach instead of a step. MUST match `coast::city_sea_depth` term for term.
+    if (params.city.x > 0.0) {
+        let past_shelf = max(abs(wxz.x) - params.city.x, abs(wxz.y) - params.city.y);
+        let past_causeway = max(abs(wxz.x) - params.city.w, wxz.y - params.city.y);
+        let past_mainland = wxz.y + params.city.z;
+        return min(min(past_shelf, past_causeway), past_mainland);
     }
     let arc_half = params.coast.x;
     if (arc_half <= 0.0) { return -1000.0; }          // corridor mode: no gap, no sea
@@ -494,9 +507,8 @@ fn sea_depth_at(wxz: vec2<f32>) -> f32 {
     // and the ground must agree about where the sea is, or we paint a coastline nothing
     // collides with.
     let past_fan = (theta - arc_half_at(d, arc_half)) * d;
-    let past_spit = abs(wxz.y) - spit_half_width(d);
-    let past_neck = d - params.coast.y;
-    var sea = min(min(past_fan, past_spit), past_neck);
+    let past_shore = d - params.coast.y;
+    var sea = min(min(past_fan, approach_dist(wxz)), past_shore);
     // CONTINENTS (WG-7): the sea is the OCEAN *union* every strait, and a signed depth's
     // union is a `max` — past the ocean's land, or inside an inland sea. On open ground far
     // from either, the ocean's own (negative) distance survives, so the beach at the fan's
