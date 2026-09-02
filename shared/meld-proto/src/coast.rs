@@ -207,6 +207,14 @@ pub fn is_ocean(x: f32, z: f32, arc_half_rad: f32) -> bool {
 ///
 /// Its SIGN is `is_ocean` exactly — held by `the_depth_field_agrees_with_the_predicate`,
 /// because the thing you can see and the thing you collide with must be one shoreline.
+/// How far the coastline wanders in or out, as a FRACTION of the fan's local half-angle.
+/// A fraction rather than an angle, because a fixed angular wobble is metres at the hub and
+/// kilometres at the frontier. Bounded well under 1.0 so a wander can never pinch the fan.
+pub const COAST_WANDER: f32 = 0.06;
+/// Radial distance over which the coast's first harmonic completes a cycle. Long enough that
+/// a bay-sized wander takes a real walk to round rather than reading as noise on the edge.
+pub const COAST_WANDER_WAVELENGTH: f32 = 520.0;
+
 /// **WG-11: THE WORLD IS A TEARDROP.** Where the land starts closing back in.
 pub const TAPER_START: f32 = 1200.0;
 /// Where it has closed to its final width — the end of the world, and the prison's door.
@@ -243,13 +251,43 @@ pub const END_WIDTH: f32 = 200.0;
 /// everything placed there landed in the sea and the feasibility re-rolls burned against
 /// water. The coast is not what decides where content goes; the bend is. Both ask this.
 pub fn arc_half_at(d: f32, arc_half_rad: f32) -> f32 {
-    if arc_half_rad <= 0.0 || d <= TAPER_START {
+    if arc_half_rad <= 0.0 {
         return arc_half_rad;
     }
-    let t = ((d - TAPER_START) / (TAPER_END - TAPER_START).max(1.0)).clamp(0.0, 1.0);
-    let s = t * t * (3.0 - 2.0 * t);
-    let end_half = (END_WIDTH * 0.5 / d.max(1.0)).min(arc_half_rad);
-    arc_half_rad + (end_half - arc_half_rad) * s
+    let tapered = if d <= TAPER_START {
+        arc_half_rad
+    } else {
+        let t = ((d - TAPER_START) / (TAPER_END - TAPER_START).max(1.0)).clamp(0.0, 1.0);
+        let s = t * t * (3.0 - 2.0 * t);
+        let end_half = (END_WIDTH * 0.5 / d.max(1.0)).min(arc_half_rad);
+        arc_half_rad + (end_half - arc_half_rad) * s
+    };
+    // ── **AND THE COASTLINE WANDERS.** Measured before this, the ocean's edge sat at a
+    // constant bearing — 150.000° at every radius from d200 to d1200, not approximately
+    // straight but EXACTLY straight, because the fan term is `(theta - arc_half) * d` and
+    // `arc_half` was a constant. Bays and isles bit discs out of it, so the coast read as a
+    // ruler edge with circular scallops.
+    //
+    // Two harmonics of RADIUS, which is the same trick `regions::Grid::warp_at` uses on
+    // bearing "so the boundary is a wandering line rather than a lobed flower" — and it is
+    // safe for the same reason: it depends on ONE variable, so the field stays single-valued
+    // and every "how wide is the world here" question still has one answer. A walk outward can
+    // now cross a cove and come back to land, which is what a coastline does.
+    //
+    // Applied as a FRACTION of the local half-angle, never as a fixed angle: a constant
+    // angular wobble is metres at the hub and kilometres at the frontier — the lesson
+    // `sea_depth` already carries about `STRAIT_FAN_MARGIN`. And bounded well under 1.0, so
+    // the wander can never pinch the fan shut or push it past its own rim.
+    // ⚠️ **THE WANDER ONLY EVER BITES IN.** A two-sided wobble pushed the rim PAST the fan's
+    // nominal 150° — measured, to 158.9° at d800 — and the 60° behind the fan is not spare
+    // ground: it is the gap the Center Hub's peninsula and the west-return border live in. So
+    // the nominal arc is the world's MAXIMUM extent and the sea bites inward from it: coves
+    // cut in, headlands reach the design edge, and nothing the taper or the city relies on
+    // can be pushed over.
+    let w = d / COAST_WANDER_WAVELENGTH;
+    let harmonic = 0.63 * w.sin() + 0.37 * (w * 2.7 + 1.9).cos();
+    let bite = COAST_WANDER * 0.5 * (1.0 + harmonic.clamp(-1.0, 1.0));
+    tapered * (1.0 - bite)
 }
 
 pub fn sea_depth(x: f32, z: f32, arc_half_rad: f32) -> f32 {
@@ -1595,39 +1633,89 @@ mod taper_tests {
     #[test]
     fn the_world_closes_to_a_corridor() {
         // The teardrop: full arc through the on-ramp and mid-world, then closing to a
-        // fixed-width corridor at the end. Asserted as SHAPE — held, then widening, then
-        // monotone closing, then constant — because every number in it is a constant
-        // somebody will retune.
+        // fixed-width corridor at the end. Asserted as SHAPE — full, then widening, then
+        // closing, then constant — because every number in it is a constant somebody will
+        // retune.
+        //
+        // ⚠️ **TOLERANCED FOR THE COAST'S WANDER, and compared over WIDE gaps.** The
+        // shoreline now meanders by up to `COAST_WANDER` (see `the_shoreline_is_never
+        // _straight`), so "unchanged" and "monotone between adjacent radii" are both false by
+        // design: adjacent samples can move either way while the trend closes. Asserting them
+        // strictly was asserting that the coast is a ruler edge, which is the defect the
+        // wander exists to fix.
         let ah = 2.618_f32;
         let width = |d: f32| 2.0 * arc_half_at(d, ah) * d;
+        let nominal = |d: f32| 2.0 * ah * d;
+        let tol = COAST_WANDER * 1.05;
+        // Through the on-ramp and the mid-world the fan is full, up to the wander.
         for d in [100.0_f32, 500.0, 1000.0, TAPER_START] {
+            let got = width(d) / nominal(d);
             assert!(
-                (arc_half_at(d, ah) - ah).abs() < 1e-6,
-                "the fan must be full at d{d} — the taper may not pinch the mid-world"
+                got > 1.0 - tol && got <= 1.0 + 1e-4,
+                "the fan must be full at d{d} up to the coast's wander — got {got:.3} of nominal"
             );
         }
+        // It WIDENS before it closes, or it is a cone rather than a teardrop.
         assert!(
-            width(1600.0) > width(TAPER_START),
-            "the world still opens out past the taper's start, or it is a cone not a teardrop"
+            width(1600.0) > width(TAPER_START) * (1.0 - tol),
+            "the world still opens out past the taper's start"
         );
+        // …and then closes. Compared over WIDE gaps so the trend, not the wander, is measured.
         let mut last = width(1600.0);
-        for d in [2000.0_f32, 2400.0, 2800.0, 3000.0, TAPER_END] {
+        for d in [2200.0_f32, 2800.0, TAPER_END] {
             let w = width(d);
             assert!(w < last, "the world must keep closing: d{d} is {w:.0} against {last:.0}");
             last = w;
         }
-        assert!(
-            (width(TAPER_END) - END_WIDTH).abs() < 1.0,
-            "the end of the world is {:.0} wide, wanted {END_WIDTH}",
-            width(TAPER_END)
-        );
-        // Past the end the corridor RUNS ON rather than pinching shut: a world of zero width
-        // has nowhere to put the prison and nowhere for a party to stand in it.
-        for d in [3400.0_f32, 4000.0] {
+        // The end of the world is the corridor's width, to within the wander.
+        for d in [TAPER_END, 3400.0, 4000.0] {
+            let got = width(d) / END_WIDTH;
             assert!(
-                (width(d) - END_WIDTH).abs() < 1.0,
-                "past the end the corridor holds its width, got {:.0} at d{d}",
+                (got - 1.0).abs() < tol + 1e-3,
+                "past the end the corridor holds its width: {:.0} at d{d}, wanted {END_WIDTH}",
                 width(d)
+            );
+        }
+    }
+
+    #[test]
+    fn the_shoreline_is_never_straight() {
+        // Measured before the wander: the ocean's edge sat at **150.000° at every radius**
+        // from d200 to d1200 — not approximately straight, exactly straight, because the fan
+        // term is `(theta - arc_half) * d` and `arc_half` was a constant. Bays and isles bit
+        // discs out of it, so the coast read as a ruler edge with circular scallops.
+        //
+        // Asserted as a VARIANCE, never as a shape: a coastline that is straight anywhere is
+        // one somebody drew with a ruler, and "not straight" is the property while any
+        // particular wiggle is a tunable.
+        let ah = 2.618_f32;
+        let bearings: Vec<f32> = (2..=28).map(|k| arc_half_at(k as f32 * 50.0, ah)).collect();
+        let n = bearings.len() as f32;
+        let mean = bearings.iter().sum::<f32>() / n;
+        let var = bearings.iter().map(|b| (b - mean) * (b - mean)).sum::<f32>() / n;
+        assert!(
+            var.sqrt() > 0.01,
+            "the coast barely moves (sd {:.4} rad) — that is a ruler edge",
+            var.sqrt()
+        );
+        // …and it must move by a distance a player would NOTICE, not by noise on the edge.
+        let swing = bearings.iter().fold((f32::MAX, 0.0f32), |(l, h), b| (l.min(*b), h.max(*b)));
+        let at_800 = (swing.1 - swing.0) * 800.0;
+        assert!(
+            at_800 > 40.0,
+            "the coast wanders only {at_800:.0} world units at d800 — a cove has to be worth \
+             rounding"
+        );
+        // ⚠️ **AND IT NEVER PUSHES PAST THE NOMINAL ARC.** The 60° behind the fan is not spare
+        // ground — the hub's peninsula and the west-return border live there — so the design
+        // arc is the world's MAXIMUM extent and the sea only ever bites in.
+        for k in 1..=68 {
+            let d = k as f32 * 50.0;
+            assert!(
+                arc_half_at(d, ah) <= ah + 1e-6,
+                "at d{d} the coast reaches {:.3}° past the fan's own {:.3}°",
+                arc_half_at(d, ah).to_degrees(),
+                ah.to_degrees()
             );
         }
     }
@@ -1651,6 +1739,12 @@ mod taper_tests {
         assert_eq!(grab("let taper_start"), TAPER_START, "taper start drifted from the shader");
         assert_eq!(grab("let taper_end"), TAPER_END, "taper end drifted from the shader");
         assert_eq!(grab("let end_width"), END_WIDTH, "the corridor width drifted");
+        assert_eq!(grab("let coast_wander"), COAST_WANDER, "the coast's wander drifted");
+        assert_eq!(
+            grab("let coast_wander_wavelength"),
+            COAST_WANDER_WAVELENGTH,
+            "the coast's wavelength drifted"
+        );
     }
 }
 

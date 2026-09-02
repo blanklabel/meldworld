@@ -203,11 +203,21 @@ fn arc_half_at(d: f32, arc_half: f32) -> f32 {
     let taper_start = 1200.0;
     let taper_end = 3200.0;
     let end_width = 200.0;
-    if (arc_half <= 0.0 || d <= taper_start) { return arc_half; }
-    let t = clamp((d - taper_start) / max(taper_end - taper_start, 1.0), 0.0, 1.0);
-    let s = t * t * (3.0 - 2.0 * t);
-    let end_half = min(end_width * 0.5 / max(d, 1.0), arc_half);
-    return arc_half + (end_half - arc_half) * s;
+    let coast_wander = 0.06;
+    let coast_wander_wavelength = 520.0;
+    if (arc_half <= 0.0) { return arc_half; }
+    var tapered = arc_half;
+    if (d > taper_start) {
+        let t = clamp((d - taper_start) / max(taper_end - taper_start, 1.0), 0.0, 1.0);
+        let s = t * t * (3.0 - 2.0 * t);
+        let end_half = min(end_width * 0.5 / max(d, 1.0), arc_half);
+        tapered = arc_half + (end_half - arc_half) * s;
+    }
+    // The coast WANDERS, and only ever bites inward — mirrors `coast::arc_half_at`.
+    let w = d / coast_wander_wavelength;
+    let harmonic = 0.63 * sin(w) + 0.37 * cos(w * 2.7 + 1.9);
+    let bite = coast_wander * 0.5 * (1.0 + clamp(harmonic, -1.0, 1.0));
+    return tapered * (1.0 - bite);
 }
 
 fn sea_depth_at(wxz: vec2<f32>) -> f32 {
