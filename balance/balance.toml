@@ -1438,7 +1438,23 @@ area_count = 8                   # how many areas to pre-generate for the instan
 # rooms divided by walls with a single door on the clear path (connectivity is
 # guaranteed by construction, like a biome seam), packed denser with creatures and
 # ending in a guaranteed loot chest. Rendered by the normal obstacle/creature path.
-dungeon_every = 4                # 0 disables dungeons; else every Nth section (i>0) is one
+# ⚠️ **RETIRED (`WG-11` stage 5): A RING-SCALE ROOM IS A CATEGORY ERROR.** This made every
+# Nth SECTION a "dungeon", which was coherent while a section was a 20-tile corridor holding
+# three rooms — and stopped being so the moment WG-4 bent it into an annular band spanning the
+# whole arc. What it actually did to every fourth ring of the world:
+#   * `web_trails_per_area = 0` for that ring — **no branches at all**, a quarter of the world
+#     reduced to one lane, which is a large part of why the deep world reads as a straight shot
+#   * two divider walls across the corridor, stepping `dungeon_wall_radius * 1.8` in corridor
+#     `y` — an ANGLE — so at r=1200 they are a line of rocks a quarter-kilometre apart
+#   * denser creatures and a guaranteed chest, both of which belong to a PLACE, not to a band
+# Its own fill was skipped too, until `WG-6`: dungeon rings measured 0.167 obstacles per
+# 1000 u² against 4.92 for ordinary ones, a 30x gap.
+#
+# A dungeon becomes a LOCAL enclosure placed on the route — `WG-11` stage 6, built from
+# `meld-dungeon`'s authored parts with derived openings, which is what `WG-8` always proposed.
+# Until then the world simply has no ring-dungeons, and that is strictly better than a quarter
+# of it being a branchless band with a broken wall across it.
+dungeon_every = 0                # 0 disables dungeons; else every Nth section (i>0) is one
 dungeon_rooms = 3                # rooms per dungeon (this many − 1 internal divider walls)
 dungeon_creature_mult = 1.9      # creature density multiplier inside a dungeon
 dungeon_wall_radius = 1.1        # radius of each obstacle in a divider wall

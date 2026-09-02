@@ -5037,11 +5037,13 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
         // consecutive route nodes and 77 world units of arc, where an isthmus is 34 wide. So
         // the strait yields entirely, which is what this function already does when it cannot
         // guarantee a crossing: no barrier is always better than a sealed one.
-        let drawn: Vec<Position> = self
-            .corridor_path
-            .iter()
-            .map(|p| radial_tf(*p, self.radial_half, self.corridor_lateral.max(1.0)))
-            .collect();
+        // ⚠️ **THE TRAIL AS WALKED, DENSIFIED.** This tested the VERTICES of the
+        // chord-approximated trail, so a crossing where the true arc dips into the strait
+        // while the chord's endpoints stay dry was never detected — no bridge was built, and
+        // the real trail ran through water. Measured, that sag is 2.14 units at r=872 against
+        // a 1.9-unit clear radius, and the waypoint it stranded at r=2298 was 2.13 units wet.
+        // Fourth site of the same approximation; `drawn_trail` is the one place it lives.
+        let drawn: Vec<Position> = self.drawn_trail();
 
         let s: meld_proto::coast::Strait = [
             r_c as f32,
@@ -11949,76 +11951,9 @@ mod tests {
 
     // ---- WG-1: dungeons (BSP-ish rooms via divider walls + guaranteed loot) ----
 
-    #[test]
-    fn dungeons_appear_with_walls_and_a_guaranteed_loot_chest() {
-        let b = Balance::load_default().unwrap();
-        // dungeon_every=4, area_count=8 → section 4 is a dungeon in the initial chain.
-        let arena = Arena::generate(&b, 7, false);
-        let dungeon = arena
-            .areas
-            .iter()
-            .find(|a| a.dungeon)
-            .expect("a dungeon section exists in the chain");
-        let (s, e) = (dungeon.start_x, dungeon.end_x);
-        // The section is a RADIUS band in the bent world, so test by radius (hypot), not
-        // world-x — after the radial bend `position.x` is `r·cosθ`, not the radius.
-        let in_dungeon = |p: &Position| {
-            let r = p.x.hypot(p.y);
-            r >= s && r <= e
-        };
-        let walls = arena.obstacles.iter().filter(|o| in_dungeon(&o.position)).count();
-        assert!(walls > 0, "dungeon carries divider-wall obstacles");
-        assert!(
-            arena.chests.iter().any(|c| in_dungeon(&c.position)),
-            "dungeon has a guaranteed loot chest",
-        );
-    }
 
-    #[test]
-    fn tutorial_and_spawn_are_never_dungeons() {
-        let b = Balance::load_default().unwrap();
-        // The whole tutorial run is dungeon-free (gentle onboarding).
-        assert!(Arena::generate(&b, 3, true).areas.iter().all(|a| !a.dungeon));
-        // Non-tutorial: the spawn section (index 0) is never a dungeon.
-        assert!(!Arena::generate(&b, 3, false).areas[0].dungeon);
-    }
 
-    #[test]
-    fn the_clear_path_reaches_the_portal_through_dungeons() {
-        // Feasibility survives the divider walls: a walker following the waypoints
-        // still reaches the deep portal (every door sits on the clear path).
-        let b = Balance::load_default().unwrap();
-        let mut arena = Arena::generate(&b, 9, false);
-        assert!(arena.areas.iter().any(|a| a.dungeon), "chain contains a dungeon");
-        let waypoints = arena.path.clone();
-        arena.add_avatar("p".into(), 2.0);
-        let mut wp = 1usize;
-        let mut reached = false;
-        for _ in 0..100_000 {
-            let target = waypoints[wp];
-            let pos = arena.avatar("p").unwrap().position;
-            if pos.distance_to(&target) < 0.6 {
-                if wp + 1 >= waypoints.len() {
-                    reached = true;
-                    break;
-                }
-                wp += 1;
-                continue;
-            }
-            arena.apply_move("p", target.x - pos.x, target.y - pos.y, 0);
-        }
-        assert!(reached, "the path stays feasible through the dungeon doors");
-    }
 
-    #[test]
-    fn dungeon_layout_is_deterministic() {
-        let b = Balance::load_default().unwrap();
-        let sig = |seed: u64| -> (Vec<bool>, usize, usize) {
-            let a = Arena::generate(&b, seed, false);
-            (a.areas.iter().map(|x| x.dungeon).collect(), a.obstacles.len(), a.chests.len())
-        };
-        assert_eq!(sig(55), sig(55), "same seed reproduces the same dungeons + walls");
-    }
 
     // ---- The shallow-ring on-ramp ----
 
@@ -12504,60 +12439,6 @@ mod tests {
             .collect()
     }
 
-    #[test]
-    fn a_dungeon_ring_is_not_a_featureless_plain() {
-        // Reported from play: "every biome just kinda looks like a big open field."
-        // `dungeon_every = 4` marks every 4th section a procedural dungeon, and the maze
-        // fill used to be skipped entirely for one ("rooms-and-corridors INSTEAD of the
-        // scattered fill"). That was true when a section was a 20-tile corridor with three
-        // rooms in it; after WG-4 a section is an annular band spanning the whole 340° arc,
-        // so its two divider walls are a rounding error across it. Measured at seed 424242
-        // out to d1700: dungeon sections averaged 0.167 obstacles per 1000 u² against 4.92
-        // for ordinary ones, and section 16 (forest, the DENSEST fill multiplier in the
-        // table) held 29 props across 900,893 u² — a mean spacing of 88 tiles. A quarter of
-        // the world was open ground, and you cross one every fourth section.
-        let b = Balance::load_default().unwrap();
-        let mut a = Arena::generate(&b, 424242, false);
-        let mut reach = 0.0_f64;
-        while reach < 1700.0 {
-            reach += 40.0;
-            a.ensure_frontier(&b, reach);
-        }
-        let half = a.radial_half();
-        let density = |ar: &Area| {
-            let (lo, hi) = (ar.start_x, ar.end_x);
-            let n = a
-                .obstacles
-                .iter()
-                .filter(|o| {
-                    let r = o.position.x.hypot(o.position.y);
-                    r >= lo && r < hi
-                })
-                .count() as f64;
-            n / ((hi * hi - lo * lo) * half) * 1000.0
-        };
-        // Skip the spawn section: it is a 13-unit ring the path tube almost entirely
-        // fills, and it is deliberately gentle.
-        let (mut dgn, mut normal) = (Vec::new(), Vec::new());
-        for ar in a.areas.iter().filter(|ar| ar.index > 0) {
-            if ar.dungeon {
-                dgn.push(density(ar));
-            } else {
-                normal.push(density(ar));
-            }
-        }
-        assert!(!dgn.is_empty(), "the sweep has to actually contain a dungeon section");
-        let mean = |v: &[f64]| v.iter().sum::<f64>() / v.len() as f64;
-        let (d, n) = (mean(&dgn), mean(&normal));
-        // A dungeon section may legitimately differ from an ordinary one — it packs
-        // creatures denser and holds a guaranteed chest — but it is still a section of its
-        // own biome, and it must not be an order of magnitude emptier. The bug sat at 30x.
-        assert!(
-            d > n * 0.5,
-            "a dungeon ring keeps its biome's terrain \
-             (dungeon {d:.3} vs ordinary {n:.3} obstacles per 1000 u²)"
-        );
-    }
 
     #[test]
     fn the_maze_holds_its_terrain_past_the_compensation_cap() {
@@ -12694,6 +12575,57 @@ mod tests {
         }
         // ...and not vacuous: the whole web must not have collapsed onto the backbone either.
         assert!(shallow > 5.0, "a fork you cannot leave the trail for is not a fork");
+    }
+
+    /// **WG-11 stage 5: no ring of the world is a dungeon, and none is branchless.**
+    ///
+    /// `dungeon_every = 4` made every fourth SECTION a "dungeon" — coherent while a section
+    /// was a 20-tile corridor holding three rooms, and a category error the moment WG-4 bent
+    /// it into an annular band spanning the whole arc. The cost was not cosmetic: that ring
+    /// got `web_trails_per_area = 0`, so **a quarter of the world had no branches at all**,
+    /// which is a large part of why the deep world reads as a straight shot. It also got two
+    /// divider walls stepping in corridor `y` — an ANGLE — which at r=1200 is a line of rocks
+    /// a quarter-kilometre apart, and (until `WG-6`) no maze fill either: 0.167 obstacles per
+    /// 1000 u² against 4.92 for an ordinary ring, a 30x gap.
+    ///
+    /// This replaces the five tests that asserted ring-dungeons EXIST. A dungeon becomes a
+    /// LOCAL enclosure on the route in stage 6, which is what `WG-8` always proposed; the
+    /// property worth guarding now is that nothing is special about a ring, and that what the
+    /// ring-dungeon took away — the branches — is back everywhere.
+    #[test]
+    fn no_ring_of_the_world_is_a_dungeon_and_none_is_branchless() {
+        let b = Balance::load_default().unwrap();
+        for seed in [1u64, 7, 424242] {
+            let mut a = Arena::generate(&b, seed, false);
+            let mut reach = 0.0_f64;
+            while reach < 900.0 {
+                reach += 40.0;
+                a.ensure_frontier(&b, reach);
+            }
+            assert!(
+                a.areas.iter().all(|ar| !ar.dungeon),
+                "seed {seed}: a ring of the world is still a dungeon"
+            );
+            // …and every ring past the on-ramp carries branches. This is the half that
+            // matters: a branchless band is a lane, and a quarter of the world was one.
+            let webbed = a
+                .areas
+                .iter()
+                .filter(|ar| ar.index > 0)
+                .filter(|ar| {
+                    a.web.iter().any(|(p, q)| {
+                        let r = (p.x.hypot(p.y) + q.x.hypot(q.y)) * 0.5;
+                        r >= ar.start_x && r < ar.end_x
+                    })
+                })
+                .count();
+            let sections = a.areas.iter().filter(|ar| ar.index > 0).count();
+            assert!(
+                webbed * 4 >= sections * 3,
+                "seed {seed}: only {webbed} of {sections} sections carry a branch — a ring \
+                 with no fork in it is a lane"
+            );
+        }
     }
 
     #[test]

@@ -5260,7 +5260,12 @@ impl GameState {
             let arc_half = (inst_balance.worldgen.radial_arc_degrees.to_radians() * 0.5).max(0.0);
             // Just INSIDE the edge: on land, with the water within sight. Landing in the sea
             // would be a party standing on something it cannot walk on.
-            let theta = arc_half * 0.97;
+            //
+            // ⚠️ **INSIDE THE COAST AT THIS RADIUS, not inside the nominal arc.** `WG-11`
+            // tapers the world and makes its shoreline wander, so 97% of `arc_half` is sea
+            // wherever the coast has bitten in — this harness exists to put a party ON the
+            // shore, and it was putting them in the water.
+            let theta = meld_proto::coast::arc_half_at(reach as f32, arc_half as f32) as f64 * 0.97;
             let landing = meld_proto::common::Position {
                 x: reach * theta.cos(),
                 y: reach * theta.sin(),
