@@ -5775,7 +5775,16 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
                             Position::new(p.x + (q.x - p.x) * f, p.y + (q.y - p.y) * f)
                         };
                         let (e0, e1) = (clip(p1, p0), clip(p0, p1));
-                        if e0.distance_to(&e1) < wg.ridge_pass_width {
+                        // ⚠️ **THE ASPECT RULE APPLIES TO THE CLIPPED PIECE, NOT THE SPINE.**
+                        // `half_width` is sized against `seg_len` over the WHOLE boundary, but
+                        // what gets emitted is the part inside this section — so a short piece
+                        // keeps the full width and becomes exactly what
+                        // `a_range_is_a_wall_and_never_a_cone` forbids: a capsule wider than it
+                        // is long, which linear falloff renders as a mathematically perfect,
+                        // featureless cone. Measured, one came out 36 long and 37 wide.
+                        // Dropping such a piece is not a loss — it is a gap, and gaps are
+                        // passes.
+                        if e0.distance_to(&e1) < (half_width * 2.0).max(wg.ridge_pass_width) {
                             continue;
                         }
                         out.push([
