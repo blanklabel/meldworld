@@ -38,10 +38,17 @@ pub struct ShiftRoll {
     /// 1 = the frontier). CANON's `1d100 × 1d100` location roll, in one axis: the
     /// overworld is a radial fan, so a section index IS the location.
     pub locate: f64,
-    /// How many CONTIGUOUS sections retile — the game's translation of CANON's
-    /// 1d6 Tiny…Cataclysmic size table. A section is a radius ring, and the client
-    /// already keys its ground and biome label off per-section rings, so a
-    /// section-granular Shift retiles the world for free.
+    /// How DEEP the region reaches, in contiguous sections — the game's translation of
+    /// CANON's 1d6 Tiny…Cataclysmic size table. It sizes the BEARING wedge too
+    /// ([`crate::Arena::shift_patch`]), so a Tiny Shift is about one cell on a side and a
+    /// Cataclysmic one about three: the size table means the same thing in both axes.
+    ///
+    /// ⚠️ **This used to be the whole region, and the comment here said a section-granular
+    /// Shift "retiles the world for free" because the client keyed its ground off
+    /// per-section radius rings.** That was true when it was written and false from `WG-7`
+    /// on, where a biome became a property of a CELL derived analytically — so the Shift
+    /// swapped `Area.biome`, the banner announced it, and the ground never repainted. A
+    /// region is a patch of cells now, and what it repaints rides the wire.
     pub sections: usize,
     /// Draw for the incoming biome. Resolved against the candidate list by the
     /// arena, so a region can never "shift" into the biome it already is.
@@ -55,6 +62,11 @@ pub struct ShiftRoll {
     /// least-recently-disturbed. A purely LRU Shift is a Shift that always lands
     /// where you are not, which is a weather report rather than a hazard.
     pub uniform_pick: bool,
+    /// **Where around the arc**, as a fraction of the fan's width at the region's own
+    /// radius (0 = one rim, 1 = the other). The second axis a region needs now that it is
+    /// a patch of cells rather than a whole ring — without it every Shift takes a complete
+    /// annulus, which is the concentric-ring world `WG-7` and `WG-11` exist to retire.
+    pub bearing: f64,
 }
 
 /// Stream position for generation `g`: distinct per generation and per purpose, so
@@ -110,6 +122,10 @@ pub fn roll(b: &Balance, seed: u64, generation: u64) -> ShiftRoll {
         biome_pick: rng.next_u64(),
         damage_fraction,
         uniform_pick: rng.unit() < s.random_pick_share,
+        // ⚠️ DRAWN LAST, deliberately. The schedule is a pure function of `(seed, g)` and
+        // the draws are positional, so a new draw inserted anywhere above would move every
+        // value after it and every world's history with it.
+        bearing: rng.unit(),
     }
 }
 
@@ -120,10 +136,22 @@ pub struct ShiftOutcome {
     pub sections: Vec<usize>,
     /// The biome they are now.
     pub biome: String,
-    /// Inner and outer radius of the swapped ring, so the client can draw the tell and
-    /// the flash without knowing what a section is.
+    /// Inner and outer radius of the swapped region, so the client can draw the tell and
+    /// the flash without knowing what a section is. With `arc_center`/`arc_half` this is
+    /// the region's bounding patch — a region is a set of CELLS now, and these four numbers
+    /// are what the tell needs rather than the membership itself.
     pub inner_radius: f64,
     pub outer_radius: f64,
+    /// The bearing wedge the region occupies, in radians: its centre and half-width. A
+    /// region no longer spans the whole arc, so a tell drawn from the radii alone lights up
+    /// a full ring around a patch that changed.
+    pub arc_center: f64,
+    pub arc_half: f64,
+    /// **The cells this Shift repainted, and what they became.** The ground derives a
+    /// cell's biome analytically ([`meld_proto::regions`]), so this delta is the only thing
+    /// that can move it — without it the land swaps, the props re-scatter and the floor
+    /// stays exactly what the seed said.
+    pub repaints: Vec<meld_proto::regions::Repaint>,
     /// Entities the Shift removed, so a client holding them can drop them without
     /// waiting for a snapshot to omit them.
     pub wiped: Vec<String>,

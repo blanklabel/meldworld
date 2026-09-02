@@ -109,15 +109,29 @@ struct BiomeParams {
     river_count: u32,
     _pad_wc0: u32, _pad_wc1: u32,
     // The Shift's tell (CANON D20/§W2): (inner_radius, outer_radius, intensity, 0).
-    // A region is a radius ring in the WG-4 fan and this ground is already painted in
-    // rings, so the doomed region draws as an annulus in the same frame as everything
-    // else — no second coordinate system to keep in sync. Intensity 0 = nothing pending.
+    // ⚠️ This used to read "a region is a radius ring ... so the doomed region draws as an
+    // annulus". A region is a PATCH OF CELLS now (`WG-11`) — the radii are its band and
+    // `shift_arc` is its bearing wedge, and burning the annulus alone told every party at
+    // that depth to run from weather coming for a wedge of it. Intensity 0 = nothing pending.
     shift: vec4<f32>,
+    // The tell's bearing wedge: `(arc_center, arc_half, 0, 0)`. `arc_half <= 0` = no wedge,
+    // burn the whole ring.
+    shift_arc: vec4<f32>,
     // Open-water animation: `(seconds, 0, 0, 0)`. The sea needs a clock and this shader had
     // none — which is why the ocean was a static tile while every pond prop drifted its own
     // material UVs from `animate_water`. A vec4 rather than a bare f32 so it lands 16-byte
     // aligned after `shift` and needs no new padding on either side of the mirror.
     sea_anim: vec4<f32>,
+    // A SHIFT'S REPAINTED CELLS — `[cell_key, biome_index, 0, 0]` each, `repaint_count`
+    // live, windowed nearest-first around the player. ⚠️ Mirrors `regions::Repaints`: the
+    // biome here is DERIVED from the grid and the gate, which makes the floor a pure
+    // function of the seed — this delta is the only thing that can move it, and a Shift
+    // without it changed the props and the banner and left the ground alone.
+    repaints: array<vec4<f32>, 32>,
+    repaint_count: u32,
+    _pad_rp0: u32,
+    _pad_rp1: u32,
+    _pad_rp2: u32,
 }
 
 @group(#{MATERIAL_BIND_GROUP}) @binding(106) var<uniform> params: BiomeParams;

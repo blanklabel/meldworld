@@ -1884,11 +1884,46 @@ holds measured FLOORS for exactly that reason. Census before you believe a gener
   never wall-clock** (CANON §W2, structural — [`meld_world::shift`]). That is not a style
   point: it is what lets two integers replay a world's entire history, which is what makes
   §W5 persistence cheap. `WorldActor::tick_count` is the world clock; `meld-world` stays
-  pure and is *handed* the tick rather than reading one. **A region is a whole SECTION
-  span** (1-3 contiguous), the translation of CANON's 1d6 Tiny…Cataclysmic table — and it
-  is section-granular for a concrete reason: the client already keys its ground shader and
-  biome label off per-section radius rings, so re-sending `world.terrain_section` **is**
-  the retile and the Shift needed no new rendering path at all.
+  pure and is *handed* the tick rather than reading one.
+
+  ⚠️ **A REGION IS A PATCH OF CELLS, AND THIS PARAGRAPH USED TO SAY OTHERWISE.** It read "a
+  region is a whole SECTION span … it is section-granular for a concrete reason: the client
+  already keys its ground shader and biome label off per-section radius rings, so re-sending
+  `world.terrain_section` **is** the retile and the Shift needed no new rendering path at
+  all." True when written; **false from `WG-7` on**, which made a cell's biome ANALYTIC —
+  derived from the grid, the seed and the `[biome_gate]`, so a streaming world needs no
+  lookup table. From then until `WG-11` a Shift swapped `Area.biome`, re-scattered the props,
+  dealt Force damage and announced *"Mire became Desert"* — and **the ground stayed mire for
+  the life of the world**, because nothing on the wire could move a derivation that only
+  reads the seed. Desert scrub standing on mire, the label agreeing with the scrub, and the
+  whole server-side suite green because the Shift is *applied* correctly. **The comment was
+  the reason nobody looked.**
+
+  `meld_proto::regions::Repaints` is the delta that moves it — a sorted cell→biome map
+  consulted INSIDE the one resolver (`Grid::biome_of`), so forgetting it is a compile error
+  rather than a stale answer, and mirrored line-for-line into `rg_biome_of` in both ground
+  shaders. **The order is the rule**, held by test on both sides: the **capstone outranks a
+  repaint** (the end of the world stays one place whatever the weather does) and a **repaint
+  outranks the seed**. It rides `run.started` (the accumulated delta, so a joiner agrees with
+  everyone standing there) and `world.shift` (what just changed), windowed NEAREST-FIRST into
+  the shader because a world accumulates repaints without bound while only nearby cells can
+  be on screen.
+
+  The region's **depth** is still a section span (1-3 contiguous, CANON's 1d6
+  Tiny…Cataclysmic table); what is new is that it also has a **bearing wedge**
+  (`Arena::shift_patch`), sized off the same `roll.sections` — about one cell on a side for a
+  Tiny Shift, three for a Cataclysmic — so the size table means the same thing in both axes.
+  Repainting cells on a full annulus would have fixed "the ground never changes" and handed
+  back the concentric rings `WG-7` and `WG-11` exist to retire, in the one moment the player
+  is watching the land change. **The cell set is the region's definition and everything asks
+  it** — the Force blast, the wipe, the re-scatter, the repaint — because a radius test
+  beside a cell test is two answers to "is this inside", and the difference is a creature
+  that died to a Shift that never reached it.
+  ⚠️ Two consequences worth knowing: `reroll_props` takes the region's share of the
+  section's own **tapered** arc (a ring's worth of props strewn into a wedge is that wedge
+  over-filled), and `reroll_peaks` was pushing a **CORRIDOR** point into the world-space
+  `peaks` list, so a Shift's mountain rose most of the way around the fan at depth — the
+  bent-frame trap again.
   **The props are RE-SCATTERED and the mountains RE-CUT, not reskinned** (`reroll_props`
   / `reroll_peaks`): the incoming biome strews its own count at its own density in its own
   places, so a wood becoming desert genuinely thins instead of turning into

@@ -897,11 +897,24 @@ pub enum ServerMsg {
         biome: String,
         lands_in_ms: u64,
         caught: bool,
+        /// The doomed BEARING wedge, in radians. A region is a patch of cells, so a tell
+        /// drawn from the radii alone marks a whole ring around the part that goes.
+        arc_center: f32,
+        arc_half: f32,
     },
-    /// It landed (`world.shift`). The retiled `world.terrain_section` messages arrive
-    /// with it and are what actually repaint the ground — this is the words and the
-    /// damage, not the render.
-    Shifted { biome: String, from_biome: String, damage: Vec<i32> },
+    /// It landed (`world.shift`).
+    ///
+    /// ⚠️ **This doc used to say the retiled `world.terrain_section` messages "are what
+    /// actually repaint the ground".** They are not, and have not been since `WG-7` made a
+    /// cell's biome analytic: the retile carries GEOMETRY, and the biome comes from
+    /// `repaints` — the delta this client folds into its own decomposition. Without it the
+    /// banner said "Mire became Desert" over ground that stayed mire.
+    Shifted {
+        biome: String,
+        from_biome: String,
+        damage: Vec<i32>,
+        repaints: Vec<meld_proto::regions::Repaint>,
+    },
     /// The server moved this player (`movement.position_correction`) — today, because a
     /// Shift strewed the new land's props on top of them. The local avatar chases the
     /// snapshot exponentially for responsiveness, so a teleport has to say so or it
@@ -2821,6 +2834,8 @@ impl Inner {
                     biome: p["biome"].as_str().unwrap_or("").to_string(),
                     lands_in_ms: p["lands_in_ms"].as_u64().unwrap_or(0),
                     caught: p["caught"].as_bool().unwrap_or(false),
+                    arc_center: p["arc_center"].as_f64().unwrap_or(0.0) as f32,
+                    arc_half: p["arc_half"].as_f64().unwrap_or(0.0) as f32,
                 });
             }
             "world.shift" => {
@@ -2831,6 +2846,8 @@ impl Inner {
                     damage: p["damage"]
                         .as_array()
                         .map(|a| a.iter().map(|v| v.as_i64().unwrap_or(0) as i32).collect())
+                        .unwrap_or_default(),
+                    repaints: serde_json::from_value(p["repaints"].clone())
                         .unwrap_or_default(),
                 });
             }

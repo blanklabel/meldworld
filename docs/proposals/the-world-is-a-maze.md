@@ -505,6 +505,81 @@ with anything else. Every world-shape change in this epic has cost an interactio
 not predicted — the two shaders, the range/maze conflation, the trail crossing water — and
 all three were cheaper to find alone than in company.
 
+### 3.8 A Shift changed the biome and the ground never repainted — FIXED
+
+⚠️ **MEASURED, and this is what stage 5 is actually FOR.** `apply_shift` writes
+`self.areas[i].biome = to` and re-scatters the region's props with the new biome's kinds. The
+client is told, and tells the player: *"Mire became Desert"*. **The ground stays Mire.**
+
+Because `WG-7` made ground biome ANALYTIC. The client paints it from
+`regions::biome_at(x, z)` → `biome_of(cell_at(x, z), gate)`, a pure function of the grid
+(seed, ring step, cell width, warp) and the `[biome_gate]` table — and a Shift touches none of
+those. `TerrainSection` carries a `biome` field and the handler consumes `peaks`, `ridges`,
+`straits`, `lobes`, `water`, `bridges` — **not** `biome`. The Shift messages' `biome` reaches
+exactly two places: the warning banner and the "X became Y" line.
+
+So the ground's biome is fixed for the life of a world, and no Shift can ever change it. The
+props change, the label changes, the terrain does not — desert scrub standing on mire.
+
+⚠️ **The stale comment that hid it** is on `world.shift` itself: *"the client already keys its
+biome ground and HUD label off per-section radius rings, so a section-granular Shift needs no
+new rendering path at all."* True when it was written, false since `WG-7` shipped cells, and
+it reads as a reason not to look.
+
+**The fix is stage 5 proper, and it is not "move terrain".** Stage 5's stated headline —
+per-ring terrain becomes per-cell — moves a grid of zeros (`terraces_per_area = 0.0`, so
+`raise_terrace` never runs and `Terrain.level` is provably all-zero). What actually has to
+become per-cell is **the Shift's output**: a set of per-cell biome OVERRIDES, carried on the
+wire and consulted by both `regions::biome_at` and the ground shader's mirror of it, so the
+derivation stays a pure function of `(seed, overrides)` and §W5's replay still holds — the
+override set is exactly the kind of small delta `worlds` already stores.
+
+That also makes the Shift's region cell-shaped for free, which is the other half of stage 5:
+an override set IS a set of cells, so `world.shift_warning`'s `inner_radius`/`outer_radius`
+ring stops being the region's definition and becomes a summary of it.
+
+**What shipped.** `regions::Repaints` — a sorted cell-key → biome delta, consulted inside
+`Grid::biome_of` between the capstone and the seeded roll, mirrored line-for-line into
+`rg_biome_of` in both ground shaders. The order is the rule and is held by test: **the
+capstone outranks a repaint** (the end of the world stays one place whatever the weather
+does) and **a repaint outranks the seed**. It rides `run.started` (the accumulated delta, so
+a joiner agrees with everyone standing there) and `world.shift` (the cells that just
+changed), and the client folds it into the same `Regions` its grass, minimap, HUD label and
+ground shader all read — so nothing can disagree with the floor it is drawn on.
+
+Because the delta is consulted inside the ONE resolver rather than beside it, adding it made
+`repaints` an explicit argument of `Grid::biome_of` — forgetting it is a compile error rather
+than a silently stale answer. That is the strongest available form of the one-rule discipline
+this file keeps invoking.
+
+**And the region became a patch, in the same change, because it had to.** Repainting cells on
+a full annulus would have fixed "the ground never changes" and handed back the concentric
+rings `WG-7` and `WG-11` exist to retire — in the one moment the player is watching the land
+change. `Arena::shift_patch` gives a Shift a **bearing wedge** as well as a radius band,
+sized off the same `roll.sections` as the depth (about one cell on a side for a Tiny Shift,
+three for a Cataclysmic), so CANON's 1d6 size table means the same thing in both axes. The
+cell set is the region's definition and **everything asks it** — what the Force blast
+catches, what is wiped, what re-scatters, what repaints — because a radius test beside a cell
+test is two answers to "is this inside", and the difference is a creature that died to a
+Shift that never reached it.
+
+Two things fell out of that:
+
+- **`reroll_props` was strewing a whole ring's worth of props into a wedge.** Density is per
+  unit area, so the count takes the region's share of that section's own tapered arc.
+- **`reroll_peaks` pushed a CORRIDOR point into a world-space list.** `self.path` is corridor
+  coordinates and `peaks` is world (generation pushes `radial_tf(summit, ..)`), so a Shift's
+  mountain rose somewhere else entirely — and corridor `y` being an ANGLE means "somewhere
+  else" is most of the way around the fan at depth. Nth instance of the bent-frame trap.
+
+⚠️ **AND TWO EXISTING TESTS FAILED FOR THE RIGHT REASON**, which is worth recording:
+`a_shift_re_cuts_the_regions_mountains` and `what_grows_back_belongs_to_the_new_biome` both
+measured membership as `inner <= r < outer`. True when a region was an annulus; wrong the
+moment it became a patch — the peaks a Shift leaves standing at the same depth are not its
+peaks, and the creatures it spared are still their own biome's. Same shape as
+`the_way_out_survives_every_shift` measuring the fanned swath instead of the tube: **when a
+guard and the code it guards share a frame convention, the guard is not evidence.**
+
 ## 5. Invariants
 
 The contract, all testable:

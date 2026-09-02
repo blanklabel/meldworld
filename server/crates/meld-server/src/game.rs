@@ -5629,6 +5629,10 @@ impl GameState {
                         gate: meld_world::biome_gate_slice(&balance),
                         blend: balance.region.blend_width as f32,
                         force: inst.arena.forced_biome_index(),
+                        // Every Shift this world has already lived through. A joiner
+                        // deriving the biome from the grid alone would paint the world as
+                        // the seed left it and disagree with everyone standing in it.
+                        repaints: inst.arena.repaints().clone(),
                     },
                 },
             ));
@@ -10022,7 +10026,11 @@ impl WorldActor {
         if self.tick_count >= roll.warn_tick && !self.shift_warned {
             self.shift_warned = true;
             if let Some((first, last)) = self.arena.shift_region(&balance, &roll) {
-                let (inner, outer) = self.arena.shift_band(first, last);
+                // The tell describes the REGION, which is a patch of cells — so it carries
+                // the bearing wedge as well as the radii, and "am I caught" is asked with
+                // the region's own membership rather than a radius beside it.
+                let patch = self.arena.shift_patch(&roll, first, last);
+                let grid = self.arena.regions();
                 let becoming = self.arena.incoming_biome_for(&balance, &roll, first);
                 let lands_in_ms =
                     roll.land_tick.saturating_sub(self.tick_count) * balance.battle.tick_ms;
@@ -10030,20 +10038,19 @@ impl WorldActor {
                     let caught = self
                         .arena
                         .avatar(&r.player_id)
-                        .map(|a| {
-                            let rad = self.arena.corridorize(&a.position).x;
-                            rad >= inner && rad < outer
-                        })
+                        .map(|a| patch.holds(&grid, &a.position))
                         .unwrap_or(false);
                     out.push(out_msg(
                         &r.player_id,
                         &ww::ShiftWarning {
                             generation: roll.generation,
-                            inner_radius: inner,
-                            outer_radius: outer,
+                            inner_radius: patch.inner,
+                            outer_radius: patch.outer,
                             biome: becoming.to_string(),
                             lands_in_ms,
                             caught,
+                            arc_center: patch.arc_center,
+                            arc_half: patch.arc_half,
                         },
                     ));
                 }
@@ -10148,6 +10155,12 @@ impl WorldActor {
                     generation: roll.generation,
                     inner_radius: outcome.inner_radius,
                     outer_radius: outcome.outer_radius,
+                    arc_center: outcome.arc_center,
+                    arc_half: outcome.arc_half,
+                    // ⚠️ **WITHOUT THIS THE GROUND NEVER CHANGES.** A cell's biome is
+                    // derived from the seed on both sides of the wire, so the only thing
+                    // that can move the floor is the delta.
+                    repaints: outcome.repaints.clone(),
                     biome: outcome.biome.clone(),
                     from_biome: from.clone(),
                     wiped: outcome.wiped.clone(),
@@ -10155,9 +10168,11 @@ impl WorldActor {
                 },
             ));
         }
-        // Repaint the ground. The client keys biome ground + HUD label off per-section
-        // radius rings, so re-sending each retiled section IS the retile — no new
-        // rendering path, which is why the Shift is section-granular in the first place.
+        // Re-send the retiled sections' GEOMETRY (peaks, and everything the client replaces
+        // a section from). ⚠️ This is NOT what repaints the biome — the comment here used to
+        // claim it was, on the grounds that the client keys its ground off per-section radius
+        // rings. `WG-7` made a cell's biome analytic instead, so the retile moves mountains
+        // and the floor's THEME comes from `Shifted::repaints` above.
         let (rh, cl) = (self.arena.radial_half(), self.arena.corridor_lateral());
         for &i in &outcome.sections {
             let Some(area) = self.arena.areas.get(i) else { continue };

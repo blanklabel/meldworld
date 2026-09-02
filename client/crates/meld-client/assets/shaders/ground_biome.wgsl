@@ -118,15 +118,29 @@ struct BiomeParams {
     river_count: u32,
     _pad_wc0: u32, _pad_wc1: u32,
     // The Shift's tell (CANON D20/§W2): (inner_radius, outer_radius, intensity, 0).
-    // A region is a radius ring in the WG-4 fan and this ground is already painted in
-    // rings, so the doomed region draws as an annulus in the same frame as everything
-    // else — no second coordinate system to keep in sync. Intensity 0 = nothing pending.
+    // ⚠️ This used to read "a region is a radius ring ... so the doomed region draws as an
+    // annulus". A region is a PATCH OF CELLS now (`WG-11`) — the radii are its band and
+    // `shift_arc` is its bearing wedge, and burning the annulus alone told every party at
+    // that depth to run from weather coming for a wedge of it. Intensity 0 = nothing pending.
     shift: vec4<f32>,
+    // The tell's bearing wedge: `(arc_center, arc_half, 0, 0)`. `arc_half <= 0` = no wedge,
+    // burn the whole ring.
+    shift_arc: vec4<f32>,
     // Open-water animation: `(seconds, 0, 0, 0)`. The sea needs a clock and this shader had
     // none — which is why the ocean was a static tile while every pond prop drifted its own
     // material UVs from `animate_water`. A vec4 rather than a bare f32 so it lands 16-byte
     // aligned after `shift` and needs no new padding on either side of the mirror.
     sea_anim: vec4<f32>,
+    // A SHIFT'S REPAINTED CELLS — `[cell_key, biome_index, 0, 0]` each, `repaint_count`
+    // live, windowed nearest-first around the player. ⚠️ Mirrors `regions::Repaints`: the
+    // biome here is DERIVED from the grid and the gate, which makes the floor a pure
+    // function of the seed — this delta is the only thing that can move it, and a Shift
+    // without it changed the props and the banner and left the ground alone.
+    repaints: array<vec4<f32>, 32>,
+    repaint_count: u32,
+    _pad_rp0: u32,
+    _pad_rp1: u32,
+    _pad_rp2: u32,
 }
 
 @group(#{MATERIAL_BIND_GROUP}) @binding(100) var t_forest: texture_2d<f32>;
@@ -1012,6 +1026,17 @@ fn rg_biome_of(ring: u32, sector: u32) -> i32 {
     if (gates[10] <= inner) {
         return 10;
     }
+    // A SHIFT'S REPAINT, in the same order `regions::Grid::biome_of` asks it: it beats the
+    // seed's roll below and the CAPSTONE above beats it, so the end of the world stays one
+    // place whatever the weather does. Asked HERE rather than in `rg_biome_at` so the
+    // boundary cross-fade in `rg_edge` — which resolves the neighbouring cell's biome
+    // through this same function — fades toward the repainted theme for free.
+    let key = (ring << 7u) | (sector & 127u);
+    for (var ri = 0u; ri < params.repaint_count; ri = ri + 1u) {
+        if (u32(params.repaints[ri].x) == key) {
+            return i32(params.repaints[ri].y);
+        }
+    }
     var open = array<i32, 11>(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
     var count = 0u;
     for (var i = 0u; i < 11u; i = i + 1u) {
@@ -1023,7 +1048,6 @@ fn rg_biome_of(ring: u32, sector: u32) -> i32 {
     if (count == 0u) {
         return 0;
     }
-    let key = (ring << 7u) | (sector & 127u);
     return open[rg_hash32(params.region_seed ^ rg_hash32(key ^ 0x2545F491u)) % count];
 }
 
@@ -1283,7 +1307,12 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     // The tell. The ground inside the doomed ring burns, brightest at the two edges so
     // the boundary is a LINE you can see and run across rather than a vague glow — the
     // whole point of warning you is that leaving has to be a thing you can aim at.
-    if (params.shift.z > 0.0 && r >= params.shift.x && r < params.shift.y) {
+    // The doomed patch: a radius band AND a bearing wedge. Burning the whole annulus told
+    // every party at that depth to run from a Shift that was only coming for a wedge of it.
+    let shift_bearing = atan2(in.world_position.z, in.world_position.x);
+    let in_wedge = params.shift_arc.y <= 0.0
+        || abs(shift_bearing - params.shift_arc.x) <= params.shift_arc.y;
+    if (in_wedge && params.shift.z > 0.0 && r >= params.shift.x && r < params.shift.y) {
         let edge = min(r - params.shift.x, params.shift.y - r);
         let lip = 1.0 - smoothstep(0.0, 7.0, edge);
         let k = clamp(params.shift.z * (0.30 + 0.70 * lip), 0.0, 0.92);

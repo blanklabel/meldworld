@@ -2386,7 +2386,8 @@ design for this epic: [`proposals/worldgen-wg.md`](proposals/worldgen-wg.md).
 
 Make time in the field a living, dangerous place worth screenshotting.
 
-- [ ] **WG-11 — The world is a maze you hold open.** 🔴 *Design drafted, nothing built —
+- [ ] **WG-11 — The world is a maze you hold open.** 🟡 *Stages 1-5 landed; roads, links and
+  the micro maze remain —
   [`proposals/the-world-is-a-maze.md`](proposals/the-world-is-a-maze.md). Owner's direction;
   supersedes `WG-7`'s ROUTES half and absorbs `WG-8` wholesale.* Reported from play, after
   `WG-6` landed: *"it doesn't feel maze like at all… just feels like weird rings on a map
@@ -2434,6 +2435,24 @@ Make time in the field a living, dangerous place worth screenshotting.
     the taper shrinking the deep rings that made the problem. The constraint that killed the
     band comes with it as an invariant — **you must not be able to read the route from where
     the props thin out**.
+  - 🟢 **LANDED so far:** the boundary maze (`pass_open`, orderless, pure in `(seed, a, b)`,
+    with `[region_barrier]` porosity per biome so field and desert are the crossings and
+    ashfall is a hunt for a pass); the **teardrop taper** (`coast::arc_half_at` — the fan's
+    half-angle is a function of radius, mirrored into both ground shaders, so "only the
+    prison draws out here" and "the world funnels to a point" are one sentence); a wandering
+    shoreline that is never a ruler edge; **the ring dungeons retired** (`dungeon_every = 0`)
+    in favour of dead-end cells paying a chest tier bonus; anchored routes reading as
+    **roads**; and the bend funnelled through one definition (it was inlined eight times).
+  - 🟢 **AND A SHIFT NOW REPAINTS THE GROUND — it never did.** `WG-7` made a cell's biome
+    ANALYTIC (a pure function of the grid, the seed and the gate, which is what lets a world
+    stream with no lookup table), and the Shift predates it: it swapped `Area.biome`,
+    re-scattered the props, dealt Force damage and printed *"Mire became Desert"* while the
+    **floor stayed mire for the life of the world**. Nothing failed, because the Shift is
+    *applied* correctly — the stale comment on `world.shift` even said the retile repaints
+    the ground "for free". `regions::Repaints` is the delta (capstone > repaint > seed, held
+    by test, mirrored into `rg_biome_of`), and in the same change **a Shift's region became a
+    patch of cells** rather than a whole annulus — repainting a ring would have handed back
+    the rings in the one moment the player is watching the land change.
 - [ ] **FS-1 — Camping in the field.** An item or mechanic to make a temporary
   safe rest in the maze (heal/regroup/pass time, with risk — think
   Warding-Tent/Sanctuary-Campfire family from GDD §5, generalized to a solo rest).

@@ -108,7 +108,14 @@ pub(crate) fn update_ambient_scatter(
     mut mats: ResMut<Assets<StandardMaterial>>,
     players: Query<(&WorldEntity, &Transform), Without<GrassBlade>>,
     mut blades: Query<(&mut GrassBlade, &mut Transform, &mut Visibility)>,
+    mut epoch: Local<u64>,
 ) {
+    // A landed Shift repaints cells under a standing player. A blade recomputes only when it
+    // moves to a NEW cell, so without this the mire's tufts keep growing on the desert that
+    // just replaced them until the player walks far enough to recycle the grid.
+    let now_epoch = crate::world_render::region_epoch();
+    let stale = *epoch != now_epoch;
+    *epoch = now_epoch;
     let Some(p) = player_pos(&session, &players) else {
         for (_, _, mut v) in &mut blades {
             if !matches!(*v, Visibility::Hidden) {
@@ -143,6 +150,9 @@ pub(crate) fn update_ambient_scatter(
         let dx = (blade.idx as i32 % GRID) - GRID / 2;
         let dz = (blade.idx as i32 / GRID) - GRID / 2;
         let cell = (bx + dx, bz + dz);
+        if stale {
+            blade.last = None;
+        }
         if blade.last == Some(cell) {
             continue; // still covering the same cell — nothing to recompute
         }

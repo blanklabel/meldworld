@@ -2567,6 +2567,34 @@ pub struct Avatar {
 
 /// The generated overworld for one MazeInstance (spike scope): a seeded chain of
 /// biome areas along a walkable corridor, streamed section-by-section on demand.
+/// **The region one Shift takes**, as the set of CELLS in it plus the bounding patch the
+/// tell is drawn from. See [`Arena::shift_patch`].
+///
+/// The membership is the cell set and nothing else: a radius test beside it would be a
+/// second answer to "is this inside", and this repo has paid for that pattern twice
+/// (`check_touch`, and the two copies of "what blocks").
+#[derive(Clone, Debug, Default)]
+pub struct ShiftRegion {
+    /// [`meld_proto::regions::Cell::key`] of every cell in the region.
+    pub cells: std::collections::HashSet<u32>,
+    pub inner: f64,
+    pub outer: f64,
+    /// The bearing wedge, in radians — centre and half-width.
+    pub arc_center: f64,
+    pub arc_half: f64,
+}
+
+impl ShiftRegion {
+    /// Is `p` (a WORLD position) inside the region?
+    ///
+    /// ⚠️ World, never corridor — corridor `y` is an ANGLE, and a cell is defined by a
+    /// world bearing. Asking this in the corridor frame is the trap that has bitten the
+    /// tree spacing, the creature grouping, the divider walls and the clear-path tube.
+    pub fn holds(&self, grid: &meld_proto::regions::Grid, p: &Position) -> bool {
+        self.cells.contains(&grid.cell_at(p.x as f32, p.y as f32).key())
+    }
+}
+
 pub struct Arena {
     /// The seed this world was generated from (determinism / debugging).
     pub seed: u64,
@@ -2721,6 +2749,15 @@ pub struct Arena {
     /// than a set of concentric rings. Derived from the seed and `[region]`, so it costs
     /// nothing to persist and nothing to stream.
     regions: meld_proto::regions::Grid,
+    /// **Cells a Shift has repainted** ([`meld_proto::regions::Repaints`]) — the world's
+    /// biome DELTA over its own seed.
+    ///
+    /// ⚠️ A Shift used to swap `Area.biome` and re-scatter the region's props while the
+    /// GROUND kept the biome the seed derived, because `WG-7` made a cell's biome analytic
+    /// and the Shift predates it: the banner said "Mire became Desert", desert scrub grew,
+    /// and the floor under it stayed mire for the life of the world. This is the only thing
+    /// that can move it, and it rides the wire so the client's own derivation agrees.
+    repaints: meld_proto::regions::Repaints,
     /// `[biome_gate]` flattened into `BIOMES` order, so a cell's biome can be resolved
     /// without reaching for `Balance` — the lookup runs per placed prop.
     biome_gate: [f32; BIOMES.len()],
@@ -2941,6 +2978,13 @@ impl Arena {
         self.regions
     }
 
+    /// The cells a Shift has repainted, for the wire. A client deriving its own biome from
+    /// the grid alone paints the world as the seed left it, which is what made a Shift
+    /// invisible on the ground.
+    pub fn repaints(&self) -> &meld_proto::regions::Repaints {
+        &self.repaints
+    }
+
     /// The `MELD_BIOME` override as an index into [`BIOMES`], or `-1` in normal play. Rides the
     /// wire so the client paints the biome the server is actually spawning.
     pub fn forced_biome_index(&self) -> i32 {
@@ -2958,7 +3002,7 @@ impl Arena {
         if let Some(b) = self.force_biome {
             return b;
         }
-        BIOMES[self.regions.biome_at(p.x as f32, p.y as f32, &self.biome_gate)]
+        BIOMES[self.regions.biome_at(p.x as f32, p.y as f32, &self.biome_gate, &self.repaints)]
     }
 
     /// The biome at a **corridor** position, for the generation passes — which run before
@@ -2995,7 +3039,7 @@ impl Arena {
         for ring in lo..=hi {
             for sector in 0..g.sectors(ring) {
                 let cell = meld_proto::regions::Cell::new(ring, sector);
-                out = out.max(f(BIOMES[g.biome_of(cell, &self.biome_gate)]));
+                out = out.max(f(BIOMES[g.biome_of(cell, &self.biome_gate, &self.repaints)]));
             }
         }
         out
@@ -3161,6 +3205,7 @@ impl Arena {
                 warp: balance.region.boundary_warp as f32,
                 seed: seed as u32,
             },
+            repaints: meld_proto::regions::Repaints::default(),
             biome_gate: biome_gate_array(balance),
             terrain_cell: wg.terrain_cell,
             terraces_per_area: wg.terraces_per_area,
@@ -7585,6 +7630,61 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
         Some((first, last))
     }
 
+    /// **The cells one Shift takes.** A radius band from the section span, and a bearing
+    /// WEDGE within it — so a region is a PATCH rather than a complete annulus.
+    ///
+    /// ⚠️ A Shift used to take every bearing at its depth, which is the concentric-ring
+    /// world `WG-7` and `WG-11` exist to retire: with the biome now a property of a cell,
+    /// repainting a whole ring would hand back the rings on the map in the one place the
+    /// player is watching the land change. The wedge is sized off the SAME `roll.sections`
+    /// as the depth (about one cell on a side for a Tiny Shift, three for a Cataclysmic),
+    /// so CANON's size table means the same thing in both axes and no new draw is needed
+    /// beyond where around the arc it lands.
+    ///
+    /// The cell SET is the region's definition and everything asks it — what the Force
+    /// blast catches, what is wiped, what re-scatters, what repaints. A radius test beside
+    /// a cell test is two answers to "is this inside", and the difference is a creature
+    /// that died to a Shift that did not reach it.
+    pub fn shift_patch(&self, roll: &shift::ShiftRoll, first: usize, last: usize) -> ShiftRegion {
+        let (inner, outer) = self.shift_band(first, last);
+        let g = self.regions;
+        let r_mid = (((inner + outer) * 0.5) as f32).max(1.0);
+        // The world's own width here — TAPERED, like everything else that asks how wide the
+        // world is at a radius (`WG-11`).
+        let fan = meld_proto::coast::arc_half_at(r_mid, g.arc_half).max(1e-4);
+        let want = (roll.sections.max(1) as f32) * g.cell_width / (2.0 * r_mid);
+        let half = want.min(fan);
+        // Keep the wedge inside the fan rather than letting it clip the rim, so a Shift's
+        // size is what it says it is wherever it lands.
+        let center = ((roll.bearing as f32) * 2.0 - 1.0) * (fan - half).max(0.0);
+        let mut cells = std::collections::HashSet::new();
+        let lo = g.ring_at(inner as f32, center);
+        let hi = g.ring_at(outer as f32, center);
+        for ring in lo..=hi {
+            for sector in 0..g.sectors(ring) {
+                let c = meld_proto::regions::Cell::new(ring, sector);
+                let (cx, cz) = g.centroid(c);
+                let b = cz.atan2(cx);
+                if (b - center).abs() <= half {
+                    cells.insert(c.key());
+                }
+            }
+        }
+        // A wedge narrower than one sector can contain no centroid. A Shift that took
+        // nothing would be a warning tell over ground that never changes, so it takes the
+        // one cell it is aimed at.
+        if cells.is_empty() {
+            cells.insert(g.cell_at(r_mid * center.cos(), r_mid * center.sin()).key());
+        }
+        ShiftRegion {
+            cells,
+            inner,
+            outer,
+            arc_center: center as f64,
+            arc_half: half as f64,
+        }
+    }
+
     /// The world-space radius band a section span occupies. Corridor x IS radius in the
     /// WG-4 fan, so a section is a ring and the client can draw the tell from two numbers.
     pub fn shift_band(&self, first: usize, last: usize) -> (f64, f64) {
@@ -7619,14 +7719,14 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
         first: usize,
         last: usize,
     ) -> shift::ShiftOutcome {
-        let (inner, outer) = self.shift_band(first, last);
+        let region = self.shift_patch(roll, first, last);
+        let (inner, outer) = (region.inner, region.outer);
         let from = self.areas.get(first).map(|a| a.biome).unwrap_or("forest");
         let to = self.incoming_biome(balance, roll, from, inner);
         let mut rng = Rng(roll.biome_pick ^ (first as u64).wrapping_mul(0x9E37_79B9));
-        let in_band = |arena: &Self, p: &Position| {
-            let r = arena.corridorize(p).x;
-            r >= inner && r < outer
-        };
+        // ONE membership test, and it is the cell set — see [`ShiftRegion`].
+        let grid = self.regions;
+        let in_band = |_arena: &Self, p: &Position| region.holds(&grid, p);
 
         let mut wiped = Vec::new();
         // What lived here dies with the land. A creature already locked in a battle is
@@ -7686,10 +7786,9 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
         let caught: Vec<(String, f64)> = self
             .avatars
             .iter()
-            .filter(|a| {
-                let r = self.corridorize(&a.position).x;
-                r >= inner && r < outer
-            })
+            // The same predicate as everything else — a Force blast that caught a hero the
+            // Shift did not reach is the radius-beside-cells bug wearing a damage number.
+            .filter(|a| region.holds(&grid, &a.position))
             .map(|a| (a.player_id.clone(), roll.damage_fraction))
             .collect();
 
@@ -7698,10 +7797,27 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
             self.areas[i].shifted_at = roll.generation + 1;
         }
 
+        // ⚠️ **AND THIS IS WHAT MAKES THE GROUND FOLLOW.** `Area.biome` is only a section's
+        // representative theme; the floor is derived per CELL from the seed
+        // ([`meld_proto::regions::Grid::biome_of`]), so without a repaint the banner said
+        // "Mire became Desert", desert scrub grew, and the ground stayed mire for the life
+        // of the world.
+        let to_index = meld_proto::regions::biome_index(to).unwrap_or(0);
+        let mut repaints = Vec::with_capacity(region.cells.len());
+        for key in &region.cells {
+            let c = meld_proto::regions::Cell::from_key(*key);
+            self.repaints.set(c, to_index);
+            // Report what the resolver will actually ANSWER, not what we asked for: the
+            // capstone outranks a repaint, so a Shift landing in the deepest band changes
+            // nothing there and must not tell the client otherwise.
+            let got = self.regions.biome_of(c, &self.biome_gate, &self.repaints);
+            repaints.push(meld_proto::regions::Repaint { cell: *key, biome: got as u32 });
+        }
+
         // Topography first, then props: both go last, so the scatter sees the creatures
         // and nodes the new land just grew and refuses to bury them.
-        let peaks = self.reroll_peaks(balance, first, last, to, roll.biome_pick);
-        wiped.extend(self.reroll_props(balance, first, last, to, roll.biome_pick));
+        let peaks = self.reroll_peaks(balance, &region, first, last, to, roll.biome_pick);
+        wiped.extend(self.reroll_props(balance, &region, first, last, to, roll.biome_pick));
         let moved = self.rescue_stranded(first, last);
 
         shift::ShiftOutcome {
@@ -7709,6 +7825,9 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
             biome: to.to_string(),
             inner_radius: inner,
             outer_radius: outer,
+            arc_center: region.arc_center,
+            arc_half: region.arc_half,
+            repaints,
             wiped,
             caught,
             moved,
@@ -7751,20 +7870,18 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
     fn reroll_peaks(
         &mut self,
         balance: &Balance,
+        region: &ShiftRegion,
         first: usize,
         last: usize,
         biome: &'static str,
         seed: u64,
     ) -> Vec<(usize, Vec<[f32; 4]>)> {
         let wg = &balance.worldgen;
-        let (inner, outer) = self.shift_band(first, last);
+        let grid = self.regions;
         let keep: Vec<bool> = self
             .peaks
             .iter()
-            .map(|p| {
-                let r = self.corridorize(&Position::new(p[0] as f64, p[1] as f64)).x;
-                r < inner || r >= outer
-            })
+            .map(|p| !region.holds(&grid, &Position::new(p[0] as f64, p[1] as f64)))
             .collect();
         let mut it = keep.into_iter();
         self.peaks.retain(|_| it.next().unwrap_or(true));
@@ -7796,6 +7913,18 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
                     let (nx, ny) = (-base.y / len, base.x / len);
                     let summit =
                         Position::new(base.x + nx * side * away, base.y + ny * side * away);
+                    // ⚠️ **BENT.** `self.path` is CORRIDOR coordinates and `peaks` is a
+                    // WORLD-space list (generation pushes `radial_tf(summit, ..)`), so this
+                    // pushed a corridor point into it and a Shift's mountain rose somewhere
+                    // else entirely — corridor `y` is an ANGLE, so at depth "somewhere else"
+                    // is most of the way around the fan. Nth instance of the bent-frame trap.
+                    let summit = self.to_world(summit);
+                    // …and inside the REGION. A wedge that the trail does not cross raises no
+                    // mountain, which is right: the land that changed is the land that changed.
+                    if !region.holds(&grid, &summit) {
+                        out.push((i, mine));
+                        continue;
+                    }
                     let peak =
                         [summit.x as f32, summit.y as f32, radius as f32, height as f32];
                     self.peaks.push(peak);
@@ -7827,6 +7956,7 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
     fn reroll_props(
         &mut self,
         balance: &Balance,
+        region: &ShiftRegion,
         first: usize,
         last: usize,
         biome: &'static str,
@@ -7837,14 +7967,14 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
         // is — the same shape the generation passes use.
         let reroll_ridges: Vec<meld_proto::terrain::Ridge> = self.ridges.clone();
         let reroll_off = self.terrain_off;
-        let (inner, outer) = self.shift_band(first, last);
+        let grid = self.regions;
+        // The REGION, not the ring: a Shift takes a patch of cells, and clearing the whole
+        // annulus would re-roll props across every bearing at that depth while only a wedge
+        // of it changed biome.
         let removed: Vec<Id> = self
             .obstacles
             .iter()
-            .filter(|o| {
-                let r = self.corridorize(&o.position).x;
-                r >= inner && r < outer
-            })
+            .filter(|o| region.holds(&grid, &o.position))
             .map(|o| o.entity_id.clone())
             .collect();
         let doomed: std::collections::HashSet<&Id> = removed.iter().collect();
@@ -7871,8 +8001,22 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
             // the ring it landed on.
             let radial_scale =
                 maze_fill_scale(wg, self.radial_half, self.lateral, start_x, end_x);
-            let sparse = wg.obstacles_per_area.max(0.0).round() as usize;
-            let dense = (biome_obstacle_mult(wg, biome) * wg.obstacles_per_area * radial_scale)
+            // ⚠️ **A COUNT AUTHORED FOR A WHOLE RING, STREWN INTO A WEDGE, IS THAT WEDGE
+            // OVER-FILLED** by the ratio between them — the section's full complement of
+            // trees packed into a third of its arc. Density is per unit AREA, so the count
+            // takes the region's share of this section's own tapered arc.
+            let r_mid = (((start_x + end_x) * 0.5) as f32).max(1.0);
+            let fan = meld_proto::coast::arc_half_at(r_mid, self.radial_half as f32).max(1e-4);
+            let arc_share = if self.radial_half > 0.0 {
+                ((region.arc_half as f32) / fan).clamp(0.0, 1.0) as f64
+            } else {
+                1.0
+            };
+            let sparse = (wg.obstacles_per_area.max(0.0) * arc_share).round() as usize;
+            let dense = (biome_obstacle_mult(wg, biome)
+                * wg.obstacles_per_area
+                * radial_scale
+                * arc_share)
                 .round()
                 .max(0.0) as usize;
 
@@ -7906,6 +8050,11 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
                     near.insert(pos, radius);
                 }
                 let world = bend(pos);
+                // Inside the REGION, asked in the bent frame — a cell is defined by a world
+                // bearing, and corridor `y` is an angle.
+                if !region.holds(&grid, &world) {
+                    continue;
+                }
                 // The RANGES too: a Shift re-strews a region's props, and a range standing in
                 // it is exactly the ground they must not land on.
                 if meld_proto::terrain::landform_slope(
@@ -9641,6 +9790,105 @@ mod tests {
             (b, a)
         }
 
+        /// ⚠️ **THE BUG THIS WHOLE CHANGE EXISTS FOR.** A Shift swapped `Area.biome`,
+        /// re-scattered the props, dealt Force damage and told the client *"Mire became
+        /// Desert"* — and the GROUND never changed, because `WG-7` made a cell's biome a
+        /// pure function of the seed and nothing on the wire could move it. The banner and
+        /// the scrub said desert; the floor stayed mire for the life of the world.
+        ///
+        /// So the assertion is on the RESOLVER — what a coordinate answers — and not on any
+        /// field the Shift happens to write. `Area.biome` was being written correctly the
+        /// whole time.
+        #[test]
+        fn a_shift_repaints_the_ground_and_not_just_the_banner() {
+            let (b, mut a) = world();
+            let mut landed = 0;
+            for g in 0..80u64 {
+                let roll = shift::roll(&b, a.seed, g);
+                let Some((first, last)) = a.shift_region(&b, &roll) else { continue };
+                let patch = a.shift_patch(&roll, first, last);
+                let grid = a.regions();
+                // A point inside the region, in the frame a cell is defined in.
+                let r = ((patch.inner + patch.outer) * 0.5) as f32;
+                let probe = Position::new(
+                    (r * (patch.arc_center as f32).cos()) as f64,
+                    (r * (patch.arc_center as f32).sin()) as f64,
+                );
+                if !patch.holds(&grid, &probe) {
+                    continue;
+                }
+                let before = a.biome_at(probe);
+                let out = a.apply_shift(&b, &roll, first, last);
+                let after = a.biome_at(probe);
+                // The Shift never lands the biome a region already is, so the ground the
+                // player is standing on MUST read differently afterwards.
+                if out.biome == before {
+                    continue;
+                }
+                assert_eq!(
+                    after, out.biome,
+                    "gen {g}: the banner said {} but the ground under the region still \
+                     answers {after}",
+                    out.biome
+                );
+                assert_ne!(before, after, "gen {g}: the ground did not change at all");
+                assert!(
+                    !out.repaints.is_empty(),
+                    "gen {g}: a Shift landed and reported no repainted cells, so a client \
+                     deriving its own biome paints the world as the seed left it"
+                );
+                landed += 1;
+            }
+            assert!(landed >= 5, "only {landed} Shifts actually changed the ground");
+        }
+
+        /// A region is a PATCH of cells, not an annulus. Repainting every bearing at a depth
+        /// would hand back the concentric-ring world `WG-7` and `WG-11` exist to retire — in
+        /// the one moment the player is watching the land change.
+        #[test]
+        fn a_shift_takes_a_patch_of_the_world_and_never_a_whole_ring() {
+            // Read-only: this asks what a region WOULD take, so it never lands one.
+            let (b, a) = world();
+            let grid = a.regions();
+            let mut checked = 0;
+            for g in 0..80u64 {
+                let roll = shift::roll(&b, a.seed, g);
+                let Some((first, last)) = a.shift_region(&b, &roll) else { continue };
+                let patch = a.shift_patch(&roll, first, last);
+                let r = ((patch.inner + patch.outer) * 0.5) as f32;
+                let fan = meld_proto::coast::arc_half_at(r, grid.arc_half);
+                // Somewhere at the same depth that the Shift does NOT take. Walk the whole
+                // arc rather than trusting one sample: the wedge can sit anywhere in it.
+                let mut spared = 0;
+                let mut taken = 0;
+                for i in 0..64 {
+                    let bear = (i as f32 / 63.0 * 2.0 - 1.0) * fan * 0.98;
+                    let p = Position::new(
+                        (r * bear.cos()) as f64,
+                        (r * bear.sin()) as f64,
+                    );
+                    if patch.holds(&grid, &p) {
+                        taken += 1;
+                    } else {
+                        spared += 1;
+                    }
+                }
+                // At a radius wide enough to hold several cells, a Shift must leave some of
+                // the ring alone. Shallow rings are one or two cells around and a single cell
+                // legitimately IS most of the arc, so only assert where there is room.
+                if fan * r > 6.0 * grid.cell_width {
+                    assert!(
+                        spared > 0,
+                        "gen {g} at d{r}: the Shift took the entire ring ({taken} of \
+                         {} samples), which is the ring world it is meant to retire",
+                        taken + spared
+                    );
+                    checked += 1;
+                }
+            }
+            assert!(checked >= 5, "only {checked} regions were wide enough to check");
+        }
+
         /// A Shift that can drop the tundra's armoured bruisers onto the on-ramp kills
         /// new players for standing still. The `[biome_gate]` holds the harsh themes
         /// outward on the way OUT; it has to hold them there on the way SIDEWAYS too.
@@ -9723,24 +9971,23 @@ mod tests {
             for g in 0..30u64 {
                 let roll = shift::roll(&b, a.seed, g);
                 let Some((first, last)) = a.shift_region(&b, &roll) else { continue };
-                let (inner, outer) = a.shift_band(first, last);
+                // ⚠️ Ask the REGION, never the radius band. This test used to filter peaks
+                // by `inner <= r < outer` — true when a region was a whole annulus, and
+                // wrong the moment it became a patch of cells: the peaks a Shift leaves
+                // standing at the same depth are not its peaks.
+                let patch = a.shift_patch(&roll, first, last);
+                let grid = a.regions();
                 let before: Vec<[f32; 4]> = a
                     .peaks
                     .iter()
-                    .filter(|p| {
-                        let r = a.corridorize(&Position::new(p[0] as f64, p[1] as f64)).x;
-                        r >= inner && r < outer
-                    })
+                    .filter(|p| patch.holds(&grid, &Position::new(p[0] as f64, p[1] as f64)))
                     .copied()
                     .collect();
                 let out = a.apply_shift(&b, &roll, first, last);
                 let after: Vec<[f32; 4]> = a
                     .peaks
                     .iter()
-                    .filter(|p| {
-                        let r = a.corridorize(&Position::new(p[0] as f64, p[1] as f64)).x;
-                        r >= inner && r < outer
-                    })
+                    .filter(|p| patch.holds(&grid, &Position::new(p[0] as f64, p[1] as f64)))
                     .copied()
                     .collect();
                 assert_eq!(
@@ -9840,14 +10087,15 @@ mod tests {
             let (b, mut a) = world();
             let roll = shift::roll(&b, a.seed, 0);
             let (first, last) = a.shift_region(&b, &roll).expect("a shiftable region");
-            let (inner, outer) = a.shift_band(first, last);
+            let patch = a.shift_patch(&roll, first, last);
+            let grid = a.regions();
             let out = a.apply_shift(&b, &roll, first, last);
             let native = creatures_for_biome(&out.biome);
             let nodes = resources_for_biome(&out.biome);
-            let in_band = |p: &Position| {
-                let r = a.corridorize(p).x;
-                r >= inner && r < outer
-            };
+            // ⚠️ The REGION, not the radius band — see the peaks test above. What stands at
+            // the same depth OUTSIDE the wedge was never shifted and is still its own
+            // biome's, which is the whole point of a region being a patch.
+            let in_band = |p: &Position| patch.holds(&grid, p);
             for m in a.monsters.iter().filter(|m| in_band(&m.position) && m.bounty.is_empty()) {
                 assert!(
                     native.contains(&m.monster_kind.as_str()),

@@ -761,11 +761,21 @@ pub(crate) fn pump_net(
                     clock.elapsed_secs_f64(),
                 );
             }
-            ServerMsg::ShiftWarning { inner_radius, outer_radius, biome, lands_in_ms, caught } => {
+            ServerMsg::ShiftWarning {
+                inner_radius,
+                outer_radius,
+                biome,
+                lands_in_ms,
+                caught,
+                arc_center,
+                arc_half,
+            } => {
                 let now = clock.elapsed_secs_f64();
                 let secs = (lands_in_ms as f64 / 1000.0).round().max(1.0) as u64;
                 tell.inner = inner_radius as f32;
                 tell.outer = outer_radius as f32;
+                tell.arc_center = arc_center;
+                tell.arc_half = arc_half;
                 tell.lands_at = now + lands_in_ms as f64 / 1000.0;
                 tell.biome = crate::world_render::title_case(&biome);
                 tell.caught = caught;
@@ -782,8 +792,15 @@ pub(crate) fn pump_net(
             ServerMsg::PositionCorrection { x, y } => {
                 world.snap = Some((x as f32, y as f32));
             }
-            ServerMsg::Shifted { biome, from_biome, damage } => {
+            ServerMsg::Shifted { biome, from_biome, damage, repaints } => {
                 tell.armed = false;
+                // ⚠️ **THE GROUND FOLLOWS HERE, AND ONLY HERE.** A cell's biome is derived
+                // from the seed on both sides of the wire (`WG-7`), so the retiled
+                // `world.terrain_section` messages that arrive with this move MOUNTAINS and
+                // nothing else — for two releases the banner announced a biome the floor
+                // never became. Folding the delta in repaints it, and the ground shader picks
+                // it up from the same decomposition on its next uniform upload.
+                crate::world_render::apply_region_repaints(&repaints);
                 tell.flash_until = clock.elapsed_secs_f64() + crate::SHIFT_FLASH_SECS;
                 let hurt: i32 = damage.iter().sum();
                 let what = if from_biome.is_empty() {
@@ -924,5 +941,26 @@ mod landform_delivery {
                  client cannot draw"
             );
         }
+    }
+
+    /// ⚠️ **AND THE SAME TRAP ONE LAYER UP: A SHIFT'S REPAINT.** `WG-7` made a cell's biome
+    /// ANALYTIC — derived from the grid, the seed and the gate — so the ground's theme is a
+    /// pure function of the seed and nothing the server *writes* can move it. A Shift
+    /// swapped `Area.biome`, re-scattered the props, dealt Force damage and printed "Mire
+    /// became Desert", and the floor stayed mire for the life of the world. The whole
+    /// server-side suite was green throughout, because the Shift is *applied* correctly.
+    ///
+    /// So assert that the delta is CONSUMED, not merely decoded — the `bridges` lesson.
+    #[test]
+    fn a_landed_shift_repaints_the_ground() {
+        let src = include_str!("netglue.rs");
+        let start = src.find("ServerMsg::Shifted {").expect("the handler moved");
+        let end = src[start..].find("ServerMsg::Loadouts").expect("the next arm moved");
+        let body = &src[start..start + end];
+        assert!(
+            body.contains("apply_region_repaints"),
+            "`world.shift` carries the repainted cells and this handler never folds them in \
+             — the banner names a biome the ground never becomes"
+        );
     }
 }

@@ -61,6 +61,11 @@ const LOBE_SLOTS: usize = meld_proto::coast::MAX_LOBES;
 
 /// `vec4` slots for standing inland water (`[cx, cz, radius, level]`) and for river-chain
 /// nodes (`[x, z, half_width, chain_start]`), both windowed around the player.
+/// `vec4` slots for a Shift's REPAINTED CELLS (`[cell_key, biome, 0, 0]`), windowed around
+/// the player. A world accumulates repaints for as long as it lives while only the cells
+/// near you can be on screen — see `regions::Repaints::nearest`.
+const REPAINT_SLOTS: usize = meld_proto::regions::MAX_REPAINTS;
+
 const BASIN_SLOTS: usize = meld_proto::coast::MAX_BASINS;
 const RIVER_SLOTS: usize = meld_proto::coast::MAX_RIVER_NODES;
 
@@ -71,8 +76,8 @@ const RIVER_SLOTS: usize = meld_proto::coast::MAX_RIVER_NODES;
 mod biome_params {
     #![allow(dead_code)]
     use super::{
-        BASIN_SLOTS, BRIDGE_SLOTS, LOBE_SLOTS, PEAK_SLOTS, RIDGE_SLOTS, RIVER_SLOTS,
-        STRAIT_SLOTS,
+        BASIN_SLOTS, BRIDGE_SLOTS, LOBE_SLOTS, PEAK_SLOTS, REPAINT_SLOTS, RIDGE_SLOTS,
+        RIVER_SLOTS, STRAIT_SLOTS,
     };
     use bevy::prelude::*;
     use bevy::render::render_resource::ShaderType;
@@ -201,11 +206,30 @@ mod biome_params {
         /// the doomed annulus needs no second coordinate system. `intensity == 0` is the
         /// resting state and costs the shader one compare.
         pub(crate) shift: Vec4,
+        /// The tell's BEARING wedge: `(arc_center, arc_half, 0, 0)` in radians. A region is
+        /// a patch of cells now, so burning the whole annulus marks ground that is not
+        /// going. `arc_half <= 0` means "no wedge" and the ring burns entire, which is what
+        /// an older server's tell looks like.
+        pub(crate) shift_arc: Vec4,
         /// Open-water animation: `(seconds, 0, 0, 0)`. The sea needs a clock and this
         /// shader had none — the ocean was a static tile while every pond prop drifted its
         /// own material UVs from [`animate_water`]. A `Vec4` rather than a bare `f32` so it
         /// lands 16-byte aligned after `shift` and adds no padding to either mirror.
         pub(crate) sea_anim: Vec4,
+        /// **A SHIFT'S REPAINTED CELLS** ([`meld_proto::regions::Repaints`]) —
+        /// `[cell_key, biome_index, 0, 0]` each, `repaint_count` live.
+        ///
+        /// ⚠️ In the uniform because the shader DERIVES a cell's biome from the grid and
+        /// the gate (`WG-7`), which makes the floor a pure function of the seed — so a
+        /// Shift swapped the biome, re-scattered the props, announced itself, and the ground
+        /// never changed. This is the delta that moves it, and a shader that has not been
+        /// told paints the world as the seed left it while the server spawns the new one.
+        pub(crate) repaints: [Vec4; REPAINT_SLOTS],
+        pub(crate) repaint_count: u32,
+        // Three SCALAR pads, as with `peak_count` — a `[u32; 3]` needs a 16-byte stride.
+        pub(crate) _pad_rp0: u32,
+        pub(crate) _pad_rp1: u32,
+        pub(crate) _pad_rp2: u32,
     }
 
     impl Default for BiomeParams {
@@ -231,6 +255,11 @@ mod biome_params {
                     meld_proto::coast::TIP_TAPER,
                     super::SEA_DEPTH,
                 ),
+                repaints: [Vec4::ZERO; REPAINT_SLOTS],
+                repaint_count: 0,
+                _pad_rp0: 0,
+                _pad_rp1: 0,
+                _pad_rp2: 0,
                 straits: [Vec4::ZERO; STRAIT_SLOTS],
                 strait_count: 0,
                 _pad_sc0: 0,
@@ -249,6 +278,7 @@ mod biome_params {
                 _pad_wc1: 0,
                 shift: Vec4::ZERO,
                 sea_anim: Vec4::ZERO,
+                shift_arc: Vec4::ZERO,
                 peaks: [Vec4::ZERO; PEAK_SLOTS],
                 peak_count: 0,
                 dungeon: 0,
@@ -2838,6 +2868,7 @@ pub(crate) fn update_ground_biome_rings(
     let now = clock.elapsed_secs_f64();
     let k = tell.intensity(now);
     mat.extension.params.shift = Vec4::new(tell.inner, tell.outer, k, 0.0);
+    mat.extension.params.shift_arc = Vec4::new(tell.arc_center, tell.arc_half, 0.0, 0.0);
     // The sea's clock. Wrapped rather than raw elapsed seconds: f32 loses sub-frame
     // precision in the thousands, and a session left running overnight would see the swell
     // quantise and then stop moving. 3600 is long enough that the wrap never lines up with
@@ -3053,6 +3084,17 @@ pub(crate) fn update_ground_biome_rings(
     p.gate = Vec4::new(g(0), g(1), g(2), g(3));
     p.gate_hi = Vec4::new(g(4), g(5), g(6), g(7));
     p.gate_hi2 = Vec4::new(g(8), g(9), g(10), 0.0);
+    // …and the DELTA over it. Nearest-first around the player: the array is fixed and a
+    // world's repaints are not, and uploading the head of the list would paint the shallowest
+    // Shift in the world forever (the bug that already shipped for the ranges and bridges).
+    let near_repaints = rg.repaints.nearest(&rg.grid, px, pz, REPAINT_SLOTS);
+    for (i, slot) in p.repaints.iter_mut().enumerate() {
+        *slot = match near_repaints.get(i) {
+            Some(r) => Vec4::new(r.cell as f32, r.biome as f32, 0.0, 0.0),
+            None => Vec4::ZERO,
+        };
+    }
+    p.repaint_count = near_repaints.len() as u32;
 }
 
 /// **THIS WORLD'S REGION DECOMPOSITION**, as the server sent it on `run.started`.
@@ -3188,6 +3230,43 @@ pub(crate) fn ridges() -> Vec<meld_proto::terrain::Ridge> {
 /// Record this world's decomposition (call on `run.started`).
 pub(crate) fn set_regions(r: meld_proto::regions::Regions) {
     *REGIONS.write().unwrap() = Some(r);
+}
+
+/// Fold a landed Shift's repainted cells into this world's decomposition.
+///
+/// ⚠️ **This is the only thing that can change the ground's biome.** `WG-7` made a cell's
+/// theme analytic — derived from the grid, the seed and the gate, which is what lets a
+/// world stream outward with no lookup table — and from then until `WG-11` a Shift swapped
+/// the server's `Area.biome`, re-scattered the props and printed "Mire became Desert" while
+/// the floor stayed mire for the life of the world. The delta rides `world.shift`; the
+/// ground shader picks it up from here on its next uniform upload, and `biome_at_world`
+/// (grass, the minimap, the HUD label) reads the same resolver, so nothing can disagree
+/// with the floor it is drawn on.
+pub(crate) fn apply_region_repaints(cells: &[meld_proto::regions::Repaint]) {
+    if cells.is_empty() {
+        return;
+    }
+    {
+        let mut guard = REGIONS.write().unwrap();
+        let rg = guard.get_or_insert_with(meld_proto::regions::Regions::default);
+        for r in cells {
+            rg.repaints.set(meld_proto::regions::Cell::from_key(r.cell), r.biome as usize);
+        }
+    }
+    REGION_EPOCH.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Bumped every time the decomposition changes under a live world (today: a landed Shift).
+///
+/// ⚠️ Anything that CACHES an answer derived from a cell's biome has to watch this. The
+/// ground shader re-reads the decomposition every frame and needed nothing, but the grass
+/// scatter recomputes a blade only when it moves to a new cell — so a player standing still
+/// inside a Shift kept the old biome's tufts growing on the new floor, which is this whole
+/// bug in miniature one layer up.
+static REGION_EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+pub(crate) fn region_epoch() -> u64 {
+    REGION_EPOCH.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 /// This world's decomposition, or the empty one (`ring_step == 0`, which every reader
@@ -4331,6 +4410,35 @@ mod ground_uniform_tests {
         for term in ["0.62 * sin(bearing * 3.0 + phase)", "0.38 * cos(bearing * 7.0 - phase * 2.0)"] {
             assert!(wgsl.contains(term), "the shader's ring warp is missing `{term}`");
         }
+        // ⚠️ **AND THE REPAINT LOOKUP, IN THE RIGHT PLACE.** A cell's biome is derived on
+        // both sides of the wire, so a Shift can only move the ground through this delta —
+        // a shader that does not consult it paints the world as the seed left it while the
+        // server spawns the new biome's creatures on top. It must sit inside `rg_biome_of`
+        // rather than `rg_biome_at`, because `rg_edge` resolves the NEIGHBOUR cell's biome
+        // through the same function and the boundary cross-fade has to reach the repainted
+        // theme too.
+        let of_body = wgsl
+            .split_once("fn rg_biome_of(")
+            .expect("the shader defines rg_biome_of")
+            .1
+            .split_once("\n}")
+            .expect("…and closes it")
+            .0;
+        assert!(
+            of_body.contains("params.repaint_count") && of_body.contains("params.repaints["),
+            "`rg_biome_of` does not consult the repaint delta — a landed Shift will change \
+             the props and the banner and leave the ground exactly as the seed drew it"
+        );
+        // The ORDER is the rule: the capstone outranks a repaint, a repaint outranks the
+        // roll. Compare where each appears in the one function that decides.
+        let cap = of_body.find("return 10;").expect("the capstone arm");
+        let rep = of_body.find("params.repaint_count").expect("the repaint arm");
+        let roll = of_body.find("% count]").expect("the seeded roll");
+        assert!(
+            cap < rep && rep < roll,
+            "the shader resolves capstone/repaint/roll in the wrong order ({cap}, {rep}, \
+             {roll}) — `regions::Grid::biome_of` asks them capstone, repaint, roll"
+        );
     }
 
     /// **Every region helper the ground shader defines must actually be CALLED** — the same
@@ -4418,10 +4526,17 @@ mod ground_uniform_tests {
             "terrain_amp", "terrain_off",
             "_pad_peaks", "peaks", "peak_count", "straits", "strait_count", "lobes",
             "lobe_count", "basins", "rivers", "basin_count", "river_count", "shift",
-            "sea_anim",
+            "shift_arc", "sea_anim", "repaints", "repaint_count",
         ] {
             assert!(body.contains(&format!("{field}:")), "the shader is missing `{field}`");
         }
+        // ⚠️ The repaint array's LENGTH is the contract too: a shader sized smaller than
+        // the window the CPU fills silently drops the repaints past its end, and the ground
+        // keeps the seed's biome in exactly the cells a Shift just changed.
+        assert!(
+            body.contains(&format!("repaints: array<vec4<f32>, {REPAINT_SLOTS}>")),
+            "the shader's repaint array is not {REPAINT_SLOTS} long"
+        );
         // Declaration ORDER is the layout, so check the two agree on it rather than only
         // on membership — a reordered pair keeps every name and still corrupts the buffer.
         let order: Vec<&str> = body
@@ -4436,7 +4551,7 @@ mod ground_uniform_tests {
         );
         assert_eq!(
             order.last().copied(),
-            Some("sea_anim"),
+            Some("_pad_rp2"),
             "the last field is what the 16-byte tail rounds to: {order:?}"
         );
 
