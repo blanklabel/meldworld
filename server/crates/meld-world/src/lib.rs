@@ -5414,9 +5414,7 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
         // ⚠️ Asked in ONE frame: `corridor_path` is corridor space and a ridge is already world
         // space, so the path is bent forward. Comparing the two directly is the check that
         // silently always passes, which is how water kept landing on the trail.
-        let (half, lat) = (self.radial_half, self.corridor_lateral.max(1.0));
-        let drawn: Vec<Position> =
-            self.drawn_trail();
+        let drawn: Vec<Position> = self.drawn_trail();
         let clear = self.path_clear_radius + self.player_radius;
         // …and it yields to anything ALREADY STANDING, which resolves the opposite way to a
         // prop. `retain_placeable_obstacles` deletes trees a range swallows because a tree is
@@ -5530,9 +5528,7 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
         // ⚠️ Asked in ONE frame: `corridor_path` is corridor space and a ridge is already
         // world space, so the path is bent forward. Comparing the two directly is the check
         // that silently always passes, which is how water kept landing on the trail.
-        let (half, lat) = (self.radial_half, self.corridor_lateral.max(1.0));
-        let drawn: Vec<Position> =
-            self.drawn_trail();
+        let drawn: Vec<Position> = self.drawn_trail();
         let clear = self.path_clear_radius + self.player_radius;
         // ⚠️ **THE INDEX MUST BE A SUPERSET OF THE POLYLINE, NEVER A SUBSET** — the same rule
         // `ridge_discs` states for its capsule. Bucketing the path's VERTICES approximates it,
