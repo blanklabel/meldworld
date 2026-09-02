@@ -417,6 +417,19 @@ fn inland_water_at(wxz: vec2<f32>) -> vec2<f32> {
 // How far INTO the sea a point is, in world units (negative on land). Mirrors
 // `meld_proto::coast::is_ocean` but signed, so the shoreline can fade instead of snapping
 // to a hard edge one texel wide.
+// The fan's half-angle at radius `d`. Mirrors `meld_proto::coast::arc_half_at` — held to it
+// by `the_taper_matches_the_shader`.
+fn arc_half_at(d: f32, arc_half: f32) -> f32 {
+    let taper_start = 1200.0;
+    let taper_end = 3200.0;
+    let end_width = 200.0;
+    if (arc_half <= 0.0 || d <= taper_start) { return arc_half; }
+    let t = clamp((d - taper_start) / max(taper_end - taper_start, 1.0), 0.0, 1.0);
+    let s = t * t * (3.0 - 2.0 * t);
+    let end_half = min(end_width * 0.5 / max(d, 1.0), arc_half);
+    return arc_half + (end_half - arc_half) * s;
+}
+
 fn sea_depth_at(wxz: vec2<f32>) -> f32 {
     // LAST CITY IS THE SAME SEA, DRAWN BY THE SAME SHADER. The city is its own scene in
     // its own coordinates and cannot use the world's radial fan (that shoreline, expressed
@@ -452,7 +465,11 @@ fn sea_depth_at(wxz: vec2<f32>) -> f32 {
     //   * the NECK, the land bridge that closes the gap near the hub.
     // `min` of the three, so the sign still agrees with `meld_proto::coast::is_ocean`
     // exactly (sea iff past ALL THREE) while the magnitude is now continuous everywhere.
-    let past_fan = (theta - arc_half) * d;
+    // WG-11: the fan's half-angle is a FUNCTION OF RADIUS — the world is a teardrop that
+    // closes to a corridor at the end. Mirrors `meld_proto::coast::arc_half_at`; the server
+    // and the ground must agree about where the sea is, or we paint a coastline nothing
+    // collides with.
+    let past_fan = (theta - arc_half_at(d, arc_half)) * d;
     let past_spit = abs(wxz.y) - spit_half_width(d);
     let past_neck = d - params.coast.y;
     var sea = min(min(past_fan, past_spit), past_neck);

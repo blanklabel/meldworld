@@ -207,13 +207,58 @@ pub fn is_ocean(x: f32, z: f32, arc_half_rad: f32) -> bool {
 ///
 /// Its SIGN is `is_ocean` exactly — held by `the_depth_field_agrees_with_the_predicate`,
 /// because the thing you can see and the thing you collide with must be one shoreline.
+/// **WG-11: THE WORLD IS A TEARDROP.** Where the land starts closing back in.
+pub const TAPER_START: f32 = 1200.0;
+/// Where it has closed to its final width — the end of the world, and the prison's door.
+pub const TAPER_END: f32 = 3200.0;
+/// How wide the land is at [`TAPER_END`] and everywhere past it: the corridor you walk to
+/// the prison. Narrow enough that no town can be founded in it, so the final approach is
+/// always on foot — and that falls out of the geometry rather than needing a rule.
+pub const END_WIDTH: f32 = 200.0;
+
+/// The fan's half-angle at radius `d` — **the world's own shape, not a constant.**
+///
+/// A constant half-angle makes the world a wedge that widens forever: ~2,000 units of arc at
+/// r=400 against ~15,700 at r=3000, so the deep world is mostly ground nobody will stand on,
+/// and anything placed per unit of arc out there is paid for and never seen. Tapering makes
+/// it a **teardrop**, and buys three things at once:
+///
+/// - **The ending becomes a PLACE.** `seraphic_oubliette` is `EXCLUSIVE` past its gate, so
+///   *"only the prison draws out here"* and *"the world funnels to a point"* stop being two
+///   statements and become one. No cell has to be chosen as the prison.
+/// - **Deep rings get SMALLER instead of quadratically larger**, which is what makes the
+///   cell-graph maze affordable: wall cost rides the boundary count, which rides the arc.
+/// - **No town fits in a 200-unit corridor.**
+///
+/// Held FULL until `TAPER_START` and smoothstepped after, because the taper fights the
+/// anti-east rule: a funnel makes the centre line geometrically shortest and the pull
+/// strengthens toward the point. Gentle through the mid-world keeps *which bearing* a real
+/// decision for as long as possible. Past `TAPER_END` the width is HELD rather than driven
+/// to zero — the prison corridor runs on.
+///
+/// ⚠️ **THIS IS THE BEND'S ANGLE TOO, NOT JUST THE SEA'S.** The first attempt at the taper
+/// changed `sea_depth` alone and the world stopped generating: `radial_tf` still mapped
+/// corridor `y` across the CONSTANT fan, so a section at d2800 scattered its creatures,
+/// props and route waypoints across ±150° while only ±17° of it was land — ~88% of
+/// everything placed there landed in the sea and the feasibility re-rolls burned against
+/// water. The coast is not what decides where content goes; the bend is. Both ask this.
+pub fn arc_half_at(d: f32, arc_half_rad: f32) -> f32 {
+    if arc_half_rad <= 0.0 || d <= TAPER_START {
+        return arc_half_rad;
+    }
+    let t = ((d - TAPER_START) / (TAPER_END - TAPER_START).max(1.0)).clamp(0.0, 1.0);
+    let s = t * t * (3.0 - 2.0 * t);
+    let end_half = (END_WIDTH * 0.5 / d.max(1.0)).min(arc_half_rad);
+    arc_half_rad + (end_half - arc_half_rad) * s
+}
+
 pub fn sea_depth(x: f32, z: f32, arc_half_rad: f32) -> f32 {
     if arc_half_rad <= 0.0 {
         return -1000.0; // corridor mode: no gap, no sea
     }
     let d = x.hypot(z);
     let theta = z.atan2(x).abs();
-    let past_fan = (theta - arc_half_rad) * d;
+    let past_fan = (theta - arc_half_at(d, arc_half_rad)) * d;
     let past_spit = z.abs() - peninsula_half_width(d, arc_half_rad);
     let past_neck = d - NECK_REACH;
     past_fan.min(past_spit).min(past_neck)
@@ -1541,6 +1586,72 @@ mod tests {
 /// Adding a kind here gives it pooling, a basin, a tile and a colour at once.
 pub fn is_water_kind(kind: &str) -> bool {
     matches!(kind, "pond" | "bog_pool" | "frozen_pond")
+}
+
+#[cfg(test)]
+mod taper_tests {
+    use super::*;
+
+    #[test]
+    fn the_world_closes_to_a_corridor() {
+        // The teardrop: full arc through the on-ramp and mid-world, then closing to a
+        // fixed-width corridor at the end. Asserted as SHAPE — held, then widening, then
+        // monotone closing, then constant — because every number in it is a constant
+        // somebody will retune.
+        let ah = 2.618_f32;
+        let width = |d: f32| 2.0 * arc_half_at(d, ah) * d;
+        for d in [100.0_f32, 500.0, 1000.0, TAPER_START] {
+            assert!(
+                (arc_half_at(d, ah) - ah).abs() < 1e-6,
+                "the fan must be full at d{d} — the taper may not pinch the mid-world"
+            );
+        }
+        assert!(
+            width(1600.0) > width(TAPER_START),
+            "the world still opens out past the taper's start, or it is a cone not a teardrop"
+        );
+        let mut last = width(1600.0);
+        for d in [2000.0_f32, 2400.0, 2800.0, 3000.0, TAPER_END] {
+            let w = width(d);
+            assert!(w < last, "the world must keep closing: d{d} is {w:.0} against {last:.0}");
+            last = w;
+        }
+        assert!(
+            (width(TAPER_END) - END_WIDTH).abs() < 1.0,
+            "the end of the world is {:.0} wide, wanted {END_WIDTH}",
+            width(TAPER_END)
+        );
+        // Past the end the corridor RUNS ON rather than pinching shut: a world of zero width
+        // has nowhere to put the prison and nowhere for a party to stand in it.
+        for d in [3400.0_f32, 4000.0] {
+            assert!(
+                (width(d) - END_WIDTH).abs() < 1.0,
+                "past the end the corridor holds its width, got {:.0} at d{d}",
+                width(d)
+            );
+        }
+    }
+
+    #[test]
+    fn the_taper_matches_the_shader() {
+        // The ground shader mirrors `arc_half_at` so the coastline it paints is the one the
+        // server collides with. This repo has already shipped a water feature invisible
+        // behind an unused WGSL function, and a bridge nobody rendered that parties walked
+        // across — so the constants are READ OUT of the shader rather than trusted.
+        let src = include_str!(
+            "../../../client/crates/meld-client/assets/shaders/ground_biome.wgsl"
+        );
+        let grab = |name: &str| -> f32 {
+            let at = src.find(name).unwrap_or_else(|| panic!("{name} missing from the shader"));
+            let tail = &src[at + name.len()..];
+            let lo = tail.find('=').expect("an assignment") + 1;
+            let hi = tail.find(';').expect("a statement end");
+            tail[lo..hi].trim().parse().unwrap_or_else(|e| panic!("{name}: {e}"))
+        };
+        assert_eq!(grab("let taper_start"), TAPER_START, "taper start drifted from the shader");
+        assert_eq!(grab("let taper_end"), TAPER_END, "taper end drifted from the shader");
+        assert_eq!(grab("let end_width"), END_WIDTH, "the corridor width drifted");
+    }
 }
 
 #[cfg(test)]

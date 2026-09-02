@@ -2421,7 +2421,8 @@ pub struct Obstacle {
 /// mode (`half == 0`), where the two frames already agree.
 fn tangential_scale(x: f64, half: f64, lat: f64) -> f64 {
     if half > 0.0 {
-        (x.max(0.0) * half / lat.max(1.0)).max(1e-6)
+        // The TAPERED angle, or this disagrees with the bend it exists to describe.
+        (x.max(0.0) * arc_half_at_f64(x, half) / lat.max(1.0)).max(1e-6)
     } else {
         1.0
     }
@@ -5947,7 +5948,10 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
         let r = p.x.hypot(p.y);
         let theta = p.y.atan2(p.x);
         let lat = self.corridor_lateral.max(1.0);
-        Position::new(r, (theta / self.radial_half) * lat)
+        // The inverse of `radial_tf`, so it must use the SAME half-angle — which WG-11's
+        // teardrop makes a function of radius. A constant here and a taper there is a
+        // round-trip that does not return where it started.
+        Position::new(r, (theta / arc_half_at_f64(r, self.radial_half)) * lat)
     }
 
     /// The elevation level at world position `p` — samples whichever section's
@@ -7812,8 +7816,18 @@ fn bend_tf(p: Position, half: f64, lat: f64) -> Position {
 
 fn radial_tf(p: Position, half: f64, lat: f64) -> Position {
     let r = p.x.max(0.0);
-    let theta = (p.y / lat).clamp(-1.0, 1.0) * half;
+    // WG-11: the fan's half-angle is a function of RADIUS (the teardrop), so corridor `y`
+    // maps across the land AVAILABLE at this radius rather than across a constant wedge.
+    // Doing this in `coast::sea_depth` alone is what made the first taper attempt stop the
+    // world generating — the sea closed in while the bend kept scattering content across the
+    // full fan, so most of a deep section landed in the water.
+    let theta = (p.y / lat).clamp(-1.0, 1.0) * arc_half_at_f64(r, half);
     Position::new(r * theta.cos(), r * theta.sin())
+}
+
+/// [`meld_proto::coast::arc_half_at`] in the generator's `f64`.
+fn arc_half_at_f64(r: f64, half: f64) -> f64 {
+    meld_proto::coast::arc_half_at(r as f32, half as f32) as f64
 }
 
 /// Append the bent images of the straight corridor segment `prev → next`, inserting
