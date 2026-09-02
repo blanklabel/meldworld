@@ -173,14 +173,23 @@ pub fn is_ocean(x: f32, z: f32, arc_half_rad: f32) -> bool {
     if arc_half_rad <= 0.0 {
         return false;
     }
-    // Inside the fan: land, always. This is the overwhelming majority of every query.
-    if z.atan2(x).abs() <= arc_half_rad {
-        return false;
-    }
     // The western gap. Near the hub it is too narrow to hold a channel and the land closes
     // across it — the NECK.
     let d = x.hypot(z);
     if d <= NECK_REACH {
+        return false;
+    }
+    // Inside the fan: land, always. This is the overwhelming majority of every query.
+    //
+    // ⚠️ **THE FAN'S OWN ANGLE AT THIS RADIUS, not the nominal one.** This fast path read
+    // the constant `arc_half_rad` while [`sea_depth`] measures against [`arc_half_at`], so
+    // the moment the world gained a taper and a wandering coast the two disagreed: this said
+    // LAND everywhere inside the nominal 150° while the depth field said SEA wherever the
+    // coast had bitten in. `the_depth_field_agrees_with_the_predicate` exists for exactly
+    // that — the shoreline you SEE and the one you COLLIDE with must be one shoreline — and
+    // it caught it. Eighth site of the same rule: everything that asks how wide the world is
+    // here has to ask the same function.
+    if z.atan2(x).abs() <= arc_half_at(d, arc_half_rad) {
         return false;
     }
     // Otherwise: sea, except on the spit. A zero width is past the tip — open water even
@@ -1006,17 +1015,36 @@ mod tests {
         // ever occupies the western gap. This is a statement about the ocean's shape, not
         // about the world having one landmass: the inland seas that separate the continents
         // are a separate term, and they come in through `is_ocean_with`.
+        //
+        // ⚠️ **"INSIDE THE FAN" MEANS INSIDE ITS OWN COAST AT THAT RADIUS**, not inside the
+        // nominal arc. The world tapers and its coastline wanders (`arc_half_at`), so the
+        // rim moves — sampling the full ±`ARC_HALF` and demanding land is demanding a ruler
+        // edge, which is the defect the wander exists to remove.
         for i in 0..=100 {
-            let th = -ARC_HALF + (i as f32 / 100.0) * 2.0 * ARC_HALF;
             for r in [5.0_f32, 40.0, 200.0, 1200.0] {
+                let local = arc_half_at(r, ARC_HALF);
+                let th = -local + (i as f32 / 100.0) * 2.0 * local;
                 let (x, z) = (r * th.cos(), r * th.sin());
                 assert!(
                     !is_ocean(x, z, ARC_HALF),
-                    "inside the fan must be land (r={r}, theta={:.1}°)",
+                    "inside the fan's own coast must be land (r={r}, theta={:.1}°)",
                     th.to_degrees()
                 );
             }
         }
+        // …and not vacuous: past that coast, inside the NOMINAL arc, is sea. That is the
+        // wander, and without it these two statements would describe the same set.
+        let mut bitten = 0;
+        for r in [200.0_f32, 600.0, 1200.0] {
+            let local = arc_half_at(r, ARC_HALF);
+            if local < ARC_HALF - 1e-4 {
+                let th = (local + ARC_HALF) * 0.5;
+                if is_ocean(r * th.cos(), r * th.sin(), ARC_HALF) {
+                    bitten += 1;
+                }
+            }
+        }
+        assert!(bitten > 0, "the coast never bites inside the nominal arc — it is a ray again");
     }
 
     #[test]
@@ -1272,7 +1300,13 @@ mod tests {
 
     /// A bay sitting ON the fan's rim at r=800, biting inward.
     fn test_bay() -> Lobe {
-        let (r, th) = (800.0_f32, ARC_HALF);
+        // ⚠️ **ON THE COAST, NOT ON THE NOMINAL RIM.** A bay is an edit to the SHORELINE, so
+        // the fixture has to sit where the shoreline is — and the world's coast now wanders
+        // inside `ARC_HALF` (`arc_half_at`). Placed on the nominal rim it sat offshore, and
+        // its inward reach no longer touched land, so the test's own premise failed: exactly
+        // the way generation places one.
+        let r = 800.0_f32;
+        let th = arc_half_at(r, ARC_HALF);
         [r * th.cos(), r * th.sin(), 90.0, LOBE_BAY]
     }
 
@@ -1289,7 +1323,10 @@ mod tests {
         assert!(shore.is_ocean(bay[0], bay[1]), "a bay is water");
         // And it has genuinely bitten INWARD: a point just inside the rim, at the bay's
         // radius, is now sea where the bare fan called it land.
-        let inward_th = ARC_HALF - 20.0 / 800.0; // 20 units of arc inside the rim
+        // ⚠️ Measured from the coast's OWN angle at this radius, not the nominal rim: the
+        // wander has already taken the ground between them, so a point 20 units inside
+        // `ARC_HALF` is sea with or without the bay and would prove nothing.
+        let inward_th = arc_half_at(800.0, ARC_HALF) - 20.0 / 800.0;
         let (ix, iz) = (800.0 * inward_th.cos(), 800.0 * inward_th.sin());
         assert!(shore.is_ocean(ix, iz), "the bay must reach inside the fan's rim");
         assert!(
