@@ -915,8 +915,14 @@ pub(crate) fn setup(
     .collect();
     // A bridge's deck and parapets. Existing ground art, tiled the same way — the span needed
     // no assets of its own, which is why it could ship with the rest of the feature.
+    //
+    // ⚠️ THE DECK IS STONE, NOT A DIRT PATH. It shipped as `tile_path.png` and read as a
+    // brown boardwalk, which is the one thing it is not: a span over open water with stone
+    // parapets is masonry, and the parapets beside it were already `wall_rampart`. The
+    // cobbles are the city's own street tile — the same art Last City's plaza is paved with,
+    // which is exactly the association a causeway to its gate wants.
     let bridge_tex = (
-        load_tiled(&assets, "ground/tile_path.png"),
+        load_tiled(&assets, "ground/tile_street.png"),
         load_tiled(&assets, "ground/wall_rampart.png"),
     );
     // The ground is ONE plane wearing a biome-blending shader (`GroundBiome`): it
@@ -2228,7 +2234,20 @@ pub(crate) fn drift_clouds(
 /// Only meaningful on the Overworld: Last City is a separate scene in its own coordinates
 /// (its `coast` uniform is zeroed for exactly that reason), and a zero arc means corridor
 /// mode, which has no sea at all.
-pub(crate) fn on_open_water(frame: &crate::WorldFrame, screen: &Screen, wx: f32, wz: f32) -> bool {
+pub(crate) fn nothing_grows_here(
+    frame: &crate::WorldFrame,
+    screen: &Screen,
+    wx: f32,
+    wz: f32,
+) -> bool {
+    // ⚠️ **A BRIDGE IS LAND, WHICH IS EXACTLY WHY GRASS GREW ON IT.** `coast::bridge_clearance`
+    // subtracts the span from the sea so the deck is walkable — so the water cull, which asks
+    // the shoreline, says "land, plant away" and the scatter strewed tufts and bushes across
+    // the flagstones. Nothing grows on masonry: the deck is the one place that is land and
+    // still barren, so it needs its own test rather than a shoreline answer.
+    if meld_proto::terrain::bridge_span_at(wx, wz, &bridges()).is_some() {
+        return true;
+    }
     match screen {
         // The maze: ask the shoreline itself.
         Screen::Overworld => {
@@ -2305,7 +2324,7 @@ pub(crate) fn tile_ground_detail(
         let sc = base * (0.7 + ((h >> 48) & 0xff) as f32 / 255.0 * 0.7);
         let (wx, wz) = ((cell.x as f32 + jx) * DETAIL_CELL, (cell.y as f32 + jz) * DETAIL_CELL);
         // Nothing grows on the sea.
-        if on_open_water(&frame, state.get(), wx, wz) {
+        if nothing_grows_here(&frame, state.get(), wx, wz) {
             *vis = Visibility::Hidden;
             continue;
         }
@@ -2747,6 +2766,32 @@ pub(crate) fn city_ground_height(x: f32, z: f32) -> f32 {
 /// pure land height and wrong the moment a sea is involved (a flat scene must still dip
 /// into its bay) — so the scaling belongs on the inside, with the rule.
 pub(crate) fn terrain_height(x: f32, z: f32) -> f32 {
+    // **A DECK SITS AT THE HEIGHT OF THE LAND IT JOINS**, interpolated along the span — see
+    // `terrain::bridge_span_at` for why it used to sit at a level of its own and what that
+    // cost (a 4.4-unit cliff at every bridge end, and creatures gliding across it). Held no
+    // lower than a deck's own clearance over the water, so the middle of a long span still
+    // stands above the sea it crosses.
+    //
+    // The endpoints are sampled through `ground_no_bridge`, NOT this function: the ends lie
+    // inside the span by construction, so asking `terrain_height` there would be asking the
+    // deck about its own height.
+    let spans = bridges();
+    if let Some((i, s, parapet, w)) = meld_proto::terrain::bridge_span_at(x, z, &spans) {
+        let b = spans[i];
+        let a = ground_no_bridge(b[0], b[1]);
+        let c = ground_no_bridge(b[2], b[3]);
+        let level = (a + (c - a) * s).max(-SEA_DEPTH + meld_proto::terrain::BRIDGE_DECK_RISE);
+        let lifted = level + parapet * meld_proto::terrain::BRIDGE_PARAPET_RISE;
+        // Ramped into the bank over the abutment, so the join is continuous rather than a rim.
+        let natural = ground_no_bridge(x, z);
+        return natural + (lifted - natural) * w;
+    }
+    ground_no_bridge(x, z)
+}
+
+/// The ground WITHOUT any bridge over it — land, peaks and ranges, folded into the sea.
+/// [`terrain_height`] is this plus the deck of whatever span is overhead.
+fn ground_no_bridge(x: f32, z: f32) -> f32 {
     let (ox, oz) = terrain_offset();
     let base = meld_proto::terrain::height(x, z, ox, oz);
     let peaks = PEAKS.read();
@@ -2759,11 +2804,6 @@ pub(crate) fn terrain_height(x: f32, z: f32) -> f32 {
     // with a mountain drawn through it — the same bug this function already shipped once for
     // the ocean and once for the straits.
     let land = base + peak + meld_proto::terrain::ridge_height(x, z, &ridges());
-    // On a span, the ground IS the deck — a flat surface at its own level over the water, so
-    // anything standing there stands on the bridge rather than in the sea beneath it.
-    if let Some((rise, _)) = meld_proto::terrain::bridge_surface(x, z, &bridges()) {
-        return -SEA_DEPTH + rise;
-    }
     let (arc_half, city, amp) = ground_coast();
     // ONE answer for the City, shared with every hand-placed thing in the scene — see
     // `city_ground_height`. `amp` is 0 here by construction (the same function that
@@ -3815,6 +3855,14 @@ fn spawn_enclosure_prop(
     ));
 }
 
+/// The moon's share of the sun's lux. A fraction rather than its own tunable so that
+/// dialing the day's brightness carries the night with it — the two were literals moving
+/// independently, which is how you end up with a retuned day and an unretuned night.
+const MOONLIGHT_SHARE: f32 = 550.0 / 21_000.0;
+/// Night's share of the noon ambient, preserved from the pair of literals this replaced
+/// (95 of 260) so retuning brightness does not silently change the day/night RATIO too.
+const NIGHT_AMBIENT_SHARE: f32 = 95.0 / 260.0;
+
 pub(crate) fn apply_sky(
     mut sky: ResMut<Sky>,
     skymats: Option<Res<SkyMats>>,
@@ -3827,6 +3875,8 @@ pub(crate) fn apply_sky(
     mut fog_q: Query<&mut bevy::pbr::DistanceFog, With<Camera3d>>,
     mut stars: Query<&mut Visibility, With<Star>>,
     mut sky_doms: ResMut<Assets<SkyDome>>,
+    feel: Res<crate::feel::WorldFeel>,
+    mut exposure_q: Query<&mut bevy::camera::Exposure, With<Camera3d>>,
 ) {
     use std::f32::consts::TAU;
     let Ok(mut ambient) = ambient_q.single_mut() else { return };
@@ -3882,13 +3932,31 @@ pub(crate) fn apply_sky(
         let warm = Color::srgb(1.0, 0.6, 0.38);
         let moon = Color::srgb(0.55, 0.65, 0.95);
         light.color = mix_col(moon, mix_col(warm, noon, day), day);
-        // Full sun by day; a dim cool moon fill at night.
-        light.illuminance = (day * 21000.0 + (1.0 - day) * 550.0) * (1.0 - rain * 0.55);
+        // Full sun by day; a dim cool moon fill at night. Both ends come off ONE knob
+        // (`MELD_WORLD_FEEL="sun_lux=…"`), because the daylight value is the thing being
+        // tuned and the moon is a fixed fraction of it — see `WorldFeel::sun_lux` for why
+        // 21,000 was a correction to a bug that #304 had already fixed.
+        let moon_lux = feel.sun_lux * MOONLIGHT_SHARE;
+        light.illuminance = (day * feel.sun_lux + (1.0 - day) * moon_lux) * (1.0 - rain * 0.55);
+    }
+
+    // THE LENS. Driven here rather than only at spawn so `MELD_WORLD_FEEL="exposure=…"`
+    // can be laddered against a pinned `sky_t` from one build — which is the only way to
+    // settle "how bright should the game be", since it is an art call and not arithmetic.
+    for mut ex in &mut exposure_q {
+        if ex.ev100 != feel.exposure {
+            ex.ev100 = feel.exposure;
+        }
     }
 
     // Moonlit-blue at night (not black), warm-white by day.
     ambient.color = mix_col(Color::srgb(0.34, 0.42, 0.68), Color::srgb(0.6, 0.7, 0.85), day);
-    ambient.brightness = (95.0 + day * 165.0) * (1.0 - rain * 0.35);
+    // Ambient is UNDIRECTED, so it fills the sun's own shadows back in — which is why it
+    // is a knob and not a literal, and why it moved down alongside the sun rather than
+    // being left to hold the old brightness on its own. Night keeps a floor so the world
+    // is moonlit rather than black (the same rule the ambient COLOUR above follows).
+    ambient.brightness =
+        feel.ambient * (NIGHT_AMBIENT_SHARE + day * (1.0 - NIGHT_AMBIENT_SHARE)) * (1.0 - rain * 0.35);
     // Ashfall dims + warms the ambient — an oppressive, smoke-choked half-light.
     if ash > 0.0 {
         ambient.color = mix_col(ambient.color, Color::srgb(0.9, 0.45, 0.32), ash * 0.6);
@@ -4324,6 +4392,7 @@ mod ground_uniform_tests {
             "fn rg_seg_dist(",
             "fn ridge_wedge(",
             "fn bridge_at(",
+            "fn natural_height(",
             "fn total_height(",
             "fn terrain_normal(",
         ] {
@@ -4376,13 +4445,41 @@ mod ground_uniform_tests {
             "the approach is not in this world's bridge table, so nothing stands on it"
         );
         let mid = 0.5 * (x1 + x2);
-        let (rise, _) = meld_proto::terrain::bridge_surface(mid, 0.0, &bridges())
-            .expect("the approach must be a bridge surface at its own midpoint");
-        assert!(rise > 0.0, "the deck does not stand above the waterline (rise {rise})");
+        meld_proto::terrain::bridge_span_at(mid, 0.0, &bridges())
+            .expect("the approach must be a span at its own midpoint");
+        // The deck stands clear of the water mid-span…
         assert!(
-            (terrain_height(mid, 0.0) - (-SEA_DEPTH + rise)).abs() < 1e-3,
-            "`terrain_height` does not put the world on the deck"
+            terrain_height(mid, 0.0) >= -SEA_DEPTH + meld_proto::terrain::BRIDGE_DECK_RISE - 1e-3,
+            "the deck does not stand above the waterline at mid-span"
         );
+        // …and **MEETS THE BANK AT EACH END**, which is the whole fix: a deck levelled off the
+        // WATER stood 4.4 units below the ground it joined, and because `world_pos` feeds this
+        // into positions the client smooths exponentially, anything crossing that edge glided
+        // through the air.
+        //
+        // Stated as CONTINUITY rather than as two samples across the join: the ground rolls,
+        // so comparing a point on the deck with one ten units inland measures the hills. What
+        // must not exist is a JUMP — so walk the axis out through each end cap in small steps
+        // and bound the rise of any single one. (The span's LONG sides are a different matter
+        // and are meant to drop: mid-span they stand over open water, which is what a bridge
+        // is.)
+        for dir in [1.0_f32, -1.0] {
+            let end = if dir > 0.0 { x1 } else { x2 };
+            let mut prev = terrain_height(end - dir * 4.0, 0.0); // on the deck
+            let mut k = 1;
+            while k <= 80 {
+                let x = end - dir * 4.0 + dir * 0.25 * k as f32; // outward through the cap
+                let h = terrain_height(x, 0.0);
+                assert!(
+                    (h - prev).abs() < 0.5,
+                    "the ground jumps {:.2} in a quarter-unit at x={x:.2} (from {prev:.2} to \
+                     {h:.2}) — that is the cliff at a span's end that creatures fly off",
+                    (h - prev).abs()
+                );
+                prev = h;
+                k += 1;
+            }
+        }
         // …and NOT in corridor mode, where there is no sea for a bridge to cross.
         set_ground_coast(0.0, false, 1.0);
         assert!(

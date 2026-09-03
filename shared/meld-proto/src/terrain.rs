@@ -187,10 +187,36 @@ pub const BRIDGE_PARAPET_SHARE: f32 = 0.28;
 /// it a bridge is the deck standing ABOVE the waterline with water still drawn under its
 /// parapets, and that is a question for the heightfield, here.
 ///
-/// Returns `None` off every span so callers can leave the terrain untouched.
-pub fn bridge_surface(x: f32, z: f32, bridges: &[crate::coast::Bridge]) -> Option<(f32, f32)> {
-    let mut best: Option<(f32, f32)> = None;
-    for b in bridges {
+/// How far from a span's end its deck furniture rises out of the bank. The abutment: over
+/// this run the parapets grow from nothing to full height, so a bridge emerges from the
+/// ground it joins instead of a wall starting abruptly in the grass.
+pub const BRIDGE_ABUTMENT: f32 = 7.0;
+
+/// **THE SPAN AT `(x, z)`**: `(which bridge, how far along it 0..1, how much parapet 0..1)`,
+/// or `None` off every span.
+///
+/// ⚠️ **THIS REPLACES A `bridge_surface` THAT RETURNED AN ABSOLUTE HEIGHT, AND THE HEIGHT WAS
+/// THE BUG.** The deck sat at `-SEA_DEPTH + BRIDGE_DECK_RISE` — a level measured from the
+/// WATER — while the banks it joins are at terrain height. At the shipped constants that is
+/// `-7 + 2.6 = -4.4` against a bank at ≈0: **a vertical four-and-a-half unit step at every
+/// end of every bridge in the world**. Nothing could stand on the join, and because
+/// `world_pos` feeds `terrain_height` into positions the client smooths exponentially,
+/// anything walking across that edge GLIDED THROUGH THE AIR. Reported, memorably, as the pig
+/// flying. It was true of every strait crossing from the day bridges shipped; putting one
+/// next to the hub's spawn is what finally made it visible.
+///
+/// So a span no longer has a height of its own. This hands back only its GEOMETRY and the
+/// caller puts the deck at the height of the land it joins — see
+/// `world_render::terrain_height` and the `total_height` mirror in both ground shaders, which
+/// interpolate the natural ground at the two endpoints. A deck that meets its banks by
+/// construction cannot have a step at either one.
+pub fn bridge_span_at(
+    x: f32,
+    z: f32,
+    bridges: &[crate::coast::Bridge],
+) -> Option<(usize, f32, f32, f32)> {
+    let mut best: Option<(usize, f32, f32, f32)> = None;
+    for (i, b) in bridges.iter().enumerate() {
         let hw = b[4];
         if hw <= 0.0 {
             continue;
@@ -199,16 +225,32 @@ pub fn bridge_surface(x: f32, z: f32, bridges: &[crate::coast::Bridge]) -> Optio
         if d >= hw {
             continue;
         }
-        // The parapet is the outer band of the span; everything inside it is deck.
-        let inner = hw * (1.0 - BRIDGE_PARAPET_SHARE);
-        let on_parapet = d > inner;
-        let h = if on_parapet {
-            BRIDGE_DECK_RISE + BRIDGE_PARAPET_RISE
+        // Where along the span this is: the projection onto the segment, clamped, so a point
+        // in the rounded end CAP reads as the end itself.
+        let (dx, dz) = (b[2] - b[0], b[3] - b[1]);
+        let len2 = dx * dx + dz * dz;
+        let s = if len2 > 1e-6 {
+            (((x - b[0]) * dx + (z - b[1]) * dz) / len2).clamp(0.0, 1.0)
         } else {
-            BRIDGE_DECK_RISE
+            0.0
         };
-        if best.is_none_or(|(bh, _)| h > bh) {
-            best = Some((h, f32::from(on_parapet)));
+        // The parapet is the outer band, faded in over the abutment so it grows out of the
+        // bank rather than starting as a wall in the grass.
+        let inner = hw * (1.0 - BRIDGE_PARAPET_SHARE);
+        let along = s.min(1.0 - s) * len2.sqrt();
+        // How much DECK this is, against the natural ground: zero at the very end (and so
+        // across the whole rounded cap, whose axial distance is zero) rising to full over the
+        // abutment. That is what makes the join continuous — the cap becomes a stone pad
+        // blending into the bank rather than a flat deck whose rim is a cliff. Meeting the
+        // ground at the endpoint alone was not enough: the cap is a disc of the span's own
+        // half-width, and over nine units of rolling ground the rim had risen 3 units.
+        let deck = smoothstep(0.0, BRIDGE_ABUTMENT, along);
+        let parapet = if d > inner { deck } else { 0.0 };
+        // Nearest span wins, so overlapping spans do not fight over one fragment.
+        if best.is_none_or(|(bi, _, _, _)| d < crate::coast::dist_to_segment_pub(
+            x, z, bridges[bi][0], bridges[bi][1], bridges[bi][2], bridges[bi][3],
+        )) {
+            best = Some((i, s, parapet, deck));
         }
     }
     best

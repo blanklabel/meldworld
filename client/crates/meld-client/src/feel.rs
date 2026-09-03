@@ -189,6 +189,20 @@ pub(crate) struct WorldFeel {
     pub storm_secs: f32,
     /// Rain stops, wind dies down.
     pub clearing_secs: f32,
+    /// **CAMERA EXPOSURE, AS EV100.** The lens, and the knob that was actually wrong — see
+    /// [`meld_client::hd2d::DEFAULT_EV100`] for the diagnosis (the world was lit in real lux
+    /// and metered at Bevy's Blender default, 5.3 stops apart) and for why it can move only
+    /// so far before the emissive sky crushes to black.
+    pub exposure: f32,
+    /// **NOON SUN, IN LUX.** Bevy's `FULL_DAYLIGHT`. Physical, and paired with an exposure
+    /// that expects a physical value — see `exposure` for why this is NOT the brightness
+    /// knob, however much it looks like one.
+    pub sun_lux: f32,
+    /// **NOON AMBIENT.** Undirected fill, so it lifts the shadowed side of everything
+    /// equally and is what flattens contrast rather than what sets overall brightness.
+    /// Bevy's own default is 80; this had been left at 260 to help a too-dark scene, so it
+    /// is part of the same fixed-bug compensation as the sun and comes back down with it.
+    pub ambient: f32,
 }
 
 impl Default for WorldFeel {
@@ -208,6 +222,12 @@ impl Default for WorldFeel {
             gust_secs: 16.0,
             storm_secs: 22.0,
             clearing_secs: 14.0,
+            // ONE source: the lib owns the value, because the camera is spawned there and
+            // this default has to agree with it. A literal in both places is a lens that
+            // changes on the second frame.
+            exposure: meld_client::hd2d::DEFAULT_EV100,
+            sun_lux: 20_000.0,
+            ambient: 80.0,
         }
     }
 }
@@ -243,6 +263,11 @@ impl WorldFeel {
                 "gust_secs" => self.gust_secs = v,
                 "storm_secs" => self.storm_secs = v,
                 "clearing_secs" => self.clearing_secs = v,
+                // No clamp: the whole point of these two is to render a LADDER of values
+                // and pick by eye, and a clamp would silently flatten the top of it.
+                "exposure" => self.exposure = v,
+                "sun_lux" => self.sun_lux = v.max(0.0),
+                "ambient" => self.ambient = v.max(0.0),
                 other => warn!("MELD_WORLD_FEEL: no such knob `{other}`"),
             }
         }

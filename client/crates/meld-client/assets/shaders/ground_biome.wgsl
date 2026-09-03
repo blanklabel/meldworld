@@ -326,8 +326,15 @@ fn approach_dist(wxz: vec2<f32>) -> f32 {
 // mover — but land alone renders as the sea simply not being there. The deck standing ABOVE
 // the waterline, with water still drawn under its parapets, is what makes it read as a bridge,
 // and that lives here.
-fn bridge_at(wxz: vec2<f32>) -> vec3<f32> {
-    var best = vec3<f32>(0.0, 0.0, 0.0);
+fn bridge_at(wxz: vec2<f32>) -> vec4<f32> {
+    // (which span, how far along it 0..1, how much parapet 0..1, on a span at all).
+    //
+    // ⚠️ IT USED TO HAND BACK AN ABSOLUTE HEIGHT — `2.6` above the waterline — AND THAT WAS A
+    // CLIFF. The banks a span joins are at terrain height, so a deck levelled off the WATER
+    // stood 4.4 units below them at both ends. `total_height` puts the deck on its banks now;
+    // this reports only geometry. MUST match `terrain::bridge_span_at`.
+    var best = vec4<f32>(0.0, 0.0, 0.0, 0.0);
+    var best_d = 1e30;
     let n = i32(params.bridge_count);
     for (var i = 0; i < n; i = i + 1) {
         let b0 = params.bridges[2 * i];
@@ -339,15 +346,29 @@ fn bridge_at(wxz: vec2<f32>) -> vec3<f32> {
         if (d >= hw) {
             continue;
         }
+        // Where along the span this is; a point in the rounded end CAP reads as the end.
+        let seg = b0.zw - b0.xy;
+        let len2 = dot(seg, seg);
+        var s = 0.0;
+        if (len2 > 1e-6) {
+            s = clamp(dot(wxz - b0.xy, seg) / len2, 0.0, 1.0);
+        }
+        // The parapet is the outer band, faded in over the ABUTMENT so the rail grows out of
+        // the bank instead of starting as a wall in the grass.
+        // How much DECK this is against the natural ground: zero at the very end (and so
+        // across the whole rounded cap, whose axial distance is zero) rising to full over the
+        // abutment. That is what makes the join continuous — meeting the ground at the
+        // endpoint alone left the cap's rim, nine units out, standing on risen ground.
+        let deck_w = smoothstep(0.0, 7.0, min(s, 1.0 - s) * sqrt(len2));
         let inner = hw * (1.0 - 0.28);
-        var h = 2.6;
         var par = 0.0;
         if (d > inner) {
-            h = h + 1.8;
-            par = 1.0;
+            par = deck_w;
         }
-        if (h > best.x) {
-            best = vec3<f32>(h, par, 1.0);
+        // Nearest span wins, so two that overlap do not fight over one fragment.
+        if (d < best_d) {
+            best_d = d;
+            best = vec4<f32>(f32(i), s, par, deck_w);
         }
     }
     return best;
@@ -534,7 +555,7 @@ fn sea_depth_at(wxz: vec2<f32>) -> f32 {
 // TOTAL ground height at world `wxz`: base rolling field (through the run offset) + the
 // authored peak domes, all scaled by `terrain_amp` (0 flattens City/menus). This is the
 // single source the vertex displaces by and the normal differentiates.
-fn total_height(wxz: vec2<f32>) -> f32 {
+fn natural_height(wxz: vec2<f32>) -> f32 {
     let land = terrain_height_wgsl(wxz + params.terrain_off) + peak_dome(wxz) + ridge_wedge(wxz);
     // A SEA IS A LEVEL, NOT AN OFFSET. This used to subtract a constant depth from the
     // land — which left the sea surface carrying the terrain's rolling hills, so the ocean
@@ -564,12 +585,29 @@ fn total_height(wxz: vec2<f32>) -> f32 {
     // a level plaza) and wrong for the water: at amp 0 the sea level got multiplied to zero
     // too, so the city's ground could not dip and its water had to be laid ON TOP of the
     // grass. Flatten the land, let the water find its level, and the City gets a real bay.
-    let span = bridge_at(wxz);
-    if (span.z > 0.5) {
-        // A flat deck at its own level, so the span does not inherit the sea floor's dip.
-        return level + span.x;
-    }
     return mix(params.terrain_amp * land, level + swell, t);
+}
+
+// TOTAL ground height: the natural ground, plus the DECK of whatever span is overhead.
+//
+// A deck sits at the height of the LAND IT JOINS, interpolated along the span and held no
+// lower than its own clearance over the water — so it meets both banks by construction and
+// cannot have the step it used to. MUST match `world_render::terrain_height`; the endpoints
+// are sampled through `natural_height`, never through this, or the deck would be asking
+// itself how high it is.
+fn total_height(wxz: vec2<f32>) -> f32 {
+    let span = bridge_at(wxz);
+    let natural = natural_height(wxz);
+    if (span.w > 0.0) {
+        let b0 = params.bridges[2 * i32(span.x)];
+        let a = natural_height(b0.xy);
+        let c = natural_height(b0.zw);
+        let level = max(a + (c - a) * span.y, -params.coast_w.w + 2.6);
+        let lifted = level + span.z * 1.8;
+        // Ramped into the bank over the abutment, so the join is continuous, not a rim.
+        return natural + (lifted - natural) * span.w;
+    }
+    return natural;
 }
 
 // Surface normal by finite differences over `total_height`, so both the rolling base and
@@ -1341,11 +1379,11 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     // thing standing over the water, so neither the shore blend nor the sea tint may show
     // through it. Sampled at a fixed scale rather than the biome's `uv_scale`, so flagstones
     // read as flagstones instead of stretching with whatever ground they cross.
-    if (span_paint.z > 0.5) {
+    if (span_paint.w > 0.02) {
         let deck_uv = in.world_position.xz * 0.34;
         let deck = ground_sample(t_bridge_deck, deck_uv);
         let rail = ground_sample(t_bridge_parapet, deck_uv);
-        blended = mix(deck, rail, span_paint.y);
+        blended = mix(deck, rail, span_paint.z);
     }
     pbr_input.material.base_color = pbr_input.material.base_color * blended;
 
