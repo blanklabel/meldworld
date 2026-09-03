@@ -2386,8 +2386,8 @@ design for this epic: [`proposals/worldgen-wg.md`](proposals/worldgen-wg.md).
 
 Make time in the field a living, dangerous place worth screenshotting.
 
-- [ ] **WG-11 — The world is a maze you hold open.** 🟡 *Stages 1-5 landed; roads, links and
-  the micro maze remain —
+- [ ] **WG-11 — The world is a maze you hold open.** 🟡 *Stages -1 through 6 landed
+  (#339-#341, #344); links, the prison end-game and wall-density tuning remain —
   [`proposals/the-world-is-a-maze.md`](proposals/the-world-is-a-maze.md). Owner's direction;
   supersedes `WG-7`'s ROUTES half and absorbs `WG-8` wholesale.* Reported from play, after
   `WG-6` landed: *"it doesn't feel maze like at all… just feels like weird rings on a map
@@ -2434,7 +2434,45 @@ Make time in the field a living, dangerous place worth screenshotting.
     band along the route, but **fill the cells that are reachable, at biome density**, with
     the taper shrinking the deep rings that made the problem. The constraint that killed the
     band comes with it as an invariant — **you must not be able to read the route from where
-    the props thin out**.
+    the props thin out**. ⚠️ *Still unheld by any test.*
+  - 🟢 **LANDED (#339-#341, #344):** the boundary maze (`pass_open`, orderless and pure in
+    `(seed, a, b)`, with `[region_barrier]` porosity per biome — field and desert are the
+    crossings, ashfall is a hunt for a pass); the **teardrop taper** (`coast::arc_half_at`,
+    mirrored into both ground shaders); a wandering shoreline that is never a ruler edge; the
+    **ring dungeons retired** (`dungeon_every = 0`) for dead-end cells paying a chest tier
+    bonus; anchored routes reading as **roads**; the bend funnelled through one definition;
+    **a Shift that finally repaints the ground** (`regions::Repaints` — it never did, because
+    `WG-7` made a cell's biome analytic and the Shift predates it) with its region now a patch
+    of cells; and **stage 5's `Area` cleanup + stage 6's micro maze** (below).
+  - 🟢 **STAGE 5 — `Area` stops deciding things.** Its roles were *elevation, dungeon-ness,
+    the Shift's region, streaming, the terrain wire message, density compensation*. The
+    Shift's region is cells and density was already per-cell; **terraced verticality is
+    deleted outright** — grid, connectors, cliffs-as-walls, the wire fields, the client's
+    cliff mesh, six `Arena` fields, seven tunables and the `Terrain`/`Connector`/
+    `ConnectorKind` types. It was provably unreachable (`raise_terrace` ran zero times), and
+    relief is the heightmap plus peaks, which is world-space and cell-agnostic. Dungeon-ness
+    is dead by tunable and left alone — a feature behind a knob, not a structural unit.
+    ⚠️ **STREAMING DELIBERATELY STAYS RADIUS-BANDED.** `ensure_frontier` streams outward
+    because the world *grows* outward, and every landform it delivers is already world-space
+    — the section is a delivery envelope, not a decision. The breakages named above
+    (`route_point_at`/`path_y_at` assuming one crossing per ring; `ensure_frontier` assuming
+    outward progress) only bite once routes double back, and they do not yet: A* routes each
+    section from its entry to `(end_x - setback, 0)`, so progress is monotonic. Latent, and it
+    belongs with the stage that makes a route double back.
+  - 🟢 **STAGE 6 — the MICRO maze.** The gaps in a walled boundary *are* the passes, and a
+    bare gap is a doorway you run through without noticing. `push_pass_parts` furnishes a
+    mouth with a **chicane**, **pillars** or a **throat**, from the cell's own material. It
+    runs AFTER the route (A* does not collide with obstacles, so a part placed earlier is one
+    the trail runs through), is refused from the clear tube, and may never seal its own pass.
+    ⚠️ **Measured, it is SPARSE** — 4-8 furnished mouths and 14-35 pieces per world out to
+    d1600 — because its density rides on `ridge_max_per_section = 6`, deliberately
+    conservative and never tuned against play.
+  - ⬜ **WHAT REMAINS:** **stage 7** (player towns + teleport links, with `BD-5`);
+    **wall-density tuning** (the cheapest real win — stage 6's sparseness rides on it);
+    the **prison end-game** (Termina/Nestiph/Slake exist as bosses with biomes, but the raid
+    scoping of §3.6b and the opening mechanic of §3.6a are unbuilt — there is no prison gate
+    in the code); and the two invariants the design asks for by test (a **tortuosity floor
+    AND ceiling**, and the props-thinning constraint above).
   - 🟢 **LANDED so far:** the boundary maze (`pass_open`, orderless, pure in `(seed, a, b)`,
     with `[region_barrier]` porosity per biome so field and desert are the crossings and
     ashfall is a hunt for a pass); the **teardrop taper** (`coast::arc_half_at` — the fan's

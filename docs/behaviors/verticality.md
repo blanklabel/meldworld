@@ -5,8 +5,8 @@
 > Terraced verticality was **deleted** in `WG-11` stage 5: the per-section elevation grid,
 > the connectors (slope/ladder/rope), cliffs-as-walls, their wire fields
 > (`TerrainSection.levels`/`connectors`/`cell`/`cols`/`rows`/`y_min` and `ConnectorDto`),
-> the client's stepped ground+cliff mesh and connector props, and seven `[worldgen]`
-> tunables.
+> the client's stepped ground+cliff mesh and connector props, the `Terrain` / `Connector` /
+> `ConnectorKind` types, and seven `[worldgen]` tunables.
 >
 > It had been **provably unreachable** for a long time before that. `raise_terrace` was the
 > only writer of a level and it ran `terraces_per_area × biome_terrace_mult = 0` times, so

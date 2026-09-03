@@ -1623,86 +1623,6 @@ fn next_unit(state: &mut u64) -> f64 {
     u
 }
 
-// ---------------------------------------------------------------- verticality ---
-
-/// The kind of connector joining two elevation levels. Cliffs are always
-/// impassable walls; a connector is the *only* way to change level.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ConnectorKind {
-    /// Walkable incline — you just walk up/down and your height interpolates.
-    Slope,
-    /// Vertical; mount the base and climb to the top level.
-    Ladder,
-    /// Like a ladder, flavoured for dropping down a cliff.
-    Rope,
-}
-
-impl ConnectorKind {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            ConnectorKind::Slope => "slope",
-            ConnectorKind::Ladder => "ladder",
-            ConnectorKind::Rope => "rope",
-        }
-    }
-}
-
-/// A placed connector joining levels `lo`↔`hi`. Stepping within `radius` of it
-/// (while on one of its two levels) lets the avatar move to the other level.
-#[derive(Debug, Clone)]
-pub struct Connector {
-    pub entity_id: Id,
-    pub kind: ConnectorKind,
-    pub position: Position,
-    pub lo: u8,
-    pub hi: u8,
-    pub radius: f64,
-}
-
-impl Connector {
-}
-
-/// The elevation field for one section: a coarse grid of integer levels over the
-/// section's `[start_x, start_x + cols*cell) × [y_min, y_min + rows*cell)` extent,
-/// plus the connectors that join levels. Row-major: `level[gx*rows + gy]`.
-#[derive(Debug, Clone, Default)]
-pub struct Terrain {
-    pub start_x: f64,
-    pub y_min: f64,
-    pub cell: f64,
-    pub cols: usize,
-    pub rows: usize,
-    pub level: Vec<u8>,
-    pub connectors: Vec<Connector>,
-}
-
-impl Terrain {
-
-    fn cell_of(&self, p: &Position) -> Option<(usize, usize)> {
-        if self.cell <= 0.0 || self.cols == 0 || self.rows == 0 {
-            return None;
-        }
-        let gx = ((p.x - self.start_x) / self.cell).floor();
-        let gy = ((p.y - self.y_min) / self.cell).floor();
-        if gx < 0.0 || gy < 0.0 {
-            return None;
-        }
-        let (gx, gy) = (gx as usize, gy as usize);
-        if gx >= self.cols || gy >= self.rows {
-            return None;
-        }
-        Some((gx, gy))
-    }
-
-    /// The elevation level at world position `p` (0 outside the grid).
-    pub fn level_at(&self, p: &Position) -> u8 {
-        match self.cell_of(p) {
-            Some((gx, gy)) => self.level[gx * self.rows + gy],
-            None => 0,
-        }
-    }
-
-}
 
 /// A monster placed in the overworld. Creatures roam (see [`Arena::step_creatures`])
 /// and belong to a faction (grouping + hostility).
@@ -2286,8 +2206,11 @@ impl ResourceNode {
 }
 
 /// One generated area / **section**: a stretch of corridor `[start_x, end_x)` in
-/// one biome, holding the indices of its creatures (into [`Arena::monsters`]), a
-/// portal, and its elevation [`Terrain`].
+/// one biome, holding the indices of its creatures (into [`Arena::monsters`]) and a
+/// portal.
+///
+/// ⚠️ It used to carry an elevation `Terrain` too. Terraces are retired and that grid is
+/// gone (`WG-11` stage 5); relief is the continuous heightmap plus PEAKS, both world-space.
 #[derive(Debug, Clone)]
 pub struct Area {
     pub index: usize,
