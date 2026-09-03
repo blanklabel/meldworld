@@ -180,6 +180,7 @@ pub(crate) fn spawn_hero_actor(
                 p.spawn((
                     Mesh3d(wa.shadow_mesh.clone()),
                     MeshMaterial3d(wa.shadow_mat.clone()),
+                    hd2d::ContactShadow,
                     Transform::from_xyz(0.0, 0.02, 0.0)
                         .with_rotation(Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2))
                         .with_scale(Vec3::new(1.0, 0.55, 1.0)),
@@ -295,6 +296,7 @@ pub(crate) fn spawn_enemy_actor(
             p.spawn((
                 Mesh3d(wa.shadow_mesh.clone()),
                 MeshMaterial3d(wa.shadow_mat.clone()),
+                hd2d::ContactShadow,
                 Transform::from_xyz(0.0, 0.02, 0.0)
                     .with_rotation(Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2))
                     .with_scale(Vec3::new(h * 0.42, h * 0.23, 1.0)),
@@ -332,6 +334,7 @@ pub(crate) fn spawn_enemy_actor(
         p.spawn((
             Mesh3d(wa.shadow_mesh.clone()),
             MeshMaterial3d(wa.shadow_mat.clone()),
+            hd2d::ContactShadow,
             Transform::from_xyz(0.0, 0.02, 0.0)
                 .with_rotation(Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2))
                 .with_scale(Vec3::new(h * 0.42, h * 0.23, 1.0)),

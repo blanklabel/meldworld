@@ -744,6 +744,7 @@ pub(crate) fn city_scene(
                 p.spawn((
                     Mesh3d(wa.shadow_mesh.clone()),
                     MeshMaterial3d(wa.shadow_mat.clone()),
+                    hd2d::ContactShadow,
                     // ⚠️ A `Circle` mesh lies in the XY plane, i.e. STANDING UP. Without
                     // this rotation it faces the camera and every townsfolk appears to be
                     // standing on a bubble. Squashed on Z like every other contact shadow
@@ -848,6 +849,7 @@ pub(crate) fn city_scene(
             p.spawn((
                 Mesh3d(wa.shadow_mesh.clone()),
                 MeshMaterial3d(wa.shadow_mat.clone()),
+                hd2d::ContactShadow,
                 Transform::from_xyz(0.0, 0.02, 0.0)
                     .with_rotation(Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2))
                     .with_scale(Vec3::new(1.0, 0.55, 1.0)),
@@ -880,6 +882,7 @@ pub(crate) fn city_scene(
                     p.spawn((
                         Mesh3d(wa.shadow_mesh.clone()),
                         MeshMaterial3d(wa.shadow_mat.clone()),
+                        hd2d::ContactShadow,
                         Transform::from_xyz(0.0, 0.02, 0.0)
                             .with_rotation(Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2))
                             .with_scale(Vec3::splat(h * 0.45)),

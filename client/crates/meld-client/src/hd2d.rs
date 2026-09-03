@@ -92,6 +92,14 @@ use serde::{Deserialize, Serialize};
 /// gameplay framing (follow-cam angle, sprite size) independent of look-dev experiments.
 pub const LOOK_FILE: &str = "/tmp/meld-game-look.json";
 
+/// The soft dark disc laid under a sprite to ground it. It exists BECAUSE #88 took the real
+/// cast shadow away; with [`Look::billboard_shadows`] on, the sprite casts its own silhouette
+/// and the disc is a second, rounder, wrong-shaped shadow beside it. Marked rather than
+/// deleted so the two halves stay one decision: turn real shadows off and the disc comes
+/// back, which is what makes the toggle honest.
+#[derive(Component)]
+pub struct ContactShadow;
+
 /// See [`Look::billboard_shadows`] — a named fn so a LOOK_FILE written before the field
 /// existed inherits the real default instead of `bool::default()`.
 fn billboard_shadows_default() -> bool {
@@ -581,7 +589,16 @@ pub fn billboard_shadow_policy(
     look: Res<Look>,
     tagged: Query<Entity, (With<Billboard>, With<NotShadowCaster>)>,
     untagged: Query<Entity, (With<Billboard>, Without<NotShadowCaster>)>,
+    mut discs: Query<&mut Visibility, With<ContactShadow>>,
 ) {
+    // The contact disc is the STAND-IN for a cast shadow, so exactly one of the two shows.
+    // Driven every frame from the same flag, or the toggle leaves a doubled shadow behind.
+    let want = if look.billboard_shadows { Visibility::Hidden } else { Visibility::Inherited };
+    for mut v in &mut discs {
+        if *v != want {
+            *v = want;
+        }
+    }
     if look.billboard_shadows {
         // Hand the shadow back. Doing it here rather than at spawn keeps the toggle live,
         // so `LOOK_FILE` can A/B it in a running game instead of across two builds.
