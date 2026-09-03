@@ -682,6 +682,26 @@ art by construction rather than by a caller remembering; and the battle glow is 
 `PlayerGlowSprite`, because what lights a creature is the party's lamps — chiefly the
 Explorer's, the one with the reach to cross the arena — and not itself.
 
+**SPRITE BILLBOARDS CAST REAL SUN SHADOWS, AND THE REASON THEY DIDN'T WAS STALE.** #88
+tagged every billboard `NotShadowCaster` because a camera-facing quad's shadow was seen to
+swing across the ground as it re-oriented, and gave each sprite a soft contact disc instead.
+Re-measured by RENDERING it rather than reasoning about it: sweeping `cam_yaw` 50 degrees at
+a frozen sun leaves every tree's shadow pointing the same way in world space — **the swing
+does not reproduce**. Three things had moved underneath that decision: the sun sits at a
+steeper pitch, ambient stopped flooding the shadows flat (260 -> 80), and until the grounding
+fix every sprite HOVERED above its own contact disc, so the disc read as a smudge rather than
+as the character's shadow. `sprite_material` was already `AlphaMode::Mask(0.5)`, so a shadow
+is cut to the sprite's own silhouette — a tree casts a tree, for free.
+⚠️ **The cost is darkness in dense cover**: inside a bank of forest shadow at a low sun, mean
+luminance 28 with **56% of the frame under 16/255**, against mean 92 on the lit side.
+`[MELD_WORLD_FEEL] ambient` fills shadow interiors and is the first knob to raise if deep
+forest reads unplayable rather than atmospheric. `Look::billboard_shadows` toggles it LIVE
+through `LOOK_FILE`, so it A/Bs inside one running game.
+⚠️ **And a `#[serde(default)]` on a new `Look` field is a trap**: the derive form resolves to
+`bool::default()` (false), NOT to `Look::default()` — so a field that reads as enabled in the
+source is disabled for everyone who has ever run the game and has a `LOOK_FILE` on disk.
+Name the default function.
+
 **A NIGHT BUG NEEDS A NIGHT YOU CAN PIN.** `MELD_WORLD_FEEL="sky_t=0.0"` opens the session
 at midnight (`0.25` sunrise, `0.5` noon, `0.75` sunset) — the same argument as `MELD_TALLY`
 holding a haul on screen. Nightfall is otherwise minutes into a session and gone again

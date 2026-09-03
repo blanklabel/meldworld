@@ -5355,9 +5355,22 @@ mod weather_tests {
         );
         // And every registration must actually be IN the set, or the ordering is vacuous:
         // it resolves against an empty set and silently orders against nothing.
+        // ⚠️ MATCH THE SYSTEM, NOT ANY NAME THAT STARTS LIKE IT. `contains("hd2d::billboard")`
+        // also fires on `hd2d::billboard_shadow_policy`, a different system entirely — which
+        // then fails this assertion for not being `.in_set(BillboardSet)`, a set it has no
+        // business being in. A source-text guard has to respect identifier boundaries or it
+        // gates on spelling rather than on meaning.
+        let mentions_the_billboard_system = |l: &str| {
+            l.match_indices("hd2d::billboard").any(|(i, m)| {
+                l[i + m.len()..]
+                    .chars()
+                    .next()
+                    .is_none_or(|c| !c.is_alphanumeric() && c != '_')
+            })
+        };
         for line in main.lines() {
             let l = line.trim();
-            if !l.contains("hd2d::billboard") || l.starts_with("//") || l.contains("after(") {
+            if !mentions_the_billboard_system(l) || l.starts_with("//") || l.contains("after(") {
                 continue;
             }
             assert!(
