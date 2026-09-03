@@ -174,7 +174,11 @@ pub(crate) fn spawn_hero_actor(
                     intensity: 0.0,
                     range,
                     radius,
-                    shadow_maps_enabled: false,
+                    // Same reasoning as the avatar's lamp: light that passes through the
+                    // things it lights reads as a tint. Four of these are lit at once, so
+                    // this is the expensive one — if the arena ever costs frames at night,
+                    // this flag is the first thing to try, before `LAMP_STRENGTH`.
+                    shadow_maps_enabled: true,
                     ..default()
                 },
                 Transform::from_xyz(0.0, 1.6, 0.0),
