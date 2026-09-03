@@ -153,16 +153,20 @@ pub(crate) fn spawn_hero_actor(
                 PlayerGlowSprite,
             ));
             // The hero carries a warm lamp at night (driven by `illuminate_players`).
-            // The Explorer's is the big "Predator's Eye" beam that lights the enemy row
-            // across the arena; every other class carries only a soft, short-range
-            // glow — bright enough to stay readable, small enough not to flicker as
-            // the renderer's light clusters fight over a pile of equal lights.
-            let is_explorer = class == "explorer";
-            let (strength, range, radius) = if is_explorer {
-                (140_000.0, 34.0, 0.6) // full, big — reaches the foes
-            } else {
-                (16_000.0, 8.5, 0.3) // soft, close
-            };
+            //
+            // ⚠️ EVERY HERO CARRIES THE EXPLORER'S LAMP NOW, not just the Explorer. It used
+            // to be the "Predator's Eye" beam for that one class and a soft 16k/8.5 glow for
+            // everyone else, so a party without an Explorer fought in the dark and the arena
+            // read as unlit — the light was a class privilege rather than a way to see the
+            // fight.
+            //
+            // ⚠️ The old split was defensive, and the defence has to be re-checked rather
+            // than assumed away: the comment this replaces warned that a pile of EQUAL
+            // lights makes the renderer's light clusters fight over them, which reads as
+            // flicker. Four lamps at full strength is exactly that pile. Verified by
+            // rendering a night battle with a party holding no Explorer at all; if flicker
+            // ever returns, the knob is `LAMP_STRENGTH`, not `LAMP_REACH`.
+            let (strength, range, radius) = (LAMP_STRENGTH, LAMP_REACH, LAMP_RADIUS);
             p.spawn((
                 BattlePartyLamp { strength },
                 PointLight {
@@ -526,6 +530,15 @@ pub(crate) fn highlight_target(
 /// over walk/idle (see `hd2d::animate_chars`). Consumes the queue so each clip fires a
 /// single time. The clip swaps the sprite's `base_color_texture`; the lunge/flash in
 /// [`animate_battle_actors`] touches `base_color`/`emissive`, so the two compose.
+/// **THE LAMP EVERY BATTLE HERO CARRIES AT NIGHT.** Was the Explorer's alone — see the
+/// spawn site in `spawn_battle_actor` for why it is everyone's now.
+const LAMP_STRENGTH: f32 = 140_000.0;
+/// The Explorer's old 34.0 reach, widened by a third: far enough to light the enemy row
+/// from the party's side of the arena.
+const LAMP_REACH: f32 = 34.0 * crate::overworld::LAMP_REACH_MULT;
+/// Source SIZE, not distance — it softens the falloff, and is deliberately unchanged.
+const LAMP_RADIUS: f32 = 0.6;
+
 /// The clip every class has: its basic battle attack.
 const GENERIC_STRIKE: &str = "attack";
 
