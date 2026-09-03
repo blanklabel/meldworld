@@ -868,9 +868,18 @@ make check        # ← run this before opening a PR. What CI runs, both workspa
 make test         # DB-backed conformance suite (boots a throwaway Postgres)
 ```
 
-`make check` is one command on purpose: it is exactly what
+`make check` is one command on purpose: it runs exactly what
 [`.github/workflows/check.yml`](.github/workflows/check.yml) runs, so local and CI cannot
 drift. Adding a check means editing the `Makefile`, not the workflow.
+
+⚠️ **CI runs it as TWO PARALLEL JOBS** (`server` and `client`), which is why the Makefile has
+`check-server` and `check-client` and `check` composes them. One job doing both halves ran
+**49-83 minutes against a 75-minute timeout**, so `main` was cancelled mid-run — everything
+passing — roughly a third of the time, and a gate that goes red on its own schedule trains
+everyone to ignore it (the same reasoning that keeps `qa/` out of CI). The halves are
+genuinely independent: separate cargo workspaces sharing only `meld-proto` by path, and
+neither reads the other's output. **Put a new check in the half it belongs to**; `make check`
+locally still runs both, in the same order, which is the property worth protecting.
 
 **It covers BOTH workspaces, and that is the point.** The Bevy client is a separate cargo
 workspace sharing only `meld-proto` by path, so `cargo test --workspace` at the repo root
