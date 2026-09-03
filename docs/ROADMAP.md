@@ -2386,8 +2386,8 @@ design for this epic: [`proposals/worldgen-wg.md`](proposals/worldgen-wg.md).
 
 Make time in the field a living, dangerous place worth screenshotting.
 
-- [ ] **WG-11 — The world is a maze you hold open.** 🟡 *Stages 1-5 landed; roads, links and
-  the micro maze remain —
+- [ ] **WG-11 — The world is a maze you hold open.** 🟡 *Stages -1 through 4 landed, plus the
+  Shift's half of stage 5; the rest of stage 5, the micro maze and links remain —
   [`proposals/the-world-is-a-maze.md`](proposals/the-world-is-a-maze.md). Owner's direction;
   supersedes `WG-7`'s ROUTES half and absorbs `WG-8` wholesale.* Reported from play, after
   `WG-6` landed: *"it doesn't feel maze like at all… just feels like weird rings on a map
@@ -2435,6 +2435,13 @@ Make time in the field a living, dangerous place worth screenshotting.
     the taper shrinking the deep rings that made the problem. The constraint that killed the
     band comes with it as an invariant — **you must not be able to read the route from where
     the props thin out**.
+  - ⚠️ **STAGE 5 IS NOT DONE, and this item briefly claimed it was.** Only the SHIFT's half
+    of it landed — its region became a patch of cells, and the ground follows a repaint.
+    `Area` is still the structural unit for **terrain, streaming and the wire**
+    (`world.terrain_section` is per-section, `ensure_frontier` streams by max radius, and
+    `Area.terrain` is still carried — a grid of zeros, since `terraces_per_area = 0`). The
+    staging note calls stage 5 "the big one, and it wants its own epic", which is right and
+    is why the Shift's half is worth having landed on its own.
   - 🟢 **LANDED so far:** the boundary maze (`pass_open`, orderless, pure in `(seed, a, b)`,
     with `[region_barrier]` porosity per biome so field and desert are the crossings and
     ashfall is a hunt for a pass); the **teardrop taper** (`coast::arc_half_at` — the fan's
