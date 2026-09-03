@@ -2648,6 +2648,10 @@ pub(crate) fn spawn_dot(p: &mut ChildSpawnerCommands, cx: f32, cy: f32, size: f3
 #[derive(Component)]
 pub(crate) struct MinimapDistance;
 
+/// How much further every carried light reaches than it used to. One constant so the
+/// overworld avatar's lamp and the battle party's lamps cannot drift apart.
+pub(crate) const LAMP_REACH_MULT: f32 = 4.0 / 3.0;
+
 /// Explorer "Predator's Eye": drive the avatar lamp — brighter at night, wider as the
 /// perk levels, dark by day and absent without a Explorer (intensity from `run.perks`).
 /// Explorer "Predator's Eye": the avatar's point light illuminates the surrounding
@@ -2661,7 +2665,11 @@ pub(crate) fn update_explorer_lamp(
     let night = (1.0 - sky.day).clamp(0.0, 1.0);
     for mut light in &mut q {
         light.intensity = glow * night;
-        light.range = 12.0 + glow / 8000.0;
+        // Widened by a third, the same third the battle party's lamps got
+        // (`battle::LAMP_REACH`) — this is the one a player actually walks around inside,
+        // so the two had to move together or "the light reaches further" would be true in
+        // a fight and false on the road.
+        light.range = (12.0 + glow / 8000.0) * LAMP_REACH_MULT;
     }
 }
 
