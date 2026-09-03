@@ -250,10 +250,14 @@ pub(crate) fn stroll_city_folk(time: Res<Time>, mut q: Query<(&mut Transform, &m
             // makes it read as someone going about their day rather than pacing.
             let angle = s.roll() * std::f32::consts::TAU;
             let reach = STROLL_RADIUS * (0.35 + 0.65 * s.roll());
-            s.target = s.home + Vec3::new(angle.cos() * reach, 0.0, angle.sin() * reach);
+            let at = s.home + Vec3::new(angle.cos() * reach, 0.0, angle.sin() * reach);
+            // On the ground they will actually be standing on, or the `dist < 0.1` arrival
+            // test measures a height gap that walking can never close and they stall.
+            s.target = Vec3::new(at.x, ground_at(at.x, at.z), at.z);
             s.pause = 1.5 + s.roll() * 4.0;
         } else {
             tf.translation += to / dist * (STROLL_SPEED * dt).min(dist);
+            tf.translation.y = ground_at(tf.translation.x, tf.translation.z);
         }
     }
 }
@@ -575,6 +579,21 @@ fn road_mesh(len: f32, width: f32) -> Mesh {
     m
 }
 
+/// **THE GROUND UNDER LAST CITY**, at `(x, z)` in the city's own coordinates.
+///
+/// Everything in this scene used to be placed at a constant `y`, which was survivable only
+/// because the shore stood thirty units past anything authored. It does not now: the bay
+/// reaches the waterfront and the causeway out of town runs over open water, so a constant
+/// `y` is a dock, a beached wreck and a walking hero hanging in the air over the slope —
+/// the same bug [`crate::world_render::terrain_height`] was written to end for the maze.
+///
+/// It is that one function's own city answer, not a second copy of it: the ground the shader
+/// draws, the ground the scene stands on and the ground the avatar walks are one field or
+/// they are three, and three is what put the whole world above every coast once already.
+fn ground_at(x: f32, z: f32) -> f32 {
+    crate::world_render::city_ground_height(x, z)
+}
+
 /// A magitech street light: its point light breathes over time (see [`pulse_magitech`]).
 #[derive(Component)]
 pub(crate) struct MagitechLight {
@@ -635,7 +654,7 @@ pub(crate) fn city_scene(
         CityScene,
         Mesh3d(meshes.add(road_mesh(13.0, 13.0))),
         MeshMaterial3d(street_mat.clone()),
-        Transform::from_xyz(0.0, 0.02, 0.0),
+        Transform::from_xyz(0.0, ground_at(0.0, 0.0) + 0.02, 0.0),
     ));
     // A spoke from the plaza edge out to each district anchor.
     for d in CITY_DISTRICTS {
@@ -653,7 +672,8 @@ pub(crate) fn city_scene(
             CityScene,
             Mesh3d(meshes.add(road_mesh(seg_len, 3.4))),
             MeshMaterial3d(street_mat.clone()),
-            Transform::from_xyz(mid.x, 0.02, mid.y).with_rotation(Quat::from_rotation_y(angle)),
+            Transform::from_xyz(mid.x, ground_at(mid.x, mid.y) + 0.02, mid.y)
+                .with_rotation(Quat::from_rotation_y(angle)),
         ));
     }
 
@@ -668,7 +688,7 @@ pub(crate) fn city_scene(
             WorldAssetRoot(
                 assets.load(GltfAssetLabel::Scene(0).from_asset(format!("models/{path}.glb"))),
             ),
-            Transform::from_xyz(*x, 0.0, *z)
+            Transform::from_xyz(*x, ground_at(*x, *z), *z)
                 .with_rotation(Quat::from_rotation_y(yaw.to_radians()))
                 .with_scale(Vec3::splat(*scale)),
         ));
@@ -679,7 +699,7 @@ pub(crate) fn city_scene(
     // because a townsfolk that wandered would walk through the counters it is posted at.
     for (key, x, z, yaw, strolls) in CITY_FOLK {
         let Some(frames) = wa.npc_frames(key) else { continue };
-        let at = Vec3::new(*x, 0.0, *z);
+        let at = Vec3::new(*x, ground_at(*x, *z), *z);
         let mat = mats.add(hd2d::sprite_material(
             Color::srgb(1.22, 1.19, 1.12),
             frames.idle[0].clone(),
@@ -776,7 +796,7 @@ pub(crate) fn city_scene(
         commands
             .spawn((
                 CityScene,
-                Transform::from_xyz(s.x, 0.0, s.y),
+                Transform::from_xyz(s.x, ground_at(s.x, s.y), s.y),
                 Visibility::default(),
             ))
             .with_children(|p| {
@@ -808,7 +828,7 @@ pub(crate) fn city_scene(
         Color::srgb(1.25, 1.22, 1.12),
         frames.idle[0].clone(),
     ));
-    let start = Vec3::new(0.0, 0.0, 11.0);
+    let start = Vec3::new(0.0, ground_at(0.0, 11.0), 11.0);
     commands
         .spawn((
             CityScene,
@@ -847,7 +867,7 @@ pub(crate) fn city_scene(
             commands
                 .spawn((
                     CityScene,
-                    Transform::from_xyz(0.0, 0.0, 3.5),
+                    Transform::from_xyz(0.0, ground_at(0.0, 3.5), 3.5),
                     Visibility::default(),
                 ))
                 .with_children(|p| {
@@ -1236,6 +1256,20 @@ pub(crate) fn planar_basis(yaw_deg: f32) -> (Vec2, Vec2) {
     (fwd, Vec2::new(-fwd.y, fwd.x))
 }
 
+/// **How far behind the plaza the avatar may walk** — the far shore of the bay, where the
+/// causeway lands. Past it is the mainland, and the way to the world is the Threshold: a
+/// dive, not a stroll. Landing the bound exactly on a coast you can SEE is what keeps it
+/// from reading as an invisible wall.
+const CITY_WALK_REACH: f32 = meld_proto::coast::CITY_MAINLAND_BACK;
+
+/// The bound has to clear the shelf by a real stretch of causeway, or the crossing out of
+/// town is scenery you can look at and never set foot on — which is what the 25-unit circle
+/// this replaced made of it. Compile-time: a relationship between constants.
+const _: () = assert!(
+    CITY_WALK_REACH
+        > meld_proto::coast::CITY_TIP_REACH + meld_proto::coast::CAUSEWAY_HALF_WIDTH * 2.0
+);
+
 pub(crate) fn city_move(
     time: Res<Time>,
     keys: Res<ButtonInput<KeyCode>>,
@@ -1270,7 +1304,32 @@ pub(crate) fn city_move(
         return;
     }
     let step = m.normalize() * 9.0 * time.delta_secs();
-    let mut pos = Vec2::new(tf.translation.x + step.x, tf.translation.z + step.y);
+    let here = Vec2::new(tf.translation.x, tf.translation.z);
+    // ⚠️ THE BOUND USED TO BE A 25-UNIT CIRCLE AROUND THE PLAZA, AND A CIRCLE CANNOT HOLD
+    // THIS SHAPE. The town stands on a shelf with a CAUSEWAY leaving it (see
+    // `coast::CAUSEWAY_HALF_WIDTH`), so the walkable ground is a broad disc with a long
+    // narrow arm — a circle either pens you onto the shelf, in which case the crossing out
+    // of town is a backdrop you can never set foot on, or it is wide enough to reach the arm
+    // and then also lets you walk out over open water either side of it.
+    //
+    // The land itself is the bound now: you may walk to the water's edge and no further,
+    // which is the same rule the overworld collides against — and it funnels you onto the
+    // causeway without a single authored waypoint. SLIDE rather than stop on a refusal (the
+    // axes tried separately, exactly as `Arena::apply_move` does it), or walking into the
+    // shore at an angle sticks you to it instead of running along it.
+    let walkable = |p: Vec2| {
+        meld_proto::coast::city_sea_depth(p.x, p.y) <= 0.0 && p.y >= -CITY_WALK_REACH
+    };
+    let mut pos = here + step;
+    if !walkable(pos) {
+        pos = Vec2::new(here.x + step.x, here.y);
+        if !walkable(pos) {
+            pos = Vec2::new(here.x, here.y + step.y);
+            if !walkable(pos) {
+                return;
+            }
+        }
+    }
     // Soft-collide out of each building anchor.
     for d in CITY_DISTRICTS {
         let c = Vec2::new(d.x, d.z);
@@ -1280,14 +1339,11 @@ pub(crate) fn city_move(
             pos = c + off.normalize() * block;
         }
     }
-    // Keep within the plaza bounds.
-    let center = Vec2::new(0.0, -6.0);
-    let rel = pos - center;
-    if rel.length() > 25.0 {
-        pos = center + rel.normalize() * 25.0;
-    }
     tf.translation.x = pos.x;
     tf.translation.z = pos.y;
+    // …and stand on it. The bay reaches the waterfront now, so the walk down to the strand
+    // and out along the causeway is a walk over real ground — see `ground_at`.
+    tf.translation.y = ground_at(pos.x, pos.y);
 }
 
 /// Orbit-follow the avatar with the HD-2D camera (mirrors `hd2d_follow`).
@@ -1308,7 +1364,11 @@ pub(crate) fn city_camera(
     >,
 ) {
     let Ok(p) = players.single() else { return };
-    let target = Vec3::new(p.translation.x, 1.0, p.translation.z);
+    // `1.0 + y`, the same rule `hd2d_follow` uses on the overworld: the avatar has a real
+    // elevation in town now (the beach falls to the waterline and the causeway crowns above
+    // it), and a camera pinned to y = 1.0 lets the hero sink out of frame as they walk down
+    // to the water.
+    let target = Vec3::new(p.translation.x, 1.0 + p.translation.y, p.translation.z);
     if let Ok((mut t, mut proj, bloom, dof, fog)) = cam_q.single_mut() {
         *t = hd2d::camera_transform(&look, target, time.elapsed_secs());
         hd2d::apply_post(
@@ -1438,8 +1498,66 @@ pub(crate) fn city_vault_text(inv: &InventoryData) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::planar_basis;
+    use super::{
+        planar_basis, CITY_DISTRICTS, CITY_FOLK, CITY_PROPS, CITY_WALK_REACH, STROLL_RADIUS,
+    };
     use bevy::math::Vec2;
+    use meld_proto::coast::city_sea_depth;
+
+    /// **NOTHING AUTHORED IN THIS TOWN MAY STAND IN THE SEA.**
+    ///
+    /// The city's shore is a `coast` constant and its contents are three tables here, and
+    /// the two have no other relationship — so pulling the water in to where a player can
+    /// see it (it stood thirty units past the edge of the picture) is exactly the kind of
+    /// change that drowns a market stall, and there is no build error for it. A prop MAY
+    /// stand on the strand: a beached wreck and a dock want to be at the waterline, and
+    /// `ground_at` puts them there. What none of them may do is stand in the water.
+    #[test]
+    fn every_district_prop_and_townsperson_is_on_dry_land() {
+        for d in CITY_DISTRICTS {
+            // A district is a place you walk INTO, so its whole radius has to be dry.
+            for i in 0..16 {
+                let a = i as f32 / 16.0 * std::f32::consts::TAU;
+                let (x, z) = (d.x + a.cos() * d.radius, d.z + a.sin() * d.radius);
+                assert!(
+                    city_sea_depth(x, z) < 0.0,
+                    "{}'s radius reaches the sea at ({x:.1}, {z:.1})",
+                    d.label
+                );
+            }
+        }
+        for (path, x, z, _, _) in CITY_PROPS {
+            assert!(city_sea_depth(*x, *z) < 0.0, "`{path}` stands in the sea at ({x}, {z})");
+        }
+        for (key, x, z, _, strolls) in CITY_FOLK {
+            // A stroller's whole range, not just where it is posted — they wander.
+            let reach = if *strolls { STROLL_RADIUS } else { 0.0 };
+            for i in 0..16 {
+                let a = i as f32 / 16.0 * std::f32::consts::TAU;
+                let (px, pz) = (x + a.cos() * reach, z + a.sin() * reach);
+                assert!(
+                    city_sea_depth(px, pz) < 0.0,
+                    "`{key}` can walk into the sea at ({px:.1}, {pz:.1})"
+                );
+            }
+        }
+    }
+
+    /// The causeway is only a crossing if the player can actually set foot on it — the whole
+    /// reason [`CITY_WALK_REACH`] replaced a 25-unit circle around the plaza, which stopped
+    /// short of the shelf's own shoulder and made the bridge out of town scenery.
+    #[test]
+    fn the_avatar_can_walk_out_onto_the_causeway() {
+        // (That the bound clears the shelf at all is a fact about constants, so it is
+        // asserted at compile time beside `CITY_WALK_REACH`.) Every step of the walk is on
+        // land, so the bound is what stops you rather than the water — straight out through
+        // the Threshold at x = 0.
+        let mut z = 0.0_f32;
+        while z >= -CITY_WALK_REACH {
+            assert!(city_sea_depth(0.0, z) < 0.0, "the walk out of town is wet at z = {z}");
+            z -= 0.5;
+        }
+    }
 
     /// A sign error in this basis is invisible in a still frame — it only shows as motion —
     /// so the guard is a test. W walks into the screen and D walks screen-right, which at
@@ -4213,7 +4331,7 @@ pub(crate) fn render_district_nameplates(
             // A fixed height above the district's ground anchor — a little higher
             // than a mob's head-height plate since a district is a structure, not
             // a creature.
-            let anchor = Vec3::new(d.x, 3.0, d.z);
+            let anchor = Vec3::new(d.x, ground_at(d.x, d.z) + 3.0, d.z);
             let Ok(s) = cam.world_to_viewport(cam_tf, anchor) else {
                 continue; // behind the camera or otherwise unprojectable
             };
@@ -4326,6 +4444,10 @@ pub(crate) fn travel_to(
     // proximity check lights it up and [E] works exactly as if you had walked.
     tf.translation.x = d.x;
     tf.translation.z = d.z + (d.radius * 0.5);
+    // Standing ON it, like every other placement in this scene — see `ground_at`. Travel is
+    // the one way into a district that skips `city_move`, so it is the one that would leave
+    // the hero at whatever height they teleported away from.
+    tf.translation.y = ground_at(tf.translation.x, tf.translation.z);
     city.near = Some(i);
 }
 

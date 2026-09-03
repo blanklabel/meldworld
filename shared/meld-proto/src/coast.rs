@@ -7,33 +7,38 @@
 //! repo's whole catalogue of self-inflicted bugs is one rule living in two places: the
 //! wall-collision line that went into one mover and not the other, the maze density
 //! written once in `push_section` and again in `reroll_props`, and the `terrain.rs` ↔ WGSL
-//! mirror that has to be hand-kept in lock-step. A peninsula whose two halves disagree is
-//! that bug wearing scenery, so the shoreline — **and the neck** — live here, once.
+//! mirror that has to be hand-kept in lock-step. A coastline whose two halves disagree is
+//! that bug wearing scenery, so the shoreline — **and the crossing** — live here, once.
 //!
 //! # The shape
 //!
 //! The world fans out east over `radial_arc_degrees`, leaving a **gap** to the west. That
-//! gap is the sea, except for a **spit of land running west from the hub**, which is where
-//! Last City stands:
+//! gap is OCEAN, crossed by a single **bridge** from the hub's own shore out to Last City's
+//! gate:
 //!
 //! ```text
 //!                    . . . . . . .          |theta| <= arc_half  ->  LAND (the fan)
 //!            .                     .
-//!        ~~~~~~~~                   .
-//!      ~~~ sea ~~~                   .
-//!   [CITY]======NECK====(hub)         .     the gap  ->  SEA, except the spit
-//!      ~~~ sea ~~~                   .
-//!        ~~~~~~~~                   .
+//!      ~~~~~~~~~~~~                 .
+//!    ~~~~~ sea ~~~~~~                .
+//!   [GATE]==BRIDGE==(hub)             .     the gap  ->  SEA, except the bridge
+//!    ~~~~~ sea ~~~~~~                .
+//!      ~~~~~~~~~~~~                 .
 //!            .                     .
 //!                    . . . . . . .
 //! ```
 //!
-//! **The neck is not authored as a width — it falls out of the geometry.** Near the hub
-//! the gap is a narrow wedge (its half-width is `r · tan(gap_half)`), too tight to hold a
-//! channel, so the land closes across it. That land bridge *is* the neck, and it is the
-//! only way in or out of the city on foot: the Threshold stops being a UI affordance and
-//! becomes a geographic fact. It is also why the city is defensible, and why a siege
-//! (`BD-4`/`BD-8`) has exactly one axis of approach.
+//! ⚠️ It was a PENINSULA, and [`APPROACH_HALF_WIDTH`] is where that story is buried. Nothing
+//! survives it west of the gate — that is the point: *"there should be nothing but ocean and
+//! maybe a few islands."*
+//!
+//! **The neck is a BRIDGE, and that is the only land in the western gap.** West of the
+//! fan's coast there is ocean and the odd isle; one span crosses from the hub's own shore to
+//! Last City's gate ([`APPROACH_HALF_WIDTH`], which is also where the peninsula that used to
+//! be here is buried). The crossing is the only way in or out of the city on foot: the
+//! Threshold stops being a UI affordance and becomes a geographic fact. It is also why the
+//! city is defensible, and why a siege (`BD-4`/`BD-8`) has exactly one axis of approach — a
+//! bridge is a better answer to that than a headland, because you can see both ends of it.
 //!
 //! # Why this is free at runtime
 //!
@@ -47,14 +52,10 @@
 //! ⚠️ **The gap has to be wide enough to hold water.** At the original 340° arc the gap
 //! was 20°, so its half-width at r=30 is `30 · tan(10°)` ≈ **5.3 units** — the fan came
 //! around to within a few units of due west and there was no room for a sea beside the
-//! neck at all. A peninsula is not expressible at that arc; `radial_arc_degrees` is the
-//! knob, and `the_sea_is_wide_enough_to_see` holds the relationship rather than the value.
-
-/// GLSL-style smoothstep, matching the one in [`crate::terrain`] and the WGSL mirror.
-fn smoothstep(e0: f32, e1: f32, x: f32) -> f32 {
-    let t = ((x - e0) / (e1 - e0)).clamp(0.0, 1.0);
-    t * t * (3.0 - 2.0 * t)
-}
+//! neck at all. `radial_arc_degrees` is the knob, and `the_sea_is_wide_enough_to_see` holds
+//! the relationship rather than the value — measuring WET water and DEPTH, because a channel
+//! guarantee is not a sea guarantee: a channel narrower than twice
+//! [`crate::terrain::BEACH_BLEND`] is entirely strand.
 
 /// How far west of the hub the land bridge reaches before the sea opens on both sides.
 /// **This is the neck.**
@@ -85,39 +86,83 @@ pub const RETURN_BORDER_REACH: f32 = 46.0;
 const _: () = assert!(NECK_REACH > 8.0);
 const _: () = assert!(NECK_REACH * 2.0 < RETURN_BORDER_REACH);
 
-/// Half-width of the spit at its landward end, where it leaves the neck.
-pub const NECK_HALF_WIDTH: f32 = 12.0;
-
-/// Half-width of the spit at its widest — the shelf Last City is built on.
-pub const CITY_HALF_WIDTH: f32 = 66.0;
-
-/// How far west of the hub the spit runs before it ends in open sea.
-pub const PENINSULA_LENGTH: f32 = 260.0;
-
-/// How far west of the hub Last City itself stands, on the widest part of the spit.
+/// **THE WESTERN APPROACH IS A BRIDGE, AND THE WESTERN GAP IS OCEAN.**
 ///
-/// **Last City is a separate scene laid out in its own coordinates**, so it cannot sample
-/// `is_ocean` directly — its ground is a hand-placed plaza, not the world's terrain. It
-/// therefore takes its shoreline from the two constants below, and
-/// `the_city_actually_fits_on_its_own_spit` holds them against the real geometry. That
-/// assertion is what keeps the two scenes agreeing; without it the city's coast is just a
-/// second hand-placed shoreline, which is the exact drift this module exists to prevent.
-pub const CITY_CENTER_REACH: f32 = 190.0;
+/// ⚠️ THERE WAS A PENINSULA HERE, AND IT WAS THE WRONG IDEA. Last City stood on a spit that
+/// ran 260 units west of the hub, and the whole apparatus — `NECK_HALF_WIDTH`,
+/// `CITY_HALF_WIDTH`, `PENINSULA_LENGTH`, `TIP_TAPER`, `CHANNEL_LAND_SHARE`,
+/// `peninsula_half_width` and a wobble bolted on to disguise it — existed to make that shape.
+/// It never read as one. Its binding term was `d · tan(gap_half) · share`, linear in radius,
+/// which in polar coordinates draws two perfectly STRAIGHT rays: *"the castle is on a
+/// triangle… no peninsula looks like that… the way it meets the land makes NO organic sense
+/// whatsoever — if it's going to look that pointed it might as well just be a bridge."* And
+/// past the gate it carried on regardless, as *"a small stretch of land that moves off into
+/// the ocean endlessly"*, because the spit outlived the only thing standing on it.
+///
+/// So it is a bridge. West of the fan's coast there is nothing but ocean and the odd isle,
+/// and ONE span crosses it from the hub's own shore to Last City's gate. Everything the
+/// peninsula was for survives in a form that reads: the crossing is still the only way in or
+/// out of the city on foot, so the Threshold is still a geographic fact and a siege still has
+/// exactly one axis of approach (CANON) — a bridge is a better answer to that than a
+/// headland, because you can see both ends of it.
+///
+/// It is a [`Bridge`] rather than a shape of its own, which is why this cost almost nothing:
+/// a span is already forced land in [`Shore::sea`], already a raised deck with parapets in
+/// [`crate::terrain::bridge_surface`], already painted by both ground shaders, and already
+/// collided against by `apply_move` and land-checked by `astar_route`.
+pub const APPROACH_HALF_WIDTH: f32 = 9.0;
 
-/// The city has to stand ON the spit — not back on the neck, and not out past the tip.
-/// Compile-time, like the neck/border relationship: it is a fact about constants.
-const _: () = assert!(CITY_CENTER_REACH > NECK_REACH);
-const _: () = assert!(CITY_CENTER_REACH < PENINSULA_LENGTH);
+/// How far the span overlaps the land at each end. **Both ends overlap on purpose**: bounding
+/// a crossing exactly at the seam it joins puts a knife-edge of shoreline across the one
+/// place it has to JOIN, which is the same lesson [`city_sea_depth`]'s causeway learned — a
+/// bridge you cannot walk onto is a wall.
+const APPROACH_OVERLAP: f32 = 6.0;
+
+/// **The one span between the hub's shore and Last City's gate**, given the border's reach.
+///
+/// One function, because the same five numbers have to reach four places that must not
+/// disagree: [`sea_depth`] (so the deck is LAND), the client's bridge table (so the deck
+/// RISES and everything standing on it stands on the deck), the ground shaders' uniform (so
+/// it is DRAWN), and the overworld's gatehouse (so the stonework sits on the deck and not in
+/// the water). `the_approach_reaches_every_side_that_draws_it` holds them together.
+pub fn approach_bridge(border_reach: f32) -> Bridge {
+    [
+        -(NECK_REACH - APPROACH_OVERLAP),
+        0.0,
+        -(border_reach + APPROACH_OVERLAP),
+        0.0,
+        APPROACH_HALF_WIDTH,
+    ]
+}
+
+/// The crossing has to BE a crossing: long enough to read as one against its own width, and
+/// starting inside the hub's shore rather than at its edge. Compile-time, like the
+/// neck/border relationship — a build where the "bridge" is as wide as it is long ships a
+/// paving slab.
+const _: () = assert!(RETURN_BORDER_REACH - NECK_REACH > APPROACH_HALF_WIDTH * 3.0);
+const _: () = assert!(APPROACH_OVERLAP < NECK_REACH);
 
 /// Half-width of the dry ground Last City is built on, in its own scene. Water starts
 /// beyond this on both flanks.
-pub const CITY_SHORE_HALF_WIDTH: f32 = 52.0;
+///
+/// ⚠️ IT WAS 52, AND AT 52 THE SEA WAS NOT IN FRAME. The city's whole authored footprint —
+/// every district, prop and townsperson — fits inside `|x| <= 21`, and the default camera
+/// (36° fov at `cam_dist` 26, on a 16:9 window) sees about `|x| <= 21` at the plaza: so the
+/// shore stood thirty units past the edge of the picture, and the ocean this city is famous
+/// for standing in was something only a survey camera could find. Sized to the footprint
+/// instead — and the [`crate::terrain::BEACH_BLEND`] of strand it puts along the waterfront
+/// reaches nothing that minds, the wreck and the dock being props that belong at a
+/// waterline. `every_district_prop_and_townsperson_is_on_dry_land` is the guard.
+pub const CITY_SHORE_HALF_WIDTH: f32 = 30.0;
 
-/// How far past the city's centre the spit's tip lies, in the city's own scene — beyond
-/// this, open sea ahead as well as to the sides.
-pub const CITY_TIP_REACH: f32 = 68.0;
+/// How far from the plaza the city's own ground reaches along z, in its own scene — the
+/// spit's tip ahead (`+z`, out to sea) and its landward shoulder behind (`-z`), where the
+/// [causeway](CAUSEWAY_HALF_WIDTH) takes over. One number for both, because the shelf a
+/// city is built on is the shelf: an authored front and back would be two numbers nobody
+/// could tell apart on screen.
+pub const CITY_TIP_REACH: f32 = 34.0;
 
-/// How far BEHIND the plaza the spit meets the mainland, in the city's own scene. Past
+/// How far BEHIND the plaza the causeway meets the mainland, in the city's own scene. Past
 /// this the flanks are dry land again, because a spit joins a coast somewhere.
 ///
 /// ⚠️ WITHOUT THIS TERM THE CITY HAD A RIBBON OF GRASS RUNNING TO INFINITY. The first
@@ -125,61 +170,48 @@ pub const CITY_TIP_REACH: f32 = 68.0;
 /// strip `|x| <= shore` for EVERY z — including z going to minus infinity behind the
 /// city. Don saw it immediately: "there is a weird stretch of land behind it… it goes off
 /// forever as a small straight grass line." A spit needs a back edge as much as a tip.
-pub const CITY_MAINLAND_BACK: f32 = 68.0;
+///
+/// It is far enough back that the causeway is a CROSSING and not a kerb: from the plaza the
+/// forward view is town, then a bay, then a narrow bridge running out over it to a coast on
+/// the far side. That is the whole point of the constant being this and not 68.
+pub const CITY_MAINLAND_BACK: f32 = 110.0;
 
-/// Fraction of the spit's run over which it tapers to its tip, so the peninsula ends in a
-/// point rather than a cliff-edged rectangle.
-pub const TIP_TAPER: f32 = 0.22;
+/// **Half-width of the causeway out of Last City**, in the city's own scene — the city's
+/// twin of [`APPROACH_HALF_WIDTH`], and for the same reason.
+///
+/// The module header's claim that *"the neck is the only way in or out of the city on foot:
+/// the Threshold stops being a UI affordance and becomes a geographic fact"* was true of the
+/// world's shoreline and invisible in the city, whose own field ran a full-width mainland
+/// straight up to the plaza. Now the ground pinches just past the Threshold's arch and runs
+/// out over the water to the far coast, so leaving town is crossing a bridge — matching the
+/// span the world puts on the other side of the same gate.
+pub const CAUSEWAY_HALF_WIDTH: f32 = 12.0;
 
-/// The most of the western gap's width the spit is ever allowed to take, leaving the rest
-/// as open water. **This is what makes the channel a guarantee rather than a tuning
-/// accident**: the gap narrows toward the hub, so a spit authored at a fixed width would
-/// silently swallow the sea near the neck (it did — the first draft left 7.6 units of
-/// water at d=50 and the test caught it). Bounding the land as a SHARE of the gap means
-/// there is sea on both flanks at every depth the spit exists, by construction, whatever
-/// the arc is retuned to. Same discipline as the clear path's guaranteed route and the
-/// `Seam`'s guaranteed door.
-pub const CHANNEL_LAND_SHARE: f32 = 0.5;
-
-/// Half-width of the land at `d` world units west of the hub, measured across the spit.
-/// Zero past the tip. Only meaningful inside the western gap — the fan itself is land at
-/// any width (see [`is_ocean`]).
-pub fn peninsula_half_width(d: f32, arc_half_rad: f32) -> f32 {
-    if d <= NECK_REACH {
-        return NECK_HALF_WIDTH;
-    }
-    if d >= PENINSULA_LENGTH {
-        return 0.0;
-    }
-    let t = (d - NECK_REACH) / (PENINSULA_LENGTH - NECK_REACH);
-    // Swell from the neck out to the city's shelf and back — a spit, not a corridor.
-    let swell = (std::f32::consts::PI * t).sin();
-    let w = NECK_HALF_WIDTH + (CITY_HALF_WIDTH - NECK_HALF_WIDTH) * swell;
-    // …then close to a point over the last stretch.
-    let w = w * smoothstep(1.0, 1.0 - TIP_TAPER, t);
-    // Never take more than its share of the gap, so the sea beside it cannot vanish.
-    let gap_half = (std::f32::consts::PI - arc_half_rad).max(0.0);
-    w.min(d * gap_half.tan() * CHANNEL_LAND_SHARE)
-}
+/// The causeway has to BE a causeway: narrow against the shelf it leaves, and long enough
+/// that crossing it reads as a crossing. Compile-time, like the neck/border relationship —
+/// a build where the "bridge" is as wide as the town ships a kerb.
+const _: () = assert!(CAUSEWAY_HALF_WIDTH * 2.0 < CITY_SHORE_HALF_WIDTH);
+const _: () = assert!(CITY_MAINLAND_BACK - CITY_TIP_REACH > CAUSEWAY_HALF_WIDTH * 4.0);
 
 /// Is world position `(x, z)` open sea? `arc_half_rad` is half the world's fan
 /// (`radial_arc_degrees.to_radians() * 0.5`) — passed in rather than baked, so the server
 /// and the client cannot disagree about it the way two hand-placed shorelines would.
 ///
-/// Land is: anywhere inside the fan, the neck's land bridge, and the spit. Everything else
-/// in the western gap is sea.
+/// Land is: anywhere inside the fan, the hub's own shore, and the [western
+/// approach](approach_bridge) that crosses to Last City's gate. Everything else in the
+/// western gap is OCEAN — see [`APPROACH_HALF_WIDTH`] for why there is no longer a spit.
 pub fn is_ocean(x: f32, z: f32, arc_half_rad: f32) -> bool {
     // A degenerate arc means corridor mode (no fan) — there is no gap, so no sea.
     if arc_half_rad <= 0.0 {
         return false;
     }
-    // The western gap. Near the hub it is too narrow to hold a channel and the land closes
-    // across it — the NECK.
+    // The western gap. Near the hub the land closes across it — the hub's own SHORE.
     let d = x.hypot(z);
     if d <= NECK_REACH {
         return false;
     }
-    // Inside the fan: land, always. This is the overwhelming majority of every query.
+    // Inside the fan: land, always. This is the overwhelming majority of every query, which
+    // is why the fast path is kept rather than delegating to `sea_depth`.
     //
     // ⚠️ **THE FAN'S OWN ANGLE AT THIS RADIUS, not the nominal one.** This fast path read
     // the constant `arc_half_rad` while [`sea_depth`] measures against [`arc_half_at`], so
@@ -192,10 +224,11 @@ pub fn is_ocean(x: f32, z: f32, arc_half_rad: f32) -> bool {
     if z.atan2(x).abs() <= arc_half_at(d, arc_half_rad) {
         return false;
     }
-    // Otherwise: sea, except on the spit. A zero width is past the tip — open water even
-    // dead on the axis, or the peninsula would run west forever as a one-point-wide line.
-    let w = peninsula_half_width(d, arc_half_rad);
-    w <= 0.0 || z.abs() > w
+    // Otherwise: sea, except on the one CROSSING. This was the spit's width across; the spit
+    // is a bridge now (see [`APPROACH_HALF_WIDTH`]) and a bridge is a capsule, so the test is
+    // a distance to its segment rather than a half-width at this radius.
+    let a = approach_bridge(RETURN_BORDER_REACH);
+    dist_to_segment_pub(x, z, a[0], a[1], a[2], a[3]) > a[4]
 }
 
 /// **How far past the shoreline `(x, z)` is, in world units** — negative on land, positive
@@ -211,11 +244,10 @@ pub fn is_ocean(x: f32, z: f32, arc_half_rad: f32) -> bool {
 ///
 /// Land is three shapes, so the sea is however far you are from the nearest of them:
 /// the FAN (its edge is a ray, so the distance past it is an ARC LENGTH — a fixed angular
-/// margin would be metres at the hub and kilometres at the frontier), the SPIT across its
-/// width, and the NECK that closes the gap near the hub.
+/// margin would be metres at the hub and kilometres at the frontier), the hub's own SHORE
+/// (the disc of land the Center Hub stands on, out to [`NECK_REACH`]), and the DECK of the
+/// [western approach](approach_bridge) — the one span between that shore and the city's gate.
 ///
-/// Its SIGN is `is_ocean` exactly — held by `the_depth_field_agrees_with_the_predicate`,
-/// because the thing you can see and the thing you collide with must be one shoreline.
 /// How far the coastline wanders in or out, as a FRACTION of the fan's local half-angle.
 /// A fraction rather than an angle, because a fixed angular wobble is metres at the hub and
 /// kilometres at the frontier. Bounded well under 1.0 so a wander can never pinch the fan.
@@ -299,16 +331,25 @@ pub fn arc_half_at(d: f32, arc_half_rad: f32) -> f32 {
     tapered * (1.0 - bite)
 }
 
+/// The third of those used to be a peninsula, and [`APPROACH_HALF_WIDTH`] is where that
+/// story lives. What matters here is that a bridge is a CAPSULE — the distance to a segment,
+/// not to a ray — so its edges are parallel and its ends are round, and neither of those can
+/// draw the straight-sided triangle a width-linear-in-radius could not help drawing.
+///
+/// Its SIGN is `is_ocean` exactly — the same expression, so they cannot drift.
 pub fn sea_depth(x: f32, z: f32, arc_half_rad: f32) -> f32 {
     if arc_half_rad <= 0.0 {
         return -1000.0; // corridor mode: no gap, no sea
     }
     let d = x.hypot(z);
     let theta = z.atan2(x).abs();
+    // WG-11: the fan TAPERS and its coast WANDERS, so this is the local half-angle rather
+    // than the nominal one — see `arc_half_at`.
     let past_fan = (theta - arc_half_at(d, arc_half_rad)) * d;
-    let past_spit = z.abs() - peninsula_half_width(d, arc_half_rad);
-    let past_neck = d - NECK_REACH;
-    past_fan.min(past_spit).min(past_neck)
+    let past_shore = d - NECK_REACH;
+    let a = approach_bridge(RETURN_BORDER_REACH);
+    let past_approach = dist_to_segment_pub(x, z, a[0], a[1], a[2], a[3]) - a[4];
+    past_fan.min(past_shore).min(past_approach)
 }
 
 /// How far past LAST CITY's own shoreline `(x, z)` is, **in city-scene coordinates** —
@@ -325,15 +366,26 @@ pub fn sea_depth(x: f32, z: f32, arc_half_rad: f32) -> f32 {
 /// city cannot grow a second hand-placed shoreline — which is exactly what it had, three
 /// water planes laid a hair above the lawn, quietly missing every fix the world's sea got.
 pub fn city_sea_depth(x: f32, z: f32) -> f32 {
-    // Land is the spit OR the mainland behind it, so the sea is however far you are from
-    // the nearer of the two — `min`, exactly as the world's [`sea_depth`] takes the min of
-    // its fan, spit and neck. A `min` of signed distances is also what keeps this
-    // CONTINUOUS: an `if z < back { return land }` would jump across that line, and every
-    // smoothstep over the field would collapse into a step there — the same cliff-instead-
-    // of-beach bug this module already shipped once.
-    let past_spit = (x.abs() - CITY_SHORE_HALF_WIDTH).max(z - CITY_TIP_REACH);
+    // Land is the SHELF the city stands on, OR the CAUSEWAY that leaves it, OR the MAINLAND
+    // that causeway reaches — so the sea is however far you are from the nearest of the
+    // three. `min`, exactly as the world's [`sea_depth`] takes the min of its fan, spit and
+    // neck. A `min` of signed distances is also what keeps this CONTINUOUS: an
+    // `if z < back { return land }` would jump across that line, and every smoothstep over
+    // the field would collapse into a step there — the same cliff-instead-of-beach bug this
+    // module already shipped once.
+    //
+    // The causeway is the RIBBON THIS FUNCTION'S FIRST DRAFT SHIPPED BY ACCIDENT, at the
+    // neck's width instead of the shore's: `max(|x| - w, z - tip)` is land for every z
+    // behind the city, which as a full-width shelf was the "small straight grass line…
+    // going off forever" and as a 24-unit strip with a coast at the end of it is a bridge.
+    // Its far end is deliberately left unbounded — past `CITY_MAINLAND_BACK` the mainland is
+    // land anyway, so bounding it there would only put a knife-edge of shoreline across the
+    // one place the crossing has to JOIN. Same at the near end, where it runs the full
+    // length of the shelf rather than stopping at its shoulder.
+    let past_shelf = (x.abs() - CITY_SHORE_HALF_WIDTH).max(z.abs() - CITY_TIP_REACH);
+    let past_causeway = (x.abs() - CAUSEWAY_HALF_WIDTH).max(z - CITY_TIP_REACH);
     let past_mainland = z + CITY_MAINLAND_BACK;
-    past_spit.min(past_mainland)
+    past_shelf.min(past_causeway).min(past_mainland)
 }
 
 /// Is `(x, z)` walkable ground as far as the *coast* is concerned? The inverse of
@@ -603,8 +655,9 @@ pub fn strait_is_crossable(s: &Strait, arc_half_rad: f32) -> bool {
 // around one costs `πr / 2r` = **π/2 ≈ 1.57x** the straight line — bounded, where a ridge or
 // a river can force an arbitrarily long detour. And it cannot sever the world, because a
 // bay's reach inward is bounded to a share of the local half-arc, so there is always land
-// between it and the fan's centre line ([`BAY_LAND_SHARE`], the same discipline
-// [`CHANNEL_LAND_SHARE`] uses to guarantee the channel beside the city's spit).
+// between it and the fan's centre line ([`BAY_LAND_SHARE`], the same discipline the retired
+// `CHANNEL_LAND_SHARE` used to guarantee a channel beside the city's spit — see
+// [`APPROACH_HALF_WIDTH`] for why that spit is a bridge now).
 //
 // An isle is honestly **scenery**: it stands in the western gap, which no one can walk to,
 // so nothing is ever placed on one. It is here because an ocean with nothing in it reads as
@@ -634,7 +687,9 @@ pub const MAX_LOBES: usize = 12;
 /// The most of the local half-arc a bay may eat, leaving the rest as land. **This is what
 /// makes a bay unable to sever the world** — there is always ground between it and the
 /// fan's centre line, at every radius, whatever the arc is retuned to. Same guarantee, and
-/// the same reasoning, as [`CHANNEL_LAND_SHARE`].
+/// the same reasoning, as the retired `CHANNEL_LAND_SHARE` — with the lesson that outlived
+/// it: a share guarantee bounds a WIDTH, and a width narrower than twice
+/// [`crate::terrain::BEACH_BLEND`] is entirely strand, so it does not guarantee water.
 pub const BAY_LAND_SHARE: f32 = 0.42;
 
 // ---------------------------------------------------------------------------------------
@@ -978,14 +1033,17 @@ mod tests {
     /// boolean describing one coast must never disagree about where it is.
     #[test]
     fn the_citys_depth_field_is_its_shoreline() {
-        for xi in -40..=40 {
-            for zi in -40..=40 {
+        for xi in -60..=60 {
+            for zi in -60..=60 {
                 let (x, z) = (xi as f32 * 2.7, zi as f32 * 2.7);
                 let depth = city_sea_depth(x, z);
-                // The rule stated independently of the depth field: off the spit AND
-                // not yet onto the mainland behind it.
-                let off_spit = x.abs() > CITY_SHORE_HALF_WIDTH || z > CITY_TIP_REACH;
-                let sea = off_spit && z > -CITY_MAINLAND_BACK;
+                // The rule stated independently of the depth field: the shelf, the causeway
+                // across the bay, or the mainland on the far side — anywhere else is sea.
+                let on_shelf =
+                    x.abs() <= CITY_SHORE_HALF_WIDTH && z.abs() <= CITY_TIP_REACH;
+                let on_causeway = x.abs() <= CAUSEWAY_HALF_WIDTH && z <= CITY_TIP_REACH;
+                let on_mainland = z <= -CITY_MAINLAND_BACK;
+                let sea = !(on_shelf || on_causeway || on_mainland);
                 if depth.abs() > 1e-3 {
                     assert_eq!(depth > 0.0, sea, "({x}, {z}) disagrees about the city's coast");
                 }
@@ -1006,6 +1064,54 @@ mod tests {
         assert!(
             city_sea_depth(CITY_SHORE_HALF_WIDTH + 10.0, 0.0) > 0.0,
             "beside the plaza is still sea"
+        );
+    }
+
+    /// **LEAVING TOWN IS CROSSING A BRIDGE, AND A BRIDGE HAS TO BE CONNECTED AND NARROW.**
+    ///
+    /// The city's field is three overlapping shapes, and the two properties that make it a
+    /// causeway rather than either of the things it has already been — a full-width mainland
+    /// running up to the plaza, or a ribbon of grass to infinity — are exactly these:
+    ///
+    ///   * the walk from the fountain to the mainland is dry the WHOLE way (a crossing you
+    ///     cannot cross is a wall, and the first draft of this pinched to a knife-edge of
+    ///     shoreline at both joins, because each end was bounded at the seam instead of
+    ///     overlapping past it), and
+    ///   * it is water either side of you for most of that walk — otherwise the bay is
+    ///     scenery and it may as well be a field.
+    #[test]
+    fn the_way_out_of_town_is_a_bridge_over_the_bay() {
+        // Dry the whole way out, at a step far finer than the beach blend.
+        let mut steps = 0;
+        let mut flanked = 0;
+        let mut z = 0.0_f32;
+        while z >= -(CITY_MAINLAND_BACK + 40.0) {
+            assert!(
+                city_sea_depth(0.0, z) < 0.0,
+                "the walk out of town is under water at z = {z} — the causeway does not join"
+            );
+            // …and out over the bay, the sea is within a few strides on both flanks.
+            // Inset a beach blend at BOTH ends: the shoulder it leaves and the coast it
+            // lands on are shore, and a bridge is expected to meet the land it joins.
+            let blend = crate::terrain::BEACH_BLEND;
+            let over_the_bay =
+                -CITY_MAINLAND_BACK + blend..=-CITY_TIP_REACH - blend;
+            if over_the_bay.contains(&z) {
+                steps += 1;
+                let w = CAUSEWAY_HALF_WIDTH + 4.0;
+                if city_sea_depth(w, z) > 0.0 && city_sea_depth(-w, z) > 0.0 {
+                    flanked += 1;
+                }
+            }
+            z -= 0.5;
+        }
+        assert!(steps > 60, "the crossing is only {steps} strides long — that is a kerb");
+        assert_eq!(flanked, steps, "the causeway is not over water for its whole run");
+        // And the town end is the WIDE end: the shelf has to be broad enough that the
+        // plaza does not read as part of the bridge.
+        assert!(
+            city_sea_depth(CAUSEWAY_HALF_WIDTH + 6.0, 0.0) < 0.0,
+            "the plaza is no wider than the causeway leaving it"
         );
     }
 
@@ -1048,77 +1154,130 @@ mod tests {
     }
 
     #[test]
-    fn the_neck_is_a_land_bridge_and_the_city_is_reachable_on_foot() {
-        // Walk due west from the hub to the city's shelf: every step is land, so the only
-        // route out of Last City is over the neck and there is always one.
+    fn the_crossing_is_walkable_and_the_city_is_reachable_on_foot() {
+        // Walk due west from the hub to the gate: every step is land, so the only route out
+        // of Last City is over the span and there is always one. A crossing you cannot cross
+        // is a wall, and this is the assertion that stops one shipping — the span's ends
+        // OVERLAP the shore and the border for exactly this reason.
         let mut d = 0.0_f32;
-        while d <= PENINSULA_LENGTH * 0.6 {
+        while d <= RETURN_BORDER_REACH {
             assert!(
                 !is_ocean(-d, 0.0, ARC_HALF),
-                "the walk west along the spit must stay on land (d={d})"
+                "the walk west to the city's gate must stay on land (d={d})"
             );
-            d += 0.5;
+            d += 0.25;
         }
     }
 
     #[test]
     fn the_sea_is_wide_enough_to_see() {
-        // The point of a peninsula is water you can SEE from the shore. The gap has to be
-        // wide enough to hold a channel beside the spit — at the original 340° arc it was
-        // not (5.3 units of half-width at r=30), which is why the arc had to widen. This
-        // holds the RELATIONSHIP, not the arc value: wherever the spit runs, there must be
-        // real open water between it and the fan's coastline.
+        // The point of the western gap is water you can SEE from the shore.
+        //
+        // ⚠️ THIS TEST USED TO MEASURE CHANNEL WIDTH, AND CHANNEL WIDTH IS NOT SEA. It
+        // asserted `wedge - spit > 8.0` at d = 50/80/120 and passed for the whole life of
+        // the bug — because a channel spends [`crate::terrain::BEACH_BLEND`] of each bank as
+        // STRAND, and the ground shader only opens water's own colour over
+        // `smoothstep(0, 14, depth)`. Eight units of channel is eight units of wet sand.
+        // Measured at the return border, the only stretch a player without a Town Portal
+        // ever walks: 19.5 units of water against 48.3 of sand, deepest point 5.1. Reported
+        // as "the water always looks like a tiny shore in front of it", and it was right.
+        //
+        // It is the same failure as `NECK_REACH`'s, one layer down — a geometry test is not
+        // a reachability test, and a width test is not a wetness test. So this walks the
+        // cross-section and counts WET units and DEPTH, at radii INSIDE the return border.
         let gap_half = std::f32::consts::PI - ARC_HALF;
-        for d in [50.0_f32, 80.0, 120.0] {
-            let wedge = d * gap_half.tan();
-            let land = peninsula_half_width(d, ARC_HALF);
-            let channel = wedge - land;
+        for d in [RETURN_BORDER_REACH, 80.0, 120.0] {
+            let (wet, deepest) = wet_across_the_gap(d);
             assert!(
-                channel > 8.0,
-                "there must be open sea beside the spit at d={d} \
-                 (gap half-width {wedge:.1}, spit {land:.1}, channel {channel:.1})"
+                wet > 24.0,
+                "only {wet:.1} units of the western gap are WATER at d={d} — the rest is \
+                 strand, and a beach is not an ocean (gap half-width {:.1})",
+                d * gap_half.tan(),
+            );
+            // …and deep enough that the shader draws it as sea rather than as shallows: the
+            // depth tint ramps over `smoothstep(0, BEACH_BLEND, depth)`, so a channel that
+            // never reaches half of that is painted as the bed showing through.
+            assert!(
+                deepest > crate::terrain::BEACH_BLEND * 0.5,
+                "the western sea is only {deepest:.1} deep at d={d} — the shader opens its \
+                 colour over {} units, so this still paints as wet sand",
+                crate::terrain::BEACH_BLEND
             );
         }
     }
 
-    #[test]
-    fn past_the_tip_is_open_sea() {
-        // The spit ends. Otherwise "peninsula" is just a corridor running west forever.
-        assert!(
-            is_ocean(-(PENINSULA_LENGTH + 20.0), 0.0, ARC_HALF),
-            "due west past the tip must be open water"
-        );
-        assert_eq!(peninsula_half_width(PENINSULA_LENGTH + 1.0, ARC_HALF), 0.0);
+    /// Walk the arc at radius `d` across the whole western gap and report `(units of open
+    /// water, deepest point)`. Sampled rather than solved because the field is a `min` of
+    /// three terms and the answer is what a player SEES, which is an integral over the
+    /// bearing rather than a property of any one of them.
+    fn wet_across_the_gap(d: f32) -> (f32, f32) {
+        let gap_half = std::f32::consts::PI - ARC_HALF;
+        let span = d * gap_half.tan() * 1.6;
+        let (n, mut wet, mut deepest) = (4000, 0.0_f32, 0.0_f32);
+        let step = 2.0 * span / n as f32;
+        for i in 0..=n {
+            let z = -span + i as f32 * step;
+            if z.abs() >= d {
+                continue;
+            }
+            let depth = sea_depth(-(d * d - z * z).sqrt(), z, ARC_HALF);
+            if depth > 0.0 {
+                wet += step;
+                deepest = deepest.max(depth);
+            }
+        }
+        (wet, deepest)
     }
 
     #[test]
-    fn the_spit_has_water_on_both_sides() {
-        // Water to the north AND south of the city's shelf — that is what makes it a
-        // peninsula rather than a headland.
-        let d = (NECK_REACH + PENINSULA_LENGTH) * 0.5;
-        let w = peninsula_half_width(d, ARC_HALF);
-        for side in [1.0_f32, -1.0] {
-            assert!(
-                is_ocean(-d, side * (w + 6.0), ARC_HALF),
-                "the sea must reach both flanks of the spit (side {side})"
-            );
+    fn there_is_nothing_west_of_the_gate_but_ocean() {
+        // ⚠️ THIS REPLACES `past_the_tip_is_open_sea`, AND THE DIFFERENCE IS THE WHOLE POINT.
+        // That test asked only whether the spit ENDED; it did, 214 units past the gate, and
+        // for all of those units it was "a small stretch of land that moves off into the
+        // ocean endlessly". Nothing outlives the crossing now: past the border the gap is
+        // open water on the axis and on both flanks, all the way out.
+        for d in [
+            RETURN_BORDER_REACH + 20.0,
+            RETURN_BORDER_REACH + 120.0,
+            RETURN_BORDER_REACH + 600.0,
+        ] {
+            for off in [0.0_f32, 30.0, -30.0] {
+                assert!(
+                    is_ocean(-d, off, ARC_HALF),
+                    "there is still land west of the gate at ({}, {off})",
+                    -d
+                );
+            }
         }
     }
 
     #[test]
-    fn the_city_actually_fits_on_its_own_spit() {
-        // Last City is a separate scene and draws its shore from `CITY_SHORE_HALF_WIDTH`
-        // rather than by sampling `is_ocean`. That is only safe while the constant agrees
-        // with the real spit — otherwise the city's water sits where the world's is land
-        // (or worse, the reverse) and the two scenes tell different stories about the same
-        // place. This is the assertion that keeps them honest.
-        let w = peninsula_half_width(CITY_CENTER_REACH, ARC_HALF);
-        assert!(
-            w >= CITY_SHORE_HALF_WIDTH,
-            "the spit at the city's reach ({CITY_CENTER_REACH}) is {w:.1} half-wide, but \
-             the city scene draws {CITY_SHORE_HALF_WIDTH} of dry ground — the city would \
-             be standing in its own sea"
-        );
+    fn the_crossing_has_water_on_both_sides_and_parallel_edges() {
+        // Water to the north AND south of the span — otherwise it is a headland, not a
+        // bridge. And the edges are PARALLEL, which is the property the peninsula could not
+        // have: its width was linear in radius, so its coast was two straight rays meeting at
+        // the hub, and the west end of the world read as a machined triangle. A capsule's
+        // half-width is the same at both ends by construction.
+        for d in [NECK_REACH + 4.0, RETURN_BORDER_REACH * 0.5, RETURN_BORDER_REACH - 2.0] {
+            for side in [1.0_f32, -1.0] {
+                // Just inside the deck is land and just outside it is sea, at EVERY radius —
+                // which is the parallel-edge statement, stated where the edge actually is
+                // rather than by hunting for a waterline (near the hub the gap is narrow
+                // enough that the first waterline you meet going sideways is the FAN's, and
+                // a bisection walks straight past the deck to find it).
+                assert!(
+                    !is_ocean(-d, side * (APPROACH_HALF_WIDTH - 1.0), ARC_HALF),
+                    "the deck is under water {}u off the axis at d={d}",
+                    APPROACH_HALF_WIDTH - 1.0
+                );
+                assert!(
+                    is_ocean(-d, side * (APPROACH_HALF_WIDTH + 1.0), ARC_HALF),
+                    "the crossing is still land {}u off the axis at d={d} — its edges are \
+                     not parallel, which is the width-linear-in-radius triangle this replaced",
+                    APPROACH_HALF_WIDTH + 1.0
+                );
+            }
+        }
     }
 
     #[test]
@@ -1368,12 +1527,12 @@ mod tests {
     fn an_isle_stands_in_the_open_sea() {
         // Out past the spit's tip and OFF the axis: open ocean in the bare world.
         //
-        // Off-axis on purpose. Dead on the axis past the tip, `peninsula_half_width` is 0
+        // Off-axis on purpose. Dead on the axis past the gate the crossing has ended
         // and so `past_spit` is exactly 0 — the measure-zero waterline where a depth of 0.0
         // makes `is_ocean` false while the boolean `is_ocean` calls it sea. That line is
         // precisely what `the_depth_field_agrees_with_the_predicate` skips with its epsilon,
         // and putting a fixture on it tests the tie-break rather than the isle.
-        let (cx, cz) = (-(PENINSULA_LENGTH + 120.0), 90.0);
+        let (cx, cz) = (-(RETURN_BORDER_REACH + 320.0), 90.0);
         assert!(Shore::bare(ARC_HALF).is_ocean(cx, cz), "the fixture must start as sea");
 
         let lobes = [[cx, cz, 40.0, LOBE_ISLE]];
@@ -1407,7 +1566,7 @@ mod tests {
         let straits = [[600.0, 20.0, 0.0, 0.44, -0.24, 14.0, 0.22, 14.0]];
         let lobes = [
             test_bay(),
-            [-(PENINSULA_LENGTH + 120.0), 0.0, 40.0, LOBE_ISLE],
+            [-(RETURN_BORDER_REACH + 320.0), 0.0, 40.0, LOBE_ISLE],
             [500.0 * (-ARC_HALF).cos(), 500.0 * (-ARC_HALF).sin(), 60.0, LOBE_BAY],
         ];
         let shore = Shore { arc_half: ARC_HALF, straits: &straits, lobes: &lobes, ..Default::default() };
@@ -1434,7 +1593,7 @@ mod tests {
     /// easy to get wrong the same way.
     #[test]
     fn a_lobes_shoreline_has_a_beach_rather_than_a_cliff() {
-        let lobes = [test_bay(), [-(PENINSULA_LENGTH + 120.0), 0.0, 40.0, LOBE_ISLE]];
+        let lobes = [test_bay(), [-(RETURN_BORDER_REACH + 320.0), 0.0, 40.0, LOBE_ISLE]];
         let shore = Shore { arc_half: ARC_HALF, lobes: &lobes, ..Default::default() };
         for l in &lobes {
             // March out through the lobe's own shore in 0.5-unit steps.

@@ -1661,12 +1661,27 @@ max_level = 0                    # no discrete cliffs; elevation is the smooth h
 # 17.3 units, and the channel beside the spit is guaranteed by construction
 # (`coast::CHANNEL_LAND_SHARE`) rather than by this number.
 #
-# What it costs: the world loses 12% of its angular extent, so a ring holds proportionally
-# fewer creatures and props — but DENSITY per unit area is preserved, because
-# `maze_fill_scale`/`creature_radial_lane_cap` compensate against the arc. It is in fact a
-# small density WIN at depth: a narrower fan means less arc-stretch, so the compensation
-# cap binds later. Nothing currently draws a player sideways, so the lost lateral room is
-# the cheapest thing in the world to spend. [TUNABLE]
+# ⚠️ **AND IT STAYS 300° — I TRIED 280° AND BACKED IT OUT. WORTH READING BEFORE YOU TRY.**
+# The western sea used to read as beach because a channel guarantee is not a SEA guarantee:
+# every shoreline spends `terrain::BEACH_BLEND` of its land side as strand and the shader only
+# opens water's colour over `smoothstep(0, 14, depth)`, so the strand in the western gap is a
+# FIXED cost at every radius while the wet band grows with `r`. Measured at the return border
+# (d=46, the furthest west a player can stand): 19.5 units of water against 48.3 of sand,
+# deepest point 5.1 — `openness` **0.30**, which paints as the pale bed tile showing through.
+# Reported, correctly, as "the water always looks like a tiny shore in front of it".
+#
+# **The cause was the PENINSULA eating the gap, not the arc.** With the spit retired for a
+# bridge (`coast::APPROACH_HALF_WIDTH`) the same spot reads 28.0 wet against 39.8 of sand at
+# depth 7.4 — openness **0.54**, and **0.90 by d=60**. Widening to 280° took the border to
+# 0.90, and it cost: `a_wandering_creature_actually_goes_somewhere` (creature excursion is
+# inversely tracked to obstacle count, and the count moved +20% on seed 424242),
+# `the_trail_holds_its_terrain_at_every_depth`, and
+# `the_route_point_at_a_depth_is_on_the_route_and_at_that_depth` — where seed 1's streamed
+# route lost its outer segments to ranges and `route_point_at(1269)` silently answered **d945**.
+# The arc feeds `arc_stretch` feeds prop counts feeds the RNG stream, so it re-rolls EVERY
+# SEEDED WORLD; the last increment of openness is not worth that. `the_sea_is_wide_enough_to_
+# see` measures WETNESS AND DEPTH now rather than channel width, so whatever you try here is
+# judged on water a player can see. [TUNABLE]
 radial_arc_degrees = 300.0
 terrace_min_size = 6.0           # smallest terrace footprint side (tiles)
 terrace_max_size = 14.0          # largest terrace footprint side (tiles)

@@ -10910,9 +10910,21 @@ mod tests {
         let arc_half = (b.worldgen.radial_arc_degrees.to_radians() * 0.5) as f32;
         assert!(
             border > meld_proto::coast::NECK_REACH as f64,
-            "the return border ({border}) must sit OUTSIDE the neck ({}) or the sea is \
-             unreachable",
+            "the return border ({border}) must sit OUTSIDE the hub's shore ({}) or the sea \
+             is unreachable",
             meld_proto::coast::NECK_REACH
+        );
+        // ⚠️ AND THE MIRROR MUST BE EXACT, not merely on the right side of the shore.
+        // `coast::RETURN_BORDER_REACH` is a hand-copy of this balance value, and it is what
+        // `approach_bridge` measures the western crossing against — so a drift between them
+        // is a bridge that stops short of the gate, or runs past it, with the gatehouse
+        // standing on whichever the other one believes.
+        assert!(
+            (border - meld_proto::coast::RETURN_BORDER_REACH as f64).abs() < 1e-6,
+            "balance says the return border is {border} and `coast::RETURN_BORDER_REACH` \
+             says {} — the western crossing and the gate on it are measured from different \
+             numbers",
+            meld_proto::coast::RETURN_BORDER_REACH
         );
         // Walk west along the spit, stopping where the city would take over, and look
         // sideways for water at each step.
@@ -11123,8 +11135,32 @@ mod tests {
         // This pins the OUTCOME rather than the mechanism: a creature with nothing to
         // chase must cover a real share of its own leash. Anything that reintroduces
         // per-tick destination churn fails here however it is written.
+        // ⚠️ **SEVERAL SEEDS, AND THE ASSERTION IS ON THE DISTRIBUTION — THIS WAS PASSING BY
+        // LUCK.** It measured seed 424242 alone against `leash/3` = 3.0, and 424242 happens to
+        // read 3.20. Measured over eight seeds at the arc this test was written under (300°):
+        // 3.20, 2.75, 4.55, 2.66, 2.67, 4.01, 3.03, 3.45 — mean 3.29, and **three of the eight
+        // are already under the threshold**. The "4.20 with ranges" baseline in the comment
+        // below is stale; nothing was guarding what it claimed to guard.
+        //
+        // The driver is OBSTACLE DENSITY, which is what makes it stochastic: the excursion
+        // tracks prop count inversely and prop count swings hugely by seed (seed 7 carries
+        // 5,723 obstacles and the best wander in the sample; seed 99 carries 11,600 and one of
+        // the worst). So any change that moves where props land — a biome-mix reshuffle, a new
+        // landform, an arc retune — walks a single-seed bound straight through.
+        //
+        // Narrowing the fan 300° → 280° cost about 6% of the mean (3.29 → 3.08) for the same
+        // reason — one of the three failures that took that retune back out (see
+        // `radial_arc_degrees` in balance).
+        //
+        // What the test exists to catch is per-tick destination churn, which measured **1.93**
+        // — and under churn EVERY seed reads ~1.9, so the MEAN is the robust discriminator
+        // (3.08 against 1.9 is a 62% margin, where the old single-seed bound had 35% on a good
+        // seed and was negative on a bad one). The per-seed floor below is only "nothing is
+        // completely stuck".
         let b = Balance::load_default().unwrap();
-        let mut arena = Arena::generate(&b, 424242, false);
+        let mut means: Vec<f64> = Vec::new();
+        for seed in [424242u64, 1, 7, 13, 99, 2024, 31337, 555] {
+        let mut arena = Arena::generate(&b, seed, false);
         // No avatars: nothing to chase, so every creature is on the wander path.
         arena.avatars.clear();
         let sample: Vec<usize> = (0..arena.monsters.len().min(200)).collect();
@@ -11138,25 +11174,15 @@ mod tests {
             }
         }
         let mean = reach.iter().sum::<f64>() / reach.len() as f64;
-        // A THIRD of its own leash, and the margin is the point rather than the number.
-        //
-        // This exists to catch per-tick destination churn, which measured **1.93**. Half the
-        // leash (4.5) left it only 2.6% under the no-terrain baseline of 4.62 — so it was not
-        // really guarding against the churn bug at all, it was pinning a stochastic mean that
-        // any legitimate world change walks through. RANGES are exactly the legitimate change
-        // its own comment anticipates ("terrain legitimately blocks some legs"): they move
-        // where creatures are placed and put walls between them and their wander destination,
-        // and the mean settles at 4.20.
-        //
-        // A third keeps a 55% margin over the bug while surviving terrain, which is the trade
-        // this test was written to make. Measured: 4.62 with no ranges, 4.20 with them, 1.93
-        // when the destination churned.
+        // Per-seed: nothing is completely stuck. Loose on purpose — the discriminating
+        // assertion is on the mean, below.
         assert!(
-            mean > arena.leash_radius / 3.0,
-            "a wandering creature should cover a real share of its leash \
+            mean > 2.1,
+            "seed {seed}: wandering creatures are barely moving \
              (mean furthest excursion {mean:.2} of leash {:.1})",
             arena.leash_radius
         );
+        means.push(mean);
         // ...and it must still be a LEASH, not a migration: the fix must not let
         // anything walk off into the next biome.
         for (k, &i) in sample.iter().enumerate() {
@@ -11187,6 +11213,14 @@ mod tests {
             churned < arena.leash_radius * 0.35,
             "with a per-tick re-roll the creature should barely leave its own tile \
              (mean furthest excursion {churned:.2})"
+        );
+        }
+        let across = means.iter().sum::<f64>() / means.len() as f64;
+        assert!(
+            across > 2.6,
+            "wandering creatures cover too little of their leash — mean {across:.2} over {} \
+             seeds ({means:?}); per-tick destination churn reads about 1.9",
+            means.len()
         );
     }
 
@@ -12948,44 +12982,80 @@ mod tests {
         // one asks only that the trail gets whatever its ring got.
         let b = Balance::load_default().unwrap();
         let wg = &b.worldgen;
-        let mut a = Arena::generate_with(&b, 424242, false, Some("forest"));
-        let mut reach = 0.0_f64;
-        while reach < 1300.0 {
-            reach += 40.0;
-            a.ensure_frontier(&b, reach);
-        }
-        let half = a.radial_half();
         const BAND: f64 = 50.0;
-        for d in [200.0_f64, 550.0, 900.0, 1200.0] {
-            let (lo, hi) = (d - 50.0, d + 50.0);
-            // ⚠️ NON-VACUITY, and it needs no toggle: the band this test measures sits
-            // INSIDE the swath the corridor-frame rule cleared. Whatever it finds here is
-            // terrain that could not have existed before, by construction.
-            let old_tube = (wg.path_clear_radius + wg.obstacle_max_radius) * (d * half / wg.lateral_half_extent);
-            assert!(
-                BAND < old_tube,
-                "d{d}: the guard has to measure inside the old dead zone \
-                 (band {BAND} vs the corridor-frame tube's {old_tube:.0} world units)"
-            );
-            let (mut band, mut ring) = (0usize, 0usize);
-            for o in &a.obstacles {
-                let r = o.position.x.hypot(o.position.y);
-                if r < lo || r >= hi {
-                    continue;
-                }
-                ring += 1;
-                let route = a.route_point_at(r);
-                let bearing = o.position.y.atan2(o.position.x) - route.y.atan2(route.x);
-                if (bearing.abs() * r) < BAND {
-                    band += 1;
-                }
+        // ⚠️ **SEVERAL SEEDS, AND THE ASSERTION IS ON THE DISTRIBUTION.** This measured ONE
+        // seed, and at depth the band it counts holds 11-35 props — a sample far too small
+        // to tell "the trail lost its terrain" from Poisson noise. Retuning
+        // `radial_arc_degrees` proved it: the arc feeds `arc_stretch`, which feeds how many
+        // props each section draws, which shifts the whole RNG stream, so every seeded world
+        // is re-rolled and the band count at any one radius lands wherever it lands. Measured
+        // over ten seeds at d1200 the ratio runs 0.40, 0.63, 0.63, 0.74, 0.75, 0.80, 0.86,
+        // 0.93, 1.01, 1.31 — mean 0.81, and seed 424242 alone reads 0.40 on eleven props.
+        // A per-seed bound on that is the same mistake `a_distance_is_a_ring_so_the_naive_
+        // landing_misses_the_route` already made and already fixed: it is the assertion that
+        // is wrong, not the world.
+        //
+        // So the MEAN carries the property (the trail keeps its ring's terrain) and a loose
+        // per-seed floor still catches a real collapse — a bare trail reads 0.0 everywhere,
+        // not 0.4 on one ring of one seed.
+        // Depths INSIDE the seed loop: streaming a world out to d1300 is the expensive part,
+        // so generate each once and measure every depth on it.
+        const DEPTHS: [f64; 4] = [200.0, 550.0, 900.0, 1200.0];
+        let mut ratios: [Vec<f64>; 4] = Default::default();
+        for seed in [424242u64, 1, 7, 13, 99] {
+            let mut a = Arena::generate_with(&b, seed, false, Some("forest"));
+            let mut reach = 0.0_f64;
+            while reach < 1300.0 {
+                reach += 40.0;
+                a.ensure_frontier(&b, reach);
             }
-            let band_density = band as f64 / (2.0 * BAND * (hi - lo)) * 1000.0;
-            let ring_density = ring as f64 / ((hi * hi - lo * lo) * half) * 1000.0;
+            let half = a.radial_half();
+            for (k, d) in DEPTHS.iter().copied().enumerate() {
+                let (lo, hi) = (d - 50.0, d + 50.0);
+                // ⚠️ NON-VACUITY, and it needs no toggle: the band this test measures sits
+                // INSIDE the swath the corridor-frame rule cleared. Whatever it finds here is
+                // terrain that could not have existed before, by construction.
+                let old_tube = (wg.path_clear_radius + wg.obstacle_max_radius)
+                    * (d * half / wg.lateral_half_extent);
+                assert!(
+                    BAND < old_tube,
+                    "d{d}: the guard has to measure inside the old dead zone \
+                     (band {BAND} vs the corridor-frame tube's {old_tube:.0} world units)"
+                );
+                let (mut band, mut ring) = (0usize, 0usize);
+                for o in &a.obstacles {
+                    let r = o.position.x.hypot(o.position.y);
+                    if r < lo || r >= hi {
+                        continue;
+                    }
+                    ring += 1;
+                    let route = a.route_point_at(r);
+                    let bearing = o.position.y.atan2(o.position.x) - route.y.atan2(route.x);
+                    if (bearing.abs() * r) < BAND {
+                        band += 1;
+                    }
+                }
+                let band_density = band as f64 / (2.0 * BAND * (hi - lo)) * 1000.0;
+                let ring_density = ring as f64 / ((hi * hi - lo * lo) * half) * 1000.0;
+                assert!(band > 0, "d{d} seed {seed}: the trail band is EMPTY");
+                let ratio = band_density / ring_density.max(1e-9);
+                assert!(
+                    ratio > 0.3,
+                    "d{d} seed {seed}: the trail has all but lost its ring's terrain \
+                     (band {band_density:.2} vs ring {ring_density:.2} per 1000 u², \
+                     {band} props, ratio {ratio:.2})"
+                );
+                ratios[k].push(ratio);
+            }
+        }
+        for (k, d) in DEPTHS.iter().copied().enumerate() {
+            let r = &ratios[k];
+            let mean = r.iter().sum::<f64>() / r.len() as f64;
             assert!(
-                band_density > ring_density * 0.5,
-                "d{d}: the trail keeps its ring's terrain \
-                 (band {band_density:.2} vs ring {ring_density:.2} per 1000 u², {band} props)"
+                mean > 0.6,
+                "d{d}: the trail does not keep its ring's terrain — mean band/ring ratio \
+                 {mean:.2} over {} seeds ({r:?})",
+                r.len()
             );
         }
     }

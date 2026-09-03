@@ -1801,6 +1801,140 @@ across it regardless. The whole server-side suite was green, because a bridge is
 correctly and the client half was never asserted.
 `every_streamed_landform_is_consumed` reads the handler and holds the list.
 
+⚠️ **LAST CITY'S COAST IS A THIRD COPY OF THE SHORELINE, AND IT DRIFTED ON ONE TERM.**
+The city is the one scene `is_ocean` cannot answer for — the world's shoreline, expressed in
+city coordinates, runs through the plaza — so it has its own field, `coast::city_sea_depth`,
+handed down `sea_anim.yzw` and re-derived in both ground shaders. The Rust field is three
+terms (`min(max(flank, tip), mainland)`); the shaders carried **two**, dropping the MAINLAND
+back that makes a spit join a coast somewhere. That term was added to the Rust to answer *"a
+weird stretch of land behind it… it goes off forever as a small straight grass line"* and the
+drawing side never got it — so for **31 merges** the placement half said "mainland" behind the
+city while the shader painted open sea `SEA_DEPTH` below it, and the town rendered as a
+straight-edged tongue of grass afloat with no coast at either end. Reported as **the city
+floating**, and as *"the water always looks like a tiny shore in front of it"*: flanking a
+ribbon, the sea can only ever be two slivers converging at the horizon.
+`the_two_ground_shaders_share_one_height_field` could not catch it — it compares the two
+shaders to EACH OTHER and both were equally wrong, the same blind spot that let the whole
+inland-water feature ship invisible. `the_shaders_city_spit_is_the_coasts_city_spit`
+reconstructs the shader's own arithmetic from the uniform and holds it against the field, and
+`world_render::city_sea_uniform` is the one place the constants are packed, so a term added to
+`city_sea_depth` cannot reach placement and miss drawing again. **A shoreline mirrored into
+WGSL needs a test against the FIELD, not against the other copy of itself.**
+
+**AND LEAVING TOWN IS CROSSING A BRIDGE, WHICH IS WHAT THE SHORELINE ALWAYS SAID IT WAS.**
+`coast`'s own header has claimed for a long time that *"the neck is the only way in or out of
+the city on foot: the Threshold stops being a UI affordance and becomes a geographic fact"* —
+true of the world's spit, and invisible in the city, whose field ran a full-width mainland
+straight up to the plaza. It is three shapes now: the **shelf** the town stands on, the
+**causeway** that leaves it at `CAUSEWAY_HALF_WIDTH` (= `NECK_HALF_WIDTH`, because it IS that
+neck), and the **mainland** on the far side of the bay. The causeway is the ribbon this
+function's first draft shipped by accident, at the neck's width instead of the shore's: a
+narrow strip running back for every z is a bug at 104 units wide and a bridge at 24. Both its
+ends are deliberately UNBOUNDED past their seams — bounding them there put a knife-edge of
+shoreline across the one place a crossing has to JOIN, and a bridge you cannot walk is a wall.
+And the shore came in from 52 to **30**: the town's whole authored footprint fits inside
+`|x| <= 21` while the default camera sees `|x| <= 21` at the plaza, so the ocean the city is
+famous for standing in was thirty units past the edge of the picture and only a survey camera
+could find it. *"Why does the water always look like a tiny shore in front of it."*
+
+⚠️ **SO THE CITY IS ON A HEIGHT FIELD NOW, AND EVERY PLACEMENT IN IT MUST ASK.** A constant
+`y` was survivable only while nothing authored came within a `BEACH_BLEND` of the water.
+`city.rs::ground_at` → `world_render::city_ground_height` is the one answer, and
+`terrain_height` delegates to it so the ground the shader draws, the ground the scene stands
+on and the ground the avatar walks cannot be three answers. **The walk bound is the LAND**,
+not a circle: walkable ground is a broad disc with a long narrow arm, and a circle either pens
+you onto the shelf (the crossing becomes a backdrop) or reaches the arm and also lets you walk
+out over open water beside it. `every_district_prop_and_townsperson_is_on_dry_land` is what
+makes moving the shore safe — a district's whole radius and a stroller's whole range, because
+the shore is a `coast` constant and the town's contents are three tables with no build-time
+relationship to it.
+
+⚠️ **THE WESTERN GAP IS OCEAN AND ONE BRIDGE, BECAUSE THE PENINSULA NEVER READ AS ONE.**
+Last City stood on a spit running 260 units west of the hub, and the whole apparatus —
+`NECK_HALF_WIDTH`, `CITY_HALF_WIDTH`, `PENINSULA_LENGTH`, `TIP_TAPER`, `CHANNEL_LAND_SHARE`,
+`peninsula_half_width` — existed to make that shape. Its binding term was
+`d · tan(gap_half) · share`, **linear in radius, which in polar coordinates draws two
+perfectly STRAIGHT rays**: *"the castle is on a triangle… no peninsula looks like that… if
+it's going to look that pointed it might as well just be a bridge."* And past the gate it
+carried on regardless as *"a small stretch of land that moves off into the ocean endlessly"*,
+because the spit outlived the only thing standing on it. It is `coast::APPROACH_HALF_WIDTH`
+now: ocean west of the fan, isles from the existing `isle_chance`, and ONE span from the
+hub's own shore to the city's gate. **A capsule's edges are parallel and its ends are round
+by construction** — the shape a width-linear-in-radius field could not draw however much
+wobble you bolt on (I tried; it is deleted). CANON survives intact and reads better: the
+crossing is still the only way in or out on foot, so the Threshold is still a geographic fact
+and a siege still has exactly one axis of approach.
+
+It cost almost nothing because a **`Bridge` was already the right primitive**: forced land in
+`Shore::sea`, a raised deck with parapets in `terrain::bridge_surface`, painted by both ground
+shaders, collided against by `apply_move`, land-checked by `astar_route`. One function
+(`coast::approach_bridge`) feeds all four consumers that must not disagree — the depth field
+(so the deck is LAND), the client's bridge table (so it RISES and things stand on it), the
+shaders' `coast_w.xy` endpoints (so it is DRAWN), and the overworld gatehouse (so the
+stonework is on the deck and not in the surf, which it was: the rampart ran a flat ±14 across
+ground 13.5 half-wide). **Both ends of the span deliberately OVERLAP** what they join —
+bounding a crossing at its own seam puts a knife-edge of shoreline across the one place it
+has to join, and a bridge you cannot walk onto is a wall. Same lesson the city's causeway
+learned, one scene over.
+
+⚠️ **AND THE SEA IN REACH WAS ENTIRELY BEACH — A CHANNEL GUARANTEE IS NOT A SEA GUARANTEE.**
+Every shoreline spends `terrain::BEACH_BLEND` of its land side as strand and the shader only
+opens water's colour over `smoothstep(0, 14, depth)`, so the strand in the western gap is a
+FIXED cost at every radius while the wet band grows with `r`. Measured at the return border —
+the furthest west a player can stand — **19.5 units of water against 48.3 of sand, deepest
+point 5.1**, i.e. `openness` 0.30, which paints as the pale bed tile showing through. *"Why
+does the water always look like a tiny shore in front of it."* The cause was the PENINSULA
+eating the gap: with it retired for a bridge the same spot reads 28.0 wet against 39.8 of sand
+at depth 7.4 (openness **0.54**), and **0.90 by d=60**.
+`the_sea_is_wide_enough_to_see` measured `channel > 8.0` and passed for the whole life of the
+bug: **a width test is not a wetness test**, the same way `NECK_REACH`'s note says a geometry
+test is not a reachability test. It walks the cross-section and counts WET units and DEPTH
+now, at radii inside the border. ⚠️ Its depth bound has only ~6% margin at the border (7.4
+against a required 7.0) — that is the tightest number in the western gap, so read it as the
+budget any future shoreline change has to fit inside.
+
+⚠️ **AND `radial_arc_degrees` IS NOT THE KNOB FOR THIS — I TRIED 300° → 280° AND BACKED IT
+OUT.** It does buy the last increment of openness at the border (0.54 → 0.90), and it broke
+**three** tests to do it: `a_wandering_creature_actually_goes_somewhere` (creature excursion
+tracks obstacle count inversely and the count moved **+20%** on seed 424242, in a world 6.7%
+smaller — so ~28% denser terrain, and the wander mean fell 3.29 → 3.08),
+`the_trail_holds_its_terrain_at_every_depth`, and
+`the_route_point_at_a_depth_is_on_the_route_and_at_that_depth` — where seed 1's streamed route
+lost its outer segments to ranges and `route_point_at(1269)` silently answered **d945**, 324
+units off the ring it was asked for. The arc feeds `arc_stretch` feeds prop counts feeds the
+RNG stream, so **it re-rolls every seeded world**; that is the real price, and the last
+increment of openness is not worth it. ⚠️ The `route_point_at` gap is a live fragility even at
+300° — seed 424242 answers d1252 for a requested d1269, inside a 60-unit tolerance — so
+anything that moves where RANGES land can put a deep start off its own route again.
+
+⚠️ **AND A SECOND SINGLE-SEED GUARD WAS PASSING BY LUCK.**
+`a_wandering_creature_actually_goes_somewhere` measured seed 424242 alone against
+`leash/3` = 3.0. Over eight seeds at the arc it was written under (300°) the means are 3.20,
+2.75, 4.55, 2.66, 2.67, 4.01, 3.03, 3.45 — **three of the eight were already under the
+threshold on main**, and the "4.20 with ranges" baseline in its own comment is stale. The
+driver is OBSTACLE DENSITY and the excursion tracks prop count inversely (seed 7 carries
+5,723 obstacles and the best wander in the sample; seed 99 carries 11,600 and one of the
+worst), so prop count swings hugely by seed and any change that moves where props land walks
+a single-seed bound straight through. Narrowing the fan costs ~6% of the mean (3.29 → 3.08)
+and that is a **real, measured cost of buying the western ocean**. It asserts the mean over
+eight seeds now: under per-tick churn EVERY seed reads ~1.9, so the mean discriminates at a
+62% margin where the single-seed bound had 35% on a good seed and was negative on a bad one.
+
+**Two guards in one change, both stochastic single-seed bounds sitting on their own edge.**
+That is a pattern, not a coincidence: this world re-rolls entirely when anything upstream of
+placement moves, so ANY per-seed assertion about counts, densities or distances is a coin
+toss waiting to be flipped by an unrelated retune. Prefer a distribution.
+
+⚠️ **AND THE HAZE STARTS BEYOND THE FURNISHED WORLD.** Obstacles and creatures arrive through
+the snapshot interest cull at `interest_radius_chunks × chunk_size` = **128 units**, ground
+detail reaches **32** (`DETAIL_K × DETAIL_CELL`), and `Look::fog_start` is **200** — so a
+72-unit band of bare, fully-lit ground sits between the last tree and the first wisp of haze,
+and pulling the camera back walks straight into it. Closing it properly wants a client-side
+**far-field scatter** (the hashed, recycled trick `tile_ground_detail` already uses, at a
+coarser cell and a bigger ring) rather than a bigger interest radius, which buys the same
+pixels with bandwidth on every tick. `the_fog_starts_inside_the_populated_world` is `#[ignore]`d
+against that work and holds the relationship so the two numbers cannot drift apart again.
+
 ⚠️ **AND TRUNCATION IS NOT A WINDOW.** The shader arrays are fixed while the world streams
 outward without bound, so the ranges and bridges uploaded each frame must be the ones NEAREST
 THE PLAYER. Both took the first N of a `BTreeMap` flattened in SECTION order — the shallowest

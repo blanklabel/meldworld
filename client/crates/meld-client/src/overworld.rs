@@ -2107,7 +2107,19 @@ pub(crate) fn build_world_walls(
         // did — and stays off the fan's creatures, which top out well outside it), and
         // full in a flat corridor. The gate sits due-west on the return line; the
         // skyline is set straight back so it's glimpsed through the open door.
-        let wall_half: f32 = if arc_deg > 0.0 { 14.0 } else { 44.0 };
+        // ⚠️ AND BOUNDED BY THE GROUND IT STANDS ON, WHICH IT WAS NOT. The rampart ran a
+        // flat ±14 while the crossing it straddles is `APPROACH_HALF_WIDTH` (9) — so its
+        // outermost segment and both end towers stood IN THE SEA. The gate is a gate on a
+        // bridge: there is room for a gatehouse across the deck and not for a curtain wall,
+        // and saying so is better than building one out over the water. `- 1.5` keeps the
+        // stonework inside the parapets rather than on them.
+        let deck_half = if arc_deg > 0.0 {
+            meld_proto::coast::APPROACH_HALF_WIDTH
+        } else {
+            f32::INFINITY
+        };
+        let wall_half: f32 =
+            if arc_deg > 0.0 { 14.0_f32.min(deck_half - 1.5).max(0.0) } else { 44.0 };
         let behind = if wx < 0.0 { -1.0_f32 } else { 1.0 };
         let wall_yaw = 90.0_f32; // segments run north–south along world z
         let gate_yaw = if wx < 0.0 { 90.0_f32 } else { 270.0 }; // gatehouse faces the player
@@ -2119,15 +2131,21 @@ pub(crate) fn build_world_walls(
             }
             z += SEG_W;
         }
-        // Gatehouse dead-centre (the doorway) + two flanking towers with pennants.
+        // Gatehouse dead-centre (the doorway) + two flanking towers with pennants. The
+        // gatehouse always goes up — it IS the Threshold — but everything beside it is
+        // conditional on there being dry ground under it.
         prop(&mut commands, "pirate/castle-gate", wx, 0.0, gate_yaw, WALL_SCALE);
         for tz in [-(GATE_HALF + 1.0), GATE_HALF + 1.0] {
-            prop(&mut commands, "pirate/tower-complete-large", wx, tz, gate_yaw, 3.5);
-            prop(&mut commands, "pirate/flag-high", wx, tz, gate_yaw, 3.5);
+            if tz.abs() <= wall_half {
+                prop(&mut commands, "pirate/tower-complete-large", wx, tz, gate_yaw, 3.5);
+                prop(&mut commands, "pirate/flag-high", wx, tz, gate_yaw, 3.5);
+            }
         }
-        // A tower capping each end of the rampart.
-        for tz in [-wall_half + 2.0, wall_half - 2.0] {
-            prop(&mut commands, "pirate/tower-complete-small", wx, tz, gate_yaw, 3.0);
+        // A tower capping each end of the rampart — only where there IS a rampart.
+        if wall_half > GATE_HALF + 2.0 {
+            for tz in [-wall_half + 2.0, wall_half - 2.0] {
+                prop(&mut commands, "pirate/tower-complete-small", wx, tz, gate_yaw, 3.0);
+            }
         }
         // City skyline set straight back behind the gate — seen through the doorway.
         let city: &[(&str, f32, f32, f32, f32)] = &[
