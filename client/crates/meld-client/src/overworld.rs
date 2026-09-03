@@ -2337,7 +2337,14 @@ pub(crate) fn spawn_player_avatar(
                         intensity: 0.0,
                         range: 14.0,
                         radius: 0.4,
-                        shadow_maps_enabled: false,
+                        // ⚠️ A LAMP THAT CASTS NO SHADOW IS NOT A LAMP, IT IS A TINT. This
+                        // was `false`, so at night the light washed over every trunk and
+                        // nothing behind a tree was any darker for it — the one light the
+                        // player carries through a forest lit the forest as if it were
+                        // glass. It costs a cube shadow map, which is why it is enabled
+                        // HERE and not on the ReachHalo glow or the city's district lights:
+                        // this is the only point light in the world the player moves with.
+                        shadow_maps_enabled: true,
                         ..default()
                     },
                     Transform::from_xyz(0.0, 2.2, 0.0),
