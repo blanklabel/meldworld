@@ -138,28 +138,43 @@ fn a_strait_leaves_dry_ground_on_both_of_its_shores() {
     }
 }
 
-/// **A DECK HAS TO CARRY THE TRAIL, NOT JUST CROSS THE SEA NEAR IT.**
-///
-/// `bridge_span` collapses a run of drowned trail into ONE straight capsule from its first
-/// vertex to its last, so where the trail crosses at an angle — or bows around a range, a
-/// peak, a lake — the deck cuts the chord and misses the middle of its own run. Measured on
-/// seed 424242: section 23 found **89** drowned vertices, laid **one** span, and left **26**
-/// of them in open water at r=2283.
-///
-/// Nothing else could have caught it. A* had already drawn that trail and was never asked
-/// again, and `backbone_feasible` samples the route before the deeper section that cuts the
-/// strait even exists — so the bridging pass is the only place that knows both facts at once.
-///
-/// Asserted with the ROUTE'S OWN CLEARANCE rather than a point test, because that is what
-/// `astar_route` guarantees and what a deck therefore has to preserve: a trail that clears
-/// water by a hair is one the party wades.
+/// **The guaranteed route never swims.** The whole point of putting the strait in `coast` —
+/// and of cutting it BEFORE the path is routed — is that `astar_route` land-checks every bent
+/// edge and bends to an isthmus by itself. If this fails, the world has a barrier with no
+/// pass and the deep portal is unreachable on foot.
 #[test]
-fn a_bridged_crossing_carries_the_trail_at_a_partys_width() {
+fn the_clear_path_crosses_at_an_isthmus_and_never_swims() {
     let b = Balance::load_default().unwrap();
-    // The clearance `astar_route` keeps from water (`path_clear_radius + player_radius`).
-    let pad = (b.worldgen.path_clear_radius + b.worldgen.player_radius) as f32;
     for seed in [1u64, 7, 42, 99, 424242, 987654] {
         let a = deep_world(seed);
+        assert!(!a.straits.is_empty(), "seed {seed}: no straits to cross");
+        for (i, w) in a.path.iter().enumerate() {
+            assert!(
+                a.on_land(w.x, w.y),
+                "seed {seed}: clear-path waypoint {i} at ({:.1}, {:.1}) is in the water — the \
+                 route out of the world is not feasible",
+                w.x,
+                w.y
+            );
+        }
+        // ⚠️ **AND A DECK HAS TO CARRY THE TRAIL, NOT MERELY CROSS THE SEA NEAR IT.**
+        //
+        // `bridge_span` collapses a run of drowned trail into ONE straight capsule from its
+        // first vertex to its last, so where the trail crosses at an angle — or bows around a
+        // range, a peak, a lake — the deck cuts the chord and misses the middle of its own
+        // run. Seed 424242: one section found 89 drowned vertices, laid ONE span, and left 26
+        // of them in open water at r=2283.
+        //
+        // Nothing downstream could catch it: A* had already drawn that trail and was never
+        // asked again, and `backbone_feasible` samples the route before the deeper section
+        // that cuts the strait exists. So the bridging pass has to check its own work.
+        //
+        // Asserted with the ROUTE'S OWN CLEARANCE rather than the point test above, because
+        // that is what `astar_route` guarantees and therefore what a deck has to preserve — a
+        // trail that clears water by a hair is one the party wades. Folded in here rather than
+        // standing alone: it needs exactly these worlds, and generating six more to d3000 is
+        // minutes of a gate that already runs close to its CI timeout.
+        let pad = (b.worldgen.path_clear_radius + b.worldgen.player_radius) as f32;
         let shore = a.shore();
         let mut worst = (f32::MIN, 0.0f64, 0.0f64);
         for w in a.path.iter() {
@@ -176,27 +191,6 @@ fn a_bridged_crossing_carries_the_trail_at_a_partys_width() {
             worst.1,
             worst.2
         );
-    }
-}
-
-/// **The guaranteed route never swims.** The whole point of putting the strait in `coast` —
-/// and of cutting it BEFORE the path is routed — is that `astar_route` land-checks every bent
-/// edge and bends to an isthmus by itself. If this fails, the world has a barrier with no
-/// pass and the deep portal is unreachable on foot.
-#[test]
-fn the_clear_path_crosses_at_an_isthmus_and_never_swims() {
-    for seed in [1u64, 7, 42, 99, 424242, 987654] {
-        let a = deep_world(seed);
-        assert!(!a.straits.is_empty(), "seed {seed}: no straits to cross");
-        for (i, w) in a.path.iter().enumerate() {
-            assert!(
-                a.on_land(w.x, w.y),
-                "seed {seed}: clear-path waypoint {i} at ({:.1}, {:.1}) is in the water — the \
-                 route out of the world is not feasible",
-                w.x,
-                w.y
-            );
-        }
         // The segments between them too: a chord between two dry waypoints can cut a strait.
         for pair in a.path.windows(2) {
             let (p, q) = (pair[0], pair[1]);

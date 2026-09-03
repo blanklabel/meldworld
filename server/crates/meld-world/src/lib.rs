@@ -9843,6 +9843,19 @@ mod tests {
                 }
                 let before = a.biome_at(probe);
                 let out = a.apply_shift(&b, &roll, first, last);
+                // A repaint is stored as an INDEX into `regions::BIOMES`, and a name that is
+                // not in that list resolves to index 0 — so a Shift whose biome came from some
+                // other list would silently repaint the ground `field` while spawning its own
+                // creatures. Both sides read one list today; this keeps it that way, and it
+                // rides this test's worlds rather than generating more (the gate runs close to
+                // its CI timeout).
+                assert!(
+                    meld_proto::regions::biome_index(&out.biome).is_some(),
+                    "gen {g}: a Shift landed `{}`, which is not in `regions::BIOMES` — its \
+                     repaint would paint {} instead",
+                    out.biome,
+                    meld_proto::regions::BIOMES[0]
+                );
                 let after = a.biome_at(probe);
                 // The Shift never lands the biome a region already is, so the ground the
                 // player is standing on MUST read differently afterwards.
@@ -9864,29 +9877,6 @@ mod tests {
                 landed += 1;
             }
             assert!(landed >= 5, "only {landed} Shifts actually changed the ground");
-        }
-
-        /// A repaint is stored as an INDEX into `regions::BIOMES`, and a name that is not in
-        /// that list resolves to index 0 — so a Shift whose biome came from some other list
-        /// would silently repaint the ground `field` while spawning its own creatures. Both
-        /// sides read one list today; this is what keeps it that way.
-        #[test]
-        fn every_biome_a_shift_can_land_has_an_index_to_repaint_with() {
-            let (b, a) = world();
-            let mut seen = 0;
-            for g in 0..80u64 {
-                let roll = shift::roll(&b, a.seed, g);
-                let Some((first, _)) = a.shift_region(&b, &roll) else { continue };
-                let to = a.incoming_biome_for(&b, &roll, first);
-                assert!(
-                    meld_proto::regions::biome_index(to).is_some(),
-                    "gen {g}: a Shift can land `{to}`, which is not in `regions::BIOMES` — \
-                     its repaint would paint {} instead",
-                    meld_proto::regions::BIOMES[0]
-                );
-                seen += 1;
-            }
-            assert!(seen >= 10, "only {seen} rolls exercised");
         }
 
         /// A region is a PATCH of cells, not an annulus. Repainting every bearing at a depth
