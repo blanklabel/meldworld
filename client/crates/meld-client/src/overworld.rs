@@ -1142,11 +1142,35 @@ pub(crate) fn seg_point_dist(p: Vec2, a: Vec2, b: Vec2) -> f32 {
 /// extent — the avatar is an upright billboard and the camera is tilted, so a flat
 /// ground-plane hit lands well *behind* the sprite you actually clicked.
 #[allow(clippy::too_many_arguments)]
+/// **THE CAMERA THE PLAYER IS ACTUALLY LOOKING THROUGH.**
+///
+/// ⚠️ THERE IS MORE THAN ONE CAMERA, AND THE OTHER ONE IS 512x288. The minimap renders the
+/// corner map to a texture through its own `Camera2d` ([`crate::minimap`]), so a bare
+/// `Query<(&Camera, &GlobalTransform)>` matches it too and `iter().next()` picks whichever
+/// archetype order hands over first. Project a world point through THAT and every creature
+/// in the world lands on the same pixel — measured, 42 creatures between 14 and 126 units
+/// away all projecting to (256, 144), the exact centre of the minimap's viewport and the
+/// top-left corner of the player's screen.
+///
+/// That is the whole of the recurring nameplate clump: *"a stack of quarry and creatures in
+/// the top left"*, *"those creatures stayed in the top left of my screen the whole time"*.
+/// It survived three fixes aimed at distance, at behind-the-camera projection and at
+/// terrain occlusion — every one of which was reasonable, and every one of which was being
+/// evaluated against the wrong camera, so all of them passed and none of them helped. A
+/// guard is only as good as the frame you ask it in, which is the same lesson the corridor
+/// frame keeps teaching the world generator.
+///
+/// So the filter is a NAMED TYPE rather than something each system remembers: it was the
+/// only camera query in this file missing `With<Camera3d>`, which is exactly the kind of
+/// omission a shared alias makes impossible instead of merely unlikely.
+pub(crate) type WorldCamera<'w, 's> =
+    Query<'w, 's, (&'static Camera, &'static GlobalTransform), With<Camera3d>>;
+
 pub(crate) fn overworld_click_menu(
     mouse: Res<ButtonInput<MouseButton>>,
     touches: Res<Touches>,
     windows: Query<&Window>,
-    cam_q: Query<(&Camera, &GlobalTransform), With<Camera3d>>,
+    cam_q: WorldCamera,
     world: Res<Overworld>,
     session: Res<Session>,
     look: Res<hd2d::Look>,
@@ -1238,7 +1262,7 @@ pub(crate) fn psyker_hold_click(
     mouse: Res<ButtonInput<MouseButton>>,
     touches: Res<Touches>,
     windows: Query<&Window>,
-    cam_q: Query<(&Camera, &GlobalTransform), With<Camera3d>>,
+    cam_q: WorldCamera,
     world: Res<Overworld>,
     session: Res<Session>,
     perks: Res<PerksRes>,
@@ -1346,7 +1370,7 @@ pub(crate) fn gather_steer(
     session: Res<Session>,
     world: Res<Overworld>,
     windows: Query<&Window>,
-    cam_q: Query<(&Camera, &GlobalTransform), With<Camera3d>>,
+    cam_q: WorldCamera,
     ui_hit: Query<&Interaction, With<Button>>,
     mut steer: ResMut<Steer>,
     mut tap: ResMut<TapTarget>,
@@ -1501,6 +1525,8 @@ pub(crate) fn sync_overworld_sprites(
     time: Res<Time>,
     wa: Option<Res<WorldAssets>>,
     mut mats: ResMut<Assets<StandardMaterial>>,
+    // One material per sprite rather than one per prop — see `SpriteMats`.
+    mut sprite_mats: ResMut<SpriteMats>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut interp: ResMut<OwInterp>,
     dungeon: Res<world_render::DungeonSceneRes>,
@@ -1670,7 +1696,7 @@ pub(crate) fn sync_overworld_sprites(
                     } else {
                         Color::srgb(1.25, 1.12, 1.06) // looming, faintly warm
                     };
-                    spawn_boss_char(&mut commands, &mut mats, &wa, &look, id, e, frames, scale, tint);
+                    spawn_boss_char(&mut commands, &mut mats, &wa, id, e, frames, scale, tint);
                     continue;
                 }
                 // An ordinary creature with an installed sprite set renders the way a
@@ -1690,7 +1716,7 @@ pub(crate) fn sync_overworld_sprites(
                     } else {
                         Color::srgb(1.2, 1.15, 1.1)
                     };
-                    spawn_boss_char(&mut commands, &mut mats, &wa, &look, id, e, &frames, scale, tint);
+                    spawn_boss_char(&mut commands, &mut mats, &wa, id, e, &frames, scale, tint);
                     continue;
                 }
                 // Pick the creature's billboard by normalized kind (shared with the
@@ -1724,7 +1750,7 @@ pub(crate) fn sync_overworld_sprites(
                     Some("elite") => (1.6 * 1.4, Color::srgb(1.5, 0.8, 0.55)),
                     _ => (1.6, tint),
                 };
-                spawn_billboard_entity(&mut commands, &mut mats, &wa, id, e, tex, size, tint, 0.55, None);
+                spawn_billboard_entity(&mut commands, &mut mats, &wa, id, e, tex, size, tint, 0.55, None, None);
             }
             EntityKind::Portal => {
                 // The stone-gateway billboard, plus a faint emissive ground ring so
@@ -1739,6 +1765,7 @@ pub(crate) fn sync_overworld_sprites(
                     3.0,
                     Color::srgb(1.2, 1.2, 1.3),
                     0.0,
+                    None,
                     None,
                 );
                 add_ground_ring(&mut commands, &wa, root);
@@ -1806,7 +1833,8 @@ pub(crate) fn sync_overworld_sprites(
             EntityKind::Obstacle => {
                 let theme = if dungeon.active { dungeon.theme.as_str() } else { "" };
                 spawn_obstacle(
-                    &mut commands, &mut mats, &mut meshes, &wa, id, e, theme, &water_bodies,
+                    &mut commands, &mut mats, &mut sprite_mats, &mut meshes, &wa, id, e, theme,
+                    &water_bodies,
                 );
             }
             // Chests are static and change look when opened — a dedicated
@@ -1826,6 +1854,7 @@ pub(crate) fn sync_overworld_sprites(
                     1.8,
                     Color::srgb(1.5, 1.0, 0.55),
                     0.25,
+                    None,
                     None,
                 );
                 add_ground_ring(&mut commands, &wa, root);
@@ -1910,6 +1939,7 @@ pub(crate) fn sync_overworld_sprites(
                     Color::srgb(0.75, 1.15, 1.5),
                     0.3,
                     None,
+                    None,
                 );
                 add_ground_ring(&mut commands, &wa, root);
             }
@@ -1949,6 +1979,7 @@ pub(crate) fn sync_overworld_sprites(
                     },
                     0.2,
                     None,
+                    None,
                 );
             }
             EntityKind::Entrance => {
@@ -1965,6 +1996,7 @@ pub(crate) fn sync_overworld_sprites(
                     3.2,
                     Color::srgb(0.85, 0.45, 1.25),
                     0.45,
+                    None,
                     None,
                 );
             }
@@ -2334,7 +2366,6 @@ pub(crate) fn spawn_boss_char(
     commands: &mut Commands,
     mats: &mut Assets<StandardMaterial>,
     wa: &WorldAssets,
-    look: &hd2d::Look,
     id: &str,
     e: &OwEntity,
     frames: &hd2d::CharacterFrames,
@@ -2354,7 +2385,10 @@ pub(crate) fn spawn_boss_char(
             p.spawn((
                 Mesh3d(wa.sprite_quad.clone()),
                 MeshMaterial3d(mat),
-                Transform::from_xyz(0.0, look.sprite_y * scale, 0.0).with_scale(Vec3::splat(scale)),
+                // Grounded through the one helper: `sprite_y` scales WITH the quad, not by
+                // it. See `hd2d::grounded_sprite_y` — the flying-boar bug lived on this line.
+                Transform::from_xyz(0.0, hd2d::grounded_sprite_y(scale), 0.0)
+                    .with_scale(Vec3::splat(scale)),
                 hd2d::Billboard,
             ));
             p.spawn((
@@ -2676,7 +2710,7 @@ pub(crate) fn update_mob_nameplates(
     world: Res<Overworld>,
     session: Res<Session>,
     look: Res<hd2d::Look>,
-    cam_q: Query<(&Camera, &GlobalTransform)>,
+    cam_q: WorldCamera,
     root_q: Query<Entity, With<NameplateRoot>>,
     mob_q: Query<(&WorldEntity, &GlobalTransform)>,
     old: Query<Entity, With<Nameplate>>,
@@ -2901,7 +2935,17 @@ pub(crate) fn update_mob_nameplates(
 /// off (look-dev) there is no horizon to speak of, so nothing is culled — that is a
 /// deliberate escape hatch for inspecting the world, not an oversight.
 pub(crate) fn plate_is_close_enough_to_see(away: f32, fog_on: bool, fog_end: f32) -> bool {
-    !fog_on || away <= fog_end
+    // ⚠️ **THE FOG IS THE WRONG DISTANCE, AND GATING ON IT LET THE BUG BACK.** A plate may
+    // only name a creature that is actually ON SCREEN, and a creature's sprite is despawned
+    // at `RENDER_UNLOAD_FAR` (240) — well inside `fog_end` (500). So every mob in that
+    // 260-unit band had its body culled and its label kept: bars hanging in empty sky, barely
+    // moving because they are distant, piling into a screen corner. Exactly the clump this
+    // function was written to fix, reported a second time.
+    //
+    // The rule is "as close as the creature is DRAWN", which is the nearer of the two — and
+    // the render cull binds whether the fog is on or not, so look-dev's fog toggle cannot opt
+    // out of it either.
+    away <= RENDER_UNLOAD_FAR && (!fog_on || away <= fog_end)
 }
 
 /// Is there anything over a creature's head to draw right now?
@@ -3056,6 +3100,155 @@ pub(crate) fn creature_sprite(wa: &WorldAssets, name: &str) -> Handle<Image> {
 /// lands on the QUAD rather than the root because a billboard owns its own world rotation
 /// (see [`animate_sway`]); the root stays translation-only, which is the invariant
 /// `hd2d::billboard` depends on.
+/// **ONE MATERIAL PER SPRITE, NOT ONE PER ENTITY.**
+///
+/// ⚠️ EVERY BILLBOARD IN THE WORLD ALLOCATED ITS OWN `StandardMaterial`. The quad MESH was
+/// shared, so it looked batched — but two trees with byte-identical materials are two
+/// different assets to Bevy, and a distinct material is a distinct draw call. Measured near
+/// the hub: **2,139 obstacles, so 2,139 materials and 2,139 draw calls** for what is a couple
+/// of dozen distinct sprites. That is the real ceiling on draw distance — the wire cost is
+/// fixable by streaming, but 10,277 draw calls at a 400-unit radius is not.
+///
+/// Keyed on the texture AND the tint, because the tint is the material's other input; every
+/// obstacle passes `Color::WHITE`, so in practice obstacles collapse onto one material per
+/// sprite.
+///
+/// ⚠️ **ONLY FOR SPRITES NOTHING MUTATES PER INSTANCE.** A shared material is shared
+/// state: `pulse_collectibles`, `illuminate_players` and `update_reach_halo` all reach into
+/// a material and write it, and the moment two entities share one, lighting up the thing in
+/// reach lights up every other one of its kind. Obstacles are the verified-safe set (nothing
+/// writes an obstacle's own material — the reach glow is a separate halo entity with its own
+/// material), which is why the cache is threaded to the obstacle path and nowhere else.
+/// **HOW HIGH A SPRITE SITS IS A PROPERTY OF ITS ART, NOT OF ITS CATEGORY.**
+///
+/// A billboard maps the WHOLE png onto its quad, so grounding the picture's feet means
+/// knowing how much empty canvas sits below the art — and that varies per FILE. Measured
+/// across the shipped set: characters 25.5%, creatures 26.6%, npcs 25.5%, bosses 25.4% —
+/// one tight family — but **props range from 0% to 26.8% with a median of 18.6%**, and
+/// landscape from 1.6% to 22.1%. So there is no per-category constant that grounds props,
+/// and the two attempts that assumed one each broke half the world: putting the quad's
+/// bottom edge on the floor floated every padded tree, and applying the CHARACTER padding
+/// to props buried the unpadded ones to their waists (*"trees are halfway underground"*).
+///
+/// So measure the picture. The alpha bounding box is computed once per texture, on demand,
+/// and cached by [`AssetId`] — every billboard of that sprite then grounds off its own art
+/// for free, and a new asset needs no constant, no category and no tuning.
+#[derive(Resource, Default)]
+pub(crate) struct SpritePads(std::collections::HashMap<bevy::asset::AssetId<Image>, f32>);
+
+impl SpritePads {
+    /// The fraction of `tex`'s canvas that is empty below the art, or `None` while the
+    /// image has not finished loading (or is in a format we cannot read).
+    fn pad_of(&mut self, imgs: &Assets<Image>, tex: &Handle<Image>) -> Option<f32> {
+        let id = tex.id();
+        if let Some(p) = self.0.get(&id) {
+            return Some(*p);
+        }
+        let img = imgs.get(id)?;
+        let pad = measure_bottom_pad(img)?;
+        self.0.insert(id, pad);
+        Some(pad)
+    }
+}
+
+/// The fraction of an image's height that is fully transparent below the artwork.
+///
+/// `None` for a format whose alpha we cannot read byte-wise — better to fall back to the
+/// family default than to ground everything off a misread buffer.
+fn measure_bottom_pad(img: &Image) -> Option<f32> {
+    use bevy::render::render_resource::TextureFormat;
+    if !matches!(
+        img.texture_descriptor.format,
+        TextureFormat::Rgba8Unorm | TextureFormat::Rgba8UnormSrgb
+    ) {
+        return None;
+    }
+    let data = img.data.as_ref()?;
+    let w = img.texture_descriptor.size.width as usize;
+    let h = img.texture_descriptor.size.height as usize;
+    if w == 0 || h == 0 || data.len() < w * h * 4 {
+        return None;
+    }
+    // Walk up from the bottom row until a row holds an opaque-ish pixel. Anything at or
+    // below `ALPHA_FLOOR` is the sprite's own soft edge rather than art standing on the
+    // ground, and counting it would ground the sprite on its antialiasing.
+    const ALPHA_FLOOR: u8 = 8;
+    for row in (0..h).rev() {
+        let base = row * w * 4;
+        let (rows, _) = data[base..base + w * 4].as_chunks::<4>();
+        if rows.iter().any(|px| px[3] > ALPHA_FLOOR) {
+            return Some((h - 1 - row) as f32 / h as f32);
+        }
+    }
+    None
+}
+
+/// A billboard still grounded on a FALLBACK, waiting for its texture to load so it can be
+/// grounded on the art instead. Removed once it has been.
+#[derive(Component)]
+pub(crate) struct GroundOnArt {
+    /// The quad's world height, which the centre is a fraction of.
+    pub height: f32,
+    pub tex: Handle<Image>,
+}
+
+/// Re-ground billboards whose texture has finished loading — see [`SpritePads`]. A sprite is
+/// spawned on its family's default and corrected here, usually within a frame or two, so
+/// nothing waits on the asset server to appear.
+pub(crate) fn ground_billboards_on_their_art(
+    mut commands: Commands,
+    imgs: Res<Assets<Image>>,
+    mut pads: ResMut<SpritePads>,
+    mut q: Query<(Entity, &GroundOnArt, &mut Transform, Option<&mut crate::world_render::Sway>)>,
+) {
+    for (entity, g, mut t, sway) in &mut q {
+        let Some(pad) = pads.pad_of(&imgs, &g.tex) else {
+            continue;
+        };
+        t.translation.y = g.height * (0.5 - pad);
+        // The sway pivots about the sprite, so it follows the grounding rather than
+        // restating it — a pivot left behind rocks the tree about a point in the air.
+        if let Some(mut sway) = sway {
+            sway.pivot_y = t.translation.y;
+        }
+        commands.entity(entity).remove::<GroundOnArt>();
+    }
+}
+
+#[derive(Resource, Default)]
+pub(crate) struct SpriteMats(
+    std::collections::HashMap<(bevy::asset::AssetId<Image>, u32), Handle<StandardMaterial>>,
+);
+
+impl SpriteMats {
+    /// How many distinct sprite materials are shared right now.
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    /// The shared material for this `(sprite, tint)`, minted on first use.
+    pub(crate) fn get(
+        &mut self,
+        mats: &mut Assets<StandardMaterial>,
+        tint: Color,
+        tex: Handle<Image>,
+    ) -> Handle<StandardMaterial> {
+        // The tint as bits, so the key is exact rather than an epsilon compare.
+        let c = tint.to_srgba();
+        let key = (
+            tex.id(),
+            (((c.red * 255.0) as u32) << 16)
+                | (((c.green * 255.0) as u32) << 8)
+                | ((c.blue * 255.0) as u32),
+        );
+        self.0
+            .entry(key)
+            .or_insert_with(|| mats.add(hd2d::sprite_material(tint, tex)))
+            .clone()
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn spawn_billboard_entity(
     commands: &mut Commands,
@@ -3068,11 +3261,24 @@ pub(crate) fn spawn_billboard_entity(
     tint: Color,
     shadow: f32,
     sway: Option<f32>,
+    // `Some` to take a SHARED material for this sprite — see `SpriteMats` for which
+    // sprites may and which may not.
+    shared: Option<&mut SpriteMats>,
 ) -> Entity {
-    // The shared quad mesh is 2.2 world-units tall; scale to the wanted height and
-    // lift it so the sprite's feet sit on the ground plane.
-    let scale = height / 2.2;
-    let mat = mats.add(hd2d::sprite_material(tint, tex));
+    // The shared quad mesh is 2.2 world-units tall; scale to the wanted height and lift it
+    // so the ART'S FEET — not the quad's bottom edge — sit on the ground plane. See
+    // `hd2d::GROUNDED_CENTRE`: the difference between those two is a quarter of the
+    // sprite's height, and it is what had the whole world hovering over its own shadows.
+    let scale = height / hd2d::SPRITE_QUAD_HEIGHT;
+    // A starting guess only: `ground_billboards_on_their_art` replaces it with the padding
+    // measured from this very texture as soon as the image is available.
+    let centre_y = hd2d::grounded_centre(height);
+    let mat = match shared {
+        // The shared path: one material per sprite (see `SpriteMats`).
+        Some(cache) => cache.get(mats, tint, tex.clone()),
+        // Per-instance, for the sprites something writes a material on.
+        None => mats.add(hd2d::sprite_material(tint, tex.clone())),
+    };
     commands
         .spawn((
             WorldEntity(id.to_string()),
@@ -3083,14 +3289,17 @@ pub(crate) fn spawn_billboard_entity(
             let mut quad = p.spawn((
                 Mesh3d(wa.sprite_quad.clone()),
                 MeshMaterial3d(mat),
-                Transform::from_xyz(0.0, height * 0.5, 0.0).with_scale(Vec3::splat(scale)),
+                Transform::from_xyz(0.0, centre_y, 0.0).with_scale(Vec3::splat(scale)),
                 hd2d::Billboard,
+                GroundOnArt { height, tex: tex.clone() },
             ));
             if let Some(amp) = sway {
                 // Phase and speed off the id, so neighbouring trees never toss in lockstep.
                 let h = hash_pick(id, 10000);
                 quad.insert(Sway {
-                    pivot_y: height * 0.5,
+                    // The quad's own centre, whatever that is — the sway pivots about the
+                    // sprite, so it has to follow the grounding rather than restate it.
+                    pivot_y: centre_y,
                     phase: (h % 628) as f32 / 100.0,
                     amp,
                     speed: 0.7 + ((h / 628) % 60) as f32 / 100.0,
@@ -3174,6 +3383,9 @@ pub(crate) fn tree_pool(kind: &str) -> Option<&'static [&'static str]> {
 pub(crate) fn spawn_obstacle(
     commands: &mut Commands,
     mats: &mut Assets<StandardMaterial>,
+    // One material per sprite rather than one per tree — see `SpriteMats`. A forest is the
+    // case that needs it: a desert can afford a draw call per prop, a wood cannot.
+    sprite_mats: &mut SpriteMats,
     meshes: &mut Assets<Mesh>,
     wa: &WorldAssets,
     id: &str,
@@ -3271,6 +3483,7 @@ pub(crate) fn spawn_obstacle(
                 spawn_billboard_entity(
                     commands, mats, wa, id, e, tex, height, Color::WHITE, height * 0.28,
                     sway_amp(name),
+                    Some(sprite_mats),
                 );
                 return;
             }
@@ -3288,6 +3501,7 @@ pub(crate) fn spawn_obstacle(
                 spawn_billboard_entity(
                     commands, mats, wa, id, e, tex, height, Color::WHITE, 0.55,
                     sway_amp(name),
+                    Some(sprite_mats),
                 );
                 return;
             }
@@ -3297,6 +3511,7 @@ pub(crate) fn spawn_obstacle(
             spawn_billboard_entity(
                 commands, mats, wa, id, e, tex.clone(), height, Color::WHITE, 0.55,
                 sway_amp(name),
+                Some(sprite_mats),
             );
             return;
         }
@@ -3659,15 +3874,22 @@ mod tests {
     /// then hangs in empty sky and — being distant — barely moves, which is how a clump of
     /// them ended up parked in a screen corner for a whole session.
     #[test]
-    fn a_plate_stops_where_the_fog_does() {
-        // Inside the fog: named.
+    fn a_plate_stops_where_the_creature_does() {
+        // Close in: named.
         assert!(plate_is_close_enough_to_see(10.0, true, 320.0));
-        assert!(plate_is_close_enough_to_see(320.0, true, 320.0), "the boundary is inclusive");
-        // Past it: the creature is not visible, so neither is its label.
-        assert!(!plate_is_close_enough_to_see(320.1, true, 320.0));
-        assert!(!plate_is_close_enough_to_see(4_000.0, true, 320.0));
-        // Fog off is look-dev: show the whole world, deliberately.
-        assert!(plate_is_close_enough_to_see(4_000.0, false, 320.0));
+        // A near fog still wins where it is the tighter of the two.
+        assert!(plate_is_close_enough_to_see(200.0, true, 200.0), "the boundary is inclusive");
+        assert!(!plate_is_close_enough_to_see(200.1, true, 200.0));
+        // ⚠️ AND THE RENDER CULL BINDS TOO, which is what this test missed the first time:
+        // with `fog_end` out past `RENDER_UNLOAD_FAR`, gating on the fog alone kept a label
+        // for a creature whose sprite had been despawned — a bar hanging in empty sky.
+        assert!(
+            !plate_is_close_enough_to_see(RENDER_UNLOAD_FAR + 0.1, true, 4_000.0),
+            "a plate must not outlive the sprite it names, however far the fog reaches"
+        );
+        // …and look-dev's fog toggle cannot opt out of it: the body is still culled.
+        assert!(!plate_is_close_enough_to_see(4_000.0, false, 320.0));
+        assert!(plate_is_close_enough_to_see(RENDER_UNLOAD_FAR - 1.0, false, 320.0));
     }
 
     fn ent(kind: EntityKind, x: f32, y: f32) -> OwEntity {
@@ -4617,6 +4839,57 @@ pub(crate) fn heat_input(
 }
 
 #[cfg(test)]
+mod sprite_mat_tests {
+    use super::*;
+
+    /// **A FOREST HAS TO BATCH, AND A PER-INSTANCE MATERIAL IS WHAT STOPS IT.**
+    ///
+    /// The quad mesh was already shared, so obstacle billboards looked batched — but every
+    /// one allocated its own `StandardMaterial`, and to Bevy two byte-identical materials are
+    /// two assets, so each prop was its own draw call. Measured at the hub, seed 424242:
+    /// **2,139 obstacles → 2,139 materials**, for what turns out to be **nine** distinct
+    /// sprites. With the cache the same scene reports `standard_materials` 449 total and
+    /// **9 shared sprite materials** — the forest collapses to nine batches.
+    ///
+    /// It is worth a test rather than a comment because the failure is invisible: the world
+    /// looks identical either way and only the frame time knows. Anything that goes back to
+    /// minting a material per prop fails here.
+    #[test]
+    fn one_material_per_sprite_not_one_per_prop() {
+        let mut mats: Assets<StandardMaterial> = Assets::default();
+        let mut imgs: Assets<Image> = Assets::default();
+        let mut cache = SpriteMats::default();
+        let blank = || Image::new_fill(
+            bevy::render::render_resource::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+            bevy::render::render_resource::TextureDimension::D2,
+            &[255, 255, 255, 255],
+            bevy::render::render_resource::TextureFormat::Rgba8UnormSrgb,
+            bevy::asset::RenderAssetUsages::default(),
+        );
+        let oak = imgs.add(blank());
+        let pine = imgs.add(blank());
+
+        // A thousand oaks are ONE material…
+        let first = cache.get(&mut mats, Color::WHITE, oak.clone());
+        for _ in 0..1000 {
+            assert_eq!(
+                cache.get(&mut mats, Color::WHITE, oak.clone()),
+                first,
+                "every prop of one sprite must share a material, or the wood cannot batch"
+            );
+        }
+        assert_eq!(cache.len(), 1, "a thousand oaks minted {} materials", cache.len());
+
+        // …a different SPRITE is its own, or every tree would wear the same bark.
+        assert_ne!(cache.get(&mut mats, Color::WHITE, pine.clone()), first);
+        // …and so is a different TINT, since the tint is the material's other input.
+        assert_ne!(cache.get(&mut mats, Color::srgb(1.0, 0.5, 0.5), oak), first);
+        assert_eq!(cache.len(), 3, "sprite and tint both have to key the cache");
+        assert_eq!(mats.len(), 3, "the cache minted more assets than it keys");
+    }
+}
+
+#[cfg(test)]
 mod heat_tests {
     use super::*;
 
@@ -4887,7 +5160,7 @@ pub(crate) fn update_action_hud(
     // wrapped per payout by `channel_fill_pct`.
     mut phase: Local<f32>,
     mut was_channeling: Local<bool>,
-    cam_q: Query<(&Camera, &GlobalTransform), With<Camera3d>>,
+    cam_q: WorldCamera,
     root_q: Query<Entity, With<NameplateRoot>>,
     players: Query<(&WorldEntity, &GlobalTransform)>,
     old: Query<Entity, With<ActionHud>>,

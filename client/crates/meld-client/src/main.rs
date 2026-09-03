@@ -168,6 +168,9 @@ fn main() {
         .init_resource::<AllyPanel>()
         .init_resource::<Overlay>()
         .init_resource::<OwInterp>()
+        // One material per sprite rather than one per prop, so a forest BATCHES.
+        .init_resource::<overworld::SpriteMats>()
+        .init_resource::<overworld::SpritePads>()
         .init_resource::<OverlayTab>()
         .init_resource::<MainMenu>()
         .init_resource::<EquipSelection>()
@@ -415,7 +418,9 @@ fn main() {
                 joystick_visual,
                 touch_action_buttons,
                 (action_hud_tap, action_hud_boon_tap, action_hud_watch_tap),
-                sync_overworld_sprites,
+                // Paired: the reconciler spawns billboards on a fallback height and the
+                // second system re-grounds each on its own art once loaded.
+                (sync_overworld_sprites, overworld::ground_billboards_on_their_art),
                 // Dotted trail overlays retired — the terrain itself will convey routes
                 // once the continuous heightmap lands (natural valleys/ridges, DQ3-style).
                 // (draw_path_trail, draw_web_trail)

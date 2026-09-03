@@ -162,7 +162,7 @@ pub(crate) fn update_ambient_scatter(
         let wz = cell.1 as f32 * SPACING + (((h >> 8) & 0xFF) as f32 / 255.0 - 0.5) * SPACING * 0.9;
         // Grass does not grow on the sea — same predicate the ground detail uses, so the
         // two kinds of scatter cannot disagree about where the shoreline is.
-        if crate::world_render::on_open_water(&frame, state.get(), wx, wz)
+        if crate::world_render::nothing_grows_here(&frame, state.get(), wx, wz)
             || (h % 100) < 55
             || !grassy(biome_at(wx, wz))
         {

@@ -14,6 +14,72 @@ use std::time::{Duration, SystemTime};
 use bevy::post_process::bloom::Bloom;
 use bevy::post_process::dof::{DepthOfField, DepthOfFieldMode};
 use bevy::core_pipeline::tonemapping::Tonemapping;
+
+/// **THE CAMERA'S EXPOSURE, AS EV100 — the knob that was actually wrong.**
+///
+/// ⚠️ NOTHING IN THIS CLIENT EVER SET ONE, so the world was photographed at Bevy's default
+/// `Exposure::BLENDER` (ev100 **9.7**) while being LIT in real lux — its own sunlit preset
+/// is `EV100_SUNLIGHT` (**15.0**). That is a **5.3-stop**, ~39x mismatch between the lights
+/// and the lens, and it is the whole of "everything looks damn bright most of the time".
+///
+/// It also explains a confusing bit of history. #303 raised the sun 9,200 → 21,000 to
+/// compensate for self-shadowing that rendered the world 5-7x too dark; #304 then FIXED
+/// that bug, retuned bloom for it, and left the sun alone — and 21,000 is within a rounding
+/// error of Bevy's `light_consts::lux::FULL_DAYLIGHT` (20,000). So the SUN was never the
+/// wrong number, however much a value like 21,000 looks like somebody's fudge. Pulling it
+/// down would have desynced it from every other light in the game — the moon, the
+/// Explorer's lantern — each then needing its own compensating literal.
+///
+/// ⚠️ AND THE EXPOSURE CANNOT SIMPLY GO TO 15.0 EITHER, which is the part that has to be
+/// measured rather than reasoned about: exposure meters EMISSIVE and unlit surfaces too,
+/// and they do not scale with the lights. At 15.0 the sky dome crushes to black and the
+/// stars come out **at noon** — a correctly-lit ground under a night sky. The sky, the
+/// stars and every sprite glow were authored against 9.7, so this moves as far as the rest
+/// of the look tolerates and no further. Measured in the city at a frozen noon: mean
+/// luminance 108 → 81 with the p95/p05 contrast ratio going 3.49 → 3.93, i.e. dimmer AND
+/// with its shadow separation back.
+///
+/// Ladder it with `MELD_WORLD_FEEL="day_len=999999,sky_t=0.5,exposure=…"` — the huge
+/// `day_len` is not optional, because otherwise the capture's own wall-clock walks the sun
+/// between frames and you measure the time of day instead of the lens (which produced a
+/// non-monotonic ladder the first time, 11.5 reading darker than 13.0).
+pub const DEFAULT_EV100: f32 = 11.0;
+
+/// The shared sprite quad's own height in world units, unscaled.
+pub const SPRITE_QUAD_HEIGHT: f32 = 2.2;
+
+/// The hero's own billboard scale, and the calibration point every grounding number was
+/// tuned at.
+pub const HERO_SPRITE_SCALE: f32 = 1.6;
+
+/// **THE FRACTION OF A SPRITE CANVAS THAT IS EMPTY BELOW THE ART** — measured mean across
+/// the shipped set (art fills the middle ~50% of a 184px canvas). A billboard draws the
+/// WHOLE canvas onto its quad, so this padding is the gap between the quad's bottom edge
+/// and the feet in the picture.
+pub const SPRITE_BOTTOM_PAD: f32 = 0.2483;
+
+/// **WHERE A BILLBOARD'S CENTRE GOES, AS A FRACTION OF ITS OWN HEIGHT, SO THE ART STANDS ON
+/// THE GROUND.**
+///
+/// ⚠️ PUTTING THE QUAD'S BOTTOM EDGE ON THE GROUND IS NOT THE SAME AS PUTTING THE ART ON THE
+/// GROUND, and that one confusion floated the entire world. `spawn_billboard_entity` placed
+/// every quad at `height * 0.5` — bottom edge exactly on y=0 — under a comment that said
+/// "lift it so the sprite's feet sit on the ground plane". The intent was right and the
+/// arithmetic left out the padding above, so every tree, prop and creature hovered
+/// `SPRITE_BOTTOM_PAD` of its own height over the blob shadow drawn at its true base. Tall
+/// things floated furthest, which is why it read as *"pigs fly with the trees"*.
+///
+/// The hero was the one thing grounded, because `Look::sprite_y` was DERIVED with the
+/// padding in it — and this constant is that same derivation, extracted so the hero is no
+/// longer the only billboard that gets it right. `a_sprite_is_grounded_at_any_scale` holds
+/// the two together: if the tuned `sprite_y` and this fraction ever disagree, the hero and
+/// the world it stands in are grounded by different rules.
+pub const GROUNDED_CENTRE: f32 = 0.5 - SPRITE_BOTTOM_PAD;
+
+/// The centre-y for a billboard of world height `height` — see [`GROUNDED_CENTRE`].
+pub fn grounded_centre(height: f32) -> f32 {
+    height * GROUNDED_CENTRE
+}
 use bevy::light::NotShadowCaster;
 use bevy::pbr::{DistanceFog, FogFalloff};
 use bevy::prelude::*;
@@ -145,8 +211,13 @@ impl Default for Look {
             // where the same offset floats them ABOVE the ground instead: half the crowd
             // sunk and half hovering reads as neither, until they are all the right size and
             // the whole plaza is standing in mud together.
-            sprite_y: 0.886,
-            sprite_scale: 1.6,  // hero reads prominently in the diorama
+            // …and now COMPUTED from that derivation rather than restating its result, so
+            // the hero is grounded by the very constant the rest of the world uses. The
+            // hand-written 0.886 and the derived 0.885984 differed by 1.6e-5 — harmless in
+            // itself, and exactly the kind of two-sources drift that had the player standing
+            // on the floor while everything around them hovered.
+            sprite_y: grounded_centre(SPRITE_QUAD_HEIGHT * HERO_SPRITE_SCALE),
+            sprite_scale: HERO_SPRITE_SCALE, // hero reads prominently in the diorama
             fov: 36.0,
             dof_sensor: 0.05,
             anim_fps: 10.0,
@@ -208,6 +279,11 @@ pub fn spawn_camera(commands: &mut Commands, look: &Look, initial: Transform) ->
         Camera::default(),
         bevy::camera::Hdr,
         Tonemapping::TonyMcMapface,
+        // METERED FOR SUNLIGHT, because the world is lit in real lux. Bevy's default is
+        // `Exposure::BLENDER` (ev100 9.7) — 5.3 stops hot for an outdoor scene, which is
+        // the whole of the "everything is too bright" report. `apply_sky` drives it from
+        // `WorldFeel::exposure`; this is the value the first frame is taken at.
+        bevy::camera::Exposure { ev100: DEFAULT_EV100 },
         bloom_component(look),
         dof_component(look),
         fog_component(look),
@@ -373,6 +449,23 @@ pub fn maybe_screenshot(commands: &mut Commands) {
 /// footing + size stay tunable by eye). World props/monsters use only [`Billboard`]
 /// and keep their own spawn-baked scale/height. Sets local translation.y + scale
 /// only; [`billboard`] sets rotation, so they don't fight.
+/// **THE CENTRE-Y THAT GROUNDS A SPRITE QUAD DRAWN AT `scale`.**
+///
+/// `Look::sprite_y` is a LENGTH, tuned against `Look::sprite_scale`: half the quad minus the
+/// art's own bottom padding, which is what puts the feet on y=0. So a quad at some other
+/// scale wants that length scaled *in proportion* — never MULTIPLIED by the new scale, which
+/// is the arithmetic that had every creature in the world floating. At the creature scale of
+/// 2.0 the bad form lifts the centre to 1.77 where grounding wants 1.11, i.e. a third of the
+/// animal's own body clear of the ground. Reported as, exactly, "the piggy is flying through
+/// the air".
+///
+/// The hero never hit it because `place_billboards` assigns `sprite_y` and `sprite_scale`
+/// together, so it only ever draws at the calibration point. Anything spawning a billboard at
+/// its own scale — creatures, bosses, townsfolk — has to come through here.
+pub fn grounded_sprite_y(scale: f32) -> f32 {
+    grounded_centre(SPRITE_QUAD_HEIGHT * scale)
+}
+
 pub fn place_billboards(look: Res<Look>, mut q: Query<&mut Transform, With<HeroBillboard>>) {
     for mut t in &mut q {
         t.translation.y = look.sprite_y;
@@ -1333,6 +1426,30 @@ pub fn contact_shadow_material() -> StandardMaterial {
 // driving a far-from-origin child through actual transform propagation.
 #[cfg(test)]
 mod billboard_tests {
+#[test]
+fn a_sprite_is_grounded_at_any_scale() {
+    let look = Look::default();
+    // The hero's own scale is the calibration point, and must come back untouched.
+    assert!((grounded_sprite_y(look.sprite_scale) - look.sprite_y).abs() < 1e-6);
+    // The property the constant encodes is `centre - half_quad + bottom_pad * quad == 0`,
+    // which is LINEAR in scale — so centre/scale is the same number at every size. A runt
+    // at 0.45 and a gatekeeper at 2.6 both stand on the floor.
+    let unit = look.sprite_y / look.sprite_scale;
+    // And the hand-tuned hero constant must agree with the fraction the whole world is
+    // grounded by, or the player stands on the floor and the trees do not (or vice versa).
+    assert!(
+        (grounded_centre(SPRITE_QUAD_HEIGHT * look.sprite_scale) - look.sprite_y).abs() < 1e-3,
+        "GROUNDED_CENTRE {GROUNDED_CENTRE} disagrees with the tuned sprite_y {}",
+        look.sprite_y
+    );
+    for scale in [0.45, 1.0, 1.6, 2.0, 2.6] {
+        assert!((grounded_sprite_y(scale) / scale - unit).abs() < 1e-6, "scale {scale}");
+    }
+    // And the bug this replaced is strictly ABOVE the ground at every scale past the
+    // calibration point, which is why it read as flying rather than as sinking.
+    assert!(grounded_sprite_y(2.0) < look.sprite_y * 2.0);
+}
+
     use super::*;
 
     /// How squarely a billboard faces the camera: the dot of its rendered front (+Z)

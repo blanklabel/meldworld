@@ -80,7 +80,10 @@ pub(crate) struct GhostPiece;
 /// places on xz.
 fn cursor_ground(
     windows: &Query<&Window>,
-    cams: &Query<(&Camera, &GlobalTransform)>,
+    // The WORLD camera, never the minimap's — see `overworld::WorldCamera`. Unfiltered,
+    // this un-projects the mouse through a 512x288 top-down texture camera and aims the
+    // build cursor at ground the player is not pointing at.
+    cams: &crate::overworld::WorldCamera<'_, '_>,
 ) -> Option<Vec2> {
     let p = windows.iter().next()?.cursor_position()?;
     let (cam, tf) = cams.iter().next()?;
@@ -131,7 +134,7 @@ pub(crate) fn builder_input(
     keys: Res<ButtonInput<KeyCode>>,
     buttons: Res<ButtonInput<MouseButton>>,
     windows: Query<&Window>,
-    cams: Query<(&Camera, &GlobalTransform)>,
+    cams: crate::overworld::WorldCamera,
     mut mode: ResMut<BuildMode>,
     net: NonSend<NetRes>,
 ) {

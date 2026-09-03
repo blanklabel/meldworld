@@ -106,19 +106,34 @@ fn the_deck_stands_above_the_water_and_wears_a_parapet() {
     for a in worlds(&b) {
         for br in &a.bridges {
             let mid = ((br[0] + br[2]) * 0.5, (br[1] + br[3]) * 0.5);
-            let (h, on_parapet) = meld_proto::terrain::bridge_surface(mid.0, mid.1, &a.bridges)
-                .expect("a bridge's own midpoint is on its span");
-            assert!(h > 0.0, "the deck must stand above sea level");
+            // ⚠️ A SPAN NO LONGER CARRIES A HEIGHT — see `terrain::bridge_span_at`. It used to
+            // report an absolute `2.6` above the waterline, and since the banks it joins are at
+            // terrain height that was a 4.4-unit cliff at both ends of every bridge in the
+            // world. The deck is put on its banks by `terrain_height` now, so what a span
+            // reports is geometry: mid-span is full deck and no parapet, its outer band is
+            // parapet, and both taper to nothing at the ends so the join is continuous.
+            let (_, s, on_parapet, deck) =
+                meld_proto::terrain::bridge_span_at(mid.0, mid.1, &a.bridges)
+                    .expect("a bridge's own midpoint is on its span");
+            assert!((s - 0.5).abs() < 0.01, "the midpoint should read as half way along");
             assert_eq!(on_parapet, 0.0, "the middle of a span is deck, not parapet");
-            // …and its edge is a parapet, raised further.
+            assert!(deck > 0.99, "the middle of a span is full deck, not abutment");
+            // …and its edge is a parapet.
             let (dx, dz) = (br[2] - br[0], br[3] - br[1]);
             let n = (dx * dx + dz * dz).sqrt().max(1e-6);
             let (px, pz) = (-dz / n, dx / n);
             let edge = (mid.0 + px * br[4] * 0.92, mid.1 + pz * br[4] * 0.92);
-            if let Some((eh, ep)) = meld_proto::terrain::bridge_surface(edge.0, edge.1, &a.bridges) {
-                assert_eq!(ep, 1.0, "a span's outer band is its parapet");
-                assert!(eh > h, "a parapet stands above its own deck");
+            if let Some((_, _, ep, _)) =
+                meld_proto::terrain::bridge_span_at(edge.0, edge.1, &a.bridges)
+            {
+                assert!(ep > 0.99, "a span's outer band is its parapet");
             }
+            // …and NEITHER stands proud at the very end, or the join is a step again.
+            let (_, _, end_par, end_deck) =
+                meld_proto::terrain::bridge_span_at(br[0], br[1], &a.bridges)
+                    .expect("a span's own endpoint is on it");
+            assert_eq!(end_deck, 0.0, "a span must taper to the bank, not end in a cliff");
+            assert_eq!(end_par, 0.0, "a parapet must grow out of the bank, not start as a wall");
             checked += 1;
         }
     }
