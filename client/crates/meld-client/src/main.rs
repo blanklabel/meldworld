@@ -389,7 +389,6 @@ fn main() {
                 despawn::<WorldEntity>,
                 despawn::<PartyFollower>,
                 despawn::<PathTrail>,
-                despawn::<TerrainMesh>,
                 despawn::<WorldWall>,
                 despawn::<world_render::DungeonDecor>,
                 despawn::<ChestEntity>,
@@ -420,7 +419,6 @@ fn main() {
                 // Dotted trail overlays retired — the terrain itself will convey routes
                 // once the continuous heightmap lands (natural valleys/ridges, DQ3-style).
                 // (draw_path_trail, draw_web_trail)
-                build_terrain_sections,
                 world_render::manage_dungeon_scene,
                 hd2d::animate_chars,
                 hd2d_follow,
@@ -1026,10 +1024,6 @@ struct Terrain {
     sections: HashMap<u32, meld_client::net::TerrainSectionView>,
 }
 
-/// Marks a spawned terrain-mesh / connector-prop entity, tagged by section index so
-/// they can be despawned wholesale and rebuilt.
-#[derive(Component)]
-struct TerrainMesh(u32);
 
 /// Walkable bounds + biome seams for the instance. The client streams framing
 /// walls (edge treeline/ridge/water + west end-cap + gated biome seams) from this

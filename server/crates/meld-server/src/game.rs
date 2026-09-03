@@ -1029,27 +1029,10 @@ fn terrain_section_msg(
     corridor_lateral: f64,
     geom: SectionGeometry,
 ) -> ww::TerrainSection {
-    let t = &area.terrain;
     ww::TerrainSection {
         index: area.index as u32,
-        start_x: t.start_x,
+        start_x: area.start_x,
         end_x: area.end_x,
-        y_min: t.y_min,
-        cell: t.cell,
-        cols: t.cols as u32,
-        rows: t.rows as u32,
-        levels: t.level.clone(),
-        connectors: t
-            .connectors
-            .iter()
-            .map(|c| ww::ConnectorDto {
-                kind: c.kind.as_str().to_string(),
-                position: c.position,
-                lo: c.lo,
-                hi: c.hi,
-                radius: c.radius,
-            })
-            .collect(),
         path,
         biome: area.biome.to_string(),
         radial_half,

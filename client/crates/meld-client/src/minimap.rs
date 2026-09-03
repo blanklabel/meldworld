@@ -251,7 +251,9 @@ fn sample(
     // further off the centre line you stand. This inverse must branch exactly where
     // `radial_bend` branches or the two disagree off-axis.
     let cx = if arc_half > 0.0 { (wx * wx + wz * wz).sqrt() } else { wx };
-    let sec = terrain
+    // The section is only asked as a BOUNDS test now — "is this ground streamed yet" — so
+    // nothing is bound from it. It used to supply the elevation grid this tile was tinted by.
+    terrain
         .sections
         .values()
         .find(|s| cx >= s.start_x as f32 && cx < s.end_x as f32)?;
@@ -271,27 +273,12 @@ fn sample(
         return Some((water_tile(crate::world_render::biome_at_world(wx, wz)), 1.0));
     }
 
-    let (half, lat) = crate::overworld::radial_params(sec);
-    // Un-bend: corridor z is an ANGLE scaled by the corridor's half-width.
-    let cz = if half > 0.0 && lat > 0.0 {
-        (wz.atan2(wx) / half) * lat
-    } else {
-        wz
-    };
-    let cell = sec.cell as f32;
-    let col = ((cx - sec.start_x as f32) / cell).floor();
-    let row = ((cz - sec.y_min as f32) / cell).floor();
-    if col < 0.0 || row < 0.0 || col >= sec.cols as f32 || row >= sec.rows as f32 {
-        return None;
-    }
-    let level = sec
-        .levels
-        .get(row as usize * sec.cols as usize + col as usize)
-        .copied()
-        .unwrap_or(0);
-    // Each terrace steps the tile brighter. Clamped well under 2.0: a tint is a reading of
-    // height, not a spotlight.
-    let bright = (0.72 + level as f32 * 0.14).min(1.35);
+    // ⚠️ **THE TILE USED TO BRIGHTEN PER TERRACE LEVEL.** Discrete terraces are retired
+    // (`WG-11` stage 5) and the per-section elevation grid went with them, so that lookup was
+    // reading an all-zero array and every tile already drew at this one brightness. Relief on
+    // the map is the biome patchwork; height is the heightmap, which the minimap does not
+    // render.
+    let bright = 0.72f32;
     // ⚠️ THE CELL, NOT THE SECTION. A section spans many cells and its own `biome` is only a
     // representative summary of them, so painting the map by section would draw concentric
     // rings over a patchwork ground — and the map is where that lie costs most, because a
@@ -497,24 +484,19 @@ mod tests {
         assert_ne!(water_tile("mire"), water_tile("tundra"));
     }
 
-    /// A section spanning `start_x..end_x` of a flat corridor, all ground at level 0
-    /// except one raised cell.
+    /// A section spanning `start_x..end_x` of a flat corridor.
+    ///
+    /// ⚠️ It used to raise one corner cell three terraces up, because the minimap tinted a
+    /// tile brighter per level. Terraces are retired and the elevation grid is gone
+    /// (`WG-11` stage 5), so there is no level to raise and no tint to assert — what these
+    /// tests are about is the BIOME shading.
     fn section(biome: &str, start: f64, end: f64, half: f64) -> meld_client::net::TerrainSectionView {
-        let (cols, rows) = (((end - start) / 2.0) as u32, 20u32);
-        let mut levels = vec![0u8; (cols * rows) as usize];
-        levels[0] = 3; // the corner cell is three terraces up
         meld_client::net::TerrainSectionView {
             ridges: Vec::new(),
             bridges: Vec::new(),
             index: 0,
             start_x: start,
             end_x: end,
-            y_min: -20.0,
-            cell: 2.0,
-            cols,
-            rows,
-            levels,
-            connectors: vec![],
             path: vec![],
             biome: biome.to_string(),
             radial_half: half,
@@ -592,18 +574,10 @@ mod tests {
         );
     }
 
-    // Elevation is the one thing a flat tile cannot say, so it rides the tint. Higher
-    // ground must read brighter, or verticality is invisible on the map.
-    #[test]
-    fn higher_ground_reads_brighter() {
-        let t = terrain(section("forest", 0.0, 40.0, 0.0));
-        let f = frame(0.0);
-        // Flat corridor, so corridor coords ARE world coords: the raised cell is grid
-        // (col 0, row 0) => x in [0,2), z in [-20,-18).
-        let (_, high) = sample(&t, &f, 1.0, -19.0).expect("raised cell");
-        let (_, low) = sample(&t, &f, 20.0, 0.0).expect("flat ground");
-        assert!(high > low, "level 3 ({high}) should out-read level 0 ({low})");
-    }
+    // (`higher_ground_reads_brighter` lived here: elevation was the one thing a flat tile
+    // could not say, so it rode the tint. Terraces are retired and the elevation grid is
+    // gone — `WG-11` stage 5 — so every tile draws at one brightness and there is no height
+    // for the map to hide. Relief is the heightmap, which the minimap does not render.)
 
     // The ground covers the whole panel at the SAME scale `map_to_px` fits the walk to, so
     // a tile and the dot drawn over it name the same place. Two framings that drift apart

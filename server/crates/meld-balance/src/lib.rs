@@ -1245,28 +1245,12 @@ pub struct WorldGen {
     pub web_offset_max: f64,
     pub web_spur_offset: f64,
     pub player_radius: f64,
-    // --- Verticality (terraces + connectors), docs/proposals/verticality.md. ---
-    /// Avg raised terraces per procedural section (area 0 stays flat).
-    pub terraces_per_area: f64,
-    /// Highest elevation level a terrace can reach (0 = ground).
-    pub max_level: u8,
-    /// Smallest terrace footprint side (tiles).
-    pub terrace_min_size: f64,
-    /// Largest terrace footprint side (tiles).
-    pub terrace_max_size: f64,
-    /// Grid resolution of the elevation field (tiles/cell).
-    pub terrain_cell: f64,
-    /// Reach around a connector (ladder/rope/slope) that permits a level change.
-    pub connector_radius: f64,
     /// How far ahead of the frontier player the world streams new sections in.
     pub stream_lookahead: f64,
     /// Probability a procedural section's CLEAR PATH climbs onto a mid-segment
     /// plateau (up a ramp, across, back down) — the "path itself is a maze" knob.
     /// Endpoints stay on level 0, so feasibility is preserved.
     pub path_climb_chance: f64,
-    /// Probability a section's treasure chest sits ON TOP of a raised terrace (at
-    /// that elevation) instead of on the ground — treasure that rewards a climb.
-    pub chest_terrace_chance: f64,
     /// When a section's clear path climbs a summit, the probability a gate-boss guards
     /// the top (otherwise a guaranteed treasure chest crowns it). Boss is held off the
     /// tutorial regardless. The "there's always a payoff for the climb" knob (#3).
@@ -1302,6 +1286,12 @@ pub struct WorldGen {
     pub ridge_half_width_max: f64,
     pub ridge_aspect: f64,
     pub ridge_pass_width: f64,
+    /// `WG-11` stage 6: share of passes that get a part at all (0..1).
+    pub pass_part_chance: f64,
+    /// How far a part's piece sits off the crossing's centre line, in world units.
+    pub pass_part_stagger: f64,
+    /// A piece is refused unless this much of the pass mouth stays open beside it.
+    pub pass_part_min_gap: f64,
     pub ridge_segments_min: usize,
     pub ridge_segments_max: usize,
     pub bridge_half_width: f64,

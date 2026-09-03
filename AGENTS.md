@@ -2227,16 +2227,49 @@ than adapted: a cell's neighbour is not ahead of it and behind it, it is all aro
   advances (endless past the initial `area_count` chain; the deep portal stays at the
   chain's end). The game loop streams new sections' terrain each tick.
 
-- **Verticality (terraces + connectors).** Each section carries a `Terrain` elevation
-  grid + `Connector`s (slope/ladder/rope). Terraces are raised plateaus kept OUT of the
-  clear-path tube, so extraction stays on level 0 and always feasible; cliffs are
-  impassable walls and a **connector is the only way to change level** (no free
-  climbing). `apply_move`/`check_touch`/`harvest`/`at_portal` are elevation-aware.
-  Rides the wire as `SnapshotEntity.level` + the `world.terrain_section` message; the
-  client builds a stepped ground+cliff mesh per section and connector props. See
-  [`VERTICALITY-PROPOSAL.md`](docs/proposals/verticality.md). `[worldgen]` tunables:
-  `terraces_per_area`, `max_level`, `terrace_min/max_size`, `terrain_cell`,
-  `connector_radius`, `stream_lookahead`.
+- ⚠️ **TERRACED VERTICALITY IS DELETED, AND THIS ENTRY USED TO DESCRIBE IT AS LIVE.**
+  Each section carried a `Terrain` elevation grid plus `Connector`s (slope/ladder/rope),
+  cliffs were impassable walls, and a connector was the only way to change level. All of it
+  is gone (`WG-11` stage 5) — the grid, the connectors, their wire fields
+  (`TerrainSection.levels`/`connectors`/`cell`/`cols`/`rows`/`y_min`, `ConnectorDto`), the
+  client's stepped ground+cliff mesh and connector props, and seven `[worldgen]` tunables.
+  It was **provably unreachable**: `raise_terrace` was the only writer of a level and it ran
+  `terraces_per_area × biome_terrace_mult = 0` times, so the grid was all zeros and the
+  client's mesh sat behind an `if any(level > 0)` that could never fire. The only thing still
+  exercising it was a TEST FIXTURE — `corridor_balance()` set `terraces_per_area = 3.0` —
+  which is a retired mechanism kept alive where no player could see it.
+  **Relief is the continuous heightmap plus PEAKS**, both world-space and both cell-agnostic,
+  which is what "cells replace `Area` as the structural unit" means for terrain.
+  `area_level_at` survives as one function returning 0, and `SnapshotEntity.level` /
+  `STEP_HEIGHT` survive as an entity property that is always 0 — a level is still a real
+  concept in a dungeon, and the day something raises ground again there is one place that
+  answers for it. [`docs/proposals/verticality.md`](docs/proposals/verticality.md) and
+  [`docs/behaviors/verticality.md`](docs/behaviors/verticality.md) are marked RETIRED.
+
+- **THE MICRO MAZE: what stands inside a pass** (`WG-11` stage 6). A walled cell boundary is
+  a run of capsule segments and the GAPS between them are the passes — so a gap is otherwise
+  a doorway you run through without noticing, and the macro maze reads as arbitrary gates
+  rather than as terrain. `push_pass_parts` furnishes a mouth with one of three shapes — a
+  **chicane** (offset stubs, so you weave), **pillars** (a broken line across it) or a
+  **throat** (clusters squeezing the middle) — built from the CELL's own material, so a
+  forest pass chokes with trees and an ashfall pass with rock.
+  ⚠️ **It runs AFTER the route is drawn, and that is load-bearing**: `astar_route` collides
+  with ranges and terrain but **not with obstacles** (see its `routable`), so a part placed
+  before the route is one the guaranteed trail runs straight through. Placed after, every
+  piece is refused from the clear tube by `clear_of_routes`, so feasibility stays structural
+  exactly as it does for a range. No piece may seal its own pass (`pass_part_min_gap`) — a
+  gap nobody fits through is a wall with a rumour of a door, which is the failure
+  `ridge_pass_width` prevents one scale up.
+  ⚠️ **A mouth is owned by the BOUNDARY, not by the section holding the capsule.** Recording
+  it after the section clip measured 3-5 furnished mouths in a world holding 46-77 wall
+  segments: a boundary is walled across a whole cell edge while a section emits only the
+  piece inside its own radius band, so two consecutive surviving segments rarely landed in
+  one section and the pass between them was real in the world and invisible from either side
+  of the bookkeeping. Ownership is settled by the MOUTH's own radius instead.
+  ⚠️ **Measured, it is still SPARSE**: 4-8 furnished mouths and 14-35 pieces per world out to
+  d1600. The mechanism is built and tested; its density rides on the wall density
+  (`ridge_max_per_section = 6`, deliberately conservative and **never tuned against play**),
+  because more walls is more passes is more mouths.
 
 - **Extraction is mostly the Town Portal item.** There is a **single fixed portal**,
   deep at the end of the last area (`Arena::portal`). The primary way home is the

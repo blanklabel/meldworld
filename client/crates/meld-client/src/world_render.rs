@@ -795,7 +795,6 @@ pub(crate) struct WorldAssets {
     /// bespoke pixel-art water tile and drifting via [`animate_water`]. Keyed by the
     /// `SnapshotEntity` obstacle name; fall back to `pond` via [`Self::water_mat`].
     pub(crate) water_mats: HashMap<String, Handle<WaterMat>>,
-    pub(crate) ground_tex: Vec<Handle<Image>>, // per-biome textures; also dress terrace tops/cliffs
 }
 
 impl WorldAssets {
@@ -1499,7 +1498,6 @@ pub(crate) fn setup(
             )
         })
         .collect(),
-        ground_tex,
     });
 
     // Drifting clouds: soft white billboard puffs high overhead, anchored around the
@@ -3676,7 +3674,7 @@ pub(crate) fn manage_dungeon_scene(
     decor: Query<Entity, With<DungeonDecor>>,
     // Overworld framing (terraces + biome-edge cliff/treeline walls) is hidden
     // underground so none of it leaks past the dungeon forest, restored on exit.
-    mut overworld_framing: Query<&mut Visibility, Or<(With<TerrainMesh>, With<WorldWall>)>>,
+    mut overworld_framing: Query<&mut Visibility, With<WorldWall>>,
 ) {
     if !scene.dirty {
         return;

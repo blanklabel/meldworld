@@ -264,27 +264,25 @@ pub struct ConnectorView {
     pub radius: f64,
 }
 
-/// One streamed overworld **section**'s static geometry: its elevation grid +
-/// connectors (+ trail contribution). The client builds one stepped ground+cliff
-/// mesh per section and spawns the connector props.
+/// One streamed overworld **section**'s static geometry — its landforms and its trail
+/// contribution.
+///
+/// ⚠️ **IT USED TO CARRY AN ELEVATION GRID AND CONNECTORS, and the client built a stepped
+/// ground+cliff mesh from them.** Discrete terraces are retired (`WG-11` stage 5), so the
+/// grid was provably all zeros and that whole mesh sat behind an `if any(level > 0)` that
+/// could never fire. Relief is the shader-displaced **heightmap** plus **PEAKS** now.
 #[derive(Clone)]
 pub struct TerrainSectionView {
     pub index: u32,
     pub start_x: f64,
     pub end_x: f64,
-    pub y_min: f64,
-    pub cell: f64,
-    pub cols: u32,
-    pub rows: u32,
-    pub levels: Vec<u8>,
-    pub connectors: Vec<ConnectorView>,
     pub path: Vec<(f64, f64)>,
     /// The section's biome theme, so the client keys ground + HUD off the actual
     /// per-section biome (radius ring) rather than fixed distance bands.
     pub biome: String,
-    /// WG-4 radial fan: half the arc in radians (0 ⇒ flat). The elevation grid is in
-    /// un-bent corridor coords; the client bends terrace/cliff/connector geometry by
-    /// this arc so raised ground lines up with the (server-bent) positions it walks on.
+    /// WG-4 radial fan: half the arc in radians (0 ⇒ flat). `path` is in un-bent corridor
+    /// coords, so the client bends each waypoint by this arc to line the trail up with the
+    /// (server-bent) positions it walks on.
     pub radial_half: f64,
     /// Corridor half-extent the arc maps against (pairs with `radial_half`).
     pub corridor_lateral: f64,
@@ -3068,23 +3066,6 @@ impl Inner {
                         index: t.index,
                         start_x: t.start_x,
                         end_x: t.end_x,
-                        y_min: t.y_min,
-                        cell: t.cell,
-                        cols: t.cols,
-                        rows: t.rows,
-                        levels: t.levels,
-                        connectors: t
-                            .connectors
-                            .into_iter()
-                            .map(|c| ConnectorView {
-                                kind: c.kind,
-                                x: c.position.x,
-                                y: c.position.y,
-                                lo: c.lo,
-                                hi: c.hi,
-                                radius: c.radius,
-                            })
-                            .collect(),
                         path: t.path.into_iter().map(|p| (p.x, p.y)).collect(),
                         biome: t.biome,
                         radial_half: t.radial_half,

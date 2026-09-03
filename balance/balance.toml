@@ -1648,8 +1648,6 @@ player_radius = 0.5              # the avatar's collision radius vs obstacles
 # climbs: `path_climb_chance` sections raise a mid-segment plateau the route crosses
 # via guaranteed ramps, with the endpoints staying on level 0 so extraction is always
 # feasible. Cliffs are impassable; the only way up is a connector. All [TUNABLE].
-terraces_per_area = 0.0          # discrete blocky terraces retired — the continuous heightmap (client terrain_height) is the new natural elevation (Phase A). Peak rewards + slope-walking return via the heightmap in Phase B/C.
-max_level = 0                    # no discrete cliffs; elevation is the smooth heightmap now
 # WG-4: the generated corridor is bent into a radial ARC of this many degrees around
 # the hub — the world fans out from the Center Hub, leaving the western gap for Last
 # City. `x` becomes radius (distance = difficulty, unchanged), lateral `y` becomes angle.
@@ -1683,13 +1681,8 @@ max_level = 0                    # no discrete cliffs; elevation is the smooth h
 # see` measures WETNESS AND DEPTH now rather than channel width, so whatever you try here is
 # judged on water a player can see. [TUNABLE]
 radial_arc_degrees = 300.0
-terrace_min_size = 6.0           # smallest terrace footprint side (tiles)
-terrace_max_size = 14.0          # largest terrace footprint side (tiles)
-terrain_cell = 2.0               # elevation-grid resolution (tiles per cell)
-connector_radius = 2.2           # reach around a connector that permits a level change
 stream_lookahead = 60.0          # generate new sections this far ahead of the frontier
-path_climb_chance = 0.6          # chance a section's clear path climbs a plateau (0..1)
-chest_terrace_chance = 0.5       # chance a section's chest sits atop a terrace (0..1)
+path_climb_chance = 0.6          # chance a section raises a climbable PEAK beside its clear path (0..1). Named for the retired terrace plateau it used to gate; it is the peak roll now. [TUNABLE]
 peak_boss_chance = 0.5           # when the path climbs a summit, chance a gate-boss guards the top instead of a guaranteed treasure chest (0..1)
 summit_min_height = 7.0          # min world terrain height a clear-path crest must reach to earn a summit reward (heightmap #3); filters flat sections
 peak_radius = 26.0               # world-radius of an authored CLIMBABLE landmark mountain (#3); its height = radius * PEAK_MAX_ASPECT * ~0.9 so the dome stays walkable (you climb it) while reading as a real peak
@@ -1736,6 +1729,15 @@ ridge_max_per_section = 6
 ridge_passes_min = 1            # interior passes per range. With the boundary's two ends that is at least three ways past — one door is the retired `Seam` again.
 ridge_passes_max = 3
 ridge_pass_share = 0.09         # a pass's width as a share of the range's own length, floored at `ridge_pass_width`. A share so the gap scales with the wall.
+
+# ── WG-11 stage 6: THE MICRO MAZE — what stands inside a pass.
+# A gap in a wall is otherwise a doorway you run through without noticing, which makes the
+# macro maze read as arbitrary gates rather than as terrain. The cell graph decides where you
+# can go; these decide what crossing a boundary feels like. Built from the CELL'S own material,
+# so a forest pass is choked with trees and an ashfall pass with rock.
+pass_part_chance = 0.55         # share of passes that get a part at all. Below 1.0 on purpose: a maze where every gap is furnished reads as authored rather than as country, and an unshaped pass is the contrast that makes a shaped one register. [TUNABLE]
+pass_part_stagger = 7.0         # how far a piece sits off the crossing's centre line, in world units — what turns a chicane into a weave rather than two stones side by side. [TUNABLE]
+pass_part_min_gap = 6.0         # a piece is REFUSED unless this much of the mouth is still open beside it. A pass nobody fits through is a wall with a rumour of a door — the failure `ridge_pass_width` prevents one scale up, enforced again here because a part narrows what the wall left. Must stay above `2 * player_radius`. [TUNABLE]
 ridge_arc_share = 0.55          # share of ranges laid along an ARC boundary (blocking OUTWARD travel, forcing a lateral detour) rather than a SPOKE one (blocking lateral travel, which is what makes corridors and dead ends). Both, so the world has walls in both axes.
 ridge_half_width_min = 26.0     # narrowest range, world units from spine to foot.
 ridge_half_width_max = 52.0     # widest. A range's height is `half_width * ridge_aspect`, so this also sets how tall it stands.

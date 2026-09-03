@@ -181,29 +181,25 @@ pub mod movement {
 pub mod world {
     use super::*;
 
-    /// One connector joining two elevation levels.
-    #[derive(Debug, Clone, Serialize, Deserialize)]
-    pub struct ConnectorDto {
-        pub kind: String, // "slope" | "ladder" | "rope"
-        pub position: Position,
-        pub lo: u8,
-        pub hi: u8,
-        pub radius: f64,
-    }
 
-    /// S2C — one section's elevation field + connectors (+ its trail contribution
-    /// for streamed sections). `levels` is row-major `levels[gx*rows + gy]`.
+    /// S2C — one streamed section's LANDFORMS (and its trail contribution).
+    ///
+    /// ⚠️ **IT USED TO CARRY AN ELEVATION GRID, AND THAT IS GONE** (`WG-11` stage 5).
+    /// `levels` (row-major `levels[gx*rows + gy]`), `connectors`, and the `cell`/`cols`/
+    /// `rows`/`y_min` that described the grid went with discrete TERRACES, which are retired
+    /// (`[worldgen] terraces_per_area = 0`): `raise_terrace` was the only writer, so the grid
+    /// was provably all zeros and the client's stepped-ground/cliff mesh sat behind an
+    /// `if any(level > 0)` that could never fire.
+    ///
+    /// Relief is the continuous **heightmap** plus **PEAKS** now — both world-space and both
+    /// cell-agnostic, which is what "cells replace `Area` as the structural unit" means for
+    /// terrain. What is left here is genuinely per-section only as a DELIVERY envelope: the
+    /// landform lists are all world-space, and the section is the unit the world streams in.
     #[derive(Debug, Clone, Serialize, Deserialize)]
     pub struct TerrainSection {
         pub index: u32,
         pub start_x: f64,
         pub end_x: f64,
-        pub y_min: f64,
-        pub cell: f64,
-        pub cols: u32,
-        pub rows: u32,
-        pub levels: Vec<u8>,
-        pub connectors: Vec<ConnectorDto>,
         /// This section's clear-path waypoints, so a streamed section extends the
         /// trail. Empty for initial-chain sections (already in `run.started.path`).
         #[serde(default)]
@@ -216,9 +212,8 @@ pub mod world {
         #[serde(default)]
         pub biome: String,
         /// WG-4 radial world: half the fan arc in **radians** (0 ⇒ flat corridor, no
-        /// bend). The terrain grid above is in un-bent corridor coords; the client
-        /// bends each terrace/cliff/connector vertex by the same arc the server used
-        /// to fan entity positions, so the raised ground lines up with where you walk.
+        /// bend). `path` above is in un-bent corridor coords, so the client bends each
+        /// waypoint by the same arc the server used to fan entity positions.
         #[serde(default)]
         pub radial_half: f64,
         /// The corridor half-extent the arc maps against (corridor y ∈ [−lat, lat] ↦
@@ -1978,16 +1973,23 @@ mod tests {
 
     #[test]
     fn terrain_section_round_trips() {
+        // ⚠️ **AND IT TOLERATES AN OLDER SERVER'S EXTRA FIELDS.** This payload still carries
+        // the retired elevation grid (`y_min`/`cell`/`cols`/`rows`/`levels`/`connectors`),
+        // which `WG-11` stage 5 removed along with discrete terraces — kept in the fixture on
+        // purpose, because a client that refused to parse a message with unknown members
+        // would drop every landform in it rather than the fields it no longer wants.
         let json = r#"{"type":"world.terrain_section","seq":5,"ts":1,"payload":{"index":2,"start_x":40.0,"end_x":72.0,"y_min":-28.0,"cell":2.0,"cols":16,"rows":28,"levels":[0,1,1],"connectors":[{"kind":"ladder","position":{"x":50.0,"y":-6.0},"lo":0,"hi":1,"radius":2.2}],"path":[{"x":40.0,"y":0.0},{"x":72.0,"y":3.0}]}}"#;
         let env: Envelope<world::TerrainSection> = serde_json::from_str(json).unwrap();
         assert_eq!(env.payload.index, 2);
-        assert_eq!(env.payload.connectors[0].kind, "ladder");
-        assert_eq!(env.payload.levels, vec![0, 1, 1]);
-        // Round-trips back out.
+        assert_eq!(env.payload.start_x, 40.0);
+        assert_eq!(env.payload.path.len(), 2);
+        // Round-trips back out — without the fields that are gone.
         let s = serde_json::to_string(&env.payload).unwrap();
+        assert!(!s.contains("levels"), "the retired elevation grid is back on the wire: {s}");
+        assert!(!s.contains("connectors"), "connectors are back on the wire: {s}");
         let back: world::TerrainSection = serde_json::from_str(&s).unwrap();
-        assert_eq!(back.cols, 16);
-        assert_eq!(back.connectors.len(), 1);
+        assert_eq!(back.end_x, 72.0);
+        assert_eq!(back.path.len(), 2);
     }
 
     #[test]
