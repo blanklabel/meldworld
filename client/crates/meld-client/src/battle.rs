@@ -523,6 +523,18 @@ pub(crate) fn highlight_target(
 /// over walk/idle (see `hd2d::animate_chars`). Consumes the queue so each clip fires a
 /// single time. The clip swaps the sprite's `base_color_texture`; the lunge/flash in
 /// [`animate_battle_actors`] touches `base_color`/`emissive`, so the two compose.
+/// The clip every class has: its basic battle attack.
+const GENERIC_STRIKE: &str = "attack";
+
+/// Is this ability a blow aimed at the enemy — i.e. would a generic attack animation read
+/// as the truth? A heal, a ward or a self-buff would not, and gets no stand-in.
+fn swings_at_a_foe(skill: &str) -> bool {
+    matches!(
+        meld_proto::skills::target_of(skill),
+        meld_proto::skills::Target::Enemy | meld_proto::skills::Target::AllEnemies
+    )
+}
+
 pub(crate) fn drive_battle_action_clips(
     mut hitfx: ResMut<HitFx>,
     mut q: Query<(&BattleActor, &mut hd2d::CharSprite)>,
@@ -534,6 +546,19 @@ pub(crate) fn drive_battle_action_clips(
         if let Some(clip) = hitfx.act_clip.get(&ba.id) {
             if cs.frames.clips.contains_key(clip) {
                 cs.action = Some((clip.clone(), 0.0));
+            } else if swings_at_a_foe(clip) && cs.frames.clips.contains_key(GENERIC_STRIKE) {
+                // ⚠️ MOST ABILITIES HAVE NO ART, AND A MISSING CLIP USED TO MEAN THE HERO
+                // JUST STOOD THERE. Measured against the registry: 74 of 92 abilities have
+                // no clip — every class's L35-and-up rungs (the art predates that ladder)
+                // and EVERY ability of the five classes whose sets were regenerated with
+                // only walk+attack, the Explorer among them. So the default class played
+                // nothing at all, for anything, which reads as the animations being stale.
+                //
+                // A generic swing is the honest stand-in for a blow and a LIE for anything
+                // else — a hero must not slash the air to hand out a Barrier — so the
+                // registry decides. Falling back on `target` rather than on a list means an
+                // ability added tomorrow is covered the day it lands.
+                cs.action = Some((GENERIC_STRIKE.to_string(), 0.0));
             }
         }
     }
@@ -3500,6 +3525,30 @@ mod pack_tests {
 
 #[cfg(test)]
 mod watch_banner_tests {
+    /// ⚠️ A CLASS WITH NO ABILITY ART MUST STILL READ AS DOING SOMETHING, AND THE
+    /// STAND-IN MUST NOT LIE. Measured when this landed: 74 of the registry's 92
+    /// abilities had no clip, so the fallback is the common case rather than the edge —
+    /// but a swing may only stand in for a blow. This reads the registry rather than a
+    /// list, so an ability added later is classified the day it lands.
+    #[test]
+    fn a_swing_stands_in_for_a_blow_and_never_for_a_kindness() {
+        use meld_proto::skills;
+        for def in skills::SKILLS {
+            let is_blow = matches!(def.target, skills::Target::Enemy | skills::Target::AllEnemies);
+            assert_eq!(
+                swings_at_a_foe(def.key),
+                is_blow,
+                "{} targets {:?}",
+                def.key,
+                def.target
+            );
+        }
+        // The two that matter most, spelled out: a Hunter's unanimated capstone gets the
+        // swing, and the Resonant's heal is left alone rather than miming an attack.
+        assert!(swings_at_a_foe("pin_the_prey"));
+        assert!(!swings_at_a_foe("transfuse"));
+    }
+
     use super::*;
 
     /// The banner is the only thing on the battle screen that says a watcher is watching
