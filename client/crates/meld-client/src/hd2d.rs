@@ -91,6 +91,12 @@ use serde::{Deserialize, Serialize};
 /// Separate from the look-dev's `/tmp/meld-look.json` so the game keeps its own
 /// gameplay framing (follow-cam angle, sprite size) independent of look-dev experiments.
 pub const LOOK_FILE: &str = "/tmp/meld-game-look.json";
+
+/// See [`Look::billboard_shadows`] — a named fn so a LOOK_FILE written before the field
+/// existed inherits the real default instead of `bool::default()`.
+fn billboard_shadows_default() -> bool {
+    true
+}
 /// Touch this file to request a frame capture to [`AUTO_SHOT`]. Distinct from the
 /// look-dev's request file so a running look-dev window doesn't answer the game's
 /// captures (and vice-versa) when both watch the disk at once.
@@ -128,6 +134,37 @@ pub struct Look {
     pub dof_on: bool,
     pub bloom_on: bool,
     pub fog_on: bool,
+    /// **SPRITE BILLBOARDS CAST REAL SUN SHADOWS.**
+    ///
+    /// ⚠️ THIS WAS OFF FOR ~260 MERGES ON A REASON THAT NO LONGER HOLDS. #88 ("Fix
+    /// billboards casting a glitchy sweeping shadow") tagged every billboard
+    /// `NotShadowCaster`, because a billboard yaws to face the camera every frame and its
+    /// cast shadow was seen to swing across the ground as it re-oriented. Each sprite got a
+    /// soft contact disc instead.
+    ///
+    /// Re-measured by rendering it: **the swing does not reproduce.** Sweeping `cam_yaw`
+    /// 50 degrees at a frozen sun leaves every tree's shadow pointing the same way in world
+    /// space — what changes is only which side of the trees you stand on. Three things had
+    /// moved underneath that decision: the sun sits at a steeper pitch, ambient no longer
+    /// floods the shadows flat (260 -> 80, see `WorldFeel::ambient`), and until #346 every
+    /// sprite HOVERED above its own contact disc, so the disc read as a smudge on the
+    /// ground rather than as the character's shadow. `AlphaMode::Mask(0.5)` was already on
+    /// `sprite_material`, so the shadow is cut to the sprite's own silhouette rather than
+    /// its quad — a tree casts a tree.
+    ///
+    /// ⚠️ THE COST IS DARKNESS IN DENSE COVER. Measured in forest at a low morning sun,
+    /// standing inside a bank of tree shadow: mean luminance 28 and **56% of the frame
+    /// below 16/255**, against mean 92 on the lit side. `WorldFeel::ambient` is the knob
+    /// that fills shadow interiors, and it is the first thing to raise if deep forest reads
+    /// as unplayable rather than atmospheric.
+    ///
+    /// The serde default is a NAMED FUNCTION, not `#[serde(default)]`: the derive form
+    /// resolves to `bool::default()` (false) rather than to `Look::default()`, so every
+    /// already-seeded `LOOK_FILE` on disk would have silently kept shadows off — the field
+    /// would have looked enabled in the source and been disabled for anyone who had ever
+    /// run the game.
+    #[serde(default = "billboard_shadows_default")]
+    pub billboard_shadows: bool,
     pub sprite_y: f32,     // world-y of a billboard's centre (grounds the padded sprite)
     pub sprite_scale: f32, // uniform scale of the sprite quads
     // A NARROW fov (telephoto) gives the HD-2D miniature compression AND makes DoF
@@ -198,6 +235,7 @@ impl Default for Look {
             orbit: false,
             dof_on: true,
             bloom_on: true,
+            billboard_shadows: billboard_shadows_default(),
             fog_on: true,
             // DERIVED, not eyeballed. The billboard quad is 2.2 units and draws the WHOLE
             // canvas, of which the art fills the middle ~50% — measured mean bottom
@@ -534,16 +572,25 @@ pub fn billboard(
     }
 }
 
-/// Exclude sprite billboards from casting real (sun) shadows. A flat billboard yaws
-/// to face the camera every frame, so its cast shadow swings around the ground as it
-/// re-orients (and as the sun moves) — reading as a "shadow sweeping behind the
-/// character." Billboards carry their own soft contact-shadow disc for grounding, so
-/// their real cast shadow is both redundant and glitchy. Tags each billboard once.
-pub fn no_billboard_shadows(
+/// Apply [`Look::billboard_shadows`] to every sprite billboard, both ways, every frame —
+/// so the toggle is live and a `LOOK_FILE` edit A/Bs it inside a running game rather than
+/// across two builds. Defaults ON; see the field for why #88 turned it off and why that
+/// reason was re-measured and did not hold.
+pub fn billboard_shadow_policy(
     mut commands: Commands,
-    q: Query<Entity, (With<Billboard>, Without<NotShadowCaster>)>,
+    look: Res<Look>,
+    tagged: Query<Entity, (With<Billboard>, With<NotShadowCaster>)>,
+    untagged: Query<Entity, (With<Billboard>, Without<NotShadowCaster>)>,
 ) {
-    for e in &q {
+    if look.billboard_shadows {
+        // Hand the shadow back. Doing it here rather than at spawn keeps the toggle live,
+        // so `LOOK_FILE` can A/B it in a running game instead of across two builds.
+        for e in &tagged {
+            commands.entity(e).try_remove::<NotShadowCaster>();
+        }
+        return;
+    }
+    for e in &untagged {
         // `try_insert`, not `insert`: a billboard can be despawned (screen swap,
         // actor cleanup) between this query and command application — a plain
         // `insert` panics on the now-missing entity.

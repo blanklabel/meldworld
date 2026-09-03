@@ -233,7 +233,7 @@ fn main() {
                 pump_net,
                 demo_driver,
                 hd2d_remote,
-                hd2d::no_billboard_shadows,
+                hd2d::billboard_shadow_policy,
                 (world_render::anchor_sky_dome, world_render::drive_snow),
                 drift_clouds,
                 tile_ground_detail,
