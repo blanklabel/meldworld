@@ -15,7 +15,9 @@ use meld_proto::coast::is_ocean;
 /// The same landing the server computes, kept as one expression so a change to either
 /// side is visible as a difference here.
 fn landing(reach: f64, arc_half: f64) -> (f64, f64) {
-    let theta = arc_half * 0.97;
+    // The coast's OWN angle at this radius — `WG-11` tapers the world and wanders its
+    // shoreline, so 97% of the nominal arc is sea wherever the coast has bitten in.
+    let theta = meld_proto::coast::arc_half_at(reach as f32, arc_half as f32) as f64 * 0.97;
     (reach * theta.cos(), reach * theta.sin())
 }
 

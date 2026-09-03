@@ -109,15 +109,29 @@ struct BiomeParams {
     river_count: u32,
     _pad_wc0: u32, _pad_wc1: u32,
     // The Shift's tell (CANON D20/§W2): (inner_radius, outer_radius, intensity, 0).
-    // A region is a radius ring in the WG-4 fan and this ground is already painted in
-    // rings, so the doomed region draws as an annulus in the same frame as everything
-    // else — no second coordinate system to keep in sync. Intensity 0 = nothing pending.
+    // ⚠️ This used to read "a region is a radius ring ... so the doomed region draws as an
+    // annulus". A region is a PATCH OF CELLS now (`WG-11`) — the radii are its band and
+    // `shift_arc` is its bearing wedge, and burning the annulus alone told every party at
+    // that depth to run from weather coming for a wedge of it. Intensity 0 = nothing pending.
     shift: vec4<f32>,
+    // The tell's bearing wedge: `(arc_center, arc_half, 0, 0)`. `arc_half <= 0` = no wedge,
+    // burn the whole ring.
+    shift_arc: vec4<f32>,
     // Open-water animation: `(seconds, 0, 0, 0)`. The sea needs a clock and this shader had
     // none — which is why the ocean was a static tile while every pond prop drifted its own
     // material UVs from `animate_water`. A vec4 rather than a bare f32 so it lands 16-byte
     // aligned after `shift` and needs no new padding on either side of the mirror.
     sea_anim: vec4<f32>,
+    // A SHIFT'S REPAINTED CELLS — `[cell_key, biome_index, 0, 0]` each, `repaint_count`
+    // live, windowed nearest-first around the player. ⚠️ Mirrors `regions::Repaints`: the
+    // biome here is DERIVED from the grid and the gate, which makes the floor a pure
+    // function of the seed — this delta is the only thing that can move it, and a Shift
+    // without it changed the props and the banner and left the ground alone.
+    repaints: array<vec4<f32>, 32>,
+    repaint_count: u32,
+    _pad_rp0: u32,
+    _pad_rp1: u32,
+    _pad_rp2: u32,
 }
 
 @group(#{MATERIAL_BIND_GROUP}) @binding(106) var<uniform> params: BiomeParams;
@@ -197,6 +211,29 @@ fn strait_depth_at(wxz: vec2<f32>, k: i32) -> f32 {
 // How far INTO the sea a point is, in world units (negative on land). Mirrors
 // `meld_proto::coast::is_ocean` but signed, so the shoreline can fade instead of snapping
 // to a hard edge one texel wide.
+// The fan's half-angle at radius `d`. Mirrors `meld_proto::coast::arc_half_at` — held to it
+// by `the_taper_matches_the_shader`.
+fn arc_half_at(d: f32, arc_half: f32) -> f32 {
+    let taper_start = 1200.0;
+    let taper_end = 3200.0;
+    let end_width = 200.0;
+    let coast_wander = 0.06;
+    let coast_wander_wavelength = 520.0;
+    if (arc_half <= 0.0) { return arc_half; }
+    var tapered = arc_half;
+    if (d > taper_start) {
+        let t = clamp((d - taper_start) / max(taper_end - taper_start, 1.0), 0.0, 1.0);
+        let s = t * t * (3.0 - 2.0 * t);
+        let end_half = min(end_width * 0.5 / max(d, 1.0), arc_half);
+        tapered = arc_half + (end_half - arc_half) * s;
+    }
+    // The coast WANDERS, and only ever bites inward — mirrors `coast::arc_half_at`.
+    let w = d / coast_wander_wavelength;
+    let harmonic = 0.63 * sin(w) + 0.37 * cos(w * 2.7 + 1.9);
+    let bite = coast_wander * 0.5 * (1.0 + clamp(harmonic, -1.0, 1.0));
+    return tapered * (1.0 - bite);
+}
+
 fn sea_depth_at(wxz: vec2<f32>) -> f32 {
     // LAST CITY IS THE SAME SEA, DRAWN BY THE SAME SHADER. The city is its own scene in
     // its own coordinates and cannot use the world's radial fan (that shoreline, expressed
@@ -232,7 +269,11 @@ fn sea_depth_at(wxz: vec2<f32>) -> f32 {
     //   * the NECK, the land bridge that closes the gap near the hub.
     // `min` of the three, so the sign still agrees with `meld_proto::coast::is_ocean`
     // exactly (sea iff past ALL THREE) while the magnitude is now continuous everywhere.
-    let past_fan = (theta - arc_half) * d;
+    // WG-11: the fan's half-angle is a FUNCTION OF RADIUS — the world is a teardrop that
+    // closes to a corridor at the end. Mirrors `meld_proto::coast::arc_half_at`; the server
+    // and the ground must agree about where the sea is, or we paint a coastline nothing
+    // collides with.
+    let past_fan = (theta - arc_half_at(d, arc_half)) * d;
     let past_spit = abs(wxz.y) - spit_half_width(d);
     let past_neck = d - params.coast.y;
     var sea = min(min(past_fan, past_spit), past_neck);

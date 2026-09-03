@@ -96,6 +96,133 @@ impl Cell {
     }
 }
 
+/// Is the boundary between two ADJACENT cells a **pass** (walkable) or a **barrier**?
+///
+/// `WG-11`'s maze is the cell graph: each shared boundary is either open or closed, and
+/// what closes it is the biome's own material — trees in a forest, ranges in the ashfall,
+/// trees and water in the mire. `porosity` is the share of a region's boundaries that stay
+/// open, so **field and desert sit near 1.0 (the crossings between mazes) and ashfall low
+/// (you are hunting a pass)**.
+///
+/// ⚠️ **ORDERLESS, and that is the whole contract.** A boundary is one thing seen from two
+/// sides, so `pass_open(a, b)` and `pass_open(b, a)` must agree — otherwise a cell's own
+/// neighbour list disagrees with its neighbour's and a wall exists from one side only. The
+/// keys are sorted before hashing rather than combined commutatively, because `a ^ b` and
+/// `a + b` both collide far too readily on a packed `(ring, sector)` key.
+///
+/// Pure in `(seed, a, b)` — no traversal, no state, no ordering — which is what lets the
+/// maze be **derived and never stored** (§W5: the baseline stays a function of the seed)
+/// while the world streams outward without bound. Connectivity is NOT this function's job:
+/// feasibility comes from the routes already carved through the world, which cut their own
+/// gaps through whatever this closes.
+pub fn pass_open(seed: u32, a: Cell, b: Cell, porosity: f32) -> bool {
+    let (lo, hi) = if a.key() <= b.key() { (a.key(), b.key()) } else { (b.key(), a.key()) };
+    let h = hash32(seed ^ hash32(lo.wrapping_mul(0x9E37_79B9) ^ hi));
+    // Top 24 bits to a 0..1 fraction: plenty of resolution, and it avoids the low bits that
+    // a multiply-shift hash leaves weakest.
+    let u = (h >> 8) as f32 / 16_777_216.0;
+    u < porosity.clamp(0.0, 1.0)
+}
+
+/// How many repainted cells the ground shader can hold at once. Windowed NEAREST-FIRST
+/// around the player like the straits and the bridges, because a world accumulates
+/// repaints for as long as it lives while only the cells near you can be on screen.
+///
+/// ⚠️ Truncation is not a window — see `repaints_near` and the lesson in `AGENTS.md`.
+pub const MAX_REPAINTS: usize = 32;
+
+/// One cell a Shift has repainted, and what it became: a [`Cell::key`] and an index into
+/// [`BIOMES`]. `u32` pair rather than the richer types because this crosses the wire AND
+/// the shader boundary, where a cell is a packed key and a biome is an integer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Repaint {
+    pub cell: u32,
+    pub biome: u32,
+}
+
+/// The cells a Shift has repainted — **the world's biome delta over its own seed**.
+///
+/// ⚠️ **THIS EXISTS BECAUSE A SHIFT CHANGED THE BIOME AND THE GROUND NEVER REPAINTED.**
+/// `WG-7` made a cell's biome ANALYTIC (a pure function of the grid and the gate), which
+/// is what lets the client paint a streaming world with no per-section lookup table. The
+/// Shift, written before that, swapped `Area.biome` and re-scattered the region's props —
+/// so the label said *"Mire became Desert"*, desert scrub grew, and the floor under it
+/// stayed mire. The biome was a pure function of the seed for the life of a world and
+/// nothing could change it.
+///
+/// A delta keeps both properties: the baseline is still derived (§W5 — the map is never
+/// stored), and the only thing written down is what actually happened, which is exactly
+/// the small JSON `worlds` already persists.
+///
+/// Sorted by `cell` so the lookup is a binary search rather than a scan — `biome_of` runs
+/// per creature spawn, per prop and per ground fragment, and a long-lived world
+/// accumulates repaints without bound.
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Repaints {
+    cells: Vec<Repaint>,
+}
+
+impl Repaints {
+    pub fn is_empty(&self) -> bool {
+        self.cells.is_empty()
+    }
+
+    pub fn len(&self) -> usize {
+        self.cells.len()
+    }
+
+    pub fn as_slice(&self) -> &[Repaint] {
+        &self.cells
+    }
+
+    /// Build from a flat list, ordering it. The wire hands one over unsorted.
+    pub fn from_vec(mut cells: Vec<Repaint>) -> Self {
+        cells.sort_unstable_by_key(|r| r.cell);
+        cells.dedup_by_key(|r| r.cell);
+        Repaints { cells }
+    }
+
+    /// Repaint `c`, replacing any earlier repaint of it. The LAST Shift to touch a cell is
+    /// what it is now — a repaint is a statement of current fact, not an event log entry.
+    pub fn set(&mut self, c: Cell, biome: usize) {
+        let cell = c.key();
+        let biome = biome.min(BIOMES.len() - 1) as u32;
+        match self.cells.binary_search_by_key(&cell, |r| r.cell) {
+            Ok(i) => self.cells[i].biome = biome,
+            Err(i) => self.cells.insert(i, Repaint { cell, biome }),
+        }
+    }
+
+    /// What `c` was repainted to, if it was.
+    pub fn of(&self, c: Cell) -> Option<usize> {
+        let cell = c.key();
+        self.cells
+            .binary_search_by_key(&cell, |r| r.cell)
+            .ok()
+            .map(|i| (self.cells[i].biome as usize).min(BIOMES.len() - 1))
+    }
+
+    /// The `n` repaints whose cells sit nearest `(x, z)`, nearest first.
+    ///
+    /// ⚠️ **NOT the first `n`.** The shader's array is fixed while a world's repaints grow
+    /// without bound, and the ones that can be on screen are the ones near the player —
+    /// taking the head of the list would upload the OLDEST repaints in the world and hold
+    /// them forever, which is the bug that shipped once for the ranges and the bridges.
+    pub fn nearest(&self, grid: &Grid, x: f32, z: f32, n: usize) -> Vec<Repaint> {
+        let mut by_dist: Vec<(f32, Repaint)> = self
+            .cells
+            .iter()
+            .map(|r| {
+                let (cx, cz) = grid.centroid(Cell::from_key(r.cell));
+                ((cx - x) * (cx - x) + (cz - z) * (cz - z), *r)
+            })
+            .collect();
+        by_dist.sort_by(|a, b| a.0.total_cmp(&b.0));
+        by_dist.truncate(n);
+        by_dist.into_iter().map(|(_, r)| r).collect()
+    }
+}
+
 /// A cell's extent: a radius band and a bearing wedge. The radii are NOMINAL — the real
 /// boundary wobbles by up to `warp` with bearing, which is what stops it reading as an arc.
 #[derive(Clone, Copy, Debug)]
@@ -127,7 +254,15 @@ impl Grid {
     /// How many cells `ring` is divided into: its own arc length over the target width.
     pub fn sectors(&self, ring: u32) -> u32 {
         let r_mid = (ring as f32 + 0.5) * self.ring_step;
-        let arc = 2.0 * self.arc_half * r_mid;
+        // ⚠️ **THE TAPERED ARC, because a cell's size is the whole point of this number.**
+        // `WG-11` closes the world to a 200-unit corridor by d3200 (`coast::arc_half_at`),
+        // and asking the CONSTANT half-angle here cut that corridor into 65 sectors — cells
+        // **3 units across** where the design is ~250 on a side, so the biome map degenerates
+        // into noise at depth and the boundary count RISES with radius (129 per ring at
+        // d3200) exactly where the taper was meant to bring it down. The taper is a property
+        // of the world, so everything that asks "how wide is the world here" has to ask the
+        // tapered one: the sea, the bend, and this.
+        let arc = 2.0 * crate::coast::arc_half_at(r_mid, self.arc_half) * r_mid;
         let n = (arc / self.cell_width.max(1.0)).round();
         (n.max(1.0) as u32).min(MAX_SECTORS)
     }
@@ -241,6 +376,25 @@ impl Grid {
         out
     }
 
+    /// How many of a cell's boundaries are PASSES — its degree in the maze graph (`WG-11`).
+    ///
+    /// `porosity_at` is asked per boundary rather than per cell, because porosity is a
+    /// property of the GROUND the boundary runs through and two cells of different biomes
+    /// share one: the caller hands back the porosity for the midpoint between the two, which
+    /// is exactly what the wall placement uses, so the degree a cell reports here and the
+    /// walls that actually stand are the same answer to the same question.
+    ///
+    /// **Degree 1 is a DEAD END** — a cell whose only way out is the way you came in. That is
+    /// what `WG-11` hangs content on: the through-route is for progress and the dead ends are
+    /// for reward, which is what makes wandering worth doing rather than a tax. Degree 0 is a
+    /// sealed cell, which no content should ever be placed in — nobody can reach it.
+    pub fn open_degree(&self, c: Cell, porosity_at: &dyn Fn(Cell, Cell) -> f32) -> usize {
+        self.neighbours(c)
+            .into_iter()
+            .filter(|n| pass_open(self.seed, c, *n, porosity_at(c, *n)))
+            .count()
+    }
+
     /// Distance from `(x, z)` to the nearest cell boundary, in WORLD units, and the cell on
     /// the other side of it. `None` when the nearest boundary is the fan's own rim, which
     /// is not a boundary between cells.
@@ -307,7 +461,12 @@ impl Grid {
     /// drawing the same biome is how a region larger than one cell exists at all, and any
     /// such rule would need an ordering — which would make this a traversal instead of a
     /// pure function of position.
-    pub fn biome_of(&self, c: Cell, gate: &[f32; BIOMES.len()]) -> usize {
+    pub fn biome_of(
+        &self,
+        c: Cell,
+        gate: &[f32; BIOMES.len()],
+        repaints: &Repaints,
+    ) -> usize {
         let inner = c.ring as f32 * self.ring_step;
         // ⚠️ AN EXCLUSIVE BIOME TAKES THE WHOLE BAND. Past its gate the roll is skipped
         // entirely rather than weighted, because "mostly the end of the world, with the
@@ -323,6 +482,14 @@ impl Grid {
         }
         if let Some((i, _)) = capstone {
             return i;
+        }
+        // ⚠️ **A SHIFT'S REPAINT IS CONSULTED HERE, and the order is the rule.** It beats
+        // the seed's own roll — that is the whole point of a delta — but the CAPSTONE beats
+        // it, because "the end of the world is one place" is structural and must not depend
+        // on what a Shift happened to draw. The `[biome_gate]` is already checked sideways
+        // when a Shift picks its biome; this is the other direction.
+        if let Some(b) = repaints.of(c) {
+            return b;
         }
         let mut open = [0usize; BIOMES.len()];
         let mut count = 0usize;
@@ -340,8 +507,14 @@ impl Grid {
     }
 
     /// The biome at a world position.
-    pub fn biome_at(&self, x: f32, z: f32, gate: &[f32; BIOMES.len()]) -> usize {
-        self.biome_of(self.cell_at(x, z), gate)
+    pub fn biome_at(
+        &self,
+        x: f32,
+        z: f32,
+        gate: &[f32; BIOMES.len()],
+        repaints: &Repaints,
+    ) -> usize {
+        self.biome_of(self.cell_at(x, z), gate, repaints)
     }
 }
 
@@ -357,12 +530,78 @@ impl Regions {
         for (i, g) in gate.iter_mut().enumerate() {
             *g = self.gate.get(i).copied().unwrap_or(0.0);
         }
-        self.grid.biome_at(x, z, &gate)
+        self.grid.biome_at(x, z, &gate, &self.repaints)
     }
 }
 
 #[cfg(test)]
 mod tests {
+    /// A world nothing has Shifted. Most of these tests are about the DERIVATION, so they
+    /// ask it with an empty delta.
+    fn no_repaints() -> super::Repaints {
+        super::Repaints::default()
+    }
+
+
+    #[test]
+    fn a_boundary_is_the_same_wall_from_either_side() {
+        // A boundary is ONE thing seen from two cells. If `pass_open` disagreed by argument
+        // order, a cell's own neighbour list would contradict its neighbour's and a wall
+        // would exist from one side only — you could walk through it one way and not back.
+        let g = Grid { arc_half: 2.618, ring_step: 250.0, cell_width: 250.0, warp: 40.0, seed: 7 };
+        let mut open = 0usize;
+        let mut total = 0usize;
+        for ring in 0..12u32 {
+            for sector in 0..g.sectors(ring) {
+                let c = Cell::new(ring, sector);
+                for n in g.neighbours(c) {
+                    assert_eq!(
+                        pass_open(g.seed, c, n, 0.5),
+                        pass_open(g.seed, n, c, 0.5),
+                        "the boundary {c:?}<->{n:?} is a wall from one side only"
+                    );
+                    total += 1;
+                    if pass_open(g.seed, c, n, 0.5) {
+                        open += 1;
+                    }
+                }
+            }
+        }
+        // ...and it actually splits: a hash that always answered the same way would pass the
+        // symmetry check above and produce either no maze at all or a solid world.
+        let share = open as f64 / total as f64;
+        assert!(
+            (0.4..0.6).contains(&share),
+            "porosity 0.5 should open about half the boundaries, opened {share:.2}"
+        );
+    }
+
+    #[test]
+    fn porosity_is_the_dial_between_a_crossing_and_a_maze() {
+        // field/desert are the open crossings between mazes; ashfall is where you hunt for a
+        // pass. That ordering is the design, so it is asserted as an ordering — the values
+        // themselves are `[TUNABLE]`.
+        let g = Grid { arc_half: 2.618, ring_step: 250.0, cell_width: 250.0, warp: 40.0, seed: 99 };
+        let share = |p: f32| {
+            let (mut open, mut total) = (0usize, 0usize);
+            for ring in 1..10u32 {
+                for sector in 0..g.sectors(ring) {
+                    let c = Cell::new(ring, sector);
+                    for n in g.neighbours(c) {
+                        total += 1;
+                        if pass_open(g.seed, c, n, p) {
+                            open += 1;
+                        }
+                    }
+                }
+            }
+            open as f64 / total as f64
+        };
+        let (open_biome, mazey) = (share(0.9), share(0.3));
+        assert!(open_biome > 0.8, "a crossing must stay crossable ({open_biome:.2})");
+        assert!(mazey < 0.4, "a maze must actually close ({mazey:.2})");
+        assert!(open_biome > mazey, "porosity has to be monotone or it is not a dial");
+    }
     use super::*;
 
     /// The shipped shape: a 300° fan, cells ~250 units on a side.
@@ -374,6 +613,116 @@ mod tests {
             warp: 88.0,
             seed,
         }
+    }
+
+    /// **THE BUG THIS FIXES.** A Shift swapped the biome and re-scattered the props while
+    /// the GROUND stayed what the seed said, because `WG-7` made a cell's biome analytic and
+    /// the Shift predates it. So the derivation has to admit a delta, or nothing that happens
+    /// to a world can ever change the floor.
+    #[test]
+    fn a_shift_repaints_the_ground_the_seed_had_already_decided() {
+        let g = grid(424242);
+        // Every ordinary theme open, the CAPSTONE held out — an all-zero gate opens
+        // `seraphic_oubliette` at the hub, and then the whole world is the ending.
+        let mut gate = [0.0f32; BIOMES.len()];
+        gate[biome_index("seraphic_oubliette").unwrap()] = f32::MAX;
+        let mut moved = 0;
+        for ring in 1..8u32 {
+            for sector in 0..g.sectors(ring).min(6) {
+                let c = Cell::new(ring, sector);
+                let before = g.biome_of(c, &gate, &no_repaints());
+                // Repaint to something it is NOT, so a pass cannot be a coincidence.
+                let want = (before + 3) % 6;
+                let mut rp = Repaints::default();
+                rp.set(c, want);
+                assert_eq!(
+                    g.biome_of(c, &gate, &rp),
+                    want,
+                    "cell {c:?} kept the seed's biome through a repaint"
+                );
+                // …and ONLY that cell. A repaint is one cell, not a ring.
+                let other = Cell::new(ring, (sector + 1) % g.sectors(ring).max(1));
+                if other != c {
+                    assert_eq!(
+                        g.biome_of(other, &gate, &rp),
+                        g.biome_of(other, &gate, &no_repaints()),
+                        "repainting {c:?} moved its neighbour {other:?} too"
+                    );
+                }
+                moved += 1;
+            }
+        }
+        assert!(moved > 20, "only {moved} cells exercised");
+    }
+
+    /// The order inside `biome_of` is a rule, not an implementation detail: a repaint beats
+    /// the seed's roll and the CAPSTONE beats the repaint. "The end of the world is one
+    /// place" has to stay structural — a Shift landing in the deepest band must not be able
+    /// to put a meadow in the middle of the ending.
+    #[test]
+    fn a_repaint_never_overrules_the_end_of_the_world() {
+        let g = grid(7);
+        let cap = biome_index("seraphic_oubliette").expect("the capstone is in BIOMES");
+        let mut gate = [0.0f32; BIOMES.len()];
+        gate[cap] = 3000.0;
+        // A cell wholly past the capstone's gate.
+        let deep = Cell::new((3600.0 / g.ring_step) as u32, 0);
+        let mut rp = Repaints::default();
+        rp.set(deep, biome_index("field").unwrap());
+        assert_eq!(
+            g.biome_of(deep, &gate, &rp),
+            cap,
+            "a repaint overruled the end of the world"
+        );
+        // Shallow of the gate the same repaint must land, or it is inert everywhere.
+        let shallow = Cell::new(2, 0);
+        rp.set(shallow, biome_index("field").unwrap());
+        assert_eq!(g.biome_of(shallow, &gate, &rp), biome_index("field").unwrap());
+    }
+
+    /// ⚠️ **Truncation is not a window.** The shader's array is fixed while a world's
+    /// repaints accumulate for as long as it lives, so the ones uploaded have to be the ones
+    /// NEAREST the player — taking the head of the list uploads the oldest repaints in the
+    /// world and keeps them forever, which is the bug that already shipped for the ranges
+    /// and the bridges.
+    #[test]
+    fn the_repaint_window_is_the_cells_nearest_the_player_not_the_first_it_finds() {
+        let g = grid(99);
+        let mut rp = Repaints::default();
+        // Repaint a cell in every ring, shallowest first — so list order is radial order and
+        // "the first N" is a measurably wrong answer for a player standing deep.
+        for ring in 1..12u32 {
+            rp.set(Cell::new(ring, 0), (ring as usize) % 6);
+        }
+        let deep = Cell::new(10, 0);
+        let (px, pz) = g.centroid(deep);
+        let win = rp.nearest(&g, px, pz, 3);
+        assert_eq!(win.len(), 3);
+        assert_eq!(win[0].cell, deep.key(), "the nearest repaint is not first");
+        let head: Vec<u32> = rp.as_slice().iter().take(3).map(|r| r.cell).collect();
+        let got: Vec<u32> = win.iter().map(|r| r.cell).collect();
+        assert_ne!(got, head, "the window is just the head of the list");
+        // Nearest-first, monotonically.
+        let d = |c: u32| {
+            let (cx, cz) = g.centroid(Cell::from_key(c));
+            (cx - px).hypot(cz - pz)
+        };
+        for w in win.windows(2) {
+            assert!(d(w[0].cell) <= d(w[1].cell), "window is not sorted by distance");
+        }
+    }
+
+    /// A repaint replaces the last one rather than stacking: it is a statement of what a
+    /// cell IS, and a world lives through many Shifts.
+    #[test]
+    fn the_last_shift_to_touch_a_cell_is_what_it_is_now() {
+        let mut rp = Repaints::default();
+        let c = Cell::new(4, 2);
+        rp.set(c, 1);
+        rp.set(c, 5);
+        assert_eq!(rp.of(c), Some(5));
+        assert_eq!(rp.len(), 1, "a second repaint of one cell grew the list");
+        assert_eq!(rp.of(Cell::new(4, 3)), None, "an untouched cell reads as repainted");
     }
 
     /// Walk the fan and confirm every point lands in exactly one cell, and that the cell it
@@ -434,13 +783,19 @@ mod tests {
         ];
         for seed in [1u32, 7, 424242, 99, 1_000_003, 5, 31, 777] {
             let g = grid(seed);
-            for r in [400.0f32, 900.0, 1800.0, 3000.0] {
+            // ⚠️ **MEASURED WHERE THE WORLD HAS ROOM FOR VARIETY.** `r = 3000` was in this
+            // sweep and cannot be any more: `WG-11`'s teardrop closes the land to ~600 units
+            // there and 200 by d3200, so a full circle crosses one or two cells and demanding
+            // five biomes of it is demanding the wedge back. The property under test is that
+            // a circle is not ONE biome — that is the ring world this decomposition replaced —
+            // and it is tested across the radii where a circle is long enough to hold several.
+            for r in [400.0f32, 900.0, 1400.0, 1800.0] {
                 let mut seen = [false; BIOMES.len()];
                 let mut runs = 0;
                 let mut prev = usize::MAX;
                 for k in 0..1440 {
                     let b = (k as f32 / 1440.0 * 2.0 - 1.0) * g.arc_half * 0.995;
-                    let bi = g.biome_at(r * b.cos(), r * b.sin(), &gate);
+                    let bi = g.biome_at(r * b.cos(), r * b.sin(), &gate, &no_repaints());
                     seen[bi] = true;
                     if bi != prev {
                         runs += 1;
@@ -464,27 +819,86 @@ mod tests {
 
     /// Cells must not become thin slivers or vast provinces as the fan widens, or "a region"
     /// means something different at the hub than at the frontier.
+    ///
+    /// ⚠️ **REWRITTEN FOR THE TEARDROP (`WG-11`), and the old form was measuring with the
+    /// wrong arc.** It computed a cell's width as `2·arc_half·r_mid / n` using the CONSTANT
+    /// half-angle while `sectors` had started dividing the TAPERED one — an untapered
+    /// numerator over a tapered denominator, which reports vast provinces at depth that do
+    /// not exist. Its second assertion (`sectors(12) > sectors(1) * 6`) encoded the older
+    /// world outright: that the arc is subdivided outward *forever*. The world now closes,
+    /// so the sector count RISES TO A PEAK AND FALLS, and demanding it keep climbing is
+    /// demanding the wedge back.
     #[test]
-    fn a_cell_stays_about_the_same_size_at_every_depth() {
+    fn a_cell_stays_about_the_same_size_where_the_world_has_room() {
         let g = grid(424242);
+        let width = |ring: u32| {
+            let r_mid = (ring as f32 + 0.5) * g.ring_step;
+            let n = g.sectors(ring).max(1);
+            2.0 * crate::coast::arc_half_at(r_mid, g.arc_half) * r_mid / n as f32
+        };
+        // Wherever the world is wider than one cell, a cell is about one cell wide.
         let mut widths = Vec::new();
         for ring in 1..14u32 {
-            let n = g.sectors(ring);
             let r_mid = (ring as f32 + 0.5) * g.ring_step;
-            widths.push(2.0 * g.arc_half * r_mid / n as f32);
+            let arc = 2.0 * crate::coast::arc_half_at(r_mid, g.arc_half) * r_mid;
+            if arc >= g.cell_width * 1.5 {
+                widths.push(width(ring));
+            }
         }
+        assert!(widths.len() > 6, "the sweep has to cover most of the world, got {}", widths.len());
         let (lo, hi) = widths.iter().fold((f32::MAX, 0.0f32), |(l, h), w| (l.min(*w), h.max(*w)));
         assert!(
             hi / lo < 1.6,
-            "cell arc width ranges {lo:.0}..{hi:.0} across the world — {:.2}x",
+            "cell arc width ranges {lo:.0}..{hi:.0} where the world has room — {:.2}x",
             hi / lo
         );
-        // And it is genuinely growing the sector COUNT rather than the cell.
-        assert!(g.sectors(12) > g.sectors(1) * 6, "the arc is not being subdivided outward");
+        // The arc IS subdivided outward while the world widens…
+        let mid = g.sectors(6);
+        assert!(mid > g.sectors(1) * 2, "the widening world must be subdivided: {mid} vs {}", g.sectors(1));
+        // …and then the teardrop closes and takes the subdivisions back with it, which is the
+        // whole reason the deep world became affordable to wall.
+        assert!(
+            g.sectors(13) < mid,
+            "the world must close again: {} sectors at the end against {mid} at the waist",
+            g.sectors(13)
+        );
     }
 
     /// Adjacency has to be mutual, or a Shift that spreads to a neighbour cannot be
     /// replayed from the other side and an anchor's hold has a direction.
+    /// A maze needs dead ends, and it needs them to be findable rather than theoretical.
+    #[test]
+    fn the_maze_has_dead_ends_and_no_sealed_cells() {
+        let g = grid(424242);
+        let porosity = |_a: Cell, _b: Cell| 0.45_f32; // a mazey biome
+        let (mut dead, mut sealed, mut total) = (0usize, 0usize, 0usize);
+        for ring in 1..10u32 {
+            for sector in 0..g.sectors(ring) {
+                let d = g.open_degree(Cell::new(ring, sector), &porosity);
+                total += 1;
+                if d == 0 {
+                    sealed += 1;
+                }
+                if d == 1 {
+                    dead += 1;
+                }
+            }
+        }
+        assert!(total > 50, "the sweep has to cover a real stretch of world, got {total}");
+        // Dead ends are the CONTENT of a maze, so a maze without any is a corridor.
+        assert!(
+            dead * 20 >= total,
+            "only {dead} dead ends in {total} cells — a maze needs somewhere to go that is \
+             worth going and does not lead onward"
+        );
+        // …and a SEALED cell is one nobody can enter, so nothing may be placed there. They
+        // are legal (the hash is free to close every side) and must simply be rare.
+        assert!(
+            sealed * 10 < total,
+            "{sealed} of {total} cells are sealed — that much of the world is unreachable"
+        );
+    }
+
     #[test]
     fn adjacency_is_symmetric() {
         let g = grid(424242);
@@ -556,7 +970,7 @@ mod tests {
             for ring in 0..16u32 {
                 for sector in 0..g.sectors(ring) {
                     let c = Cell::new(ring, sector);
-                    let bi = g.biome_of(c, &gate);
+                    let bi = g.biome_of(c, &gate, &no_repaints());
                     let inner = ring as f32 * g.ring_step;
                     assert!(
                         gate[bi] <= inner,
@@ -591,11 +1005,13 @@ mod tests {
             for sector in 0..a.sectors(ring) {
                 let cell = Cell::new(ring, sector);
                 assert_eq!(
-                    a.biome_of(cell, &gate),
-                    b.biome_of(cell, &gate),
+                    a.biome_of(cell, &gate, &no_repaints()),
+                    b.biome_of(cell, &gate, &no_repaints()),
                     "the same seed gave {cell:?} two biomes"
                 );
-                if a.biome_of(cell, &gate) != c.biome_of(cell, &gate) {
+                if a.biome_of(cell, &gate, &no_repaints())
+                    != c.biome_of(cell, &gate, &no_repaints())
+                {
                     differ += 1;
                 }
             }
@@ -622,14 +1038,21 @@ mod tests {
         for (i, g) in [(2usize, 400.0f32), (3, 250.0), (4, 550.0)] {
             gate[i] = g;
         }
-        let derived = Regions { grid: g, gate: gate.clone(), blend: 26.0, force: -1 };
+        let derived =
+            Regions { grid: g, gate: gate.clone(), blend: 26.0, force: -1, repaints: no_repaints() };
         // …and the override must be doing real work overall. Asked in AGGREGATE rather than
         // per biome: with eleven themes one of them will legitimately be what the grid would
         // have picked anyway across a sample, and failing on that coincidence tests nothing.
         let mut total_differed = 0usize;
         for (want, name) in BIOMES.iter().enumerate() {
             let forced =
-                Regions { grid: g, gate: gate.clone(), blend: 26.0, force: want as i32 };
+                Regions {
+                    grid: g,
+                    gate: gate.clone(),
+                    blend: 26.0,
+                    force: want as i32,
+                    repaints: no_repaints(),
+                };
             let mut differed = 0;
             for k in 0..400 {
                 let r = 300.0 + k as f32 * 6.0;
@@ -678,7 +1101,7 @@ mod tests {
         let mut seen = [false; BIOMES.len()];
         for ring in 0..16u32 {
             for sector in 0..g.sectors(ring) {
-                seen[g.biome_of(Cell::new(ring, sector), &gate)] = true;
+                seen[g.biome_of(Cell::new(ring, sector), &gate, &no_repaints())] = true;
             }
         }
         for (i, s) in seen.iter().enumerate() {
@@ -711,6 +1134,11 @@ pub struct Regions {
     /// class of mismatch the per-section biome LUT was originally built to fix, one layer up.
     #[serde(default = "no_force")]
     pub force: i32,
+    /// **Cells a Shift has repainted** — see [`Repaints`]. Empty in a world nothing has
+    /// Shifted yet, which is why the derivation stays a pure function of the seed until
+    /// something actually happens to it.
+    #[serde(default)]
+    pub repaints: Repaints,
 }
 
 fn no_force() -> i32 {
@@ -726,6 +1154,7 @@ impl Default for Regions {
             gate: vec![0.0; BIOMES.len()],
             blend: 26.0,
             force: -1,
+            repaints: Repaints::default(),
         }
     }
 }

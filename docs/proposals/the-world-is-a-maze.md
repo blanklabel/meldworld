@@ -99,6 +99,32 @@ what movement, routing, placement and the shader all ask.
 It also pays for itself: deep rings get **smaller** instead of quadratically larger, so the
 density cap stops binding and the deep biomes can hold their designed terrain.
 
+⚠️ **AND IT IS NOT ONE TERM. THIS SECTION SAID IT WAS, AND THAT WAS WRONG — tried, measured,
+reverted.** Making `arc_half_rad` a function of radius inside `coast::sea_depth` is indeed a
+single line, and the shape it produces is right: full 150° out to d1200, widening to ~7,500
+units at d1600, then closing to 200 at d3200 and holding. **The world then stops generating.**
+
+The cause is that **the coast is not what decides where content goes — the BEND is.**
+`radial_tf` maps corridor `y` across the *constant* ±150° at every radius, so with a tapered
+shoreline a section at d2800 still scatters its creatures, props, chests and route waypoints
+across the full fan while only ±17.4° of it is land. Roughly **88% of everything placed out
+there lands in the sea**, and `generate_with`'s feasibility re-rolls burn themselves against a
+section that is almost entirely water — the same failure the ranges hit once (*"2.2s without
+ranges and over 60s WITH"*), for the same reason.
+
+So the taper is really: `sea_depth` **plus the bend** — `radial_tf`, its inverse
+`corridorize`, and `tangential_scale` all have to ask `arc_half_at(r)` instead of the
+constant. That is three one-line changes and one real obstacle: **the bend is inlined in
+eight places** in `meld-world` (`let theta = (p.y / lat).clamp(-1.0, 1.0) * half`) rather than
+going through `radial_tf`. Eight copies of the most load-bearing transform in the generator is
+precisely the shape of every bent-frame bug this epic has already paid for, so the taper's
+real first step is **funnel the bend through one function**, exactly as `clear_of_routes` did
+for the clear tube. Do that first, then the taper is genuinely one term — in one place.
+
+*Good news for when it is done:* `tangential_scale` already exists and already expresses
+"world units per corridor y", and `WG-6` moved four call sites onto it. The abstraction is
+half-built already.
+
 ⚠️ **The taper fights the anti-east rule.** A funnel makes the centre line geometrically
 shortest, and the pull strengthens toward the point. The taper must stay gentle through the
 mid-world and the passes near the end must be deliberately off-axis, or the funnel
@@ -322,6 +348,20 @@ along a held pass so a road reads as a road from a distance. That is not decorat
   haul ore out to, and it survives its founder logging off. No new mechanic needed — and the
   per-warp chit cost on a *link* is the sink that keeps the network from being free.
 
+**What a road LOOKS like — decided.** A **worn dirt road: packed brown earth with wheel
+ruts**, and **at most two tiles wide**. Both halves matter:
+
+- *Packed earth with ruts* says **used**, which is the whole point — a road is not a paved
+  civic work, it is ground that enough people have walked and hauled over that the maze gave
+  up. It also reads as decaying gracefully: a road losing its anchors should thin back toward
+  wilderness, and worn earth has somewhere to go on the way (ruts fading, grass returning)
+  where flagstones would simply switch off.
+- *Two tiles at most* keeps it a **trail, not a highway** — the same argument
+  `path_clear_radius` already makes at 1.9 ("was a 4.0 highway that read as a corridor"). A
+  wide road would also outline the route from a distance, which is precisely what invariant 7
+  forbids: you must not be able to read where the through-route runs by looking at the ground.
+  At two tiles a road is legible when you are ON it and invisible from across a cell.
+
 ⚠️ **Two traps are already waiting for the visible road, both documented in blood.**
 `ground_biome.wgsl` mirrors the region decomposition analytically, but ranges and bridges ride
 as fixed-size uniform arrays — and *"TRUNCATION IS NOT A WINDOW"*: both shipped taking the
@@ -438,6 +478,140 @@ Three things follow, and the first corrects a worry stated above:
   crossed, which is exactly the ground that becomes a road. That makes roads not a
   convenience but the mechanic that pays off the maze's own structural cost.
 
+### 3.7 The shoreline is a ruler edge, and it should not be
+
+⚠️ **MEASURED: the coast is a perfect RAY.** `sea_depth`'s fan term is
+`(theta - arc_half) * d`, so the ocean's edge sits at a constant bearing — **150.000° at
+every radius from d200 to d1200**, not approximately straight but exactly straight. Past
+`TAPER_START` it becomes a straight-sided 200-unit channel. The only things breaking it up
+are bays and isles, which are DISCS bitten out of a straight line, so the coast reads as a
+ruler edge with circular scallops.
+
+**The fix already exists one layer up.** `regions::Grid::warp_at` displaces ring boundaries
+using TWO harmonics of bearing, explicitly *"so the boundary is a wandering line rather than
+a lobed flower"* — and it is safe precisely because it depends on ONE variable, which keeps
+the partition well defined (the ring index stays monotone in radius along every ray). The
+same trick on `arc_half_at`, as a function of RADIUS, gives a meandering coast and inherits
+that property: the fan's width wanders, the field stays single-valued, and a walk outward can
+cross a cove and come back to land — which is what a coastline does.
+
+**The guard is a variance, not a shape.** Assert that the rim's bearing VARIES with radius
+past some floor. A coastline that is straight anywhere is a coastline somebody drew with a
+ruler, and "not straight" is the property; any particular wiggle is a tunable.
+
+⚠️ It moves every seeded world, and it is asked by the bend as well as by the sea
+(`arc_half_at` is both), so it wants its own change and its own gate rather than riding along
+with anything else. Every world-shape change in this epic has cost an interaction that was
+not predicted — the two shaders, the range/maze conflation, the trail crossing water — and
+all three were cheaper to find alone than in company.
+
+### 3.8 A Shift changed the biome and the ground never repainted — FIXED
+
+⚠️ **MEASURED, and this is what stage 5 is actually FOR.** `apply_shift` writes
+`self.areas[i].biome = to` and re-scatters the region's props with the new biome's kinds. The
+client is told, and tells the player: *"Mire became Desert"*. **The ground stays Mire.**
+
+Because `WG-7` made ground biome ANALYTIC. The client paints it from
+`regions::biome_at(x, z)` → `biome_of(cell_at(x, z), gate)`, a pure function of the grid
+(seed, ring step, cell width, warp) and the `[biome_gate]` table — and a Shift touches none of
+those. `TerrainSection` carries a `biome` field and the handler consumes `peaks`, `ridges`,
+`straits`, `lobes`, `water`, `bridges` — **not** `biome`. The Shift messages' `biome` reaches
+exactly two places: the warning banner and the "X became Y" line.
+
+So the ground's biome is fixed for the life of a world, and no Shift can ever change it. The
+props change, the label changes, the terrain does not — desert scrub standing on mire.
+
+⚠️ **The stale comment that hid it** is on `world.shift` itself: *"the client already keys its
+biome ground and HUD label off per-section radius rings, so a section-granular Shift needs no
+new rendering path at all."* True when it was written, false since `WG-7` shipped cells, and
+it reads as a reason not to look.
+
+**The fix is stage 5 proper, and it is not "move terrain".** Stage 5's stated headline —
+per-ring terrain becomes per-cell — moves a grid of zeros (`terraces_per_area = 0.0`, so
+`raise_terrace` never runs and `Terrain.level` is provably all-zero). What actually has to
+become per-cell is **the Shift's output**: a set of per-cell biome OVERRIDES, carried on the
+wire and consulted by both `regions::biome_at` and the ground shader's mirror of it, so the
+derivation stays a pure function of `(seed, overrides)` and §W5's replay still holds — the
+override set is exactly the kind of small delta `worlds` already stores.
+
+That also makes the Shift's region cell-shaped for free, which is the other half of stage 5:
+an override set IS a set of cells, so `world.shift_warning`'s `inner_radius`/`outer_radius`
+ring stops being the region's definition and becomes a summary of it.
+
+**What shipped.** `regions::Repaints` — a sorted cell-key → biome delta, consulted inside
+`Grid::biome_of` between the capstone and the seeded roll, mirrored line-for-line into
+`rg_biome_of` in both ground shaders. The order is the rule and is held by test: **the
+capstone outranks a repaint** (the end of the world stays one place whatever the weather
+does) and **a repaint outranks the seed**. It rides `run.started` (the accumulated delta, so
+a joiner agrees with everyone standing there) and `world.shift` (the cells that just
+changed), and the client folds it into the same `Regions` its grass, minimap, HUD label and
+ground shader all read — so nothing can disagree with the floor it is drawn on.
+
+Because the delta is consulted inside the ONE resolver rather than beside it, adding it made
+`repaints` an explicit argument of `Grid::biome_of` — forgetting it is a compile error rather
+than a silently stale answer. That is the strongest available form of the one-rule discipline
+this file keeps invoking.
+
+**And the region became a patch, in the same change, because it had to.** Repainting cells on
+a full annulus would have fixed "the ground never changes" and handed back the concentric
+rings `WG-7` and `WG-11` exist to retire — in the one moment the player is watching the land
+change. `Arena::shift_patch` gives a Shift a **bearing wedge** as well as a radius band,
+sized off the same `roll.sections` as the depth (about one cell on a side for a Tiny Shift,
+three for a Cataclysmic), so CANON's 1d6 size table means the same thing in both axes. The
+cell set is the region's definition and **everything asks it** — what the Force blast
+catches, what is wiped, what re-scatters, what repaints — because a radius test beside a cell
+test is two answers to "is this inside", and the difference is a creature that died to a
+Shift that never reached it.
+
+Two things fell out of that:
+
+- **`reroll_props` was strewing a whole ring's worth of props into a wedge.** Density is per
+  unit area, so the count takes the region's share of that section's own tapered arc.
+- **`reroll_peaks` pushed a CORRIDOR point into a world-space list.** `self.path` is corridor
+  coordinates and `peaks` is world (generation pushes `radial_tf(summit, ..)`), so a Shift's
+  mountain rose somewhere else entirely — and corridor `y` being an ANGLE means "somewhere
+  else" is most of the way around the fan at depth. Nth instance of the bent-frame trap.
+
+⚠️ **AND TWO EXISTING TESTS FAILED FOR THE RIGHT REASON**, which is worth recording:
+`a_shift_re_cuts_the_regions_mountains` and `what_grows_back_belongs_to_the_new_biome` both
+measured membership as `inner <= r < outer`. True when a region was an annulus; wrong the
+moment it became a patch — the peaks a Shift leaves standing at the same depth are not its
+peaks, and the creatures it spared are still their own biome's. Same shape as
+`the_way_out_survives_every_shift` measuring the fanned swath instead of the tube: **when a
+guard and the code it guards share a frame convention, the guard is not evidence.**
+
+### 3.9 The gate was red for a reason nobody had looked at
+
+⚠️ **The branch was red before any of stage 5's work, and I nearly merged it.** The earlier
+gate had reported `the_clear_path_crosses_at_an_isthmus_and_never_swims` failing and I never
+got a green verdict back before moving on — worth stating plainly, because "the gate is
+running" is not "the gate passed".
+
+**The cause: a deck is a straight segment and a crossing can be a curve.** `bridge_span`
+collapses a run of drowned trail into ONE straight capsule from its first vertex to its last.
+Where the trail crosses at an angle, or bows around a range or a lake, the deck cuts the chord
+and misses the middle of its own run. Seed 424242: one section found **89** drowned trail
+vertices, laid **one** span, and left **26** in open water at r=2283.
+
+**Why nothing caught it** is the part worth keeping. A\* draws a route that is dry by
+construction — it samples every bent edge at ≤1 world unit against the route's own pad — and
+it is never asked again. `backbone_feasible` samples the route before the deeper section that
+cuts the strait exists. The strait's own contract (`a_strait_is_cut_and_it_is_always
+_crossable`) holds in isolation, and held here. So the bridging pass is the only place in the
+generator that knows both "here is the trail" and "here is the new sea" at the same moment,
+and it was the one place not checking the result. **A pass that repairs something has to
+verify its own repair** — the same shape as the dependency-order table in `AGENTS.md`, one
+level down.
+
+It also took five wrong hypotheses to find, every one of them plausible and every one killed
+by an instrument rather than by argument: a later section drowning an earlier route (ruled out
+— identical wet set at every reach), a straight stub-to-next-section chord (ruled out — no gap
+in `corridor_path`), A\* accepting wet edges (ruled out — a debug print showed every route dry
+when drawn), the strait sealing its ring (ruled out — 1347 of 2401 bearings at that radius
+clear the pad), and two overlapping straits drowning each other's isthmus (ruled out by
+per-strait attribution). The thing that actually found it was printing `wet` and `spans` at
+the decision point: `wet=89 spans=1 DROWNED 26`.
+
 ## 5. Invariants
 
 The contract, all testable:
@@ -535,9 +709,39 @@ The contract, all testable:
 
 ## 8. Staging
 
-1. **Barriers on cell boundaries** with passes and a guaranteed spanning route. Additive,
-   reuses range/water placement, leaves streaming alone. The world becomes chambers and
-   passes — the biggest change in feel per unit of risk.
+-1. **Funnel the bend through one function.** `radial_tf` is inlined in eight places, and the
+   taper cannot land until they all ask the same question — see §3.3. Mechanical, no
+   behaviour change, and it is the prerequisite for the prerequisite.
+0. ⚠️ **THE TAPER COMES FIRST — measured.** It was listed third as an independent win; it is
+   a *prerequisite*. Wall density is the whole design, and the cost of walls scales with the
+   number of cell boundaries in a section, which scales with the arc: ~63 sectors per ring at
+   r=3000 against 8 at r=400. Measured, generation to d900 across four seeds, best-of:
+   `ridge_chance` 0.0 → **2,395 ms**, 0.45 (shipped) → **3,001 ms**, 1.0 → **3,123 ms**, with
+   routability holding throughout and the drawn path lengthening 10-24%. So ONE range per
+   section is cheap — but the maze wants MANY, and the slope is per-wall, so a deep section
+   at 5 walls lands where the density cap already sits: over the `ensure_frontier` tick
+   budget, `SC-2`/`CR-4` territory. Closing the fan to ~1.8° at d3200 cuts deep cell count
+   roughly twentyfold and makes the barriers affordable exactly where they are not today.
+   **Build the taper, then measure the wall budget again.**
+1. **Barriers on cell boundaries** with passes. ⚠️ *Smaller than it looks — the mechanism is
+   already there.* `Arena::push_ridges` (`WG-7`'s routes half) already raises a range along a
+   cell boundary, weighted by the cell's own biome, cuts `ridge_passes` gaps into it, and
+   yields to the drawn trail — *"dropping it IS a pass, because passes are gaps"* — so
+   feasibility is structural rather than checked. What is missing is that it rolls **once per
+   section** instead of asking the graph. Drive it from `regions::pass_open` over the closed
+   boundaries and the maze falls out.
+   ⚠️ **And `WG-7` has a standing objection to answer**: it sized ranges as a share of the
+   FAN precisely because *"one cell boundary (~250 u by design) is something you round without
+   noticing it was there"*. That is true of ONE wall and false of a maze — a boundary is only
+   roundable while its neighbours are open. So this stage is not "add a wall", it is "close
+   boundaries in NUMBERS", which is exactly why the taper has to come first.
+   ⚠️ **A ridge is a MOUNTAIN**: it raises `ridge_height` and blocks by slope. So it is the
+   right primitive for ashfall and the tundra's range half, and the wrong one for a forest —
+   trees cannot be a raised spine. Prop-built walls need `spacing <= 2·obstacle_min_radius +
+   2·player_radius` (= 3.2) to actually block, which is ~80 colliders per 250-unit boundary
+   against a whole deep section's current 2,350. **Prop barriers must therefore REPLACE the
+   scattered maze fill rather than add to it** — the same "replaces the meander" constraint
+   the detour budget imposed.
 2. **Dead ends and content placement** on terminal branches.
 3. **The taper**, via one term in `coast`. Unlocks the density cap as a side effect.
 4. **Anchors hold passes; a held route is a road.**

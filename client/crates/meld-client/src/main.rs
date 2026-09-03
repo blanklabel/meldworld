@@ -950,6 +950,13 @@ struct RunStats {
 struct ShiftTell {
     inner: f32,
     outer: f32,
+    /// The doomed BEARING wedge, in radians: centre and half-width. A region is a patch of
+    /// cells rather than a whole annulus, so lighting the ring alone would tell everyone at
+    /// that depth to run from weather that is not coming for them. `arc_half <= 0` is the
+    /// "no wedge given" state, and the ground treats it as the whole ring — which is what an
+    /// older server sends.
+    arc_center: f32,
+    arc_half: f32,
     /// Client clock (seconds) the region swaps. Past it, the ring is history.
     lands_at: f64,
     /// What it becomes, for the countdown line.

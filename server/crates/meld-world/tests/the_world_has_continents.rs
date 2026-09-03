@@ -144,6 +144,7 @@ fn a_strait_leaves_dry_ground_on_both_of_its_shores() {
 /// pass and the deep portal is unreachable on foot.
 #[test]
 fn the_clear_path_crosses_at_an_isthmus_and_never_swims() {
+    let b = Balance::load_default().unwrap();
     for seed in [1u64, 7, 42, 99, 424242, 987654] {
         let a = deep_world(seed);
         assert!(!a.straits.is_empty(), "seed {seed}: no straits to cross");
@@ -156,6 +157,40 @@ fn the_clear_path_crosses_at_an_isthmus_and_never_swims() {
                 w.y
             );
         }
+        // ⚠️ **AND A DECK HAS TO CARRY THE TRAIL, NOT MERELY CROSS THE SEA NEAR IT.**
+        //
+        // `bridge_span` collapses a run of drowned trail into ONE straight capsule from its
+        // first vertex to its last, so where the trail crosses at an angle — or bows around a
+        // range, a peak, a lake — the deck cuts the chord and misses the middle of its own
+        // run. Seed 424242: one section found 89 drowned vertices, laid ONE span, and left 26
+        // of them in open water at r=2283.
+        //
+        // Nothing downstream could catch it: A* had already drawn that trail and was never
+        // asked again, and `backbone_feasible` samples the route before the deeper section
+        // that cuts the strait exists. So the bridging pass has to check its own work.
+        //
+        // Asserted with the ROUTE'S OWN CLEARANCE rather than the point test above, because
+        // that is what `astar_route` guarantees and therefore what a deck has to preserve — a
+        // trail that clears water by a hair is one the party wades. Folded in here rather than
+        // standing alone: it needs exactly these worlds, and generating six more to d3000 is
+        // minutes of a gate that already runs close to its CI timeout.
+        let pad = (b.worldgen.path_clear_radius + b.worldgen.player_radius) as f32;
+        let shore = a.shore();
+        let mut worst = (f32::MIN, 0.0f64, 0.0f64);
+        for w in a.path.iter() {
+            let d = shore.water(w.x as f32, w.y as f32);
+            if d > worst.0 {
+                worst = (d, w.x, w.y);
+            }
+        }
+        assert!(
+            worst.0 < -pad,
+            "seed {seed}: the trail comes within {:.2} of water at ({:.0}, {:.0}) — the route \
+             keeps {pad:.2} from it, so this is a wade the pathfinder never agreed to",
+            -worst.0,
+            worst.1,
+            worst.2
+        );
         // The segments between them too: a chord between two dry waypoints can cut a strait.
         for pair in a.path.windows(2) {
             let (p, q) = (pair[0], pair[1]);

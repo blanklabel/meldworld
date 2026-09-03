@@ -3288,8 +3288,20 @@ mod tests {
                         );
                     }
                 }
-                assert!(total > 20, "seed {wseed} gave only {total} boss turns to read");
             }
+            // ⚠️ **THE FLOOR IS ON THE POOLED SAMPLE, NOT ON EACH SEED** — which is what this
+            // closure's own comment always said it was doing ("aggregated across seeds: one
+            // gatekeeper is only a few dozen turns, too small a sample to read a share off on
+            // its own") while the assertion sat INSIDE the seed loop demanding 20 turns from
+            // every world. A gatekeeper's species comes from the biome of the ground it stands
+            // on, so any change to the world's decomposition moves which creature holds a
+            // given seam and how long the fight lasts — `WG-11`'s taper did exactly that and
+            // seed 7 came back with 19. Pooling is both the bigger sample and the thing that
+            // stops one world's short fight failing a measurement about the boss ladder.
+            assert!(
+                total > 60,
+                "only {total} boss turns pooled across three worlds — too small to read a share"
+            );
             f64::from(wide) / f64::from(total)
         };
 

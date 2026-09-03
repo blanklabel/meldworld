@@ -322,27 +322,51 @@ pub mod world {
         /// What it is about to become, so the tell can name it.
         pub biome: String,
         pub lands_in_ms: u64,
-        /// Whether the receiving player is standing inside the doomed ring right now.
+        /// Whether the receiving player is standing inside the doomed region right now.
         /// The client owns how loud to be about it; the server owns the fact.
         #[serde(default)]
         pub caught: bool,
+        /// The doomed BEARING wedge, in radians — centre and half-width. Without it the
+        /// tell is drawn as a full ring while a patch of it is what actually goes, which
+        /// sends everyone at that depth running from weather that was never coming.
+        #[serde(default)]
+        pub arc_center: f64,
+        #[serde(default)]
+        pub arc_half: f64,
     }
     impl Message for ShiftWarning {
         const TYPE: &'static str = "world.shift_warning";
     }
 
-    /// S2C — it landed. The ring is now `biome`, everything in `wiped` is gone, and
+    /// S2C — it landed. The region is now `biome`, everything in `wiped` is gone, and
     /// `damage` is the Force blast this player's party just took (0 if they got out).
     ///
-    /// The retiled sections' `world.terrain_section` messages follow immediately, which
-    /// is what actually repaints the ground: the client already keys its biome ground
-    /// and HUD label off per-section radius rings, so a section-granular Shift needs no
-    /// new rendering path at all.
+    /// ⚠️ **THIS COMMENT USED TO SAY THE RETILE REPAINTS THE GROUND FOR FREE** — "the
+    /// client already keys its biome ground and HUD label off per-section radius rings, so
+    /// a section-granular Shift needs no new rendering path at all". True when it was
+    /// written; false from `WG-7` on, where a cell's biome became ANALYTIC (derived from
+    /// the grid and the gate, so a streaming world needs no lookup table). From then until
+    /// `WG-11` a Shift swapped `Area.biome`, re-scattered the props, printed "Mire became
+    /// Desert" — and the floor stayed mire for the life of the world, because nothing on
+    /// the wire could move a derivation that only reads the seed.
+    ///
+    /// `repaints` is what moves it, and it is the whole reason this message matters
+    /// beyond its banner.
     #[derive(Debug, Clone, Serialize, Deserialize)]
     pub struct Shifted {
         pub generation: u64,
         pub inner_radius: f64,
         pub outer_radius: f64,
+        /// The bearing wedge the region occupied, in radians. A region is a PATCH of cells
+        /// now rather than a whole annulus, so the radii alone describe a ring around it.
+        #[serde(default)]
+        pub arc_center: f64,
+        #[serde(default)]
+        pub arc_half: f64,
+        /// **The cells that changed, and what they became** — the delta the client folds
+        /// into its own decomposition so its ground agrees with the server's.
+        #[serde(default)]
+        pub repaints: Vec<crate::regions::Repaint>,
         pub biome: String,
         /// The biome it stopped being, for the message the client prints.
         #[serde(default)]

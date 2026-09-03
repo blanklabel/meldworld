@@ -50,6 +50,7 @@ pub struct Balance {
     pub perks: Perks,
     pub biome_gate: BiomeGate,
     pub region: Region,
+    pub region_barrier: RegionBarrier,
     pub armor_resist: ArmorResist,
     pub affliction: Affliction,
     pub shift: Shift,
@@ -747,6 +748,25 @@ pub struct Region {
     pub blend_width: f64,
 }
 
+/// **WG-11: the cell graph is the maze.** How porous each biome's region boundaries are —
+/// the share that stay walkable — plus how a closed one is drawn. Porosity is what makes a
+/// biome maze in its OWN way rather than merely differ by density: field and desert are the
+/// open crossings between mazes, ashfall is where you hunt for a pass.
+#[derive(Debug, Clone, Deserialize)]
+pub struct RegionBarrier {
+    pub porosity_field: f64,
+    pub porosity_desert: f64,
+    pub porosity_forest: f64,
+    pub porosity_amber_wood: f64,
+    pub porosity_tundra: f64,
+    pub porosity_mire: f64,
+    pub porosity_ashfall: f64,
+    pub porosity_default: f64,
+    pub dead_end_chest_tier_bonus: i32,
+    pub band_half_width: f64,
+    pub prop_spacing: f64,
+}
+
 /// is a pure function of `(world_seed, shift_generation)` driven by the tick counter —
 /// is code, and lives in [`meld_world::shift`].
 #[derive(Debug, Clone, Deserialize)]
@@ -773,6 +793,7 @@ pub struct Building {
     pub anchor_build_ms: u64,
     pub wall_build_ms: u64,
     pub build_start_fraction: f64,
+    pub road_speed_mult: f64,
     pub anchor_pin_radius: f64,
     pub repair_hp_per_material: i32,
     pub demolish_refund_fraction: f64,
@@ -1273,6 +1294,7 @@ pub struct WorldGen {
     pub ridge_arc_share_max: f64,
     pub ridge_spoke_rings_min: u32,
     pub ridge_spoke_rings_max: u32,
+    pub ridge_max_per_section: usize,
     pub ridge_passes_min: usize,
     pub ridge_passes_max: usize,
     pub ridge_pass_share: f64,

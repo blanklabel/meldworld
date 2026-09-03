@@ -1438,7 +1438,23 @@ area_count = 8                   # how many areas to pre-generate for the instan
 # rooms divided by walls with a single door on the clear path (connectivity is
 # guaranteed by construction, like a biome seam), packed denser with creatures and
 # ending in a guaranteed loot chest. Rendered by the normal obstacle/creature path.
-dungeon_every = 4                # 0 disables dungeons; else every Nth section (i>0) is one
+# ⚠️ **RETIRED (`WG-11` stage 5): A RING-SCALE ROOM IS A CATEGORY ERROR.** This made every
+# Nth SECTION a "dungeon", which was coherent while a section was a 20-tile corridor holding
+# three rooms — and stopped being so the moment WG-4 bent it into an annular band spanning the
+# whole arc. What it actually did to every fourth ring of the world:
+#   * `web_trails_per_area = 0` for that ring — **no branches at all**, a quarter of the world
+#     reduced to one lane, which is a large part of why the deep world reads as a straight shot
+#   * two divider walls across the corridor, stepping `dungeon_wall_radius * 1.8` in corridor
+#     `y` — an ANGLE — so at r=1200 they are a line of rocks a quarter-kilometre apart
+#   * denser creatures and a guaranteed chest, both of which belong to a PLACE, not to a band
+# Its own fill was skipped too, until `WG-6`: dungeon rings measured 0.167 obstacles per
+# 1000 u² against 4.92 for ordinary ones, a 30x gap.
+#
+# A dungeon becomes a LOCAL enclosure placed on the route — `WG-11` stage 6, built from
+# `meld-dungeon`'s authored parts with derived openings, which is what `WG-8` always proposed.
+# Until then the world simply has no ring-dungeons, and that is strictly better than a quarter
+# of it being a branchless band with a broken wall across it.
+dungeon_every = 0                # 0 disables dungeons; else every Nth section (i>0) is one
 dungeon_rooms = 3                # rooms per dungeon (this many − 1 internal divider walls)
 dungeon_creature_mult = 1.9      # creature density multiplier inside a dungeon
 dungeon_wall_radius = 1.1        # radius of each obstacle in a divider wall
@@ -1688,6 +1704,20 @@ ridge_arc_share_min = 0.22      # a range's span as a share of the FAN, not in w
 ridge_arc_share_max = 0.46      # widest. CAPPED BELOW 1.0 ON PURPOSE, and that is what makes the world unsealable BY CONSTRUCTION rather than by check: a range always stops short of the fan's rim, so rounding its end is always possible. Same argument the strait uses.
 ridge_spoke_rings_min = 2       # a SPOKE range's radial extent, in region rings. Radial distance does not distort with depth, so this one is a straight multiple.
 ridge_spoke_rings_max = 4
+# WG-11: how many CLOSED cell boundaries one section may wall. The maze is the cell graph,
+# so walls come in numbers — a lone 250-unit wall is something you round without noticing,
+# and only its neighbours being closed too makes it a maze. Capped because every wall costs
+# placement work on a path that runs inside the authoritative tick; the teardrop is what keeps
+# the boundary count bounded (it peaks at ~59 per ring around d1600 and falls to 1 at d3200).
+# ⚠️ **HELD AT 0: THE GRAPH WALLS ARE LANDED BUT DORMANT.** Everything they need is here and
+# tested — `regions::pass_open`, the porosity table, the boundary walk, the section clip, the
+# yields — and at any count >= 1 seed 1 fails `the_clear_path_crosses_at_an_isthmus_and_never
+# _swims`: the trail cuts across water at r~872. It is NOT a density problem (it fails at one
+# wall) and NOT fixable from the wall side (a separation rule cannot see water that does not
+# exist yet — `push_water` runs after, and water is found by walking downhill up to ~800 units
+# and deliberately is not bounded to its own section band). The fix belongs with water's
+# cross-section yielding, and the maze turns on by raising this number once it lands.
+ridge_max_per_section = 6
 ridge_passes_min = 1            # interior passes per range. With the boundary's two ends that is at least three ways past — one door is the retired `Seam` again.
 ridge_passes_max = 3
 ridge_pass_share = 0.09         # a pass's width as a share of the range's own length, floored at `ridge_pass_width`. A share so the gap scales with the wall.
@@ -2518,6 +2548,7 @@ wll_per_level = 2
 [region]
 ring_step = 250.0        # radial thickness of one ring of cells. With `cell_width` this is a cell's size: ~250 units on a side is a region you cross in well under a minute but never mistake for the one next door. Deliberately CONSTANT, unlike a section's length (20 + 7i), so a region means the same thing at the hub and at the frontier.
 cell_width = 250.0       # target arc width of one cell. The sector COUNT rides the radius to hold this roughly fixed — 8 cells around the arc at r=400, 65 at r=3000 — which is what stops a cell being a sliver near the hub and a province deep.
+
 boundary_warp = 88.0     # how far a ring boundary wanders with bearing. Its whole job is to stop the boundary reading as an ARC; it depends on bearing alone, which is what keeps the ring index monotone along every ray and the partition well-defined at any magnitude.
 blend_width = 26.0       # world units the ground cross-fades across a cell boundary. A boundary is 2D now, so this is a distance rather than the old per-ring band — and the fade is symmetric from both sides, or a boundary seams.
 
@@ -2528,6 +2559,43 @@ blend_width = 26.0       # world units the ground cross-fades across a cell boun
 # numbers — so a Hearth-Plains hound is not innately stronger than a forest boar; it is
 # simply only ever met 2400 units out. Each biome keeps ONE faction, so a biome is at
 # peace with itself and at war with its neighbours (CR-13). All [TUNABLE].
+
+# ── WG-11: THE CELL GRAPH IS THE MAZE ────────────────────────────────────────────────────
+# Each boundary between two adjacent cells is either a PASS you can walk or a BARRIER made
+# of the biome's own material. `porosity` is the SHARE OF A REGION'S BOUNDARIES THAT STAY
+# OPEN, which is what makes each biome maze in its own way rather than differ by density:
+# field and desert are the open crossings BETWEEN mazes, ashfall is where you hunt for a
+# pass. Ordering is the design and is held by test; the values are [TUNABLE].
+#
+# ⚠️ Feasibility is NOT bought here. A barrier is laid like any other prop and is refused
+# inside the route tube (`clear_of_routes`), so wherever the guaranteed clear path or a web
+# trail crosses a closed boundary it cuts its own gap. The way out stays feasible by
+# construction, exactly as it was before, and no barrier code needs to know about it.
+[region_barrier]
+porosity_field = 0.92            # a crossing: you are getting OVER this to the next biome
+porosity_desert = 0.90
+porosity_forest = 0.55           # a wood you have to find your way through
+porosity_amber_wood = 0.60
+porosity_tundra = 0.38           # trees AND ranges
+porosity_mire = 0.35             # trees AND water
+porosity_ashfall = 0.30          # ranges: the tightest, you are hunting a pass
+porosity_default = 0.55          # the deep authored biomes until they are tuned
+# How a barrier is drawn along the boundary it closes.
+# WG-11 stage 2: DEAD ENDS ARE THE CONTENT. A cell whose only open boundary is the one you
+# came in by leads nowhere — so the through-route is for PROGRESS and the dead ends are for
+# REWARD. That is what makes wandering worth doing rather than a tax, and it is the answer to
+# "why would anyone go north or south" that no invariant can give. A chest found down one is
+# worth more than a chest on the road. [TUNABLE]
+dead_end_chest_tier_bonus = 1    # extra loot tier for a chest at the end of a wrong turn
+band_half_width = 3.0            # half-thickness of the wall, world units
+prop_spacing = 3.0               # distance between barrier prop CENTRES along the line. Two
+                                 # props of radius r leave a gap of `spacing - 2r`, and a
+                                 # player of `player_radius` squeezes through when that gap
+                                 # exceeds `2 * player_radius`. So a wall requires
+                                 # `spacing <= 2*obstacle_min_radius + 2*player_radius` = 3.2,
+                                 # and this sits under it — otherwise the "wall" is a picket
+                                 # fence you walk straight through. Held by test: it is the
+                                 # one number that decides whether any of this is a maze.
 
 [creature.amber_stag]      # amber_wood BRUISER — antlers like bare branches
 base_hp = 150
@@ -2863,6 +2931,12 @@ build_start_fraction = 0.15
 # How far an anchor's hold reaches, in world units. Wider than a section is deliberate:
 # the Shift is section-granular, so a pin narrower than a section could never hold a
 # whole one and the loop would never fire.
+# WG-11 stage 4: **AN ANCHORED ROUTE IS A ROAD.** Held ground is fast ground, so the payoff
+# for anchoring a route you found is that you never have to solve it twice — "you should not
+# have to wonder". It is also what pays off the maze's own structural cost: backtracking is
+# the only genuinely empty time a maze creates, and backtracked ground is by definition ground
+# you already crossed, which is exactly the ground an anchor holds. [TUNABLE]
+road_speed_mult = 1.6            # movement multiplier within `anchor_pin_radius` of a standing anchor
 anchor_pin_radius = 90.0
 # Repair: one unit of the structure's OWN material buys this much HP back. The counter to
 # attrition, and the reason a held region needs supply rather than just a builder. Paying in
