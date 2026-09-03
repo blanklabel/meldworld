@@ -1,14 +1,18 @@
 # Build + lint + test on every PR and every push to main.
 #
-# This runs `make check` and nothing else, deliberately: the same command a developer runs
-# locally is the command that gates a merge, so the two cannot drift. Adding a check means
-# editing the Makefile, not this file.
+# This runs `make check`'s two halves and nothing else, deliberately: the same commands a
+# developer runs locally are the commands that gate a merge, so the two cannot drift, and
+# `make check` still runs both. Adding a check means editing the Makefile, not this file —
+# put it in the half it belongs to.
 #
-# What it covers, and why it is worth a job at all: the Bevy client is a SEPARATE cargo
-# workspace (sharing only `meld-proto` by path), so `cargo test --workspace` at the repo root
-# never touches it. A variant added to a shared enum can pass every server-side check and
-# still leave the game unbuildable — `ConsumableEffect::ThrownAll` did exactly that, and
-# `main` could not build the client for several merges before anyone tried it.
+# ⚠️ **SPLIT INTO TWO PARALLEL JOBS, and that is a fix rather than a tidy-up.** One job
+# doing both halves ran 49-83 minutes against a 75-minute timeout, so `main` was cancelled
+# mid-run — everything passing — roughly a third of the time. A gate that goes red on its
+# own schedule trains everyone to ignore it, which is exactly the reasoning that keeps the
+# `qa/` suite out of CI. The halves are genuinely independent (separate cargo workspaces
+# sharing only `meld-proto` by path, and neither reads the other's output), so this is
+# close to a halving of wall-clock for the price of some config. Each job also caches only
+# the workspace it builds instead of both.
 #
 # The Postgres-backed `qa/` suite is NOT here. It drives real bot clients through real-time
 # loops with wall-clock deadlines, and those flake under a loaded shared runner — a suite that
@@ -32,13 +36,34 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  check:
+  # The SERVER workspace: clippy over every target (which also compiles the `qa/` tests)
+  # and the DB-free suite. This is the half that GROWS — `meld-world` alone is ~16 min
+  # locally and most of its tests sweep every biome and every seed, so widening the world
+  # widens them: six biomes to eleven took the local suite 831s -> 949s. It needs no Bevy
+  # build deps and no client cache.
+  server:
     runs-on: ubuntu-latest
-    # Both workspaces from cold, including Bevy, plus the server suite — which is the
-    # half that grows. `meld-world` alone is ~16 min locally and most of its tests sweep
-    # every biome and every seed, so widening the world widens them: going from six
-    # biomes to eleven took the local suite 831s -> 949s and pushed this job past 45,
-    # where it was killed mid-run with everything passing.
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: .
+
+      - run: make check-server
+
+  # The CLIENT workspace — a separate cargo workspace sharing only `meld-proto` by path, so
+  # `cargo test --workspace` at the repo root never touches it. A variant added to a shared
+  # enum can pass every server-side check and still leave the game unbuildable:
+  # `ConsumableEffect::ThrownAll` did exactly that, and `main` could not build the client for
+  # several merges before anyone tried. That is why this is a job at all.
+  client:
+    runs-on: ubuntu-latest
     timeout-minutes: 75
     steps:
       - uses: actions/checkout@v4
@@ -58,12 +83,13 @@ jobs:
         with:
           components: clippy
 
-      # BOTH target dirs — they are separate workspaces with separate locks, and the client's
-      # is the expensive one (Bevy). `.` must be listed explicitly once `client` is.
+      # BOTH target dirs, even though this job only builds the client: `cd client && cargo`
+      # compiles `meld-proto` from the root workspace by path, and `.` must be listed
+      # explicitly once `client` is. The client's is the expensive one (Bevy).
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: |
             .
             client
 
-      - run: make check
+      - run: make check-client

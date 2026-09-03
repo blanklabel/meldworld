@@ -31,7 +31,8 @@ GH_SLUG := $(shell git remote get-url origin 2>/dev/null | sed -E 's|^.*github\.
 export MELD_ADDR
 
 .DEFAULT_GOAL := help
-.PHONY: help play play-dev play-solo dist release look server smoke check test stop
+.PHONY: help play play-dev play-solo dist release look server smoke check \
+        check-server check-client test stop
 
 help:
 	@echo "MELDWORLD — common tasks:"
@@ -143,15 +144,30 @@ smoke:
 # `clippy --all-targets` is doing double duty: it COMPILES every target including the `qa/`
 # tests, so a broken test there fails here even though the suite itself needs a database and
 # runs in `make test`.
-check:
+# ⚠️ **THE TWO HALVES ARE SEPARATE TARGETS SO CI CAN RUN THEM IN PARALLEL.**
+#
+# One job doing both was taking 49-83 minutes against a 75-minute timeout, so `main` was
+# red-by-timeout roughly a third of the time — and a gate that fails on its own schedule
+# trains everyone to ignore the light, which is the same reasoning that keeps the `qa/`
+# suite out of CI. The halves are genuinely independent: separate cargo workspaces sharing
+# only `meld-proto` by path, and nothing in one's tests reads the other's output.
+#
+# `make check` still runs BOTH, which is the property worth protecting: the command that
+# gates a merge is the command a developer runs, so the two cannot drift. Adding a check
+# still means editing this file rather than the workflow — put it in the half it belongs to.
+check-server:
 	@echo "→ server workspace: clippy (all targets, warnings are errors)"
 	cargo clippy --workspace --all-targets -- -D warnings
 	@echo "→ server workspace: tests (meld-qa needs Postgres — that is 'make test')"
 	cargo test --workspace --exclude meld-qa
+
+check-client:
 	@echo "→ client workspace: clippy (all targets, warnings are errors)"
 	cd client && cargo clippy -p meld-client --all-targets -- -D warnings
 	@echo "→ client workspace: tests"
 	cd client && cargo test -p meld-client
+
+check: check-server check-client
 	@echo ""
 	@echo "✔ check passed — both workspaces build clean and their DB-free tests pass."
 	@echo "  Postgres-backed conformance is 'make test'."
