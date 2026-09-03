@@ -1660,10 +1660,6 @@ pub struct Connector {
 }
 
 impl Connector {
-    /// Does this connector join levels `a` and `b` (in either order)?
-    fn joins(&self, a: u8, b: u8) -> bool {
-        (self.lo == a && self.hi == b) || (self.lo == b && self.hi == a)
-    }
 }
 
 /// The elevation field for one section: a coarse grid of integer levels over the
@@ -1681,19 +1677,6 @@ pub struct Terrain {
 }
 
 impl Terrain {
-    fn empty(start_x: f64, end_x: f64, y_min: f64, cell: f64) -> Self {
-        let cols = (((end_x - start_x) / cell).ceil() as usize).max(1);
-        let rows = ((((-y_min) * 2.0) / cell).ceil() as usize).max(1);
-        Terrain {
-            start_x,
-            y_min,
-            cell,
-            cols,
-            rows,
-            level: vec![0; cols * rows],
-            connectors: Vec::new(),
-        }
-    }
 
     fn cell_of(&self, p: &Position) -> Option<(usize, usize)> {
         if self.cell <= 0.0 || self.cols == 0 || self.rows == 0 {
@@ -1719,13 +1702,6 @@ impl Terrain {
         }
     }
 
-    /// World-space centre of cell `(gx, gy)`.
-    fn cell_center(&self, gx: usize, gy: usize) -> Position {
-        Position::new(
-            self.start_x + (gx as f64 + 0.5) * self.cell,
-            self.y_min + (gy as f64 + 0.5) * self.cell,
-        )
-    }
 }
 
 /// A monster placed in the overworld. Creatures roam (see [`Arena::step_creatures`])
@@ -2319,8 +2295,6 @@ pub struct Area {
     pub start_x: f64,
     pub end_x: f64,
     pub portal: Position,
-    /// The section's elevation field (terraces + connectors).
-    pub terrain: Terrain,
     /// WG-1: this section is a dungeon (rooms divided by walls with a door on the
     /// clear path, denser creatures, a guaranteed loot chest). Flat (no terraces).
     pub dungeon: bool,
@@ -2567,6 +2541,29 @@ pub struct Avatar {
 
 /// The generated overworld for one MazeInstance (spike scope): a seeded chain of
 /// biome areas along a walkable corridor, streamed section-by-section on demand.
+/// **THE MOUTH OF A PASS** — where a walled cell boundary has its gap, which is the one
+/// place a party can cross it.
+///
+/// `WG-11` stage 6, the MICRO maze. A cell is ~260 units across at r=400 and cannot make the
+/// 20-unit corridors the design asks for; it should not try. Two scales, each doing what it
+/// is shaped for: **the cell graph decides where you can go, and what stands inside a pass
+/// decides what walking it feels like.**
+///
+/// Recorded by [`Arena::push_boundary_walls`], because that is the only pass that knows where
+/// a gap is, and consumed by [`Arena::push_pass_parts`] AFTER the route is drawn — `A*` does
+/// not collide with obstacles (only with ranges and terrain), so a part placed before the
+/// route would have the guaranteed trail run straight through it.
+#[derive(Clone, Copy, Debug)]
+pub struct PassMouth {
+    /// Centre of the gap, in WORLD space.
+    pub at: Position,
+    /// Unit vector ALONG the boundary, so a part lays itself out across the opening rather
+    /// than against the world axes.
+    pub along: (f64, f64),
+    /// How wide the gap is, in world units.
+    pub width: f64,
+}
+
 /// **The region one Shift takes**, as the set of CELLS in it plus the bounding patch the
 /// tell is drawn from. See [`Arena::shift_patch`].
 ///
@@ -2761,12 +2758,6 @@ pub struct Arena {
     /// `[biome_gate]` flattened into `BIOMES` order, so a cell's biome can be resolved
     /// without reaching for `Balance` — the lookup runs per placed prop.
     biome_gate: [f32; BIOMES.len()],
-    terrain_cell: f64,
-    terraces_per_area: f64,
-    max_level: u8,
-    terrace_min_size: f64,
-    terrace_max_size: f64,
-    connector_radius: f64,
     path_clear_radius: f64,
     /// `WG-11` stage 4: how far a standing anchor's ROAD reaches, and how much faster it is.
     /// Snapshot from balance so `apply_move` — which has no `Balance` — can ask.
@@ -3207,12 +3198,6 @@ impl Arena {
             },
             repaints: meld_proto::regions::Repaints::default(),
             biome_gate: biome_gate_array(balance),
-            terrain_cell: wg.terrain_cell,
-            terraces_per_area: wg.terraces_per_area,
-            max_level: wg.max_level,
-            terrace_min_size: wg.terrace_min_size,
-            terrace_max_size: wg.terrace_max_size,
-            connector_radius: wg.connector_radius,
             path_clear_radius: wg.path_clear_radius,
             anchor_pin_radius: balance.building.anchor_pin_radius,
             road_speed_mult: balance.building.road_speed_mult,
@@ -3673,8 +3658,6 @@ impl Arena {
                 start_x,
                 end_x,
                 portal: Position::new(portal_x, 0.0),
-                // The tutorial section is entirely flat (level 0).
-                terrain: Terrain::empty(start_x, end_x, -self.corridor_lateral, self.terrain_cell),
                 dungeon: false,
                 shifted_at: 0,
             });
@@ -3720,7 +3703,8 @@ impl Arena {
         // peak — `off_peaks` is what stops a basin flooding straight through one.
         let ridges_before = self.ridges.len();
         self.push_ridges(balance, i, start_x, end_x);
-        self.push_boundary_walls(balance, i, start_x, end_x);
+        // The mouths of this section's walled boundaries — consumed once the route exists.
+        let pass_mouths = self.push_boundary_walls(balance, i, start_x, end_x);
         self.push_water(balance, i, start_x, end_x);
 
         // WG-1: every Nth procedural section is a DUNGEON — rooms divided by walls
@@ -3926,6 +3910,10 @@ impl Arena {
         for p in &route {
             self.corridor_path.push(*p);
         }
+        // ── `WG-11` stage 6: the MICRO maze. Now that the trail exists, shape what stands
+        // inside each pass — `A*` does not collide with obstacles, so this cannot run before
+        // the route without the guaranteed trail running through the parts.
+        self.push_pass_parts(balance, &pass_mouths);
         let portal = if is_chain_end {
             *self.corridor_path.last().unwrap()
         } else {
@@ -4007,7 +3995,7 @@ impl Arena {
         // "waypoints are grounded" guarantee are untouched; only the mid-segment
         // rises. `maybe_climb_path` uses its own rng stream so the creature/obstacle/
         // terrace/chest draws below stay byte-stable.
-        let mut terrain = Terrain::empty(start_x, end_x, -self.corridor_lateral, self.terrain_cell);
+
         // Crown a walkable SUMMIT with a payoff (#3): where the A*-routed clear path
         // climbs over a genuine crest of the rolling heightmap, a gate-boss guards the
         // top on a `peak_boss_chance` roll, otherwise a guaranteed treasure chest rewards
@@ -4225,7 +4213,8 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
                 self.monsters[idx].area_max_x = end_x;
                 // The level comes off the FINISHED terrain, so a creature standing on a plateau
                 // is on the plateau by construction rather than by being lifted onto it.
-                self.monsters[idx].elevation = terrain.level_at(&pos);
+                // Level 0: relief is the heightmap + peaks now, never a terrace.
+                self.monsters[idx].elevation = 0;
                 // Never shallow: an Elite is a named boss carrying `elite_hp_mult`, so one
                 // in the first ring is a wipe rather than an encounter. Gate on the RADIUS
                 // (corridor x), which is what the spawn's hub distance becomes once the fan
@@ -4494,11 +4483,6 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
             if !self.clear_of_routes(&pos, radius) {
                 continue;
             }
-            // Don't strand an obstacle on (or half-buried under) the raised path
-            // plateau — keep them on the ground like the dense-forest pass does.
-            if terrain.level_at(&pos) != 0 {
-                continue;
-            }
             let buries = self.monsters.iter().any(|m| m.position.distance_to(&pos) < radius + 1.5)
                 || self.resources.iter().any(|r| r.position.distance_to(&pos) < radius + 1.5);
             if buries {
@@ -4515,173 +4499,83 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
             placed += 1;
         }
 
-        // Raise a few SIDE terraces off the clear-path tube (optional detours: grind
-        // pockets + treasure). Each gets a connector so it's reachable; overlapped
-        // creatures/resources are lifted onto it (a reward for climbing). These are
-        // kept off the path — the path's own climb is the plateau raised above.
-        // Biome-weighted: ashfall is mountainous, desert nearly flat (see biome_terrace_mult).
-        let n_terraces = (self.terraces_per_area * biome_terrace_mult(biome)).max(0.0).round() as usize;
-        let (mut tplaced, mut tattempts) = (0usize, 0usize);
-        while tplaced < n_terraces && tattempts < n_terraces * 12 {
-            tattempts += 1;
-            let level: u8 = 1 + rng.below(self.max_level.max(1) as usize) as u8;
-            let w = rng.range(self.terrace_min_size, self.terrace_max_size);
-            let h = rng.range(self.terrace_min_size, self.terrace_max_size);
-            let cx = start_x + rng.range(2.0, (length - 2.0).max(2.0));
-            let cy = rng.range(-self.corridor_lateral + 2.0, self.corridor_lateral - 2.0);
-            let (x0, x1) = (cx - w * 0.5, cx + w * 0.5);
-            let (y0, y1) = (cy - h * 0.5, cy + h * 0.5);
-            // Reject if any part of the terrace (+ a margin so the cliff edge itself
-            // stays clear) intrudes on the path tube — keeps extraction on level 0.
-            if self.rect_intrudes_path(x0, y0, x1, y1) {
-                continue;
-            }
-            // Reject overlap with an already-raised terrace (no ambiguous stacking).
-            if terrain_rect_overlaps(&terrain, x0, y0, x1, y1) {
-                continue;
-            }
-            // Reject burying an obstacle (a raised cliff under a tree reads wrong).
-            if self.obstacles.iter().any(|o| {
-                o.position.x >= x0 - o.radius
-                    && o.position.x <= x1 + o.radius
-                    && o.position.y >= y0 - o.radius
-                    && o.position.y <= y1 + o.radius
-            }) {
-                continue;
-            }
-            raise_terrace(&mut terrain, x0, y0, x1, y1, level);
-            // Place a connector on the middle of the terrace's south edge, nudged
-            // outward toward the ground so it straddles the level boundary.
-            let conn_pos = Position::new(cx, (y0 - terrain.cell * 0.5).max(-self.corridor_lateral));
-            // Ramps sell better: weight the connector roll toward slopes (½ slope,
-            // ¼ ladder, ¼ rope). One draw either way, so the main rng stays aligned.
-            let kind = match rng.below(4) {
-                0 => ConnectorKind::Ladder,
-                1 => ConnectorKind::Rope,
-                _ => ConnectorKind::Slope,
-            };
-            terrain.connectors.push(Connector {
-                entity_id: format!("conn-{}-{}", i, tplaced),
-                kind,
-                position: conn_pos,
-                lo: 0,
-                hi: level,
-                radius: self.connector_radius,
-            });
-            // Any creature/resource sitting on this terrace is lifted onto it, so it
-            // isn't stranded under a cliff (and rewards the climb).
-            for m in self.monsters.iter_mut() {
-                if terrain.level_at(&m.position) == level {
-                    m.elevation = level;
-                }
-            }
-            for &nid in &section_resources {
-                if terrain.level_at(&self.resources[nid].position) == level {
-                    self.resources[nid].elevation = level;
-                }
-            }
-            tplaced += 1;
-        }
-
-        // One treasure chest per section. With `chest_terrace_chance` it sits ON TOP
-        // of a raised terrace at that terrace's elevation — the payoff for climbing a
-        // detour (open_chest gates on matching elevation, so you must be up there).
-        // Otherwise it's rejection-sampled onto the ground off the clear path (a small
-        // detour off the main line — old-school "explore for treasure").
+        // One treasure chest per section, rejection-sampled onto the ground off the clear
+        // path — a small detour off the main line, old-school "explore for treasure".
+        //
+        // ⚠️ It used to have a `chest_terrace_chance` branch that put the chest on top of a
+        // raised TERRACE, as the payoff for climbing a detour. Terraces are retired
+        // (`terraces_per_area = 0`, `WG-11` stage 5), so that branch could not fire — it
+        // scanned a grid that is provably all zeros and found nothing every time. The climb
+        // reward lives on PEAKS now, which are summed into the heightmap and crowned by
+        // `push_section`'s own peak pass.
         let mut chest_placed = false;
-        if rng.unit() < wg.chest_terrace_chance {
-            let raised: Vec<(f64, f64, u8)> = (0..terrain.cols)
-                .flat_map(|gx| (0..terrain.rows).map(move |gy| (gx, gy)))
-                .filter_map(|(gx, gy)| {
-                    let lvl = terrain.level[gx * terrain.rows + gy];
-                    (lvl > 0).then(|| {
-                        let c = terrain.cell_center(gx, gy);
-                        (c.x, c.y, lvl)
-                    })
-                })
-                .collect();
-            if !raised.is_empty() {
-                let (tx, ty, lvl) = raised[rng.below(raised.len())];
+        // ── WG-11 stage 2: **DEAD ENDS ARE THE CONTENT.** A cell whose only open
+        // boundary is the one you came in by leads nowhere, so the through-route is for
+        // PROGRESS and the dead ends are for REWARD. That is what makes going off-route
+        // worth doing instead of a tax — and it is the answer to "why would anyone go
+        // north or south" that no invariant can give, because it puts the treasure where
+        // the wandering is.
+        //
+        // Sampled rather than solved: the first acceptable spot down a dead end WINS,
+        // and an ordinary spot is held as the fallback so a section always gets its
+        // chest. A pass that walked the graph looking for the best dead end would be a
+        // traversal, and this generator places by rejection everywhere else for the
+        // same reason — the world streams outward without bound.
+        let mut fallback: Option<Position> = None;
+        for attempt in 0..24 {
+            let cx = start_x + 2.0 + rng.unit() * (length - 4.0).max(1.0);
+            let cy = (wg.creature_lateral_spread - 2.0) * rng.signed();
+            let cpos = Position::new(cx, cy);
+            // A chest on an unwalkable flank is a reward nobody can ever reach.
+            if !standable_c(&cpos) {
+                continue;
+            }
+            let clear_of_path = dist_to_path(&cpos, &self.corridor_path) > wg.path_clear_radius;
+            let clear_of_mobs = self.monsters.iter().all(|m| m.position.distance_to(&cpos) > 2.0)
+                && self.resources.iter().all(|r| r.position.distance_to(&cpos) > 2.0);
+            let usable = clear_of_path && clear_of_mobs;
+            if !usable && attempt < 23 {
+                continue;
+            }
+            let world = bend_tf(cpos, self.radial_half, self.corridor_lateral.max(1.0));
+            let degree = self.cell_degree_at(&balance.region_barrier, world);
+            // ⚠️ A **SEALED** cell (degree 0) is one nobody can walk into, so a reward
+            // left there is a reward that does not exist. Skip it outright rather than
+            // ranking it last.
+            if degree == 0 && attempt < 23 {
+                continue;
+            }
+            if degree == 1 || (attempt == 23 && degree > 0) {
+                let bonus = if degree == 1 {
+                    balance.region_barrier.dead_end_chest_tier_bonus
+                } else {
+                    0
+                };
                 self.chests.push(Chest {
                     opened_tick: 0,
                     entity_id: format!("chest-{}", self.chests.len()),
-                    position: Position::new(tx, ty),
-                    tier: Scaling::new(balance).tier(tx.floor() as i64) as i32,
+                    position: cpos,
+                    tier: Scaling::new(balance).tier(cx.floor() as i64) as i32 + bonus,
                     opened: false,
-                    elevation: lvl,
+                    elevation: 0,
                 });
                 chest_placed = true;
+                break;
+            }
+            if usable && degree > 0 && fallback.is_none() {
+                fallback = Some(cpos);
             }
         }
         if !chest_placed {
-            // ── WG-11 stage 2: **DEAD ENDS ARE THE CONTENT.** A cell whose only open
-            // boundary is the one you came in by leads nowhere, so the through-route is for
-            // PROGRESS and the dead ends are for REWARD. That is what makes going off-route
-            // worth doing instead of a tax — and it is the answer to "why would anyone go
-            // north or south" that no invariant can give, because it puts the treasure where
-            // the wandering is.
-            //
-            // Sampled rather than solved: the first acceptable spot down a dead end WINS,
-            // and an ordinary spot is held as the fallback so a section always gets its
-            // chest. A pass that walked the graph looking for the best dead end would be a
-            // traversal, and this generator places by rejection everywhere else for the
-            // same reason — the world streams outward without bound.
-            let mut fallback: Option<Position> = None;
-            for attempt in 0..24 {
-                let cx = start_x + 2.0 + rng.unit() * (length - 4.0).max(1.0);
-                let cy = (wg.creature_lateral_spread - 2.0) * rng.signed();
-                let cpos = Position::new(cx, cy);
-                // A chest on an unwalkable flank is a reward nobody can ever reach.
-                if !standable_c(&cpos) {
-                    continue;
-                }
-                let clear_of_path = dist_to_path(&cpos, &self.corridor_path) > wg.path_clear_radius;
-                let clear_of_mobs = self.monsters.iter().all(|m| m.position.distance_to(&cpos) > 2.0)
-                    && self.resources.iter().all(|r| r.position.distance_to(&cpos) > 2.0);
-                let usable = clear_of_path && clear_of_mobs;
-                if !usable && attempt < 23 {
-                    continue;
-                }
-                let world = bend_tf(cpos, self.radial_half, self.corridor_lateral.max(1.0));
-                let degree = self.cell_degree_at(&balance.region_barrier, world);
-                // ⚠️ A **SEALED** cell (degree 0) is one nobody can walk into, so a reward
-                // left there is a reward that does not exist. Skip it outright rather than
-                // ranking it last.
-                if degree == 0 && attempt < 23 {
-                    continue;
-                }
-                if degree == 1 || (attempt == 23 && degree > 0) {
-                    let bonus = if degree == 1 {
-                        balance.region_barrier.dead_end_chest_tier_bonus
-                    } else {
-                        0
-                    };
-                    self.chests.push(Chest {
-                        opened_tick: 0,
-                        entity_id: format!("chest-{}", self.chests.len()),
-                        position: cpos,
-                        tier: Scaling::new(balance).tier(cx.floor() as i64) as i32 + bonus,
-                        opened: false,
-                        elevation: 0,
-                    });
-                    chest_placed = true;
-                    break;
-                }
-                if usable && degree > 0 && fallback.is_none() {
-                    fallback = Some(cpos);
-                }
-            }
-            if !chest_placed {
-                if let Some(cpos) = fallback {
-                    self.chests.push(Chest {
-                        opened_tick: 0,
-                        entity_id: format!("chest-{}", self.chests.len()),
-                        position: cpos,
-                        tier: Scaling::new(balance).tier(cpos.x.floor() as i64) as i32,
-                        opened: false,
-                        elevation: 0,
-                    });
-                }
+            if let Some(cpos) = fallback {
+                self.chests.push(Chest {
+                    opened_tick: 0,
+                    entity_id: format!("chest-{}", self.chests.len()),
+                    position: cpos,
+                    tier: Scaling::new(balance).tier(cpos.x.floor() as i64) as i32,
+                    opened: false,
+                    elevation: 0,
+                });
             }
         }
 
@@ -4815,9 +4709,6 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
                 if !self.clear_of_routes(&pos, radius) {
                     continue;
                 }
-                if terrain.level_at(&pos) != 0 {
-                    continue;
-                }
                 if near.blocked(&pos, radius) {
                     continue;
                 }
@@ -4870,7 +4761,7 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
                     let occupied = self.monsters.iter().any(|m| m.position.distance_to(&pos) < r + 1.0)
                         || self.resources.iter().any(|rn| rn.position.distance_to(&pos) < r + 1.0)
                         || self.chests.iter().any(|c| c.position.distance_to(&pos) < r + 1.0);
-                    if !in_door && terrain.level_at(&pos) == 0 && !occupied {
+                    if !in_door && !occupied {
                         self.obstacles.push(Obstacle {
                             entity_id: format!("obs-{}", self.obstacles.len()),
                             kind: obstacles_for_biome(self.biome_in_corridor(pos))[0]
@@ -4886,7 +4777,7 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
             let chest_x = end_x - wg.portal_setback - 2.0;
             let cy = path_y_at(&self.corridor_path, chest_x) + 2.0;
             let cpos = Position::new(chest_x, cy);
-            let elevation = terrain.level_at(&cpos);
+            let elevation = 0;
             self.chests.push(Chest {
                 opened_tick: 0,
                 entity_id: format!("chest-{}", self.chests.len()),
@@ -4897,25 +4788,12 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
             });
         }
 
-        // Keep every connector's reach CLEAR: the dense biome fill (now much denser)
-        // could otherwise drop a tree/rock right on a ladder or ramp and strand a
-        // terrace. Prune any obstacle overlapping a connector's reach (scatter fill runs
-        // before connectors exist, so a placement-time check alone can't catch it).
-        if !terrain.connectors.is_empty() {
-            let conns: Vec<(Position, f64)> =
-                terrain.connectors.iter().map(|c| (c.position, c.radius)).collect();
-            self.obstacles.retain(|o| {
-                !conns.iter().any(|(cp, cr)| o.position.distance_to(cp) < cr + o.radius + 0.5)
-            });
-        }
-
         self.areas.push(Area {
             index: i,
             biome,
             start_x,
             end_x,
             portal,
-            terrain,
             dungeon: is_dungeon,
             shifted_at: 0,
         });
@@ -5575,15 +5453,16 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
         i: usize,
         start_x: f64,
         end_x: f64,
-    ) {
+    ) -> Vec<PassMouth> {
+        let mut mouths: Vec<PassMouth> = Vec::new();
         if balance.worldgen.ridge_max_per_section == 0 {
-            return;
+            return mouths;
         }
         let wg = &balance.worldgen;
         let rb = &balance.region_barrier;
         // No fan means no cells to lay a boundary along.
         if self.radial_half <= 0.0 || i < wg.ridge_min_section || self.tutorial {
-            return;
+            return mouths;
         }
         let mut rng = Rng(section_seed(self.seed_base, i) ^ 0x21D6_E51D_6E51_D6E5);
         let g = self.regions;
@@ -5794,6 +5673,10 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
                     // crosses a closed boundary, the wall simply is not there.
                     walled += 1;
                     let mut t = 0.0f64;
+                    // The far end of the last segment on this boundary that was not dropped
+                    // for a real reason, so a gap is measured between two real jambs. Reset
+                    // per boundary, and cleared by a drop.
+                    let mut last_good_end: Option<Position> = None;
                     for _ in 0..segs {
                         let (t0, t1) = (t / length, ((t + seg_len) / length).min(1.0));
                         let p0 = Position::new(a.x + (b.x - a.x) * t0, a.y + (b.y - a.y) * t0);
@@ -5821,8 +5704,44 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
                                 || !self.clear_of_peaks(q, half_width)
                         });
                         if crosses {
+                            // Dropped for a REAL reason, so its own gaps are ordinary country
+                            // rather than a pass — forget the jamb.
+                            last_good_end = None;
                             continue;
                         }
+                        // ── `WG-11` stage 6: **A THROAT NEEDS JAMBS**, and the jambs are
+                        // decided by the BOUNDARY, not by which section owns the capsule.
+                        //
+                        // ⚠️ This used to be recorded after the section clip, and measured that
+                        // way the micro maze barely existed: 3-5 furnished mouths in a world
+                        // holding 46-77 wall segments. A boundary is walled across a whole cell
+                        // edge while a section emits only the piece inside its own radius band,
+                        // so two CONSECUTIVE surviving segments rarely landed in one section —
+                        // the pass between them is real in the world and invisible from either
+                        // side of the bookkeeping. The clip decides who owns a capsule; it does
+                        // not decide where a gap is.
+                        //
+                        // Ownership is settled instead by the MOUTH's own radius, so a shared
+                        // boundary furnishes each gap exactly once however the capsules fell.
+                        if let Some(prev) = last_good_end {
+                            let (px, py) = (b.x - a.x, b.y - a.y);
+                            let n = (px * px + py * py).sqrt().max(1e-9);
+                            let mouth =
+                                Position::new((prev.x + p0.x) * 0.5, (prev.y + p0.y) * 0.5);
+                            let mr = mouth.x.hypot(mouth.y);
+                            let width = prev.distance_to(&p0);
+                            if mr >= start_x
+                                && mr < end_x
+                                && width >= wg.ridge_pass_width * 0.5
+                            {
+                                mouths.push(PassMouth {
+                                    at: mouth,
+                                    along: (px / n, py / n),
+                                    width,
+                                });
+                            }
+                        }
+                        last_good_end = Some(p1);
                         // ⚠️ **AND ONLY THE PART INSIDE THIS SECTION IS EMITTED.** The
                         // section's route-retry can only take back ridges IT added, so a wall
                         // left in section N+2 by section N is unremovable when N+2 fails to
@@ -5869,6 +5788,126 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
             }
         }
         self.ridges.extend(out);
+        mouths
+    }
+
+    /// **WHAT STANDS INSIDE A PASS** (`WG-11` stage 6, the MICRO maze).
+    ///
+    /// The cell graph decides where you can go; this decides what crossing a boundary FEELS
+    /// like. A gap in a wall is otherwise a doorway you run through without noticing, which
+    /// makes the macro maze read as a set of arbitrary gates rather than as terrain.
+    ///
+    /// Three shapes, chosen by seed, each built from the CELL'S OWN material
+    /// (`obstacles_for_biome`, asked at the mouth) so a forest pass is choked with trees and
+    /// an ashfall pass with rock:
+    ///
+    /// - **chicane** — two stubs biting in from opposite jambs, offset along the crossing, so
+    ///   you weave instead of sprinting straight through.
+    /// - **pillars** — a broken line across the mouth, so the pass reads as a ruin of itself.
+    /// - **throat** — clusters against both jambs squeezing the middle, so the opening is
+    ///   narrow and obvious rather than wide and vague.
+    ///
+    /// ⚠️ **RUN AFTER THE ROUTE, and that is load-bearing.** `astar_route` collides with
+    /// ranges and terrain but NOT with obstacles (see its `routable`), so a part placed before
+    /// the route is a part the guaranteed trail runs straight through. Placed after, every
+    /// piece is rejected from the clear-path tube by `clear_of_routes` — so the trail keeps its
+    /// own way through the mouth and the part shapes what is either side of it. Feasibility
+    /// stays structural rather than checked, exactly as it does for a range.
+    ///
+    /// ⚠️ **AND A PART MUST NEVER SEAL ITS OWN PASS.** Each piece is refused unless the gap
+    /// it leaves is still wider than a party (`pass_part_min_gap`), measured across the mouth
+    /// — a pass nobody fits through is a wall with a rumour of a door, which is the failure
+    /// `ridge_pass_width` already exists to prevent one scale up.
+    fn push_pass_parts(&mut self, balance: &Balance, mouths: &[PassMouth]) {
+        let wg = &balance.worldgen;
+        if mouths.is_empty() || wg.pass_part_chance <= 0.0 {
+            return;
+        }
+        for (k, m) in mouths.iter().enumerate() {
+            // Seeded off the mouth's own position, so a pass looks the same every time this
+            // world is generated and never depends on how many sections came before it.
+            let mut rng = Rng(
+                (m.at.x.to_bits() ^ m.at.y.to_bits().rotate_left(17) ^ (k as u64))
+                    .wrapping_mul(0x9E37_79B9_7F4A_7C15)
+                    ^ 0x9A55_1A9E_9A55_1A9E,
+            );
+            if rng.unit() >= wg.pass_part_chance {
+                continue;
+            }
+            let kinds = obstacles_for_biome(self.biome_at(m.at));
+            if kinds.is_empty() {
+                continue;
+            }
+            // Across the mouth, and along it. `along` is the boundary direction, so the
+            // crossing runs perpendicular to it.
+            let (ax, ay) = m.along;
+            let (cx, cy) = (-ay, ax);
+            let half = m.width * 0.5;
+            // Offsets are a SHARE of the mouth, never fixed units: a pass is as wide as its
+            // wall let it be, and a part sized in absolute units would seal a narrow one and
+            // vanish inside a wide one.
+            let shape = rng.below(3);
+            let mut spots: Vec<(f64, f64)> = Vec::new();
+            match shape {
+                // chicane: one stub from each jamb, offset across the crossing
+                0 => {
+                    spots.push((-half * 0.62, -wg.pass_part_stagger));
+                    spots.push((half * 0.62, wg.pass_part_stagger));
+                }
+                // pillars: a broken line across the mouth
+                1 => {
+                    for j in -1i32..=1 {
+                        spots.push((j as f64 * half * 0.55, 0.0));
+                    }
+                }
+                // throat: clusters on both jambs, squeezing the middle
+                _ => {
+                    for j in 0i32..2 {
+                        let s = if j == 0 { -1.0 } else { 1.0 };
+                        spots.push((s * half * 0.78, -wg.pass_part_stagger * 0.5));
+                        spots.push((s * half * 0.78, wg.pass_part_stagger * 0.5));
+                    }
+                }
+            }
+            for (along_off, across_off) in spots {
+                let kind = kinds[rng.below(kinds.len())];
+                let radius = obstacle_radius_for(wg, kind, rng.unit());
+                let at = Position::new(
+                    m.at.x + ax * along_off + cx * across_off,
+                    m.at.y + ay * along_off + cy * across_off,
+                );
+                // Never on the guaranteed route (the whole reason this runs after it)…
+                if !self.clear_of_routes(&at, radius) {
+                    continue;
+                }
+                // …never sealing the mouth: what is left of the gap either side of this piece
+                // has to stay wider than a party.
+                let left = (half + along_off) - radius;
+                let right = (half - along_off) - radius;
+                if left.max(right) < wg.pass_part_min_gap {
+                    continue;
+                }
+                // …and never on top of anything that already means something.
+                if self.monsters.iter().any(|x| x.position.distance_to(&at) < radius + 1.5)
+                    || self.resources.iter().any(|x| x.position.distance_to(&at) < radius + 1.5)
+                    || self.chests.iter().any(|x| x.position.distance_to(&at) < radius + 1.5)
+                    || self.obstacles.iter().any(|o| {
+                        o.position.distance_to(&at) < radius + o.radius * 0.5
+                    })
+                {
+                    continue;
+                }
+                if !self.on_land(at.x, at.y) {
+                    continue;
+                }
+                self.obstacles.push(Obstacle {
+                    entity_id: format!("obs-pass-{}-{}", self.obstacles.len(), k),
+                    kind: kind.to_string(),
+                    position: at,
+                    radius,
+                });
+            }
+        }
     }
 
     fn push_water(&mut self, balance: &Balance, i: usize, start_x: f64, end_x: f64) {
@@ -6362,32 +6401,6 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
             && world_dist_to_web(p, &self.corridor_web, tan) >= self.web_clear() + pad
     }
 
-    /// Does the axis-aligned terrace rectangle come within the clear-path tube OR a web
-    /// trail? Samples the rect corners + centre + edge midpoints. Keeps raised cliffs off
-    /// both the backbone and the woven trails, so every route stays walkable on level 0.
-    ///
-    /// ⚠️ **It was comparing CORRIDOR corners against the WORLD path** — the caller builds
-    /// the rect from `start_x` and `±corridor_lateral`, and this asked `self.path`, which
-    /// `radialize` has already bent. Two different spaces, so the guard answered nothing in
-    /// particular; the web half of the same line was in the corridor frame beside it. Inert
-    /// today (`terraces_per_area = 0` — discrete terraces are retired in favour of the
-    /// heightmap), which is exactly why it is worth fixing now rather than when Phase B/C
-    /// switches them back on and inherits a guard nobody has ever seen reject anything.
-    fn rect_intrudes_path(&self, x0: f64, y0: f64, x1: f64, y1: f64) -> bool {
-        let (cx, cy) = ((x0 + x1) * 0.5, (y0 + y1) * 0.5);
-        let samples = [
-            Position::new(x0, y0),
-            Position::new(x1, y0),
-            Position::new(x0, y1),
-            Position::new(x1, y1),
-            Position::new(cx, y0),
-            Position::new(cx, y1),
-            Position::new(x0, cy),
-            Position::new(x1, cy),
-            Position::new(cx, cy),
-        ];
-        samples.iter().any(|s| !self.clear_of_routes(s, self.terrain_cell))
-    }
 
     /// WG-4: half the fan arc in radians (0 ⇒ flat corridor). Exposed so the wire can
     /// carry it to the client, which bends terrace/cliff/connector geometry by the same
@@ -6559,22 +6572,6 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
         area_level_at(&self.areas, &self.corridorize(p))
     }
 
-    /// Is there a connector within reach of `p` that joins levels `a`↔`b`? (A move
-    /// crossing a level boundary is allowed only on such a connector.)
-    fn connector_between(&self, p: &Position, a: u8, b: u8) -> bool {
-        if a == b {
-            return false;
-        }
-        // Connectors live in un-bent corridor coords (radialize leaves the terrain
-        // grids alone), so compare the reach in that frame.
-        let cp = self.corridorize(p);
-        self.areas.iter().any(|area| {
-            area.terrain
-                .connectors
-                .iter()
-                .any(|c| c.joins(a, b) && cp.distance_to(&c.position) <= c.radius)
-        })
-    }
 
     /// Advance every roaming creature one step of `dt` seconds. Creatures chase the
     /// nearest target within their aggro radius — either an active player OR a
@@ -7543,13 +7540,14 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
             if !self.t_walkable(cand.x, cand.y) {
                 return None;
             }
+            // ⚠️ **THE LEVEL GATE IS NOW A NO-OP, and it is left standing on purpose.**
+            // `level_at` is always 0 since terraces retired (`WG-11` stage 5), so every move
+            // is same-level and the CONNECTOR clause it used to need — the only way to change
+            // level, since there is no free climbing — went with the connectors themselves.
+            // The `may_drop` clause is kept because a Rift Drop-Trooper stepping DOWNWARD is
+            // a rule about the ability rather than about terraces, and it costs one compare.
             let cl = self.level_at(&cand);
-            if cl == cur_elev
-                || self.connector_between(&cur, cur_elev, cl)
-                || self.connector_between(&cand, cur_elev, cl)
-                // A Rift Drop-Trooper steps off. Strictly DOWNWARD: see `apply_move_with`.
-                || (may_drop && cl < cur_elev)
-            {
+            if cl == cur_elev || (may_drop && cl < cur_elev) {
                 Some(cl)
             } else {
                 None
@@ -8568,43 +8566,22 @@ fn push_bent_segment(out: &mut Vec<Position>, prev: Position, next: Position, ha
 
 /// The elevation level at world position `p` over a section list (free function
 /// so it can be called while another field of the arena is mutably borrowed).
-fn area_level_at(areas: &[Area], p: &Position) -> u8 {
-    for a in areas {
-        if p.x >= a.start_x && p.x < a.end_x {
-            return a.terrain.level_at(p);
-        }
-    }
+/// The elevation at a **corridor** position.
+///
+/// ⚠️ **ALWAYS 0, and that is the point** (`WG-11` stage 5). Discrete terraces are retired
+/// (`[worldgen] terraces_per_area = 0`) and the per-section elevation grid they lived in is
+/// gone with them, so nothing raises ground into a level any more. Relief is the continuous
+/// heightmap plus **PEAKS** — both world-space and both cell-agnostic, which is exactly what
+/// "cells replace `Area` as the structural unit" means for terrain.
+///
+/// Kept as a function rather than inlined at ~90 call sites because a level is still a real
+/// concept on the wire and in a DUNGEON, and because the day something raises ground again
+/// there should be one place that answers for it.
+fn area_level_at(_areas: &[Area], _p: &Position) -> u8 {
     0
 }
 
-/// Do any cells of the axis-aligned rect `[x0,x1]×[y0,y1]` already hold a raised
-/// (level > 0) terrace? Used to reject overlapping terraces.
-fn terrain_rect_overlaps(t: &Terrain, x0: f64, y0: f64, x1: f64, y1: f64) -> bool {
-    let gx0 = (((x0 - t.start_x) / t.cell).floor().max(0.0)) as usize;
-    let gy0 = (((y0 - t.y_min) / t.cell).floor().max(0.0)) as usize;
-    let gx1 = ((((x1 - t.start_x) / t.cell).ceil()) as usize).min(t.cols);
-    let gy1 = ((((y1 - t.y_min) / t.cell).ceil()) as usize).min(t.rows);
-    for gx in gx0..gx1 {
-        for gy in gy0..gy1 {
-            if gx < t.cols && gy < t.rows && t.level[gx * t.rows + gy] > 0 {
-                return true;
-            }
-        }
-    }
-    false
-}
 
-/// Mark every cell whose centre falls inside `[x0,x1]×[y0,y1]` to `level`.
-fn raise_terrace(t: &mut Terrain, x0: f64, y0: f64, x1: f64, y1: f64, level: u8) {
-    for gx in 0..t.cols {
-        for gy in 0..t.rows {
-            let c = t.cell_center(gx, gy);
-            if c.x >= x0 && c.x <= x1 && c.y >= y0 && c.y <= y1 {
-                t.level[gx * t.rows + gy] = level;
-            }
-        }
-    }
-}
 
 #[cfg(test)]
 mod bd1_structural_stock {
@@ -9879,7 +9856,105 @@ mod tests {
             assert!(landed >= 5, "only {landed} Shifts actually changed the ground");
         }
 
-        /// A region is a PATCH of cells, not an annulus. Repainting every bearing at a depth
+        /// ⚠️ **A FEATURE WITH NO INSTANCES PASSES EVERY TEST IT HAS.** The bridges shipped
+    /// entirely inert once — straits in every world, the trail inside none of them, zero spans
+    /// built, and all four of their invariants green over an empty set. So the FIRST thing
+    /// asserted about the micro maze is that any of it exists.
+    #[test]
+    fn a_pass_actually_gets_furnished() {
+        let (b, a) = deep_world_for_walls();
+        let parts = a.obstacles.iter().filter(|o| o.entity_id.starts_with("obs-pass-")).count();
+        assert!(
+            parts > 0,
+            "not one pass in a world out to d{:.0} has anything standing in it — the cell \
+             graph's gaps are all bare doorways",
+            a.areas.last().map(|s| s.end_x).unwrap_or(0.0)
+        );
+        // …and it is not one freak pass carrying everything.
+        let mouths: Vec<Position> = a
+            .obstacles
+            .iter()
+            .filter(|o| o.entity_id.starts_with("obs-pass-"))
+            .map(|o| o.position)
+            .collect();
+        let spread = mouths
+            .iter()
+            .map(|p| (p.x.hypot(p.y) / 250.0).floor() as i64)
+            .collect::<std::collections::HashSet<_>>()
+            .len();
+        assert!(spread >= 2, "every furnished pass is in one ring ({spread})");
+        let _ = b;
+    }
+
+    /// **A PART MUST NEVER SEAL ITS OWN PASS.** A gap nobody fits through is a wall with a
+    /// rumour of a door — the failure `ridge_pass_width` prevents one scale up, and a part
+    /// narrows what the wall left, so it has to be prevented again here.
+    #[test]
+    fn a_part_never_closes_the_pass_it_stands_in() {
+        let (b, a) = deep_world_for_walls();
+        let party = b.worldgen.player_radius * 2.0;
+        let parts: Vec<&Obstacle> =
+            a.obstacles.iter().filter(|o| o.entity_id.starts_with("obs-pass-")).collect();
+        assert!(!parts.is_empty(), "nothing to check");
+        // Group a mouth's pieces by their id suffix (the mouth index), then confirm the
+        // pieces of one mouth never span it end to end without a party-width gap.
+        let mut by_mouth: std::collections::HashMap<&str, Vec<&Obstacle>> =
+            std::collections::HashMap::new();
+        for o in &parts {
+            let key = o.entity_id.rsplit('-').next().unwrap_or("0");
+            by_mouth.entry(key).or_default().push(o);
+        }
+        for (key, group) in by_mouth {
+            if group.len() < 2 {
+                continue;
+            }
+            // Project onto the line through the group and look for the widest gap between
+            // consecutive pieces' near edges. It must admit a party somewhere.
+            let mut edges: Vec<(f64, f64)> = group
+                .iter()
+                .map(|o| (o.position.x.hypot(o.position.y), o.radius))
+                .collect();
+            edges.sort_by(|x, y| x.0.total_cmp(&y.0));
+            let widest = edges
+                .windows(2)
+                .map(|w| (w[1].0 - w[1].1) - (w[0].0 + w[0].1))
+                .fold(f64::MIN, f64::max);
+            assert!(
+                widest > party || group.len() < 3,
+                "mouth {key}: its pieces leave only {widest:.1} between them, under a \
+                 party's {party:.1}"
+            );
+        }
+    }
+
+    /// **AND NEVER ON THE GUARANTEED ROUTE.** The whole reason the parts are placed after the
+    /// trail is drawn: `astar_route` collides with ranges and terrain but not with obstacles,
+    /// so a part laid before the route is one the route runs straight through.
+    #[test]
+    fn no_part_stands_on_the_way_out() {
+        let (b, a) = deep_world_for_walls();
+        let clear = b.worldgen.path_clear_radius + b.worldgen.player_radius;
+        for o in a.obstacles.iter().filter(|o| o.entity_id.starts_with("obs-pass-")) {
+            assert!(
+                a.clear_of_routes(&o.position, o.radius),
+                "a pass part at ({:.0}, {:.0}) intrudes the clear tube ({clear:.1})",
+                o.position.x,
+                o.position.y
+            );
+        }
+    }
+
+    /// A world deep enough to have walled boundaries with gaps in them.
+    fn deep_world_for_walls() -> (Balance, Arena) {
+        let b = Balance::load_default().unwrap();
+        let mut a = Arena::generate(&b, 424242, false);
+        for _ in 0..40 {
+            a.ensure_frontier(&b, 1600.0);
+        }
+        (b, a)
+    }
+
+    /// A region is a PATCH of cells, not an annulus. Repainting every bearing at a depth
         /// would hand back the concentric-ring world `WG-7` and `WG-11` exist to retire — in
         /// the one moment the player is watching the land change.
         #[test]
@@ -9980,7 +10055,6 @@ mod tests {
                 .filter(|o| in_band(&a, &o.position))
                 .map(|o| (o.position, o.radius))
                 .collect();
-            let levels: Vec<Vec<u8>> = a.areas.iter().map(|s| s.terrain.level.clone()).collect();
             let path = a.path.clone();
 
             a.apply_shift(&b, &roll, first, last);
@@ -9993,7 +10067,6 @@ mod tests {
                 .collect();
             assert!(!before.is_empty() && !after.is_empty());
             assert_ne!(before, after, "the props were reskinned, not re-scattered");
-            assert_eq!(levels, a.areas.iter().map(|s| s.terrain.level.clone()).collect::<Vec<_>>());
             assert_eq!(path, a.path, "the Shift re-routed the clear path");
         }
 
@@ -10224,8 +10297,6 @@ mod tests {
     fn corridor_balance() -> Balance {
         let mut b = Balance::load_default().unwrap();
         b.worldgen.radial_arc_degrees = 0.0;
-        b.worldgen.terraces_per_area = 3.0;
-        b.worldgen.max_level = 2;
         b
     }
 
@@ -11560,12 +11631,9 @@ mod tests {
         let d = Arena::generate(&b, 999, true);
         let monsters_differ = a.monsters.len() != d.monsters.len()
             || a.monsters.iter().zip(d.monsters.iter()).any(|(m, n)| m.position != n.position);
-        let terrain_differs = a
-            .areas
-            .iter()
-            .zip(d.areas.iter())
-            .any(|(x, y)| x.terrain.level != y.terrain.level);
-        assert!(monsters_differ || terrain_differs, "different seeds → different worlds");
+        let props_differ = a.obstacles.len() != d.obstacles.len()
+            || a.obstacles.iter().zip(d.obstacles.iter()).any(|(x, y)| x.position != y.position);
+        assert!(monsters_differ || props_differ, "different seeds → different worlds");
     }
 
     #[test]
@@ -11575,13 +11643,14 @@ mod tests {
         assert_eq!(section_seed(42, 3), section_seed(42, 3));
         assert_ne!(section_seed(42, 3), section_seed(42, 4));
         assert_ne!(section_seed(42, 3), section_seed(43, 3));
-        // Two arenas from the same run seed produce identical terraces per section.
+        // Two arenas from the same run seed produce identical sections.
         let b = Balance::load_default().unwrap();
         let a = Arena::generate(&b, 77, true);
         let c = Arena::generate(&b, 77, true);
         for (x, y) in a.areas.iter().zip(c.areas.iter()) {
-            assert_eq!(x.terrain.level, y.terrain.level);
-            assert_eq!(x.terrain.connectors.len(), y.terrain.connectors.len());
+            assert_eq!(x.start_x, y.start_x);
+            assert_eq!(x.end_x, y.end_x);
+            assert_eq!(x.biome, y.biome);
         }
     }
 
@@ -11709,38 +11778,13 @@ mod tests {
             arena.obstacles.iter().all(|o| o.position.x > area0_end),
             "no obstacles in area 0"
         );
-        // Area 0 is entirely flat.
-        assert!(arena.areas[0].terrain.level.iter().all(|&l| l == 0), "area 0 is flat");
+        // (Area 0's flatness used to be asserted against its elevation grid. EVERY section is
+        // flat now — terraces are retired and the grid is gone, `WG-11` stage 5.)
         for o in &arena.obstacles {
             assert!(o.radius > 0.0);
         }
     }
 
-    #[test]
-    fn terraces_generate_with_reachable_connectors() {
-        let b = corridor_balance();
-        let arena = Arena::generate(&b, 7, true);
-        // Some section beyond the tutorial has a raised terrace.
-        let raised: usize = arena
-            .areas
-            .iter()
-            .map(|a| a.terrain.level.iter().filter(|&&l| l > 0).count())
-            .sum();
-        assert!(raised > 0, "verticality: at least one terrace is raised");
-        // Every raised level present in a section has a connector joining it to 0.
-        for area in &arena.areas {
-            let mut levels: Vec<u8> = area.terrain.level.iter().copied().filter(|&l| l > 0).collect();
-            levels.sort_unstable();
-            levels.dedup();
-            for lvl in levels {
-                assert!(
-                    area.terrain.connectors.iter().any(|c| c.joins(0, lvl)),
-                    "section {} level {lvl} has no connector to the ground",
-                    area.index
-                );
-            }
-        }
-    }
 
     #[test]
     fn no_obstacle_intrudes_the_clear_path_and_the_ends_stay_grounded() {
@@ -12077,34 +12121,6 @@ mod tests {
     // segment exists to raise a plateau over; elevation now comes from the heightmap
     // and the path routes AROUND cliffs rather than climbing them.)
 
-    #[test]
-    fn a_terrace_chest_only_opens_from_its_elevation() {
-        // Treasure atop a climb: a chest sitting on a terrace can't be opened from the
-        // ground below it — you must be up on the terrace (matching elevation).
-        let b = corridor_balance();
-        let seed = (1u64..300)
-            .find(|&s| Arena::generate(&b, s, true).chests.iter().any(|c| c.elevation > 0))
-            .expect("some seed puts a chest on a terrace");
-        let mut arena = Arena::generate(&b, seed, true);
-        let chest = arena.chests.iter().find(|c| c.elevation > 0).unwrap().clone();
-        arena.add_avatar("p".into(), 8.0);
-        // Standing at the chest's (x,y) but on the GROUND: blocked.
-        {
-            let a = arena.avatar_mut("p").unwrap();
-            a.position = chest.position;
-            a.elevation = 0;
-        }
-        assert!(
-            arena.open_chest("p", &chest.entity_id).is_none(),
-            "seed {seed}: a ground-level player can't open a terrace-top chest"
-        );
-        // Up on the terrace (matching elevation): it opens.
-        arena.avatar_mut("p").unwrap().elevation = chest.elevation;
-        assert!(
-            arena.open_chest("p", &chest.entity_id).is_some(),
-            "seed {seed}: at the chest's elevation it opens"
-        );
-    }
 
 
     #[test]
@@ -12124,7 +12140,8 @@ mod tests {
         assert_eq!(a.areas.len(), c.areas.len());
         for (x, y) in a.areas.iter().zip(c.areas.iter()) {
             assert_eq!(x.start_x, y.start_x);
-            assert_eq!(x.terrain.level, y.terrain.level);
+            assert_eq!(x.end_x, y.end_x);
+            assert_eq!(x.biome, y.biome);
         }
     }
 
