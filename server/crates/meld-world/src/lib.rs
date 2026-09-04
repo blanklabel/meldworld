@@ -3863,6 +3863,37 @@ impl Arena {
             self.push_boundary_walls(balance, i, start_x, end_x);
         self.push_water(balance, i, start_x, end_x);
 
+        // ⚠️ **A RANGE THAT THE WATER REACHED YIELDS, because water is placed AFTER it.**
+        // Both emitters ask `on_land` along the spine when they raise a range — but
+        // `push_water` runs later, and a river walks downhill up to ~364 units while a basin
+        // fills a contour, so a range raised on dry ground can be flooded by water that did
+        // not exist yet. Measured on seed 1: **2 of 49 ranges** wading, the deepest 20 units
+        // offshore, and `no_range_stands_in_open_water` said so.
+        //
+        // The dependency table already settles the direction — *"a range over standing water
+        // → the range yields"* — and this is the only moment both facts are known. Dropping a
+        // range only ever OPENS ground, so it cannot cost feasibility: this runs before the
+        // route, and A* is strictly freer afterwards.
+        self.ridges.retain(|r| {
+            let (a0, a1) = (r[0] as f64, r[1] as f64);
+            let (b0, b1) = (r[2] as f64, r[3] as f64);
+            (0..=6).all(|k| {
+                let t = k as f64 / 6.0;
+                let (px, py) = (a0 + (b0 - a0) * t, a1 + (b1 - a1) * t);
+                let sh = meld_proto::coast::Shore {
+                    arc_half: self.radial_half as f32,
+                    terrain_off: self.terrain_off,
+                    peaks: &self.peaks,
+                    straits: &self.straits,
+                    lobes: &self.lobes,
+                    basins: &self.basins,
+                    rivers: &self.rivers,
+                    bridges: &self.bridges,
+                };
+                sh.water(px as f32, py as f32) < 0.0
+            })
+        });
+
 
         // WG-1: every Nth procedural section is a DUNGEON — rooms divided by walls
         // with a door on the clear path (connectivity guaranteed like a biome seam),
