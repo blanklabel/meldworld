@@ -2606,22 +2606,20 @@ fn wall_material(biome: &str, roll: f64) -> WallMaterial {
         // three. Water as a WALL is what makes it a wetland maze: the boundaries are channels
         // you ford, and the trees inside a cell are the fill.
         "mire" => {
-            // ⚠️ **WATER WALLS ARE BUILT BUT GATED OFF, and this is a deliberate retreat.**
-            // The machinery is real — a `RiverNode` chain per segment whose chain breaks are
-            // FORDS — but it broke the route's own feasibility invariant and I could not close
-            // it inside stage 8. Measured on seed 8: a walker following the guaranteed trail
-            // stalled at waypoint 218 of 384 with a channel's edge **0.4 units** away, and the
-            // identical world with these off walked all 384. The channel had cleared
-            // `clear_of_routes` demanding 7.5 units from the CORRIDOR path while sitting 3.6
-            // from the WALKED one — the two frames disagree by roughly 2x at that depth, and
-            // padding did not close it.
+            // ⚠️ **THE MIRE WALLS WITH WATER, and that is the biome's whole character.** A
+            // `RiverNode` chain per surviving segment, so the gaps the pass machinery already
+            // cut become **FORDS** — dry ground, a stony crossing — by exactly the
+            // construction a strait gets its isthmuses. `apply_move` already collides with it,
+            // `astar_route` already keeps `route_pad` from it, both ground shaders already
+            // draw it: nothing new had to learn what water is.
             //
-            // Kept rather than deleted because `WG-11` stage 9 rebuilds it anyway: a channel
-            // will be seeded from the CELL'S BODY and coalesced, never laid down a boundary,
-            // and placed FROM the maze rather than validated against a snapshot of terrain.
-            // The fix is that redesign, not another margin. Turn it on with
-            // `MELD_WATER_WALLS=1` to reproduce the failure.
-            if std::env::var("MELD_WATER_WALLS").is_ok() && roll < 0.75 {
+            // ⚠️ **It shipped broken once and the cause is worth keeping.** These were laid
+            // inside `push_boundary_walls`, which runs BEFORE the route — and then handed a
+            // WORLD point to `clear_of_routes`, which wants a corridor one, so the check was
+            // inert and a channel sat on the guaranteed trail (seed 8 stalled a walker at
+            // waypoint 218 of 384). Both halves are fixed: collected as `WaterWall` and laid
+            // after the route beside `push_prop_walls`, and corridorized before asking.
+            if roll < 0.75 {
                 WallMaterial::Water
             } else {
                 WallMaterial::Props
@@ -6171,22 +6169,26 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
                     || self.chests.iter().any(|c| c.position.distance_to(&at) < half + 1.5);
                 // Never on the guaranteed trail, and never in the sea (a channel running into
                 // the ocean is just the ocean).
-                // ⚠️ **PAD FOR THE SAG, BECAUSE `clear_of_routes` MEASURES THE CHORD AND THE
-                // PLAYER WALKS THE ARC.** It asks `world_dist_to_path` against
-                // `corridor_path` — the sparse corridor waypoints — while the walker follows
-                // the DENSIFIED bent trail, and the chord between two bent vertices cuts
-                // inside the arc by `L^2/8R`. A prop clears this by luck (it blocks at ~2.0
-                // total); a channel is 3.2 of half-width and does not. Measured on seed 8: a
-                // walker following the trail stalled at waypoint 218 of 384 with the water's
-                // edge **0.0 units** away, and `the_clear_path_actually_reaches_the_portal`
-                // failed — while the identical world with water walls off walked all 384.
+                // ⚠️ **`clear_of_routes` WANTS A CORRIDOR POINT, AND I WAS HANDING IT A WORLD
+                // ONE — so the check was INERT.** `world_dist_to_path` scales `y` by the
+                // tangential factor (`Position::new(q.x, q.y * tan)`), which only approximates
+                // a world distance when both the point and the path are in CORRIDOR
+                // coordinates. These nodes come from `polar(r, bearing)`, so multiplying a
+                // world `y` by ~19 at d205 produced a nonsense distance, always large, and
+                // every node passed.
                 //
-                // A party's width plus the tube's own half-width covers the sag at these
-                // depths with room. ⚠️ If a future channel gets wider, re-measure rather than
-                // trusting this margin — the honest fix is asking the WALKED path, and it is
-                // not available during generation because `self.path` is not bent yet.
-                let route_pad = half + self.player_radius + self.path_clear_radius;
-                if occupied || !self.clear_of_routes(&at, route_pad) || !self.on_land(at.x, at.y) {
+                // That is the whole of seed 8's stall: a channel sat ON the guaranteed trail
+                // because nothing had actually asked. Padding for the arc's sag did not move
+                // it, which is the tell I should have read — a margin cannot fix a predicate
+                // that is not being evaluated.
+                //
+                // ⚠️ **AND PROP WALLS MAKE THE IDENTICAL MISTAKE AND GET AWAY WITH IT**, which
+                // is why it hid: they hand world points to the same function, but `radialize`'s
+                // retain culls OBSTACLES inside the clear tube afterwards using world-space
+                // `dist_to_path`. Props have a backstop; `self.rivers` has none.
+                let cp = self.corridorize(&at);
+                let route_pad = half + self.player_radius;
+                if occupied || !self.clear_of_routes(&cp, route_pad) || !self.on_land(at.x, at.y) {
                     // A break in the chain is a FORD, so an interruption here is not a hole in
                     // the wall — it is a crossing, which is exactly what the trail wants.
                     laid = 0;
