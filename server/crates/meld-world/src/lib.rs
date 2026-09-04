@@ -3706,7 +3706,11 @@ impl Arena {
         // river is the one water body that can genuinely sever the world.
         // BEFORE the water, so a lake yields to a mountain the way it already yields to a
         // peak — `off_peaks` is what stops a basin flooding straight through one.
-        let ridges_before = self.ridges.len();
+        // ⚠️ **MUTABLE, BECAUSE A RETIREMENT CAN REMOVE A RANGE BELOW IT.** This marks where
+        // THIS section's ranges begin, so the unroutable fallback can truncate them — and both
+        // retirement paths below delete entries anywhere in the world, including earlier ones.
+        // Leaving it fixed would make that truncate eat one range too many.
+        let mut ridges_before = self.ridges.len();
         self.push_ridges(balance, i, start_x, end_x);
         // The mouths of this section's walled boundaries, and the boundaries a PROP wall has
         // to be laid along — both consumed once the route exists.
@@ -3715,7 +3719,7 @@ impl Arena {
 
         // ⚠️ Every blocker for this band is now down, which is the only moment the question
         // "is any of this severed" can be asked — see `open_sealed_ground`.
-        self.open_sealed_ground(balance, end_x);
+        self.open_sealed_ground(balance, end_x, &mut ridges_before);
 
         // WG-1: every Nth procedural section is a DUNGEON — rooms divided by walls
         // with a door on the clear path (connectivity guaranteed like a biome seam),
@@ -3942,8 +3946,11 @@ impl Arena {
             if route.last().is_some_and(|p| p.distance_to(&exit_target) < 6.0) {
                 break;
             }
-            if !self.retire_range_blocking(entry, exit_target) {
+            let Some(idx) = self.retire_range_blocking(entry, exit_target) else {
                 break;
+            };
+            if idx < ridges_before {
+                ridges_before -= 1;
             }
             route = self.astar_route(entry, exit_target);
         }
@@ -5268,10 +5275,9 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
     /// the straight run is what the route WANTS to be, and a barrier on it is the barrier
     /// worth yielding.
     ///
-    /// Zeroing the half-width rather than removing the entry keeps every index anything else
-    /// may hold — including `ridges_before` — valid, and `ridge_height` and `ridge_discs`
-    /// both already skip a zero-width spine.
-    fn retire_range_blocking(&mut self, entry: Position, exit: Position) -> bool {
+    /// Returns the index removed, so the caller can keep its `ridges_before` marker honest —
+    /// retiring a range from an EARLIER section shifts everything above it down.
+    fn retire_range_blocking(&mut self, entry: Position, exit: Position) -> Option<usize> {
         let pad = self.path_clear_radius + self.player_radius;
         let len = entry.distance_to(&exit).max(1.0);
         let steps = (len / 2.0).ceil().max(2.0) as i32;
@@ -5297,13 +5303,9 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
                 }
             }
         }
-        match best {
-            Some((idx, _)) => {
-                self.ridges[idx][4] = 0.0;
-                true
-            }
-            None => false,
-        }
+        let (idx, _) = best?;
+        self.ridges.remove(idx);
+        Some(idx)
     }
 
     fn bridge_the_direct_line(&mut self, balance: &Balance, entry: Position, exit: Position) {
@@ -5413,7 +5415,7 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
     /// grid cannot resolve the gaps between trunks — counting it made a wood read as solid
     /// and the flood die inside the hub ring (measured: 0.1% reached). Prop WALLS are checked
     /// and, measured, seal nothing on any seed: their mouths work.
-    fn open_sealed_ground(&mut self, balance: &Balance, end_x: f64) {
+    fn open_sealed_ground(&mut self, balance: &Balance, end_x: f64, ridges_before: &mut usize) {
         let wg = &balance.worldgen;
         // Only a section that actually raised a range can have sealed anything with one, and
         // that is rare — which is what keeps this off the tick in the common case.
@@ -5543,9 +5545,16 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
             let Some((&worst, _)) = votes.iter().max_by_key(|(_, v)| **v) else {
                 return;
             };
-            // Zeroing the half-width retires the segment without disturbing the indices
-            // anything else may hold, and `ridge_discs` already skips a zero-width spine.
-            self.ridges[worst][4] = 0.0;
+            // ⚠️ **REMOVED, NOT ZEROED.** Leaving a zero-width spine in place looks harmless —
+            // `ridge_height` and `ridge_discs` both skip one — but it is still a range as far
+            // as everything that ITERATES the list is concerned: it rides the wire to the
+            // client, it consumes one of the fixed shader slots that are supposed to hold the
+            // ranges NEAREST the player, and `a_range_is_steeper_than_anything_may_be_walked`
+            // rightly fails on it, because a retired spine has no crest above its own foot.
+            self.ridges.remove(worst);
+            if worst < *ridges_before {
+                *ridges_before -= 1;
+            }
         }
     }
 
