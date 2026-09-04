@@ -168,7 +168,7 @@ pub(crate) fn spawn_hero_actor(
             // ever returns, the knob is `LAMP_STRENGTH`, not `LAMP_REACH`.
             let (strength, range, radius) = (LAMP_STRENGTH, LAMP_REACH, LAMP_RADIUS);
             p.spawn((
-                BattlePartyLamp { strength },
+                NightLamp { strength },
                 PointLight {
                     color: Color::srgb(1.0, 0.88, 0.62),
                     intensity: 0.0,
@@ -326,7 +326,7 @@ pub(crate) fn spawn_enemy_actor(
             // is not leading a pack goes unlit until the server sends it.
             if let Some(strength) = creature_lamp_strength(&c.statuses) {
                 p.spawn((
-                    BattlePartyLamp { strength },
+                    NightLamp { strength },
                     PointLight {
                         // Cold and hostile, against the party's warm lanterns, so the two
                         // sides of the arena never read as the same light.
@@ -348,6 +348,27 @@ pub(crate) fn spawn_enemy_actor(
             }
             p.spawn((
                 TargetDiamond { id: c.id.clone(), base_y: marker_y },
+                // ⚠️ THE GEM CASTS LIGHT, and the SAME light a hero's lamp does. It span
+                // for "a gem glint" and lit nothing, so the one enemy your order is aimed at
+                // was no better lit than the rank beside it — the marker said "this one" and
+                // the picture did not.
+                //
+                // It rides `NightLamp` rather than driving its own intensity, so it is
+                // night-scaled by the one system that scales every other carried light: the
+                // same amount of light as the lamp means the same code path, not a matching
+                // literal that drifts. And it needs no show/hide logic — Bevy skips a light
+                // whose `ViewVisibility` is false (`bevy_pbr` light.rs: `if
+                // !view_visibility.get() { continue; }`), so it goes out with the diamond
+                // that `highlight_target` already hides.
+                NightLamp { strength: LAMP_STRENGTH },
+                PointLight {
+                    color: Color::srgb(1.0, 0.93, 0.72),
+                    intensity: 0.0,
+                    range: LAMP_REACH,
+                    radius: LAMP_RADIUS,
+                    shadow_maps_enabled: true,
+                    ..default()
+                },
                 Mesh3d(wa.sprite_quad.clone()),
                 MeshMaterial3d(marker_mat),
                 Transform::from_xyz(0.0, marker_y, 0.0).with_scale(Vec3::splat(0.8 / 2.2)),
@@ -388,6 +409,27 @@ pub(crate) fn spawn_enemy_actor(
         // this enemy is the picked target (bobbed by `highlight_target`).
         p.spawn((
             TargetDiamond { id: c.id.clone(), base_y: marker_y },
+                // ⚠️ THE GEM CASTS LIGHT, and the SAME light a hero's lamp does. It span
+            // for "a gem glint" and lit nothing, so the one enemy your order is aimed at
+            // was no better lit than the rank beside it — the marker said "this one" and
+            // the picture did not.
+            //
+            // It rides `NightLamp` rather than driving its own intensity, so it is
+            // night-scaled by the one system that scales every other carried light: the
+            // same amount of light as the lamp means the same code path, not a matching
+            // literal that drifts. And it needs no show/hide logic — Bevy skips a light
+            // whose `ViewVisibility` is false (`bevy_pbr` light.rs: `if
+            // !view_visibility.get() { continue; }`), so it goes out with the diamond
+            // that `highlight_target` already hides.
+            NightLamp { strength: LAMP_STRENGTH },
+            PointLight {
+                color: Color::srgb(1.0, 0.93, 0.72),
+                intensity: 0.0,
+                range: LAMP_REACH,
+                radius: LAMP_RADIUS,
+                shadow_maps_enabled: true,
+                ..default()
+            },
             Mesh3d(wa.sprite_quad.clone()),
             MeshMaterial3d(marker_mat),
             Transform::from_xyz(0.0, marker_y, 0.0).with_scale(Vec3::splat(0.8 / 2.2)),
