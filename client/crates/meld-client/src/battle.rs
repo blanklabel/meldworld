@@ -624,14 +624,26 @@ const LAMP_RADIUS: f32 = 0.6;
 /// How high the carried lamp hangs. Above head height on purpose — see the spawn site.
 const LAMP_HEIGHT: f32 = 2.7;
 
-/// What a creature's own light is worth, or `None` for the rank and file. A named boss
-/// burns brightest; a pack leader is the elite of its group and glows enough to be picked
-/// out of the line. Deliberately under the party's `LAMP_STRENGTH`: the arena should read
-/// as the party's lanterns pushing INTO the dark, not as a lit room.
+/// What a creature's own light is worth, or `None` for the rank and file.
+///
+/// Brightness IS the pecking order: a named boss burns hardest, then a gatekeeper, then an
+/// elite, then a pack leader — which is the elite of its own group and no more. Every one
+/// stays under the party's `LAMP_STRENGTH`, so the arena reads as the party's lanterns
+/// pushing INTO the dark rather than as a lit room.
+///
+/// ⚠️ `enc:elite` / `enc:gatekeeper` did not exist until standing was put on the wire:
+/// `Battle::encounter_class` classes the whole encounter and cannot say WHICH creature is
+/// the champion, so before that an elite not leading a pack was indistinguishable from a
+/// footsoldier here and went unlit.
 fn creature_lamp_strength(statuses: &[String]) -> Option<f32> {
+    let has = |t: &str| statuses.iter().any(|s| s == t);
     if statuses.iter().any(|s| s.starts_with("boss:")) {
         Some(LAMP_STRENGTH * 0.55)
-    } else if statuses.iter().any(|s| s == "pack:leader") {
+    } else if has("enc:gatekeeper") {
+        Some(LAMP_STRENGTH * 0.45)
+    } else if has("enc:elite") {
+        Some(LAMP_STRENGTH * 0.3)
+    } else if has("pack:leader") {
         Some(LAMP_STRENGTH * 0.2)
     } else {
         None
@@ -3650,8 +3662,14 @@ mod watch_banner_tests {
         let leader = vec!["pack:leader".to_string()];
         let minion = vec!["pack:minion".to_string()];
         let plain: Vec<String> = vec![];
+        let gate = vec!["enc:gatekeeper".to_string()];
+        let elite = vec!["enc:elite".to_string()];
         let b = creature_lamp_strength(&boss).expect("a named boss carries a light");
+        let g = creature_lamp_strength(&gate).expect("a gatekeeper carries a light");
+        let e = creature_lamp_strength(&elite).expect("an elite carries a light");
         let l = creature_lamp_strength(&leader).expect("a pack leader carries a light");
+        // Brightness is the pecking order, and it must stay strictly ordered.
+        assert!(b > g && g > e && e > l, "pecking order broken: {b} {g} {e} {l}");
         assert!(creature_lamp_strength(&minion).is_none(), "a minion is rank and file");
         assert!(creature_lamp_strength(&plain).is_none(), "a plain creature is unlit");
         assert!(b > l, "a named boss must out-burn the leader of a pack: {b} vs {l}");
