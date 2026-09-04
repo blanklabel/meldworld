@@ -45,7 +45,7 @@ fn biome_colour(b: &str) -> &'static str {
 #[ignore = "dev instrument: writes an SVG map; run with --ignored"]
 fn dump_world_map() {
     let b = Balance::load_default().unwrap();
-    for seed in [1u64, 42, 424242] {
+    for seed in [424242u64] {
         let mut a = Arena::generate(&b, seed, false);
         for _ in 0..40 {
             a.ensure_frontier(&b, REACH);
