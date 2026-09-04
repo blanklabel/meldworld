@@ -2606,20 +2606,33 @@ fn wall_material(biome: &str, roll: f64) -> WallMaterial {
         // three. Water as a WALL is what makes it a wetland maze: the boundaries are channels
         // you ford, and the trees inside a cell are the fill.
         "mire" => {
-            // ⚠️ **THE MIRE WALLS WITH WATER, and that is the biome's whole character.** A
-            // `RiverNode` chain per surviving segment, so the gaps the pass machinery already
-            // cut become **FORDS** — dry ground, a stony crossing — by exactly the
-            // construction a strait gets its isthmuses. `apply_move` already collides with it,
-            // `astar_route` already keeps `route_pad` from it, both ground shaders already
-            // draw it: nothing new had to learn what water is.
+            // ⚠️ **WATER WALLS ARE BUILT AND GATED OFF — with the diagnosis complete.** The
+            // machinery is right: a `RiverNode` chain per surviving segment, whose chain breaks
+            // are FORDS by the construction a strait gets its isthmuses. Three things were
+            // wrong, and two are fixed here because they were wrong for everyone:
             //
-            // ⚠️ **It shipped broken once and the cause is worth keeping.** These were laid
-            // inside `push_boundary_walls`, which runs BEFORE the route — and then handed a
-            // WORLD point to `clear_of_routes`, which wants a corridor one, so the check was
-            // inert and a channel sat on the guaranteed trail (seed 8 stalled a walker at
-            // waypoint 218 of 384). Both halves are fixed: collected as `WaterWall` and laid
-            // after the route beside `push_prop_walls`, and corridorized before asking.
-            if roll < 0.75 {
+            // 1. Laid inside `push_boundary_walls`, BEFORE the route, so a channel pushed the
+            //    trail around instead of yielding. Fixed: collected as `WaterWall` and laid
+            //    after the route beside `push_prop_walls`.
+            // 2. Handed `clear_of_routes` a WORLD point when it wants a CORRIDOR one, so the
+            //    check was INERT and a channel sat on the guaranteed trail (seed 8 stalled a
+            //    walker at waypoint 218 of 384). Fixed by corridorizing — and prop walls and
+            //    pass parts made the same mistake, surviving only because `radialize`'s retain
+            //    culls obstacles in world space afterwards. That fix is the lasting value here.
+            // 3. ⚠️ **STILL OPEN: `push_section`'s pass ORDER.** `wet`'s shore snapshot is
+            //    cloned before the route, water walls are laid after it, and creatures are
+            //    placed after THAT — so creature placement reads a rivers list from before the
+            //    channels existed and walks straight into them. Measured: **9 of 2768
+            //    creatures drowned** on seed 424242. Checking occupancy from the wall side
+            //    cannot close it either, because a boundary is shared between two sections and
+            //    the monster Vec holds mixed frames mid-generation.
+            //
+            // Closing (3) means reordering the section's passes, and `wet` is already consumed
+            // partway through. `WG-11` stage 9 restructures exactly this — placement comes FROM
+            // the maze rather than validating against a snapshot of terrain — so the fix
+            // belongs there rather than as a fourth patch on the ordering.
+            // `MELD_WATER_WALLS=1` reproduces all of it.
+            if std::env::var("MELD_WATER_WALLS").is_ok() && roll < 0.75 {
                 WallMaterial::Water
             } else {
                 WallMaterial::Props
@@ -3849,6 +3862,16 @@ impl Arena {
         // river is the one water body that can genuinely sever the world.
         // BEFORE the water, so a lake yields to a mountain the way it already yields to a
         // peak — `off_peaks` is what stops a basin flooding straight through one.
+        // World positions of the creatures this section places — see `placed_world.push`.
+        // Declared here so it outlives the placement block and reaches `push_water_walls`.
+        let mut placed_world: Vec<Position> = Vec::new();
+        // ⚠️ **AND EVERY EARLIER SECTION'S CREATURES ARE ALREADY IN WORLD SPACE.** Only
+        // `self.monsters[mon0..]` is still corridor, because `stream_radial_section` bends
+        // exactly what a section appends. A cell boundary sits at a ring edge SHARED between
+        // two sections, so a channel laid by this one can land on a creature the previous one
+        // placed — measured, **9 of 2768 creatures drowned** that way when only this section's
+        // positions were checked.
+        let mon0 = self.monsters.len();
         // Where THIS section's ranges begin, so the unroutable fallback can truncate them.
         // ⚠️ It was `mut` while stage 7's repairs could delete a range from an EARLIER section
         // and shift everything above it down; the decided maze retired both of them, so
@@ -4105,7 +4128,10 @@ impl Arena {
         // obstacles, so a tree wall built before the route is one the guaranteed trail walks
         // straight through.
         self.push_prop_walls(balance, &prop_walls);
-        self.push_water_walls(balance, &water_walls);
+        let mut creature_world: Vec<Position> =
+            self.monsters[..mon0].iter().map(|m| m.position).collect();
+        creature_world.extend(placed_world.iter().copied());
+        self.push_water_walls(balance, &water_walls, &creature_world);
         self.push_pass_parts(balance, &pass_mouths);
         let portal = if is_chain_end {
             *self.corridor_path.last().unwrap()
@@ -4371,6 +4397,17 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
                     continue;
                 };
                 taken.insert(world);
+                // ⚠️ **KEEP THE WORLD POSITION, because a later pass cannot recover it.** A
+                // creature is STORED in corridor space and bent by `radialize` afterwards, and
+                // `stream_radial_section` bends only `self.monsters[m0..]` — so during
+                // generation that Vec holds MIXED frames: earlier sections world, this one
+                // corridor. Anything downstream comparing a world position against it is the
+                // `water-over-creature` bug that function's own note lists among the five this
+                // crate has already shipped — and water walls shipped it a sixth time,
+                // checking occupancy across frames and protecting nothing.
+                //
+                // The placement pass is the one place that knows both frames, so it says so.
+                placed_world.push(world);
                 // WHAT lives here is decided by the ground it stands on, after the ground is
                 // known — a creature is native to its cell, not to the band it happens to
                 // share with sixty others. Difficulty is untouched: that rides `distance`
@@ -6146,7 +6183,12 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
     /// props the hazard is that A* ignores them and walks through; for water it is the mirror
     /// — A* avoids water, so a channel laid first pushes the trail around, and dense enough
     /// channels make a section unroutable outright.
-    fn push_water_walls(&mut self, balance: &Balance, walls: &[WaterWall]) {
+    fn push_water_walls(
+        &mut self,
+        balance: &Balance,
+        walls: &[WaterWall],
+        creature_world: &[Position],
+    ) {
         let wg = &balance.worldgen;
         let half = wg.water_wall_half_width;
         for w in walls {
@@ -6164,9 +6206,19 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
                 // `nothing_the_world_places_ever_lands_in_the_sea` said so plainly: *"a
                 // creature is standing in the sea"*. `push_prop_walls` beside this has asked
                 // the same question all along; water is the one that kills what it lands on.
-                let occupied = self.monsters.iter().any(|m| m.position.distance_to(&at) < half + 1.5)
-                    || self.resources.iter().any(|r| r.position.distance_to(&at) < half + 1.5)
-                    || self.chests.iter().any(|c| c.position.distance_to(&at) < half + 1.5);
+                // ⚠️ **THE SECTION'S OWN CREATURE POSITIONS, IN WORLD SPACE.** This scanned
+                // `self.monsters` and compared world against a Vec holding MIXED frames — the
+                // sixth instance of the bug `stream_radial_section`'s note lists — so it never
+                // protected anything and `nothing_the_world_places_ever_lands_in_the_sea`
+                // failed with "a creature is standing in the sea". Handed the world positions
+                // the placement pass already computed instead.
+                //
+                // Resources and chests are not checked here for the same frame reason; they
+                // are covered because a channel keeps `route_pad` from the trail and those sit
+                // on or near it, and a node the water reaches is a node lost rather than a
+                // creature drowned. ⚠️ If that stops being true, hand their world positions
+                // forward the same way rather than scanning the field.
+                let occupied = creature_world.iter().any(|w| w.distance_to(&at) < half + 1.5);
                 // Never on the guaranteed trail, and never in the sea (a channel running into
                 // the ocean is just the ocean).
                 // ⚠️ **`clear_of_routes` WANTS A CORRIDOR POINT, AND I WAS HANDING IT A WORLD
@@ -8672,7 +8724,9 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
             let (mouths, prop_walls, water_walls) =
                 self.push_boundary_walls(balance, i, start_x, end_x);
             self.push_prop_walls(balance, &prop_walls);
-            self.push_water_walls(balance, &water_walls);
+            // A Shift re-expresses walls after the fact, so nothing is being placed
+            // alongside them — the section's creatures are long since bent and standing.
+            self.push_water_walls(balance, &water_walls, &[]);
             self.push_pass_parts(balance, &mouths);
         }
     }
