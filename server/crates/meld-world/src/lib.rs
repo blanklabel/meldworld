@@ -6237,7 +6237,12 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
                     ^ 0x5EA1_1A11_0000_0001_u64.wrapping_add(w as u64));
                 let radius = obstacle_radius_for(wg, wall.kind, krng.unit());
                 // ⚠️ Never on the guaranteed route — the whole reason this runs after it.
-                if !self.clear_of_routes(&at, radius) {
+                // ⚠️ Corridorized — see `clear_of_routes`. This passed a WORLD point for a
+                // long time and got away with it, because `radialize`'s retain culls
+                // obstacles inside the clear tube afterwards in world space. The backstop is
+                // real, but a check that never evaluates is not one, and the next
+                // late-placed feature will not have a retain behind it.
+                if !self.clear_of_routes(&self.corridorize(&at), radius) {
                     continue;
                 }
                 if !self.on_land(at.x, at.y) {
@@ -6372,7 +6377,10 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
                     m.at.y + ay * along_off + cy * across_off,
                 );
                 // Never on the guaranteed route (the whole reason this runs after it)…
-                if !self.clear_of_routes(&at, radius) {
+                // ⚠️ Corridorized — see `clear_of_routes`. `PassMouth.at` is WORLD space
+                // (its own doc says so), so this was inert too, and only the obstacle retain
+                // kept a pass part off the trail.
+                if !self.clear_of_routes(&self.corridorize(&at), radius) {
                     continue;
                 }
                 // …never sealing the mouth: what is left of the gap either side of this piece
@@ -7023,6 +7031,20 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
     /// that went into one mover, the creature damage pass that kept the O(n²) scan, and
     /// `maze_fill_scale` itself — so the frame fix ships as a funnel rather than as four
     /// edits that have to stay in agreement.
+    /// Is `p` far enough from the guaranteed trail and the web?
+    ///
+    /// ⚠️ **`p` MUST BE IN CORRIDOR COORDINATES.** `world_dist_to_path` approximates a world
+    /// distance by scaling `y` by the tangential factor
+    /// (`Position::new(q.x, q.y * tan)`), which is only meaningful when the point and the path
+    /// are in the SAME corridor frame. Hand it a world point and a world `y` gets multiplied
+    /// by ~19 at d205: the distance comes back nonsense, always large, and **every caller
+    /// passes**. Use [`Arena::corridorize`] first if what you have came from `polar()` or
+    /// `to_world()`.
+    ///
+    /// That is not hypothetical. `WG-11` stage 8's water walls passed world points here, the
+    /// check was inert, a channel sat on the guaranteed trail and seed 8 stalled a walker at
+    /// waypoint 218 of 384. Padding for the arc's sag did not move it — a margin cannot fix a
+    /// predicate that is not being evaluated.
     fn clear_of_routes(&self, p: &Position, pad: f64) -> bool {
         let tan = tangential_scale(p.x, self.radial_half, self.corridor_lateral);
         world_dist_to_path(p, &self.corridor_path, tan) >= self.path_clear_radius + pad
