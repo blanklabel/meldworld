@@ -2347,7 +2347,9 @@ pub(crate) fn spawn_player_avatar(
                         shadow_maps_enabled: true,
                         ..default()
                     },
-                    Transform::from_xyz(0.0, 2.2, 0.0),
+                    // Head height, matching the battle lamps: below the face, a point
+                    // light leaves every head darker than the chest beneath it.
+                    Transform::from_xyz(0.0, 2.7, 0.0),
                 ));
             }
         });
