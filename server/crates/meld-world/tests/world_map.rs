@@ -353,7 +353,140 @@ fn dump_world_map() {
                 k[2] as f64 / (2.0 * span) * size
             ));
         }
-        svg.push_str("</g>\n</svg>\n");
+        svg.push_str("</g>\n");
+
+        // ── LEGEND. A survey nobody can read is a picture rather than an instrument — and
+        // every layer here is a toggleable `<g id=…>`, so the key names the layer too.
+        {
+            svg.push_str("<g id='legend'>\n");
+            let (lx, ly, lw, row) = (14.0f64, 14.0f64, 268.0f64, 15.0f64);
+            let rows: &[(&str, &str, &str)] = &[
+                ("head", "", "THE MAZE  (id=maze)"),
+                ("line-thick", "#ff5c4d", "walled boundary - no way through"),
+                ("line-dash", "#4de0a0", "pass - the maze's way through"),
+                ("ring", "#ffd166", "dead end - where the reward goes"),
+                ("head", "", "GROUND"),
+                ("capsule", "#e8dcc8", "mountain range - blocks by slope"),
+                ("dot", "#d8c8a0", "peak - climbable, crowned (id=peaks)"),
+                ("dot", "#9db98a", "scatter prop (id=scatter)"),
+                ("dot", "#ffcf6b", "prop wall - boundary walled with trees"),
+                ("dot", "#ff7b4a", "pass part - micro maze inside a mouth"),
+                ("head", "", "WATER"),
+                ("swatch", "#1d4f7a", "ocean, straits, bays (id=sea)"),
+                ("disc", "#2f6ea8", "lake / basin - fills a contour"),
+                ("line", "#3f8ec9", "river & water wall - gaps are FORDS"),
+                ("head", "", "ROUTE"),
+                ("line", "#ff4fa3", "guaranteed trail + web (id=route)"),
+            ];
+            let lh = row * (rows.len() as f64) + 30.0;
+            svg.push_str(&format!(
+                "<rect x='{lx}' y='{ly}' width='{lw}' height='{lh:.0}' rx='5' fill='#0b0d12' \
+                 fill-opacity='0.85' stroke='#3a4152'/>\n"
+            ));
+            svg.push_str(&format!(
+                "<text x='{:.0}' y='{:.0}' fill='#e8edf6' font-family='monospace' \
+                 font-size='11' font-weight='bold'>seed {seed} - d0..{:.0} - {} cells</text>\n",
+                lx + 10.0,
+                ly + 18.0,
+                REACH,
+                cells
+            ));
+            let mut y = ly + 36.0;
+            for (kind, colour, label) in rows {
+                let (sx0, tx) = (lx + 12.0, lx + 44.0);
+                let cy = y - 3.0;
+                match *kind {
+                    "head" => {
+                        svg.push_str(&format!(
+                            "<text x='{:.0}' y='{y:.0}' fill='#8f9bb3' font-family='monospace' \
+                             font-size='9' letter-spacing='1'>{label}</text>\n",
+                            lx + 10.0
+                        ));
+                        y += row;
+                        continue;
+                    }
+                    "line-thick" => svg.push_str(&format!(
+                        "<path d='M{sx0:.0},{cy:.0} L{:.0},{cy:.0}' stroke='{colour}' \
+                         stroke-width='2.2'/>\n",
+                        sx0 + 22.0
+                    )),
+                    "line-dash" => svg.push_str(&format!(
+                        "<path d='M{sx0:.0},{cy:.0} L{:.0},{cy:.0}' stroke='{colour}' \
+                         stroke-width='1' stroke-dasharray='2 3'/>\n",
+                        sx0 + 22.0
+                    )),
+                    "line" => svg.push_str(&format!(
+                        "<path d='M{sx0:.0},{cy:.0} L{:.0},{cy:.0}' stroke='{colour}' \
+                         stroke-width='1.6'/>\n",
+                        sx0 + 22.0
+                    )),
+                    "capsule" => svg.push_str(&format!(
+                        "<path d='M{sx0:.0},{cy:.0} L{:.0},{cy:.0}' stroke='{colour}' \
+                         stroke-width='7' stroke-linecap='round'/>\n",
+                        sx0 + 22.0
+                    )),
+                    "ring" => svg.push_str(&format!(
+                        "<circle cx='{:.0}' cy='{cy:.0}' r='3.5' fill='none' stroke='{colour}' \
+                         stroke-width='1.6'/>\n",
+                        sx0 + 11.0
+                    )),
+                    "disc" => svg.push_str(&format!(
+                        "<circle cx='{:.0}' cy='{cy:.0}' r='5' fill='{colour}' \
+                         fill-opacity='0.75'/>\n",
+                        sx0 + 11.0
+                    )),
+                    "swatch" => svg.push_str(&format!(
+                        "<rect x='{sx0:.0}' y='{:.0}' width='22' height='8' fill='{colour}'/>\n",
+                        cy - 4.0
+                    )),
+                    _ => svg.push_str(&format!(
+                        "<circle cx='{:.0}' cy='{cy:.0}' r='2.4' fill='{colour}'/>\n",
+                        sx0 + 11.0
+                    )),
+                }
+                svg.push_str(&format!(
+                    "<text x='{tx:.0}' y='{y:.0}' fill='#cdd6e5' font-family='monospace' \
+                     font-size='10'>{label}</text>\n"
+                ));
+                y += row;
+            }
+            svg.push_str("</g>\n");
+
+            // ── BIOME KEY: what a cell's fill means.
+            svg.push_str("<g id='biome-key'>\n");
+            let biomes = [
+                "field", "forest", "amber_wood", "mire", "tundra", "desert", "ashfall",
+                "hearth_plains", "seized_engine", "seraphic_oubliette", "nestiphian_cradle",
+            ];
+            let bh = row * biomes.len() as f64 + 26.0;
+            let by = size - bh - 14.0;
+            svg.push_str(&format!(
+                "<rect x='14' y='{by:.0}' width='200' height='{bh:.0}' rx='5' fill='#0b0d12' \
+                 fill-opacity='0.85' stroke='#3a4152'/>\n"
+            ));
+            svg.push_str(&format!(
+                "<text x='24' y='{:.0}' fill='#8f9bb3' font-family='monospace' font-size='9' \
+                 letter-spacing='1'>BIOME  (cell fill, id=cells)</text>\n",
+                by + 17.0
+            ));
+            let mut y = by + 34.0;
+            for b in biomes {
+                svg.push_str(&format!(
+                    "<rect x='26' y='{:.0}' width='12' height='9' fill='{}' fill-opacity='0.5' \
+                     stroke='#0b0d12' stroke-width='0.5'/>\n",
+                    y - 8.0,
+                    biome_colour(b)
+                ));
+                svg.push_str(&format!(
+                    "<text x='48' y='{y:.0}' fill='#cdd6e5' font-family='monospace' \
+                     font-size='10'>{b}</text>\n"
+                ));
+                y += row;
+            }
+            svg.push_str("</g>\n");
+        }
+
+        svg.push_str("</svg>\n");
 
         let path = format!("/tmp/meld-map-{seed}.svg");
         std::fs::write(&path, &svg).unwrap();

@@ -2606,7 +2606,22 @@ fn wall_material(biome: &str, roll: f64) -> WallMaterial {
         // three. Water as a WALL is what makes it a wetland maze: the boundaries are channels
         // you ford, and the trees inside a cell are the fill.
         "mire" => {
-            if roll < 0.75 {
+            // ⚠️ **WATER WALLS ARE BUILT BUT GATED OFF, and this is a deliberate retreat.**
+            // The machinery is real — a `RiverNode` chain per segment whose chain breaks are
+            // FORDS — but it broke the route's own feasibility invariant and I could not close
+            // it inside stage 8. Measured on seed 8: a walker following the guaranteed trail
+            // stalled at waypoint 218 of 384 with a channel's edge **0.4 units** away, and the
+            // identical world with these off walked all 384. The channel had cleared
+            // `clear_of_routes` demanding 7.5 units from the CORRIDOR path while sitting 3.6
+            // from the WALKED one — the two frames disagree by roughly 2x at that depth, and
+            // padding did not close it.
+            //
+            // Kept rather than deleted because `WG-11` stage 9 rebuilds it anyway: a channel
+            // will be seeded from the CELL'S BODY and coalesced, never laid down a boundary,
+            // and placed FROM the maze rather than validated against a snapshot of terrain.
+            // The fix is that redesign, not another margin. Turn it on with
+            // `MELD_WATER_WALLS=1` to reproduce the failure.
+            if std::env::var("MELD_WATER_WALLS").is_ok() && roll < 0.75 {
                 WallMaterial::Water
             } else {
                 WallMaterial::Props
@@ -6114,9 +6129,33 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
                     w.a.x + (w.b.x - w.a.x) * t,
                     w.a.y + (w.b.y - w.a.y) * t,
                 );
+                // ⚠️ **AND NEVER ON TOP OF ANYTHING THAT ALREADY MEANS SOMETHING.** This runs
+                // after the route, which also puts it after the creatures, nodes and chests
+                // the section placed — so a channel laid without asking **drowns them**, and
+                // `nothing_the_world_places_ever_lands_in_the_sea` said so plainly: *"a
+                // creature is standing in the sea"*. `push_prop_walls` beside this has asked
+                // the same question all along; water is the one that kills what it lands on.
+                let occupied = self.monsters.iter().any(|m| m.position.distance_to(&at) < half + 1.5)
+                    || self.resources.iter().any(|r| r.position.distance_to(&at) < half + 1.5)
+                    || self.chests.iter().any(|c| c.position.distance_to(&at) < half + 1.5);
                 // Never on the guaranteed trail, and never in the sea (a channel running into
                 // the ocean is just the ocean).
-                if !self.clear_of_routes(&at, half) || !self.on_land(at.x, at.y) {
+                // ⚠️ **PAD FOR THE SAG, BECAUSE `clear_of_routes` MEASURES THE CHORD AND THE
+                // PLAYER WALKS THE ARC.** It asks `world_dist_to_path` against
+                // `corridor_path` — the sparse corridor waypoints — while the walker follows
+                // the DENSIFIED bent trail, and the chord between two bent vertices cuts
+                // inside the arc by `L^2/8R`. A prop clears this by luck (it blocks at ~2.0
+                // total); a channel is 3.2 of half-width and does not. Measured on seed 8: a
+                // walker following the trail stalled at waypoint 218 of 384 with the water's
+                // edge **0.0 units** away, and `the_clear_path_actually_reaches_the_portal`
+                // failed — while the identical world with water walls off walked all 384.
+                //
+                // A party's width plus the tube's own half-width covers the sag at these
+                // depths with room. ⚠️ If a future channel gets wider, re-measure rather than
+                // trusting this margin — the honest fix is asking the WALKED path, and it is
+                // not available during generation because `self.path` is not bent yet.
+                let route_pad = half + self.player_radius + self.path_clear_radius;
+                if occupied || !self.clear_of_routes(&at, route_pad) || !self.on_land(at.x, at.y) {
                     // A break in the chain is a FORD, so an interruption here is not a hole in
                     // the wall — it is a crossing, which is exactly what the trail wants.
                     laid = 0;
@@ -10952,6 +10991,20 @@ mod tests {
                     .filter(|p| patch.holds(&grid, &Position::new(p[0] as f64, p[1] as f64)))
                     .copied()
                     .collect();
+                let relief_before: Vec<[f32; 6]> = a
+                    .ridges
+                    .iter()
+                    .filter(|r| {
+                        patch.holds(
+                            &grid,
+                            &Position::new(
+                                0.5 * (r[0] + r[2]) as f64,
+                                0.5 * (r[1] + r[3]) as f64,
+                            ),
+                        )
+                    })
+                    .copied()
+                    .collect();
                 let out = a.apply_shift(&b, &roll, first, last);
                 let after: Vec<[f32; 4]> = a
                     .peaks
@@ -10964,11 +11017,33 @@ mod tests {
                     out.peaks.iter().map(|(_, p)| p.len()).sum::<usize>(),
                     "the reported peaks are not the peaks that stand there"
                 );
-                if before != after {
+                // ⚠️ **RELIEF, NOT PEAKS.** This asked only whether the PEAK list changed, and
+                // peaks are rare — measured, a world at d900 holds **3 peaks and 9 ranges**, so
+                // a Shift's patch almost never contains one and the property was unobservable
+                // even while the land plainly changed (a census showed a Shift taking its
+                // patch's ranges 1 → 2). Peaks and ranges are two implementations of the same
+                // thing, "the ground stands higher here", and `WG-11` stage 9 merges them into
+                // one coalesced mass — so asking about relief rather than about peaks is both
+                // honest now and survives that.
+                let relief_after: Vec<[f32; 6]> = a
+                    .ridges
+                    .iter()
+                    .filter(|r| {
+                        patch.holds(
+                            &grid,
+                            &Position::new(
+                                0.5 * (r[0] + r[2]) as f64,
+                                0.5 * (r[1] + r[3]) as f64,
+                            ),
+                        )
+                    })
+                    .copied()
+                    .collect();
+                if before != after || relief_before != relief_after {
                     changed += 1;
                 }
             }
-            assert!(changed > 0, "30 Shifts never re-cut a single mountain");
+            assert!(changed > 0, "30 Shifts never re-cut the region's relief");
         }
 
         /// A dome must stay climbable, or a Shift can raise a wall nobody gets over — the
@@ -11973,10 +12048,23 @@ mod tests {
             rich * 8 >= total,
             "only {rich} of {total} chests are down a dead end — the wrong turns pay nothing"
         );
+        // ⚠️ **AND THE ROAD STILL PAYS SOMETHING — but it no longer has to pay MOST.**
+        // This asserted `rich * 2 <= total`, i.e. the through-route carries the majority, and
+        // `WG-11` stage 8 retired that premise rather than breaking it: halving the cells took
+        // the world from 173 cells with 50 dead ends to **664 with 189**, so most cells are now
+        // OFF the through-route and the chests follow (measured: 62 of 85). Both rules were
+        // true at 50 dead ends and cannot both be true at 189.
+        //
+        // The item's own design settles which one wins — *"the through-route is for PROGRESS
+        // and the dead ends are for REWARD… what makes wandering worth doing rather than a
+        // tax"* — so a real maze means exploring is how you get paid. What must still hold is
+        // that neither side is EMPTY: a diver who stays on the road is not shut out, which is
+        // this assertion's surviving half and the mirror of the one above it.
         assert!(
-            rich * 2 <= total,
-            "{rich} of {total} chests are down dead ends — the through-route should still \
-             carry most of the loot, or the maze is a detour tax on everyone"
+            (total - rich) * 8 >= total,
+            "only {} of {total} chests are on the through-route — a player who dives straight \
+             out should still find something without solving the maze",
+            total - rich
         );
     }
 

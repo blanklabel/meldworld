@@ -2512,6 +2512,18 @@ Make time in the field a living, dangerous place worth screenshotting.
       **nominal** extent of a cell, since `warp_at` already makes the true inner/outer
       bearing-dependent — so a bearing warp is the same approximation on the other axis rather
       than a new kind of lie, and `neighbours`/`cell_at` already tolerate it.
+    - ⚠️ **PLACE FROM THE MAZE, DO NOT VALIDATE AGAINST THE GROUND.** Owner's direction:
+      *"shouldn't you only plant creatures within the maze corridors? we literally know what
+      and where those are."* Creature placement DOES reject water and unstandable ground —
+      but at the moment it runs, so anything laid afterwards invalidates it. That is the shape
+      of nearly every bug this arc has produced: a range in the sea, a creature drowned by a
+      water wall laid later, props culled by a range that rose after them.
+      **The portal is the one placement that never breaks**, and the reason is that it is
+      DERIVED — taken from the route, then forced to be the clear path's last vertex. Creatures,
+      nodes and chests should come from the maze's own walkable cell interiors the same way,
+      which deletes the ordering sensitivity instead of patching it.
+      ⚠️ It re-rolls every creature position in every seeded world, so it wants its own branch
+      and its own gate.
     - ⚠️ **THE EDGE IS NOT A PLACE — NOTHING IS EVER POSITIONED RELATIVE TO IT.** An earlier
       draft of this said "seed the material off the line, with lateral jitter", and that is
       still wrong for the same reason stage 8 was: it treats a boundary as somewhere to put
@@ -2543,12 +2555,25 @@ Make time in the field a living, dangerous place worth screenshotting.
       at once. So `biome_at` keeps returning one biome for gameplay and a separate blend weight
       drives the shader and the coalescence. The same split as `Area.biome` being a section's
       representative theme while the scatter asks the cell under its own feet.
-    - *WATER IS `height < level`, per cell.* The level is the wet share's quantile of that
-      cell's own terrain, interpolated between neighbours — so water fills the low ground
-      (a noise threshold puts ponds on hillsides), `wet_mire = 0.80` means exactly what it
-      says, and a mire at 0.8 beside a forest at 0.1 gets a shore that wanders instead of a
-      cell-edge ring. ⚠️ In a flooded cell the maze **inverts**: the land is the corridor and
-      the water is the wall, which is what a wetland maze actually is.
+    - *WATER IS A WALL MATERIAL, and a cell's **wet share** is the ambient around it.* ⚠️ An
+      earlier draft of this item called for *"water as GROUND"* — a cell's base state being
+      wet with land carved through it. **That was never asked for and is struck.** The owner's
+      direction is that water paints the maze's BARRIERS (*"paint the maze boundary in a mire
+      with water… e.g. a wall"*), and when asked how much of a mire should be water the answer
+      chosen was explicitly **walls only, accepting that surface coverage stays far below
+      80%**. So `WallMaterial::Water` (stage 8) is the mechanism, and stage 9 only changes its
+      SHAPE — the channel is seeded from the cell's body and coalesced rather than drawn down
+      the boundary.
+    - *A cell's **wet share** decides how readily it holds standing water*, as `height < level`
+      where the level is that share's quantile of the cell's own terrain, interpolated between
+      neighbours. That is the local lever the downhill basin walk never had — water fills the
+      low ground (a noise threshold puts ponds on hillsides) and a mire beside a forest gets a
+      shore that wanders instead of a cell-edge ring. It is the AMBIENT the coalesced channels
+      structure, not a replacement for them.
+    - ⚠️ **AND `the_mire_is_the_wettest_biome` BEING ~8-14% IS THE CHOSEN OUTCOME, NOT A GAP.**
+      Stage 8 carried it as unfinished work for a while on the strength of the struck
+      "water as ground" idea. Walls-only was picked deliberately; the swamp reads as a maze you
+      ford rather than as a flood.
     - *What it DELETES:* `basin_chance`, `basin_radius_min`/`max`, `biome_basin_mult` and the
       downhill basin walk — a lake becomes a cell with a high wet share. Also the whole class
       of bug behind stage 8's mire work, where **a basin (radius 45-190) was bigger than a cell
