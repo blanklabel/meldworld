@@ -2630,6 +2630,25 @@ pub struct PropWall {
     pub kind: &'static str,
 }
 
+/// **A WATER WALL'S SEGMENT**, collected during the boundary pass and laid AFTER the route.
+///
+/// ⚠️ **WHY IT IS NOT LAID WHERE IT IS DECIDED.** `push_boundary_walls` runs BEFORE
+/// `astar_route`, and the prop walls beside it are deliberately deferred for a stated reason —
+/// *"A\* does not collide with obstacles, so a tree wall built before the route is one the
+/// guaranteed trail walks straight through"*. Water is the mirror hazard: A* DOES avoid it, so
+/// a channel laid before the route does not get walked through, it **pushes the trail around**
+/// — and where channels are dense enough that A* cannot reach its exit, the section stubs its
+/// trail. That is seed 1's d945 failure returning by another door, and the fallback that used
+/// to catch it was stage 7, deleted by this very stage.
+///
+/// Deferred, a channel asks `clear_of_routes` like everything else in that group, so the
+/// causeway through a flooded cell IS the guaranteed route — dry by construction rather than
+/// by luck.
+pub struct WaterWall {
+    pub a: Position,
+    pub b: Position,
+}
+
 /// **THE MOUTH OF A PASS** — where a walled cell boundary has its gap, which is the one
 /// place a party can cross it.
 ///
@@ -3825,7 +3844,8 @@ impl Arena {
         self.push_ridges(balance, i, start_x, end_x);
         // The mouths of this section's walled boundaries, and the boundaries a PROP wall has
         // to be laid along — both consumed once the route exists.
-        let (pass_mouths, prop_walls) = self.push_boundary_walls(balance, i, start_x, end_x);
+        let (pass_mouths, prop_walls, water_walls) =
+            self.push_boundary_walls(balance, i, start_x, end_x);
         self.push_water(balance, i, start_x, end_x);
 
 
@@ -4041,6 +4061,7 @@ impl Arena {
         // obstacles, so a tree wall built before the route is one the guaranteed trail walks
         // straight through.
         self.push_prop_walls(balance, &prop_walls);
+        self.push_water_walls(balance, &water_walls);
         self.push_pass_parts(balance, &pass_mouths);
         let portal = if is_chain_end {
             *self.corridor_path.last().unwrap()
@@ -5629,17 +5650,18 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
         i: usize,
         start_x: f64,
         end_x: f64,
-    ) -> (Vec<PassMouth>, Vec<PropWall>) {
+    ) -> (Vec<PassMouth>, Vec<PropWall>, Vec<WaterWall>) {
         let mut mouths: Vec<PassMouth> = Vec::new();
+        let mut water_walls: Vec<WaterWall> = Vec::new();
         let mut prop_walls: Vec<PropWall> = Vec::new();
         if balance.worldgen.ridge_max_per_section == 0 {
-            return (mouths, prop_walls);
+            return (mouths, prop_walls, water_walls);
         }
         let wg = &balance.worldgen;
         let rb = &balance.region_barrier;
         // No fan means no cells to lay a boundary along.
         if self.radial_half <= 0.0 || i < wg.ridge_min_section || self.tutorial {
-            return (mouths, prop_walls);
+            return (mouths, prop_walls, water_walls);
         }
         let mut rng = Rng(section_seed(self.seed_base, i) ^ 0x21D6_E51D_6E51_D6E5);
         let g = self.regions;
@@ -6001,27 +6023,10 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
                         // Laid only on LAND, like a range: a channel is inland water, and one
                         // running into the sea is just the sea.
                         if material == WallMaterial::Water {
-                            let n = ((e0.distance_to(&e1) / wg.water_wall_node_step).ceil()
-                                as usize)
-                                .max(1);
-                            let mut laid = 0usize;
-                            for k in 0..=n {
-                                let t = k as f64 / n as f64;
-                                let (px, py) =
-                                    (e0.x + (e1.x - e0.x) * t, e0.y + (e1.y - e0.y) * t);
-                                if !self.on_land(px, py) {
-                                    continue;
-                                }
-                                self.rivers.push([
-                                    px as f32,
-                                    py as f32,
-                                    wg.water_wall_half_width as f32,
-                                    // The FIRST node of this segment starts a new chain; the
-                                    // rest continue it. A chain break is the ford.
-                                    if laid == 0 { 1.0 } else { 0.0 },
-                                ]);
-                                laid += 1;
-                            }
+                            // Collected, NOT laid — see `WaterWall`. Laying it here would put
+                            // it before the route, where it pushes the trail around instead of
+                            // yielding to it.
+                            water_walls.push(WaterWall { a: e0, b: e1 });
                             continue;
                         }
                         // Range-only for the same reason as the sizing gate above: this is
@@ -6061,7 +6066,7 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
             }
         }
         self.ridges.extend(out);
-        (mouths, prop_walls)
+        (mouths, prop_walls, water_walls)
     }
 
     /// **LAY A CLOSED BOUNDARY'S WALL OUT OF THE BIOME'S OWN PROPS** (`WG-11`).
@@ -6088,6 +6093,46 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
     /// step is a share of that, and the props are NOT entered into the scatter's spacing grid
     /// (which enforces the opposite — that nothing touches). Same exemption water already has,
     /// for the same reason: a wall has to be able to close.
+    /// **LAY THE WATER WALLS** the boundary pass collected — a [`meld_proto::coast::RiverNode`]
+    /// chain per segment, so the gaps the pass machinery cut become **FORDS** by exactly the
+    /// construction a strait gets its isthmuses.
+    ///
+    /// ⚠️ Called AFTER the route, beside [`Arena::push_prop_walls`], and asks
+    /// `clear_of_routes` for the same reason: the guaranteed trail must stay walkable. For
+    /// props the hazard is that A* ignores them and walks through; for water it is the mirror
+    /// — A* avoids water, so a channel laid first pushes the trail around, and dense enough
+    /// channels make a section unroutable outright.
+    fn push_water_walls(&mut self, balance: &Balance, walls: &[WaterWall]) {
+        let wg = &balance.worldgen;
+        let half = wg.water_wall_half_width;
+        for w in walls {
+            let n = ((w.a.distance_to(&w.b) / wg.water_wall_node_step).ceil() as usize).max(1);
+            let mut laid = 0usize;
+            for k in 0..=n {
+                let t = k as f64 / n as f64;
+                let at = Position::new(
+                    w.a.x + (w.b.x - w.a.x) * t,
+                    w.a.y + (w.b.y - w.a.y) * t,
+                );
+                // Never on the guaranteed trail, and never in the sea (a channel running into
+                // the ocean is just the ocean).
+                if !self.clear_of_routes(&at, half) || !self.on_land(at.x, at.y) {
+                    // A break in the chain is a FORD, so an interruption here is not a hole in
+                    // the wall — it is a crossing, which is exactly what the trail wants.
+                    laid = 0;
+                    continue;
+                }
+                self.rivers.push([
+                    at.x as f32,
+                    at.y as f32,
+                    half as f32,
+                    if laid == 0 { 1.0 } else { 0.0 },
+                ]);
+                laid += 1;
+            }
+        }
+    }
+
     fn push_prop_walls(&mut self, balance: &Balance, walls: &[PropWall]) {
         let wg = &balance.worldgen;
         if walls.is_empty() {
@@ -8530,8 +8575,10 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
                 Some(ar) => (ar.start_x, ar.end_x),
                 None => continue,
             };
-            let (mouths, prop_walls) = self.push_boundary_walls(balance, i, start_x, end_x);
+            let (mouths, prop_walls, water_walls) =
+                self.push_boundary_walls(balance, i, start_x, end_x);
             self.push_prop_walls(balance, &prop_walls);
+            self.push_water_walls(balance, &water_walls);
             self.push_pass_parts(balance, &mouths);
         }
     }
@@ -9382,6 +9429,33 @@ mod tests {
     mod walling_in {
         use super::*;
 
+        /// **SOMEWHERE A FIXTURE CAN ACTUALLY STAND.**
+        ///
+        /// ⚠️ **A HARDCODED POSITION IN A PROCEDURAL WORLD IS A FIXTURE THAT EXPIRES.** Two
+        /// tests here each wrote `Position::new(420.0, 0.0)` — the same coordinate, twice —
+        /// and `WG-11` stage 8's water put **11.9 units of water** on it. The victim was
+        /// teleported into a lake, `apply_move` quite correctly refused every bearing, and one
+        /// test reported a cage while the other reported the player "never set off". Neither
+        /// failure was about walls at all.
+        ///
+        /// These tests already guarded against a TREE closing the last gap (*"a tree closing
+        /// the last gap would make this test lie"*); this extends the same care to the water
+        /// and the ranges stage 8 added — in ONE place rather than once per test, because the
+        /// bug was an assumption written down twice.
+        fn open_ground(a: &Arena) -> Position {
+            let field = BlockField::with_ridges(Vec::new(), a.ridge_discs());
+            (0..96)
+                .flat_map(|i| {
+                    let th = std::f64::consts::TAU * (i as f64) / 96.0;
+                    (0..8).map(move |j| {
+                        let r = 360.0 + j as f64 * 20.0;
+                        Position::new(r * th.cos(), r * th.sin())
+                    })
+                })
+                .find(|p| a.on_land(p.x, p.y) && !field.ridge_blocks(p, 60.0))
+                .expect("nowhere dry and clear of ranges to stand a walling fixture on")
+        }
+
         /// Ring a player with `n` walls whose adjacent centres sit exactly `chord` apart
         /// — the tightest packing placement will ever allow — and report whether they can
         /// walk out of it.
@@ -9393,7 +9467,8 @@ mod tests {
             a.add_avatar("victim".into(), 5.0);
             // Open ground well away from props, so the only thing penning them in is the
             // cage — a tree closing the last gap would make this test lie.
-            let centre = Position::new(420.0, 0.0);
+            // ⚠️ Not a coordinate — see `open_ground`.
+            let centre = open_ground(&a);
             a.obstacles.retain(|o| o.position.distance_to(&centre) > 40.0);
             let r = chord / (2.0 * (std::f64::consts::PI / n as f64).sin());
             for k in 0..n {
@@ -9438,7 +9513,9 @@ mod tests {
                 a.ensure_frontier(&b, 700.0);
             }
             a.add_avatar("p1".into(), 5.0);
-            let here = Position::new(420.0, 0.0);
+            // ⚠️ Not a coordinate — this test carried its own copy of `(420, 0)`, which is
+            // how one expired assumption failed two tests. See `open_ground`.
+            let here = open_ground(&a);
             a.obstacles.retain(|o| o.position.distance_to(&here) > 40.0);
             a.avatar_mut("p1").unwrap().position = here;
             a.structures.push(Structure {
