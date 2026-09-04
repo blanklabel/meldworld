@@ -143,7 +143,12 @@ pub(crate) fn mock_battle_setup(
         hero("h4", 36, 0.75, "phoenix_guard", false),
         CombatantView {
             id: "grendel".into(),
-            name: "Grendel".into(),
+            // ⚠️ REAL CREATURE NAMES, because the sprite is resolved BY NAME. A battle
+            // enemy's art comes from `creature_kind(&c.name)` -> `creature_frames`, so an
+            // invented name like "Grendel" matches no folder, silently falls through to the
+            // generic single-png billboard, and the fixture screenshots the one rendering
+            // path the game no longer uses. Every foe here is a species with installed art.
+            name: "Thornback Boar".into(),
             hp: 44,
             max_hp: 60,
             gauge: 0.65,
@@ -155,7 +160,7 @@ pub(crate) fn mock_battle_setup(
         // A second LIVE foe: the pack case, and the one whose numbers were mis-anchored.
         CombatantView {
             id: "wight".into(),
-            name: "Wight".into(),
+            name: "Bog Stinger".into(),
             hp: 31,
             max_hp: 48,
             gauge: 0.4,
@@ -167,7 +172,7 @@ pub(crate) fn mock_battle_setup(
         // A third foe, downed — shows the KO gray-out (death indicator).
         CombatantView {
             id: "stalker".into(),
-            name: "Stalker".into(),
+            name: "Bog Ooze".into(),
             hp: 0,
             max_hp: 30,
             gauge: 0.0,
@@ -194,6 +199,12 @@ pub(crate) fn mock_battle_setup(
     // Grendel carries the Explorer's work too, so the new badges are screenshottable:
     // blazed by Trailblaze and distracted by Misdirection (the icon cycles through them).
     add(&mut battle, "grendel", &["poison", "burn", "marked", "distracted"]);
+    // A pack reads as a pack: the leader draws its own art at 1.7x and the minion its
+    // runt set — the two-character rule the overworld already follows. And one named
+    // BOSS, so the fixture covers `boss_frames` (its own sprite set, drawn larger) and
+    // now the boss lamp, none of which an invented name could ever reach.
+    add(&mut battle, "grendel", &["pack:leader", "boss:ironmaw"]);
+    add(&mut battle, "wight", &["pack:minion"]);
     // `MELD_BATTLE=coop` seeds a few joined allied parties so the surround layout
     // (each player's lineup on its own edge, enemies shrunk in the middle) can be
     // screenshotted. `MELD_BATTLE=1` stays a solo fight.

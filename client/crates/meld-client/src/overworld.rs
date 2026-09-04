@@ -2347,7 +2347,9 @@ pub(crate) fn spawn_player_avatar(
                         shadow_maps_enabled: true,
                         ..default()
                     },
-                    Transform::from_xyz(0.0, 2.2, 0.0),
+                    // Head height, matching the battle lamps: below the face, a point
+                    // light leaves every head darker than the chest beneath it.
+                    Transform::from_xyz(0.0, 2.7, 0.0),
                 ));
             }
         });
@@ -2552,14 +2554,20 @@ pub(crate) struct ExplorerLamp;
 /// black in the dark. See [`illuminate_players`].
 #[derive(Component)]
 pub(crate) struct PlayerGlowSprite;
-/// A warm point light carried by each battle hero at night. The **Explorer** carries a
+/// A point light that only burns after dark, scaled by nightfall in [`illuminate_players`].
+/// Named for WHEN it burns rather than for who holds one, because it is no longer only the
+/// party's: a named boss and a pack leader carry one, and so does the target gem hovering
+/// over whichever enemy your order is aimed at.
+///
+/// Historical note kept because the numbers still read oddly without it: this was a warm
+/// point light carried by each battle hero at night. The **Explorer** carried a
 /// big, bright lamp — its "Predator's Eye" class feature — with enough reach to light
 /// the enemy row across the arena; every other class carries only a soft, short-range
 /// glow so it stays visible without washing the scene or overflowing the renderer's
 /// light clusters (which read as flicker). `strength` is the full-dark intensity that
 /// [`illuminate_players`] scales by nightfall; the range/radius are baked at spawn.
 #[derive(Component)]
-pub(crate) struct BattlePartyLamp {
+pub(crate) struct NightLamp {
     pub(crate) strength: f32,
 }
 /// Root UI node that holds the per-mob nameplates (Explorer/Psyker intel).
@@ -2683,7 +2691,7 @@ pub(crate) fn update_explorer_lamp(
 /// Player characters carry their own light at night so the game stays readable in
 /// the dark — overworld AND battle. Two parts, both scaled by darkness (nothing by
 /// day): (1) every [`PlayerGlowSprite`] self-illuminates by emitting its own
-/// texture, so the hero never goes black; (2) each [`BattlePartyLamp`] point light
+/// texture, so the hero never goes black; (2) each [`NightLamp`] point light
 /// throws warm light off the party onto the enemy creature in the arena.
 pub(crate) fn illuminate_players(
     sky: Res<Sky>,
@@ -2696,7 +2704,7 @@ pub(crate) fn illuminate_players(
         &MeshMaterial3d<StandardMaterial>,
         (With<PlayerGlowSprite>, Without<crate::battle::SpriteQuad>),
     >,
-    mut lamps: Query<(&mut PointLight, &BattlePartyLamp)>,
+    mut lamps: Query<(&mut PointLight, &NightLamp)>,
 ) {
     let night = (1.0 - sky.day).clamp(0.0, 1.0);
     // Self-illumination: warm glow keyed off each sprite's own texture colours.
