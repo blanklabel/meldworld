@@ -2211,6 +2211,26 @@ counted and, measured, seal nothing on any seed. ⚠️ `BlockField::with_ridges
 puts its first argument in the PROPS half, which `ridge_blocks` does not consult — passing
 barriers there tests nothing and reports it as a clean result.
 
+⚠️ **AND "A RANGE YIELDS TO THE ROUTE" WAS SCOPED TO ONE SECTION, SO THE TRAIL COULD END.**
+`push_section` retires the ranges it raised when A* cannot reach its own exit — correct, and
+useless for a section that raised NONE, which then had no fallback at all: `astar_route`
+stops where it can and the trail is a **stub**. A range reaches BACK across sections, so
+scoping the yield to the current one always left this hole; it needs a seed whose blocking
+range sits in an earlier band, which is why it hid. Measured on seed 1: the world streamed to
+d1333 with its guaranteed route ending at **d945**, each successive section escaping further
+BACKWARDS (x=825, 705, 585 against targets of 1098/1204/1332) — so `route_point_at(1269)`
+answered d945, and the deep portal, the Gatekeeper in the pass and the end fight were all
+unreachable past that ring. `retire_range_blocking` drops whatever stands on the direct line
+to the exit, wherever it was raised, bounded by `route_yield_max_ranges`: a section still
+unroutable after that has something other than a range in the way.
+
+⚠️ **`open_sealed_ground` AND THE ROUTE GUARD DIFFERENT PREDICATES, AND THE SEAM IS REAL.**
+The flood asks `WALKABLE_SLOPE` at `player_radius`; A* asks the stricter `ROUTE_SLOPE` at
+`route_pad`. So ground can be walkable-connected while staying unroutable, and the
+explorability guard will happily pass a world whose guaranteed trail is a stub. They are
+guarding different properties on purpose — a player may scramble where the trail may not —
+but do not read either as covering the other.
+
 ⚠️ **AND A DECK IS A STRAIGHT SEGMENT WHILE A CROSSING CAN BE A CURVE.** `bridge_span`
 collapses a run of drowned trail into ONE straight capsule from its first vertex to its last,
 so where the trail crosses at an angle — or bows around a range, a peak, a lake — the deck

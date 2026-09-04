@@ -2428,6 +2428,12 @@ Make time in the field a living, dangerous place worth screenshotting.
     barrier** (at any affordable cell size the grid cannot resolve the gaps between trunks, so
     counting trees makes a wood read as solid and the flood dies in the hub ring, at 0.1%).
     Prop walls ARE counted and, measured, seal nothing on any seed: stage 6's mouths work.
+    ⚠️ *And it exposed a bigger one beside it:* **"a range yields to the route" only ever
+    covered ranges the SAME section raised**, so a section that raised none had no fallback and
+    its trail ended as a STUB — seed 1 streamed to d1333 with its guaranteed route ending at
+    **d945**, which is what made `route_point_at(1269)` answer d945 and left the deep portal,
+    the Gatekeeper and the end fight unreachable past that ring. Fixed by scope, not by
+    judgement (`retire_range_blocking`, `route_yield_max_ranges`).
   - *The teardrop:* rather than choosing which portion of the deep band is the prison —
     today `EXCLUSIVE` makes it the WHOLE annulus past d3000, ~15,700 units of arc you can
     arrive at anywhere along — **taper the land** by making `arc_half_rad` a function of

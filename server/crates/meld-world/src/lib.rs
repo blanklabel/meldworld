@@ -3896,6 +3896,7 @@ impl Arena {
         // arrive at a bridge, rather than the world quietly bending you around the sea.
         self.bridge_the_direct_line(balance, entry, exit_target);
         let mut route = self.astar_route(entry, exit_target);
+
         // ⚠️ **A RANGE THAT MAKES ITS OWN SECTION UNROUTABLE IS NOT RAISED.**
         //
         // `astar_route` never invents a crossing: when it cannot reach the exit it routes as
@@ -3915,6 +3916,35 @@ impl Arena {
             .is_some_and(|p| p.distance_to(&exit_target) < 6.0);
         if !reached && self.ridges.len() > ridges_before {
             self.ridges.truncate(ridges_before);
+            route = self.astar_route(entry, exit_target);
+        }
+        // ⚠️ **AND A RANGE THAT BLOCKS A *LATER* SECTION HAS NO SECTION TO YIELD FROM.**
+        //
+        // The rule above only retires ranges THIS section raised, so a section that raised
+        // none has no fallback at all: `astar_route` stops where it can and the trail is a
+        // STUB. That is not a cosmetic gap — measured on seed 1, sections 14/15/16 each
+        // stubbed with `own_ranges=0`, and each successive one escaped further BACKWARDS
+        // (x=825, then 705, then 585, against targets of 1098/1204/1332). The world streamed
+        // to d1333 with its guaranteed route ending at **d945**, which is what made
+        // `route_point_at(1269)` answer d945 and put a deep start a third of the world from
+        // its own trail. Every piece of content anchored to the route — the deep portal, the
+        // Gatekeeper in the pass, the end fight — is unreachable past that point.
+        //
+        // A range reaches back across sections (the same cross-section span the river and
+        // lake walks have), so scoping the yield to the current section was always going to
+        // leave this hole; it stayed hidden because it needs a seed whose blocking range sits
+        // in an earlier band. So the judgement is unchanged — **the range yields to the
+        // route** — and only its scope is fixed: retire whatever stands on the direct line to
+        // the exit, wherever it was raised, and ask the pathfinder again. Bounded, because a
+        // section that still cannot route after this has something other than a range in the
+        // way and deleting mountains will not find it.
+        for _ in 0..wg.route_yield_max_ranges {
+            if route.last().is_some_and(|p| p.distance_to(&exit_target) < 6.0) {
+                break;
+            }
+            if !self.retire_range_blocking(entry, exit_target) {
+                break;
+            }
             route = self.astar_route(entry, exit_target);
         }
         for p in &route {
@@ -5232,6 +5262,50 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
     /// Sampled rather than solved: a strait is an annular sector and the run is a corridor
     /// chord, so the intersection has no closed form worth writing. Walking it at the A* cell
     /// size is both cheap and exactly the resolution the router will see.
+    /// Retire the range segment standing closest to the direct line from `entry` to `exit`,
+    /// returning whether one was found. The direct line rather than a second A* run because
+    /// that is exactly the precedent [`Arena::bridge_the_direct_line`] sets one call earlier:
+    /// the straight run is what the route WANTS to be, and a barrier on it is the barrier
+    /// worth yielding.
+    ///
+    /// Zeroing the half-width rather than removing the entry keeps every index anything else
+    /// may hold — including `ridges_before` — valid, and `ridge_height` and `ridge_discs`
+    /// both already skip a zero-width spine.
+    fn retire_range_blocking(&mut self, entry: Position, exit: Position) -> bool {
+        let pad = self.path_clear_radius + self.player_radius;
+        let len = entry.distance_to(&exit).max(1.0);
+        let steps = (len / 2.0).ceil().max(2.0) as i32;
+        let mut best: Option<(usize, f64)> = None;
+        for k in 0..=steps {
+            let t = k as f64 / steps as f64;
+            let w = self.to_world(Position::new(
+                entry.x + (exit.x - entry.x) * t,
+                entry.y + (exit.y - entry.y) * t,
+            ));
+            for (idx, r) in self.ridges.iter().enumerate() {
+                let hw = r[4] as f64;
+                if hw <= 0.0 {
+                    continue;
+                }
+                let d = dist_point_segment(
+                    &w,
+                    &Position::new(r[0] as f64, r[1] as f64),
+                    &Position::new(r[2] as f64, r[3] as f64),
+                );
+                if d < hw + pad && best.is_none_or(|(_, bd)| d < bd) {
+                    best = Some((idx, d));
+                }
+            }
+        }
+        match best {
+            Some((idx, _)) => {
+                self.ridges[idx][4] = 0.0;
+                true
+            }
+            None => false,
+        }
+    }
+
     fn bridge_the_direct_line(&mut self, balance: &Balance, entry: Position, exit: Position) {
         if self.straits.is_empty() || self.radial_half <= 0.0 {
             return;

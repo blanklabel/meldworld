@@ -1292,6 +1292,8 @@ pub struct WorldGen {
     pub ridge_half_width_max: f64,
     pub ridge_aspect: f64,
     pub ridge_pass_width: f64,
+    /// How many range segments the guaranteed route may retire to reach its own exit.
+    pub route_yield_max_ranges: usize,
     /// World units per cell of the connectivity flood that finds range-sealed ground.
     pub connectivity_cell: f64,
     /// A severed pocket smaller than this many cells is scenery, not a severed region.
