@@ -2941,6 +2941,23 @@ pub struct Arena {
     /// bent by `radialize` (one-shot generate) or not yet (streaming) — so it records the
     /// bent position itself, at placement, and the frame is never in question. Spans
     /// sections, so a spawn at a seam is separated from the one in the section next door.
+    /// **THE BLOCKING FIELD, CACHED** — what stops a mover, as a spatial hash.
+    ///
+    /// ⚠️ **IT WAS REBUILT FROM SCRATCH ON EVERY TICK, AND ONCE PER PLAYER ON TOP.**
+    /// `blocking_field()` collects every obstacle in the world into a fresh `Vec`, extends it
+    /// with structures, appends `ridge_discs()` and builds a fresh hash — and it was called
+    /// from `step_creatures_with_aggro` (once a tick) AND from `apply_move_with`, which
+    /// `handle_move` calls per movement intent. So a tick paid **1 + N rebuilds for N
+    /// players**, each over **35,000-58,000 obstacles** at d900-d3400.
+    ///
+    /// The cost grows with how much world has streamed in, which is why it degrades as a
+    /// party walks outward and never appears in a generation benchmark.
+    ///
+    /// Everything that MUTATES it is a short, closed list — generation, building and
+    /// demolition, the Shift, regrowth, prop culls — and everything else, every tick of
+    /// movement, is a READ. So it is built once and invalidated by `dirty_blockers`.
+    /// `creature_spots` beside it is the same pattern.
+    blockers: std::cell::RefCell<Option<CachedBlockers>>,
     creature_spots: SpotGrid,
 }
 
@@ -3186,6 +3203,27 @@ impl Arena {
 
 
 
+    /// Does a RANGE block a disc of `pad` at world `(x, z)`? The same question
+    /// `astar_route` and every mover ask, exposed for the guards that have to check the
+    /// maze's passes are still passable — see `a_range_never_blocks_a_pass`.
+    ///
+    /// ⚠️ Named `_for_tests` because it is not for gameplay: a caller inside the crate should
+    /// build a `BlockField` once and reuse it rather than paying a fresh one per query.
+    pub fn range_blocks_for_tests(&self, x: f64, z: f64, pad: f64) -> bool {
+        BlockField::with_ridges(Vec::new(), self.ridge_discs())
+            .ridge_blocks(&Position::new(x, z), pad)
+    }
+
+    /// Half-width of the guaranteed route's tube. See `path_clear_radius`.
+    pub fn path_clear_radius_for_tests(&self) -> f64 {
+        self.path_clear_radius
+    }
+
+    /// The avatar's collision radius.
+    pub fn player_radius_for_tests(&self) -> f64 {
+        self.player_radius
+    }
+
     pub fn shore(&self) -> meld_proto::coast::Shore<'_> {
         meld_proto::coast::Shore {
             arc_half: self.radial_half as f32,
@@ -3370,6 +3408,7 @@ impl Arena {
             clash_linger: balance.ai.clash_linger_seconds,
             creature_regen: balance.ai.creature_regen_fraction_per_sec,
             loot_pickup_radius: balance.ai.loot_pickup_radius,
+            blockers: std::cell::RefCell::new(None),
             creature_spots: SpotGrid::new(balance.ai.group_radius + balance.encounters.pack_spread),
         };
 
@@ -3883,6 +3922,71 @@ impl Arena {
         let (pass_mouths, prop_walls, water_walls) =
             self.push_boundary_walls(balance, i, start_x, end_x);
         self.push_water(balance, i, start_x, end_x);
+
+        // ⚠️ **A RANGE MUST NOT SEAL A PASS.** Owner's priority, stated exactly: *"I don't
+        // care how big ranges are as long as they don't block the maze."*
+        //
+        // Laid down the boundary it walls, a range could only block THAT boundary — walled by
+        // definition, so harmless. Grown between two cells' MASSES (stage 9) it spans two cell
+        // interiors, so its flank can bulge across a NEIGHBOURING open boundary and close a
+        // way through the maze meant to leave. Measured on three seeds: **2 of 506 passes**.
+        //
+        // ⚠️ **ONE PASS OVER ALL RANGES, because there are TWO emitters.** The first cut
+        // checked inside `push_boundary_walls` and the numbers did not move at all — the
+        // offenders came from `push_ridges`, the per-section arc/spoke range, which is not
+        // mass-based and never saw the check. A rule in one of two places is half a rule; that
+        // is the third time this crate has taught it (the wall-collision line, the two range
+        // land checks, this).
+        //
+        // Dropping a segment is not a loss: a gap in a range IS a pass, which is the rule the
+        // authored passes already use. And it only ever OPENS ground, so it cannot cost
+        // feasibility — this runs before the route.
+        {
+            let g = self.regions;
+            let arc_half = self.radial_half as f32;
+            let pad = self.path_clear_radius + self.player_radius;
+            let maze = std::mem::take(&mut self.maze);
+            let ring_lo = g.ring_at(start_x as f32, 0.0).saturating_sub(1);
+            let ring_hi = g.ring_at(end_x as f32, 0.0) + 1;
+            // The open boundaries this section could have reached, sampled once.
+            let mut passes: Vec<Position> = Vec::new();
+            for ring in ring_lo..=ring_hi {
+                for sector in 0..g.sectors(ring) {
+                    let c = meld_proto::regions::Cell::new(ring, sector);
+                    if !crate::maze::cell_holds_land(&g, arc_half, c) {
+                        continue;
+                    }
+                    for nb in g.neighbours(c) {
+                        if nb.key() <= c.key() || !maze.is_open(c, nb) {
+                            continue;
+                        }
+                        let Some(((q0, c0), (q1, c1))) =
+                            crate::maze::shared_boundary(&g, c, nb)
+                        else {
+                            continue;
+                        };
+                        for k in 0..=12 {
+                            let t = k as f64 / 12.0;
+                            let (rr, bb) = (q0 + (q1 - q0) * t, c0 + (c1 - c0) * t);
+                            passes.push(Position::new(rr * bb.cos(), rr * bb.sin()));
+                        }
+                    }
+                }
+            }
+            // A pass is sealed iff EVERY sample along it is inside this range's reach, so a
+            // range that merely narrows one is kept — narrowing is what a pass is for.
+            self.ridges.retain(|r| {
+                let hw = r[4] as f64;
+                if hw <= 0.0 {
+                    return true;
+                }
+                let (a0, a1) = (Position::new(r[0] as f64, r[1] as f64), Position::new(r[2] as f64, r[3] as f64));
+                !passes.chunks(13).any(|pass| {
+                    pass.iter().all(|p| dist_point_segment(p, &a0, &a1) <= hw + pad)
+                })
+            });
+            self.maze = maze;
+        }
 
         // ⚠️ **A RANGE THAT THE WATER REACHED YIELDS, because water is placed AFTER it.**
         // Both emitters ask `on_land` along the spine when they raise a range — but
@@ -5906,6 +6010,15 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
                     if material == WallMaterial::Open {
                         continue;
                     }
+                    // ⚠️ **STAGE 9 WILL GROW A RANGE BETWEEN THE TWO CELLS' MASSES, NOT ALONG
+                    // THEIR EDGE — and it is NOT wired up yet.** `maze::cell_mass` exists and
+                    // is tested; swapping the spine endpoints for it measurably works (the mean
+                    // |cos| between a spine and its boundary fell from ~1.0 to **0.518**: a
+                    // range crosses its boundary instead of tracing it, which is the whole of
+                    // "straight mountain lines"). Parked because the primitive does not satisfy
+                    // two constraints at once yet: correcting for the grid warp so a mass lands
+                    // in its OWN cell moved the masses far enough that walled neighbours
+                    // stopped meeting. Both measurements are in `the_maze_is_decided`.
                     // Ranges keep their own roll, so rock country's mountain density is
                     // unchanged by this; only the biomes that had NO usable wall gain one.
                     if material == WallMaterial::Range
@@ -7379,7 +7492,9 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
         let pack_leash = self.pack_leash;
         let (skirmish_aggro, skirmish_range) = (self.skirmish_aggro, self.skirmish_range);
         let interval = self.skirmish_interval;
-        let obstacles = self.blocking_field();
+        // ⚠️ The CACHED field — see `Arena::blockers`. This was a full rebuild on a hot
+        // path: once a tick here, and once per movement intent in `apply_move_with`.
+        let obstacles = self.blockers();
         // Combat state of every creature, snapshotted so a creature can target
         // another without aliasing the `&mut` iteration below. (pos, faction, alive, def).
         // The species rides along with the faction: `creatures_at_odds` needs BOTH, because
@@ -8236,7 +8351,9 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
         let dt = self.sim_dt;
         let (x_min, x_max, lateral) = (self.x_min, self.x_max, self.lateral);
         let pr = self.player_radius;
-        let obstacles = self.blocking_field();
+        // ⚠️ The CACHED field — see `Arena::blockers`. This was a full rebuild on a hot
+        // path: once a tick here, and once per movement intent in `apply_move_with`.
+        let obstacles = self.blockers();
         // Clamp direction magnitude to ≤ 1 (movement-world.md).
         let mag = (dir_x * dir_x + dir_y * dir_y).sqrt();
         let (nx, ny) = if mag > 1.0 {
@@ -8916,7 +9033,7 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
     fn rescue_stranded(&mut self, first: usize, last: usize) -> Vec<(Id, Position)> {
         let (inner, outer) = self.shift_band(first, last);
         let entry = self.region_entry(first);
-        let field = self.blocking_field();
+        let field = self.blockers();
         let blocked: Vec<(Id, Position)> = self
             .avatars
             .iter()
@@ -8973,7 +9090,7 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
     /// Only ACTIVE avatars: someone in a battle or mid-channel is not walking anywhere,
     /// and teleporting them out of a fight would be a worse bug than the one being fixed.
     pub fn rescue_trapped(&mut self) -> Vec<(Id, Position)> {
-        let field = self.blocking_field();
+        let field = self.blockers();
         let moves: Vec<(Id, Position)> = self
             .avatars
             .iter()
@@ -16286,6 +16403,17 @@ impl Arena {
 
 }
 
+/// The cached blocking field and the world-counts it was built from — see `Arena::blockers`.
+///
+/// `Clone` because `Arena` is, and cloning shares the built field rather than rebuilding it —
+/// a clone of a world that has already answered "what blocks" should not have to ask again.
+#[derive(Clone)]
+struct CachedBlockers {
+    /// `(obstacles, structures, ridges)` lengths. A change in any means rebuild.
+    key: (usize, usize, usize),
+    field: std::sync::Arc<BlockField>,
+}
+
 /// The blocking field as a spatial hash rather than a flat list.
 ///
 /// **This is a per-tick cost, and the world streams outward without bound.** The check is
@@ -16520,6 +16648,34 @@ impl Arena {
             }
         }
         None
+    }
+
+    /// The blocking field, built once and reused until the world changes under it.
+    ///
+    /// ⚠️ **KEYED ON THE COUNTS, NOT ON A CALL SITE REMEMBERING.** There are seventeen places
+    /// that push, retain, extend, truncate or splice obstacles, structures or ranges, and a
+    /// `dirty()` call at each is a call site that will forget — the same reasoning that put
+    /// "what blocks" in ONE function after the wall-collision line went into one mover and not
+    /// the other. So the cache carries the three lengths it was built from and rebuilds when
+    /// any of them moves. No caller has to know it exists.
+    ///
+    /// ⚠️ **AN IN-PLACE EDIT THAT KEEPS THE COUNT WOULD BE MISSED** — mutating an existing
+    /// range's half-width in place, say. There is no such write today (the one that existed,
+    /// zeroing a retired range's width, was replaced by removing the entry). If one is added,
+    /// it must clear this cache explicitly, and a `debug_assert` here would not catch it.
+    ///
+    /// `Arc`, not `Rc`: the `Arena` is moved into the game loop's Tokio task, so it stays
+    /// `Send`.
+    fn blockers(&self) -> std::sync::Arc<BlockField> {
+        let key = (self.obstacles.len(), self.structures.len(), self.ridges.len());
+        if let Some(c) = self.blockers.borrow().as_ref() {
+            if c.key == key {
+                return c.field.clone();
+            }
+        }
+        let built = std::sync::Arc::new(self.blocking_field());
+        *self.blockers.borrow_mut() = Some(CachedBlockers { key, field: built.clone() });
+        built
     }
 
     fn blocking_field(&self) -> BlockField {

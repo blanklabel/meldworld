@@ -409,6 +409,32 @@ pub fn cell_mass(grid: &Grid, m: &Maze, c: Cell, seed: u64) -> Option<(f64, f64,
     let jx = step * 0.10 * (rng.below(2001) as f64 / 1000.0 - 1.0);
     let jy = step * 0.10 * (rng.below(2001) as f64 / 1000.0 - 1.0);
     let (mx, my) = (cx + px / pull * lean + jx, cy + py / pull * lean + jy);
+    // ⚠️ **CORRECT FOR THE WARP, because `centroid` is NOMINAL and `cell_at` is not.**
+    // `Grid::cell_at` computes the ring from `r + warp_at(bearing)`, while `centroid` and
+    // `span` are a cell's nominal extent — and the warp (~40 units) is comparable to half a
+    // ring (62.5), so **a cell's own centroid is not reliably inside it** as `cell_at` sees it.
+    // Measured: the mass for ring 3 sector 4 on seed 1 landed in ring 2 sector 3, and pulling
+    // back toward the centroid could not fix it, because the centroid was outside too.
+    //
+    // The warp is a pure radius offset at a given bearing, so it inverts exactly: subtract it.
+    // Then verify with the function that decides, pulling toward a warp-corrected centroid as
+    // the floor.
+    let warped = |x: f64, y: f64| -> (f64, f64) {
+        let b = y.atan2(x);
+        let r = x.hypot(y) - grid.warp_at(b as f32) as f64;
+        (r * b.cos(), r * b.sin())
+    };
+    let (tx, ty) = warped(cx, cy);
+    let (mut mx, mut my) = warped(mx, my);
+    for _ in 0..8 {
+        if grid.cell_at(mx as f32, my as f32).key() == c.key() {
+            break;
+        }
+        mx = 0.5 * (mx + tx);
+        my = 0.5 * (my + ty);
+    }
+    let (mx, my) = (mx, my);
+
     // Reach: far enough to MEET the nearest walled neighbour's mass, which is half the way to
     // its centre. Two masses across a walled boundary therefore touch by construction rather
     // than by a radius anyone tuned.

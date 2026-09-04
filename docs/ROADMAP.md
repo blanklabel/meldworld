@@ -2614,16 +2614,48 @@ Make time in the field a living, dangerous place worth screenshotting.
       sorting, which a shader cannot do. One float per cell, ridden like `Repaints` rides
       biomes — and the mirror gets a test against the FIELD, never against the other copy of
       itself, because that is exactly how `coast::city_sea_depth` drifted for 31 merges.
-    - ⚠️ **`MAX_RIDGES` (16) gets TIGHTER, not looser.** A coalesced range is many blobs and the
-      shader window holds the sixteen nearest; past that a range renders flat while
-      `ridge_blocks` still refuses it. That budget is part of this stage, not a follow-up.
-
-  - ⬜ *Stage 8 — **BUILD THE MAZE, THEN MAKE IT LOOK LIKE A PLACE.*** Owner's direction, and
-    it inverts the order stages 5-7 have been fighting. Today terrain goes down FIRST (straits,
-    lobes, ranges, water) and each cell boundary rolls its wall INDEPENDENTLY — which is the
-    whole reason stage 7 exists: nothing planned the topology, so connectivity had to be
-    repaired afterwards. Decide the maze first and the conflicts stop existing, because a range
-    is only raised where a wall is wanted and a gap only left where the topology says pass.
+    - ⚠️ **AND THE PER-TICK COST OF WALKING AROUND IS ITS OWN PROBLEM — probably the bigger
+      one.** Owner's point, and reading the hot path bears it out: **`blocking_field()` is
+      rebuilt from scratch inside `step_creatures_with_aggro` AND inside `apply_move_with`**.
+      Each rebuild collects every obstacle in the world (**35,000-58,000** at d900-d3400) into
+      a fresh `Vec`, extends it with structures, appends `ridge_discs()`, and builds a fresh
+      spatial hash. `apply_move_with` is called from `handle_move`, once per movement intent —
+      so a tick pays **1 + N rebuilds for N players**, and the cost grows with how much world
+      has streamed in. That is exactly why it would bite while walking and never show in a
+      generation benchmark.
+      - ⚠️ **READ FROM THE CODE, NOT MEASURED.** Get the number before the fix — this stage has
+        already produced several confident wrong inferences.
+      - *The fix, if it measures as expected:* cache the field and invalidate on mutation. What
+        mutates it is a short closed list — generation, building and demolition, the Shift,
+        regrowth, prop culls — and everything else, every tick of movement, is a READ.
+        `creature_spots` already lives cached on the `Arena`, so the pattern exists.
+      - *Stage 9 pushes the same term twice*, via more ranges (more `ridge_discs` per rebuild)
+        and more relief overall. Measure it BEFORE this stage lands or the regression and the
+        baseline are inseparable.
+    - ⚠️ **PERFORMANCE IS A GATE ON THIS STAGE, NOT A FOLLOW-UP.** Measured during stage 8:
+      section streaming stalls the **authoritative tick for 1.2-1.5 s** (a comment claimed 181
+      ms), and **A\* is 93-96% of a deep section's cost** — the band-filter and sampling fix
+      took the worst section 2,108 ms → 490 ms, which is still **5x over the 100 ms tick**.
+      - *Stage 9 makes A\* worse by construction.* Per-cell relief means more ranges, and
+        `ridge_discs` is consulted on EVERY A* sample — that is the 93-96% term. Mass-to-mass
+        spines are also longer than boundary-length ones, so each covers more discs. Measure
+        ranges-per-world and A* cost after the MASS change and before coalescence lands on top,
+        or the two are indistinguishable.
+      - *And no amount of A\* tuning fixes a 490 ms section on a 100 ms tick.* Taking
+        generation OFF the authoritative tick — a background task producing sections, the loop
+        consuming finished ones — is the structural answer. It was deferred when A* got 4.3x
+        faster, which was right then and will not survive this stage.
+      - ⚠️ **Re-baseline first.** Stage 7's deletion removed `open_sealed_ground`, which was
+        O(radius² x landforms) and cost 13% of generation, so several stage-8 figures are stale
+        in OUR favour. Do not quote them as current.
+    - ⚠️ **`MAX_RIDGES` CANNOT BE REMOVED, ONLY RAISED — it is a WGSL uniform array bound.**
+      The per-section DESIGN cap (`ridge_max_per_section`) is gone, and rightly: a budget that
+      truncates the maze is incoherent once topology decides what a wall is. This is a
+      different thing wearing a similar name — `RIDGE_SLOTS = MAX_RIDGES * 2` sizes a uniform
+      array, which needs a compile-time bound. ⚠️ Raising it is not free either: `ridge_height`
+      loops EVERY slot per fragment, so 16 → 48 triples that loop in the ground shader.
+      Measure the GPU cost before changing it. A range past the window renders FLAT while
+      `ridge_blocks` still refuses it, so this number is a correctness bound, not just fidelity.
     - *The topology:* **Houston's algorithm** (Robin Houston — Aldous-Broder until ~⅓ of the
       grid is carved, then Wilson's, taking the fast half of each and inheriting Wilson's
       UNIFORM spanning tree). ⚠️ At this size the performance argument is moot and the quality
