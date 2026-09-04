@@ -207,12 +207,30 @@ pub enum CombatantKind {
 }
 
 /// Encounter classification (realtime battle.md). Drives flee + disconnect rules.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EncounterClass {
+    #[default]
     Standard,
     Elite,
     Gatekeeper,
+}
+
+impl EncounterClass {
+    /// Read the standing half of a spawn's `encounter_class` string.
+    ///
+    /// ⚠️ ONE FIELD CARRIES TWO DIFFERENT FACTS, which is why this reads as a near-copy of
+    /// [`PackRole::from_encounter_class`] and is not one. A spawn's `encounter_class` is
+    /// either a PACK ROLE ("leader"/"minion") or a STANDING ("elite"/"gatekeeper") — never
+    /// both — so each parser answers its own question and shrugs at the other's values. A
+    /// pack leader is therefore `Standard` standing, and an elite has no pack role.
+    pub fn from_encounter_class(class: &str) -> EncounterClass {
+        match class {
+            "elite" | "undead_rite" => EncounterClass::Elite,
+            "gatekeeper" => EncounterClass::Gatekeeper,
+            _ => EncounterClass::Standard,
+        }
+    }
 }
 
 /// A creature's role in its encounter (CR-6 packs). Drives pack AI: a leader is

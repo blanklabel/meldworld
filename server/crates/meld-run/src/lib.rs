@@ -1093,6 +1093,10 @@ pub fn enemy_fighters(
             // CR-6: carry the creature's pack role into the fight, so the engine can
             // shield a leader with its minions and rout them when it falls.
             f.pack_role = meld_proto::enums::PackRole::from_encounter_class(&m.encounter_class);
+            // …and the other half of the same field: a champion's STANDING, so the client
+            // can tell an elite from the rank and file inside a fight.
+            f.encounter_class =
+                meld_proto::enums::EncounterClass::from_encounter_class(&m.encounter_class);
             // PG-2: a named boss met deeper wears a darker palette. The band comes
             // from the level it is met at, which is the same axis its deep-gated
             // abilities come online on — so look and kit escalate together.

@@ -161,6 +161,12 @@ pub struct Fighter {
     /// CR-6 pack role. A leader is shielded by its living minions and lends them
     /// its presence; killing it routs them. `None` for anything not in a pack.
     pub pack_role: PackRole,
+    /// This creature's STANDING in the encounter — elite, gatekeeper, or the rank and
+    /// file. Distinct from [`Battle::encounter_class`], which classes the whole fight and
+    /// so cannot say WHICH creature is the champion; and distinct from `pack_role`, which
+    /// reads the other half of the same spawn field (a leader has no standing, an elite
+    /// has no pack). Rides the wire as `enc:<class>`.
+    pub encounter_class: EncounterClass,
     /// The tick this fighter comes back out of the interstitial void, or 0 (the Rift
     /// Knight's Dimensional Dive / Phase Delay).
     ///
@@ -357,6 +363,7 @@ impl Fighter {
             flees: false,
             boss_band: 0,
             pack_role: PackRole::None,
+            encounter_class: EncounterClass::Standard,
             phased_until: 0,
             called: false,
             group_id: None,
@@ -415,6 +422,16 @@ impl Fighter {
             PackRole::Leader => v.push("pack:leader".to_string()),
             PackRole::Minion => v.push("pack:minion".to_string()),
             PackRole::None => {}
+        }
+        // ⚠️ STANDING NEVER REACHED A FIGHT. `Battle::encounter_class` classes the whole
+        // encounter, so nothing on the wire said WHICH creature was the champion — the
+        // client could tell a pack leader from its runts and a named boss from wildlife,
+        // and had no way at all to know it was looking at an elite. Anything that wants to
+        // treat a champion differently in battle (its own light, for one) needs this.
+        match self.encounter_class {
+            EncounterClass::Elite => v.push("enc:elite".to_string()),
+            EncounterClass::Gatekeeper => v.push("enc:gatekeeper".to_string()),
+            EncounterClass::Standard => {}
         }
         if self.barrier > 0 {
             v.push(format!("barrier:{}", self.barrier));
@@ -10841,6 +10858,24 @@ mod tests {
         use std::sync::atomic::{AtomicU64, Ordering};
         static N: AtomicU64 = AtomicU64::new(0);
         format!("act-{}", N.fetch_add(1, Ordering::Relaxed))
+    }
+
+    /// ⚠️ STANDING HAS TO REACH THE CLIENT, and for a long time it did not.
+    /// `Battle::encounter_class` classes the whole ENCOUNTER, so nothing told the client
+    /// which creature in a fight was the champion — an elite was wire-identical to a
+    /// footsoldier. Anything that wants to treat a champion differently in battle depends
+    /// on this token existing.
+    #[test]
+    fn a_champions_standing_rides_the_wire() {
+        let mut f = monster("m1", 40, 50);
+        assert!(
+            !f.to_wire().statuses.iter().any(|s| s.starts_with("enc:")),
+            "the rank and file carry no standing"
+        );
+        f.encounter_class = EncounterClass::Elite;
+        assert!(f.to_wire().statuses.contains(&"enc:elite".to_string()));
+        f.encounter_class = EncounterClass::Gatekeeper;
+        assert!(f.to_wire().statuses.contains(&"enc:gatekeeper".to_string()));
     }
 
     /// FS-4: a fighter's `boss_kind` rides the wire as a `boss:<key>` status,
