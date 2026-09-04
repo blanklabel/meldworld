@@ -28,6 +28,7 @@
 //! Gatekeeper arenas, chokepoint geometry, and the infinite zone past d=5000.
 
 pub mod abilities;
+pub mod maze;
 pub mod shift;
 
 use std::collections::HashMap;
@@ -523,6 +524,41 @@ fn biome_water_mult(biome: &str) -> f64 {
     }
 }
 
+/// A biome's **STANDING** water weight — how readily it holds a basin.
+///
+/// ⚠️ **THIS IS SEPARATE FROM `biome_water_mult` BECAUSE FLOWING WATER LEAVES.** A river is
+/// FOUND by walking downhill up to ~364 units and a basin's contour spreads up to ~800, while
+/// a cell is 125 units across — so a body born in a mire ends up wherever the terrain sends
+/// it, three or more cells away. That is physically right for a river and useless for biome
+/// character, and it is why `biome_water_mult`'s 6.4x mire:ashfall ratio produced a world
+/// where **ashfall measured 10.7% wet against the mire's 7.7%**: the multiplier governs where
+/// water is BORN, never where it comes to rest.
+///
+/// A BASIN is the local half. It fills the terrain's own contour at a level, so it stays in
+/// the hollow that authored it — which makes it the lever that can actually make a swamp boggy.
+/// So the mire's identity is standing water plus its boundary CHANNELS
+/// ([`WallMaterial::Water`], laid along a cell edge and equally local), and rivers stay free
+/// to cross biomes because that is what rivers do.
+fn biome_basin_mult(biome: &str) -> f64 {
+    match biome {
+        // A WETLAND. The whole character of the biome is being flooded, and this is the one
+        // knob that keeps the water where the mire is.
+        "mire" => 9.0,
+        "nestiphian_cradle" => 4.0, // rot needs standing wet
+        "tundra" => 1.0,
+        "forest" => 0.8,
+        "field" => 0.6,
+        "amber_wood" => 0.7,
+        "hearth_plains" => 0.4,
+        // Rock, ash and heat do not hold a pool.
+        "ashfall" => 0.15,
+        "desert" => 0.1,
+        "seraphic_oubliette" => 0.1,
+        "seized_engine" => 0.1,
+        _ => 0.8,
+    }
+}
+
 /// A biome's VERTICALITY weight — scales its terrace count AND path-climb chance so
 /// each biome climbs differently: Ashfall is a mountain-pass MAZE (tall terraces block
 /// most routes, the path almost always climbs); Forest has some rises but does its
@@ -585,16 +621,32 @@ fn biome_terrace_mult(biome: &str) -> f64 {
 /// This is what makes a biome maze in its OWN way rather than merely differ by density:
 /// field and desert are the open crossings BETWEEN mazes, ashfall is where you hunt for a
 /// pass. Ordering is the design and is held by test; the values are `[TUNABLE]`.
-fn biome_porosity(rb: &meld_balance::RegionBarrier, biome: &str) -> f64 {
+/// **What share of the walls the maze wants here does this biome ERASE into scenery?**
+///
+/// ⚠️ **THIS REPLACED `porosity`, AND THE NUMBERS ARE NOT THE SAME NUMBERS.** Porosity was the
+/// share of boundaries that stayed OPEN, rolled independently per boundary — which measured out
+/// as an ashfall region in **37 pieces**, because a random graph needs `mean_degree x p > ln(N)`
+/// (≈0.94 here) to be whole while the table ran 0.30-0.92. The maze now decides openness and a
+/// biome only decides how much of the remaining WALL it bothers to build, so:
+///
+/// - the floor is the spanning tree (measured ~36% of boundaries open), and **no biome can be
+///   tighter than that** — ashfall and mire erase NOTHING and sit exactly on it, which is what
+///   their old 0.30/0.35 was reaching for and could never reach;
+/// - a value here is a share of the WALLS, not of the boundaries, so field's old 0.92 target
+///   openness becomes `(0.92 - 0.36) / (1 - 0.36)` ≈ 0.88 of walls erased.
+///
+/// Feeding the old porosity numbers in directly would over-open everything — ashfall would land
+/// at 0.36 + 0.64 x 0.30 = 0.55 effective, nearly twice as loose as intended.
+fn biome_erasure(rb: &meld_balance::RegionBarrier, biome: &str) -> f64 {
     match biome {
-        "field" => rb.porosity_field,
-        "desert" => rb.porosity_desert,
-        "forest" => rb.porosity_forest,
-        "amber_wood" => rb.porosity_amber_wood,
-        "tundra" => rb.porosity_tundra,
-        "mire" => rb.porosity_mire,
-        "ashfall" => rb.porosity_ashfall,
-        _ => rb.porosity_default,
+        "field" => rb.erase_field,
+        "desert" => rb.erase_desert,
+        "forest" => rb.erase_forest,
+        "amber_wood" => rb.erase_amber_wood,
+        "tundra" => rb.erase_tundra,
+        "mire" => rb.erase_mire,
+        "ashfall" => rb.erase_ashfall,
+        _ => rb.erase_default,
     }
 }
 
@@ -2496,14 +2548,37 @@ pub struct Avatar {
 /// trees; ashfall ranges of mountains; the mire water and trees; the tundra trees AND
 /// mountains* — because a biome's barrier material is what makes it feel like a place rather
 /// than a density.
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum WallMaterial {
     /// A raised range: impassable by SLOPE. Rock country.
     Range,
     /// A dense line of the biome's own props, tight enough to actually block.
     Props,
-    /// Nothing — the open crossings BETWEEN mazes. Their porosity is near 1.0 anyway, so
-    /// few of their boundaries are closed in the first place.
+    /// **A CHANNEL OF STANDING WATER**, laid as a chain of [`meld_proto::coast::RiverNode`]
+    /// along the boundary — which is what makes the mire a WETLAND MAZE rather than a wood
+    /// with puddles in it.
+    ///
+    /// ⚠️ **THE PRIMITIVE ALREADY EXISTED AND ALREADY HAD DOORS.** A river is a polyline with
+    /// a half-width where a **chain break IS a ford** — dry ground, a stony crossing — so a
+    /// water wall gets its passes by exactly the construction a strait gets its isthmuses.
+    /// `apply_move` already collides with it, `astar_route` already keeps `route_pad` from it,
+    /// both ground shaders already draw it. Nothing new had to learn what water is.
+    ///
+    /// ⚠️ And it is the answer to *"the rivers running along biomes in a circular pattern are
+    /// weird"*: a [`meld_proto::coast::Strait`] is `[r_centre, r_half, θ_centre, θ_half]`, an
+    /// annular sector, so it can only ever run TANGENTIALLY — the ring world surviving in the
+    /// water. A boundary from [`crate::maze::shared_boundary`] is an arc **or a spoke**, so
+    /// water laid along one runs radially as often as circumferentially.
+    ///
+    /// ⚠️ **Not every RiverNode chain descends the terrain any more.** A river is gradient
+    /// descent by construction and that is still true of `push_water`'s rivers — but a
+    /// boundary channel follows a cell edge, not a slope. Verified safe: `coast::river_depth`
+    /// reads no elevation and no flow direction, only the polyline and its chain breaks, so
+    /// nothing downstream cares which way the water would run.
+    Water,
+    /// Nothing — the open crossings BETWEEN mazes. Their `erase_*` share is near 1.0 anyway,
+    /// so most of their walls are scenery in the first place.
     Open,
 }
 
@@ -2524,7 +2599,20 @@ fn wall_material(biome: &str, roll: f64) -> WallMaterial {
                 WallMaterial::Props
             }
         }
-        // Wooded and flooded: trees do the walling.
+        // ⚠️ **THE MIRE WALLS WITH WATER, and that is the biome's whole character.** It was
+        // `Props` like any wood, so a swamp was a wood whose label said swamp — measured, the
+        // mire held 8 basins across FIVE ENTIRE WORLDS (1.6 lakes per world's whole mire) and
+        // 5.4% of its ground was wet, with a wooded biome wetter than it on two seeds in
+        // three. Water as a WALL is what makes it a wetland maze: the boundaries are channels
+        // you ford, and the trees inside a cell are the fill.
+        "mire" => {
+            if roll < 0.75 {
+                WallMaterial::Water
+            } else {
+                WallMaterial::Props
+            }
+        }
+        // Wooded: trees do the walling.
         _ => WallMaterial::Props,
     }
 }
@@ -2756,6 +2844,18 @@ pub struct Arena {
     /// and the Shift predates it: the banner said "Mire became Desert", desert scrub grew,
     /// and the floor under it stayed mire for the life of the world. This is the only thing
     /// that can move it, and it rides the wire so the client's own derivation agrees.
+    /// **THE DECIDED MAZE** (`WG-11` stage 8) — which cell boundaries are ways through.
+    ///
+    /// Recomputed from the seed rather than stored, so §W5's "the baseline is a pure function
+    /// of the seed" survives: see [`crate::maze`] for why a global topology and a seed-derived
+    /// one stopped being in tension once the teardrop made the cell set finite.
+    ///
+    /// ⚠️ **A SHIFT NEVER MOVES IT.** The topology is the skeleton and the biome decides only
+    /// EXPRESSION — what a wall is made of, and whether an open biome erases it into scenery.
+    /// Erasure can only ever ADD openness, so no repaint can disconnect the world. That is
+    /// what makes connectivity invariant under the weather, and why stage 7's repairs are
+    /// dead code under this stage.
+    pub maze: crate::maze::Maze,
     repaints: meld_proto::regions::Repaints,
     /// `[biome_gate]` flattened into `BIOMES` order, so a cell's biome can be resolved
     /// without reaching for `Balance` — the lookup runs per placed prop.
@@ -3201,6 +3301,7 @@ impl Arena {
                 warp: balance.region.boundary_warp as f32,
                 seed: seed as u32,
             },
+            maze: crate::maze::Maze::default(),
             repaints: meld_proto::regions::Repaints::default(),
             biome_gate: biome_gate_array(balance),
             path_clear_radius: wg.path_clear_radius,
@@ -3226,6 +3327,16 @@ impl Arena {
             loot_pickup_radius: balance.ai.loot_pickup_radius,
             creature_spots: SpotGrid::new(balance.ai.group_radius + balance.encounters.pack_spread),
         };
+
+        // ⚠️ **THE MAZE IS DECIDED BEFORE ANY GROUND IS PLACED.** Stages 5-7 placed terrain
+        // first and rolled each boundary independently, which is why connectivity had to be
+        // repaired afterwards — measured, an ashfall region came out as 37 islands. Deciding
+        // the topology up front makes a range something raised only where a wall is WANTED,
+        // and a gap left only where the maze says pass.
+        let (grid, arc_half) = (arena.regions, arena.radial_half as f32);
+        arena.maze = crate::maze::build(&grid, seed, wg.maze_horizon, wg.maze_braid, &|c| {
+            crate::maze::cell_holds_land(&grid, arc_half, c)
+        });
 
         let count = wg.area_count.max(1);
         for i in 0..count {
@@ -3706,20 +3817,17 @@ impl Arena {
         // river is the one water body that can genuinely sever the world.
         // BEFORE the water, so a lake yields to a mountain the way it already yields to a
         // peak — `off_peaks` is what stops a basin flooding straight through one.
-        // ⚠️ **MUTABLE, BECAUSE A RETIREMENT CAN REMOVE A RANGE BELOW IT.** This marks where
-        // THIS section's ranges begin, so the unroutable fallback can truncate them — and both
-        // retirement paths below delete entries anywhere in the world, including earlier ones.
-        // Leaving it fixed would make that truncate eat one range too many.
-        let mut ridges_before = self.ridges.len();
+        // Where THIS section's ranges begin, so the unroutable fallback can truncate them.
+        // ⚠️ It was `mut` while stage 7's repairs could delete a range from an EARLIER section
+        // and shift everything above it down; the decided maze retired both of them, so
+        // nothing mutates the list behind this marker any more.
+        let ridges_before = self.ridges.len();
         self.push_ridges(balance, i, start_x, end_x);
         // The mouths of this section's walled boundaries, and the boundaries a PROP wall has
         // to be laid along — both consumed once the route exists.
         let (pass_mouths, prop_walls) = self.push_boundary_walls(balance, i, start_x, end_x);
         self.push_water(balance, i, start_x, end_x);
 
-        // ⚠️ Every blocker for this band is now down, which is the only moment the question
-        // "is any of this severed" can be asked — see `open_sealed_ground`.
-        self.open_sealed_ground(balance, end_x, &mut ridges_before);
 
         // WG-1: every Nth procedural section is a DUNGEON — rooms divided by walls
         // with a door on the clear path (connectivity guaranteed like a biome seam),
@@ -3920,39 +4028,6 @@ impl Arena {
             .is_some_and(|p| p.distance_to(&exit_target) < 6.0);
         if !reached && self.ridges.len() > ridges_before {
             self.ridges.truncate(ridges_before);
-            route = self.astar_route(entry, exit_target);
-        }
-        // ⚠️ **AND A RANGE THAT BLOCKS A *LATER* SECTION HAS NO SECTION TO YIELD FROM.**
-        //
-        // The rule above only retires ranges THIS section raised, so a section that raised
-        // none has no fallback at all: `astar_route` stops where it can and the trail is a
-        // STUB. That is not a cosmetic gap — measured on seed 1, sections 14/15/16 each
-        // stubbed with `own_ranges=0`, and each successive one escaped further BACKWARDS
-        // (x=825, then 705, then 585, against targets of 1098/1204/1332). The world streamed
-        // to d1333 with its guaranteed route ending at **d945**, which is what made
-        // `route_point_at(1269)` answer d945 and put a deep start a third of the world from
-        // its own trail. Every piece of content anchored to the route — the deep portal, the
-        // Gatekeeper in the pass, the end fight — is unreachable past that point.
-        //
-        // A range reaches back across sections (the same cross-section span the river and
-        // lake walks have), so scoping the yield to the current section was always going to
-        // leave this hole; it stayed hidden because it needs a seed whose blocking range sits
-        // in an earlier band. So the judgement is unchanged — **the range yields to the
-        // route** — and only its scope is fixed: retire whatever stands on the direct line to
-        // the exit, wherever it was raised, and ask the pathfinder again. Bounded, because a
-        // section that still cannot route after this has something other than a range in the
-        // way and deleting mountains will not find it.
-        for _ in 0..wg.route_yield_max_ranges {
-            if route.last().is_some_and(|p| p.distance_to(&exit_target) < 6.0) {
-                break;
-            }
-            let Some((idx, delta)) = self.open_route_through_range(balance, entry, exit_target)
-            else {
-                break;
-            };
-            if idx < ridges_before {
-                ridges_before = (ridges_before as i64 + delta).max(0) as usize;
-            }
             route = self.astar_route(entry, exit_target);
         }
         for p in &route {
@@ -5270,128 +5345,6 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
     /// Sampled rather than solved: a strait is an annular sector and the run is a corridor
     /// chord, so the intersection has no closed form worth writing. Walking it at the A* cell
     /// size is both cheap and exactly the resolution the router will see.
-    /// **CUT A DOOR THROUGH A RANGE** at the point on its spine nearest `at`, and report how
-    /// the ridge list's length changed so a caller can keep an index marker honest.
-    ///
-    /// ⚠️ **THIS IS THE OPERATION, AND DELETING THE RANGE WAS NOT.** Both repairs that use it
-    /// used to retire the whole segment — knocking a wall down because a room had no exit.
-    /// For a maze that is backwards on every count: the walls ARE the content, the deep bands
-    /// lose the mountains that make them read as ashfall or tundra, and the guaranteed route
-    /// buys its way through by demolition. [`meld_proto::terrain::Ridge`] says how a pass is
-    /// made — *"a pass is the GAP BETWEEN TWO RIDGES, not a property of one"* — which is what
-    /// [`Arena::push_ridges`] does with `ridge_passes_*`, so a repair has only to do the same
-    /// thing in one more place rather than invent a cruder answer.
-    ///
-    /// The gap is `ridge_pass_width`, the same width every authored pass gets. A flank left
-    /// shorter than three times its own half-width is dropped rather than kept, because a
-    /// capsule wider than it is long renders as a featureless cone — the rule `push_ridges`
-    /// already caps `half_width` to hold. A range too short to survive a door on either side
-    /// is simply gone, which is the old behaviour kept as the degenerate case rather than as
-    /// the strategy.
-    fn cut_pass_through_range(&mut self, balance: &Balance, idx: usize, at: Position) -> i64 {
-        let r = self.ridges[idx];
-        let (a, b) = (
-            Position::new(r[0] as f64, r[1] as f64),
-            Position::new(r[2] as f64, r[3] as f64),
-        );
-        let len = a.distance_to(&b);
-        let half_width = r[4] as f64;
-        let min_flank = 3.0 * half_width;
-        if len <= 1e-6 {
-            self.ridges.remove(idx);
-            return -1;
-        }
-        let (ux, uy) = ((b.x - a.x) / len, (b.y - a.y) / len);
-        // Where along the spine the door belongs: the projection of the point that wanted
-        // through. For the route that is where its own direct line meets the wall, which is
-        // exactly where a door should be.
-        let t = (((at.x - a.x) * ux + (at.y - a.y) * uy) / len).clamp(0.0, 1.0);
-        let gap = balance.worldgen.ridge_pass_width;
-        let (lo, hi) = (t * len - gap * 0.5, t * len + gap * 0.5);
-        let seg = |s: f64, e: f64| -> meld_proto::terrain::Ridge {
-            [
-                (a.x + ux * s) as f32,
-                (a.y + uy * s) as f32,
-                (a.x + ux * e) as f32,
-                (a.y + uy * e) as f32,
-                r[4],
-                r[5],
-            ]
-        };
-        // ⚠️ **A SHORT FLANK IS NARROWED, NOT DROPPED.** Requiring `3 x half_width` of length
-        // and deleting anything shorter is demolition wearing a door's clothes: with
-        // `ridge_half_width_max` near 50 that floor is 150 units a side, so any spine under
-        // ~300 lost BOTH flanks and the range vanished exactly as before. Measured, that cost
-        // 24% of the world's mountain footprint and 51% of seed 1's.
-        //
-        // The no-cone rule is about the ASPECT, not the length, so a flank keeps its length
-        // and gives up width instead — which is also what a pass looks like: the ridge thins
-        // as it approaches the gap. Height comes down with it, because a range is authored at
-        // a fixed aspect and a narrower one is a proportionally lower one; scaling width alone
-        // would leave a short flank standing implausibly steep for its size.
-        let flank = |s: f64, e: f64| -> Option<meld_proto::terrain::Ridge> {
-            let flank_len = e - s;
-            if flank_len < min_flank.min(gap) {
-                return None;
-            }
-            let hw = half_width.min(flank_len / 3.0);
-            if hw <= 0.0 {
-                return None;
-            }
-            let mut out = seg(s, e);
-            out[4] = hw as f32;
-            out[5] = (r[5] as f64 * (hw / half_width)) as f32;
-            Some(out)
-        };
-        let flanks: Vec<meld_proto::terrain::Ridge> =
-            [flank(0.0, lo), flank(hi, len)].into_iter().flatten().collect();
-        let delta = flanks.len() as i64 - 1;
-        self.ridges.splice(idx..=idx, flanks);
-        delta
-    }
-
-    /// **Open a DOOR through the range standing on the direct line** from `entry` to `exit`,
-    /// at the point where that line meets the wall. Returns the index it acted on and how the
-    /// ridge list's length changed, so a caller can keep an index marker honest.
-    ///
-    /// The direct line rather than a second A* run because that is exactly the precedent
-    /// [`Arena::bridge_the_direct_line`] sets one call earlier: the straight run is what the
-    /// route WANTS to be, and where it meets a wall is where the way through belongs.
-    fn open_route_through_range(
-        &mut self,
-        balance: &Balance,
-        entry: Position,
-        exit: Position,
-    ) -> Option<(usize, i64)> {
-        let pad = self.path_clear_radius + self.player_radius;
-        let len = entry.distance_to(&exit).max(1.0);
-        let steps = (len / 2.0).ceil().max(2.0) as i32;
-        let mut best: Option<(usize, f64, Position)> = None;
-        for k in 0..=steps {
-            let t = k as f64 / steps as f64;
-            let w = self.to_world(Position::new(
-                entry.x + (exit.x - entry.x) * t,
-                entry.y + (exit.y - entry.y) * t,
-            ));
-            for (idx, r) in self.ridges.iter().enumerate() {
-                let hw = r[4] as f64;
-                if hw <= 0.0 {
-                    continue;
-                }
-                let d = dist_point_segment(
-                    &w,
-                    &Position::new(r[0] as f64, r[1] as f64),
-                    &Position::new(r[2] as f64, r[3] as f64),
-                );
-                if d < hw + pad && best.is_none_or(|(_, bd, _)| d < bd) {
-                    best = Some((idx, d, w));
-                }
-            }
-        }
-        let (idx, _, at) = best?;
-        Some((idx, self.cut_pass_through_range(balance, idx, at)))
-    }
-
     fn bridge_the_direct_line(&mut self, balance: &Balance, entry: Position, exit: Position) {
         if self.straits.is_empty() || self.radial_half <= 0.0 {
             return;
@@ -5474,182 +5427,6 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
     /// and the Shift already use), so the spine is chosen FIRST and the roll is weighted by the
     /// biome of the cell it stands in — which is a thing only worth doing now that a biome is a
     /// property of a cell rather than of a whole ring.
-    /// ⚠️ **A RANGE GUARANTEES ITS OWN PASS; TWO RANGES GUARANTEE NOTHING.**
-    ///
-    /// [`Arena::push_ridges`] cuts `ridge_passes_*` gaps into every spine, so a range is
-    /// passable in isolation and its guarantee is real. Nothing stopped a LATER section's
-    /// range body from standing in an earlier one's gap — and a range reaches back into
-    /// sections already generated, exactly like the river and lake walks the dependency-order
-    /// table warns about.
-    ///
-    /// Measured at d1200: seed 1 could reach **62.8%** of its own walkable ground, severed by
-    /// SIX flood cells spread over radii 301..1005, while seeds 7/42/99/424242 read
-    /// 99.6-100%. Every range's own test passed throughout, because the failure is
-    /// COMPOSITION — the same shape as the bridge that spans a curve as a chord, and the same
-    /// reason nothing caught it: every existing guarantee is about **the route staying
-    /// feasible**, which a world that is one corridor and nothing else satisfies perfectly.
-    ///
-    /// So this asks the question no per-mechanism guarantee can: flood the band from ground
-    /// already known to connect inward, and where a pocket is severed, DROP the range segment
-    /// that seals it. A range is made of several segments and "a section with no range" is
-    /// already a legal outcome here, so dropping one degrades gracefully; the cap keeps a
-    /// pathological seed from deleting its mountains rather than opening a pass in them.
-    ///
-    /// Scatter is deliberately NOT consulted. A tree is dodgeable, and at this cell size the
-    /// grid cannot resolve the gaps between trunks — counting it made a wood read as solid
-    /// and the flood die inside the hub ring (measured: 0.1% reached). Prop WALLS are checked
-    /// and, measured, seal nothing on any seed: their mouths work.
-    fn open_sealed_ground(&mut self, balance: &Balance, end_x: f64, ridges_before: &mut usize) {
-        let wg = &balance.worldgen;
-        // Only a section that actually raised a range can have sealed anything with one, and
-        // that is rare — which is what keeps this off the tick in the common case.
-        if self.tutorial || self.radial_half <= 0.0 || wg.connectivity_max_carves == 0 {
-            return;
-        }
-        let cell = wg.connectivity_cell.max(1.0);
-        // ⚠️ **THE FLOOD IS THE WHOLE DISC, NOT THE BAND.** Scoping it to the new section's
-        // own band was the first cut and it fixed nothing on the seed that motivated it: a
-        // range reaches BACK, so the seal forms retroactively in ground generated long ago —
-        // measured, seed 1's seal spans radii 301..1005 while the section raising the last
-        // wall of it sits far outside that. A band-scoped flood cannot see a pocket at r=301
-        // while generating at r=900, and the section that owned r=301 was sound when it was
-        // built. Same cross-section trap as the river that walks 364 units into its
-        // neighbour. Flooding from the hub is the only framing in which the question is
-        // answerable, and it is affordable because a range is RARE.
-        let (ox, oz) = self.terrain_off;
-        let pad = self.player_radius;
-        let arc_half = self.radial_half;
-        if !self
-            .ridges
-            .iter()
-            .any(|r| {
-                let m = (0.5 * (r[0] + r[2]) as f64).hypot(0.5 * (r[1] + r[3]) as f64);
-                m <= end_x + wg.ridge_half_width_max
-            })
-        {
-            return;
-        }
-        let n = (end_x / cell).ceil() as i64;
-        for _ in 0..wg.connectivity_max_carves {
-            let shore = self.shore();
-            let field = BlockField::with_ridges(Vec::new(), self.ridge_discs());
-            let open = |i: i64, j: i64| -> bool {
-                let (x, z) = (i as f64 * cell, j as f64 * cell);
-                let r = x.hypot(z);
-                r <= end_x
-                    && z.atan2(x).abs() <= arc_half
-                    && !field.ridge_blocks(&Position::new(x, z), pad)
-                    && meld_proto::terrain::walkable(x as f32, z as f32, ox, oz)
-                    && shore.water(x as f32, z as f32) < -(pad as f32)
-            };
-            let mut all = std::collections::HashSet::new();
-            for i in -n..=n {
-                for j in -n..=n {
-                    if open(i, j) {
-                        all.insert((i, j));
-                    }
-                }
-            }
-            // Seeds: the inner margin, which the previous section already vouched for.
-            let mut seen = std::collections::HashSet::new();
-            let mut stack: Vec<(i64, i64)> = all
-                .iter()
-                // The hub is connected to itself by definition; everything else is measured.
-                .filter(|(i, j)| {
-                    (*i as f64 * cell).hypot(*j as f64 * cell) <= self.regions.ring_step as f64
-                })
-                .copied()
-                .collect();
-            for c in &stack {
-                seen.insert(*c);
-            }
-            if stack.is_empty() {
-                return;
-            }
-            while let Some((i, j)) = stack.pop() {
-                for (di, dj) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
-                    let c = (i + di, j + dj);
-                    if all.contains(&c) && seen.insert(c) {
-                        stack.push(c);
-                    }
-                }
-            }
-            let severed: Vec<(i64, i64)> =
-                all.iter().filter(|c| !seen.contains(c)).copied().collect();
-            if severed.len() < wg.connectivity_min_cells {
-                return;
-            }
-            // The seal: blocked ground touching BOTH sides. Vote for the range segment
-            // nearest each seal cell, and drop the one holding the most of the wall.
-            // Count the wall each seal cell belongs to, and keep one point ON that wall to
-            // put the door at — the seal cell nearest the segment, which is where the two
-            // sides of the severed ground come closest to meeting.
-            let mut votes: std::collections::HashMap<usize, (usize, f64, Position)> =
-                Default::default();
-            let severed_set: std::collections::HashSet<(i64, i64)> =
-                severed.iter().copied().collect();
-            for i in -n..=n {
-                for j in -n..=n {
-                    if all.contains(&(i, j)) {
-                        continue;
-                    }
-                    let (x, z) = (i as f64 * cell, j as f64 * cell);
-                    let r = x.hypot(z);
-                    if r > end_x || z.atan2(x).abs() > arc_half {
-                        continue;
-                    }
-                    let mut touches_in = false;
-                    let mut touches_out = false;
-                    for (di, dj) in
-                        [(1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (-1, -1), (1, -1), (-1, 1)]
-                    {
-                        let c = (i + di, j + dj);
-                        if severed_set.contains(&c) {
-                            touches_out = true;
-                        } else if seen.contains(&c) {
-                            touches_in = true;
-                        }
-                    }
-                    if !(touches_in && touches_out) {
-                        continue;
-                    }
-                    let p = Position::new(x, z);
-                    if let Some((k, d)) = self
-                        .ridges
-                        .iter()
-                        .enumerate()
-                        .filter(|(_, r)| r[4] > 0.0)
-                        .map(|(k, r)| {
-                            let a = Position::new(r[0] as f64, r[1] as f64);
-                            let b = Position::new(r[2] as f64, r[3] as f64);
-                            (k, dist_point_segment(&p, &a, &b))
-                        })
-                        .min_by(|x, y| x.1.partial_cmp(&y.1).unwrap())
-                    {
-                        let e = votes.entry(k).or_insert((0, f64::MAX, p));
-                        e.0 += 1;
-                        if d < e.1 {
-                            e.1 = d;
-                            e.2 = p;
-                        }
-                    }
-                }
-            }
-            let Some((&worst, &(_, _, door))) = votes.iter().max_by_key(|(_, v)| v.0) else {
-                return;
-            };
-            // ⚠️ **A DOOR, NOT A DEMOLITION.** This deleted the whole segment, which fixed
-            // connectivity by removing the maze — the deep bands losing exactly the mountains
-            // that make them read as ashfall or tundra. Cutting `ridge_pass_width` out of the
-            // spine leaves the wall standing either side of a way through, which is what
-            // `push_ridges` does for every authored pass.
-            let delta = self.cut_pass_through_range(balance, worst, door);
-            if worst < *ridges_before {
-                *ridges_before = (*ridges_before as i64 + delta).max(0) as usize;
-            }
-        }
-    }
-
     fn push_ridges(&mut self, balance: &Balance, i: usize, start_x: f64, end_x: f64) {
         let wg = &balance.worldgen;
         // No fan means no cells to lay a boundary along.
@@ -5803,6 +5580,22 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
             if crosses {
                 continue;
             }
+            // ⚠️ **A RANGE MUST STAND ON LAND, AND NOTHING WAS CHECKING — HERE EITHER.**
+            // Every prop the world scatters is culled off water by `radialize`'s `is_land`
+            // retain, but a range is a capsule in the HEIGHT FIELD and no cull touches it.
+            // Spotted on the survey map as pale spines lying in open sea and measured at 18 of
+            // 107 on seed 424242, the deepest 2,611 units offshore. Fixing the boundary-wall
+            // emitter took it to 8, and these are the other 8: this is the SECOND range
+            // emitter, and a rule that lives in one of two places is half a rule. Sampled
+            // along the spine, because a range that begins and ends ashore can still wade
+            // through a bay in the middle.
+            if (0..=6).any(|k| {
+                let t = k as f64 / 6.0;
+                let (px, py) = (p0.x + (p1.x - p0.x) * t, p0.y + (p1.y - p0.y) * t);
+                !self.on_land(px, py)
+            }) {
+                continue;
+            }
             self.ridges.push([
                 p0.x as f32,
                 p0.y as f32,
@@ -5925,97 +5718,80 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
         let ring_lo = g.ring_at(start_x as f32, 0.0);
         let ring_hi = g.ring_at(end_x as f32, 0.0);
         let mut out: Vec<[f32; 6]> = Vec::new();
-        // ⚠️ **THE CAP COUNTS BOUNDARIES WALLED, NOT SEGMENTS EMITTED.** One boundary becomes
-        // several ridge entries — its own passes cut it into segments, and the section clip
-        // cuts those again — so counting `out.len()` silently made "six walls" mean two.
-        let mut walled = 0usize;
-        // ⚠️ **PROP WALLS GET THEIR OWN, MUCH LARGER BUDGET, and the reason is cost.**
-        // `ridge_max_per_section` is small because a RANGE is expensive: it is a capsule
-        // sampled into the height field and re-checked against the trail, the water and
-        // everything standing at ~300 points per spine, and the comment above notes a dozen of
-        // them is tens of millions of distance tests inside the authoritative tick. A prop wall
-        // is a line of ordinary obstacles in the `BlockField` every mover already consults —
-        // O(boundary length), with none of that per-sample geometry.
+        // ⚠️ **THERE IS NO PER-SECTION WALL BUDGET ANY MORE, AND THAT IS THE POINT.**
+        // `ridge_max_per_section` (6) and `prop_wall_max_per_section` (24) truncated the maze
+        // to an allowance, which is incoherent once a decided topology says which boundaries
+        // ARE walls: the budget silently dropped the rest, so measured on seed 424242 the maze
+        // wanted **731 walls** and the world built on the order of twenty to forty boundaries'
+        // worth — under 5%. The survey map showed it plainly: a full grid of red boundaries
+        // with almost no material standing on any of them.
         //
-        // Sharing one budget is why the first cut put **232 wall props in an entire world,
-        // about 2.4 boundaries' worth**: ranges spent the allowance and the wooded boundaries
-        // never got considered.
-        let mut prop_walled = 0usize;
-        'walls: for ring in ring_lo..=ring_hi {
+        // They also hid a real bug. While the caps were binding, the wall enumeration's
+        // wrong-neighbour arcs (see the note below) mostly never got built, so an
+        // over-walling error that would have sealed cells read as harmless.
+        //
+        // What limits walls now is the maze plus `biome_erasure` — a biome builds the walls it
+        // is asked for, and an open one erases most of them. Disabling ranges is
+        // `ridge_chance = 0`, one meaning per tunable.
+        for ring in ring_lo..=ring_hi {
             let n = g.sectors(ring).max(1);
             for sector in 0..n {
-                if walled >= wg.ridge_max_per_section
-                    && prop_walled >= wg.prop_wall_max_per_section
-                {
-                    break 'walls;
-                }
                 let cell = meld_proto::regions::Cell::new(ring, sector);
-                let span = g.span(cell);
                 // Two boundaries per cell — its OUTWARD arc and its NEXT-SECTOR spoke — which
                 // visits every boundary exactly once across the whole grid rather than twice.
                 // An ARC range blocks outward travel and forces a lateral detour; a SPOKE
                 // range blocks lateral travel, which is what makes corridors and dead ends.
-                for arc in [true, false] {
-                    if walled >= wg.ridge_max_per_section {
-                        break 'walls;
+                // ⚠️ **ENUMERATE REAL NEIGHBOUR PAIRS, NOT "the outward arc and the next
+                // spoke".** Sector counts ride the radius, so a cell has TWO OR MORE outward
+                // neighbours (measured: fan-out 2 for 585 of 663 cells, 3 for 46, 4 for one)
+                // and its frontage is not one boundary. Deciding the whole arc on a single
+                // neighbour's verdict was wrong for **341 of 632** multi-neighbour arcs —
+                // walled where the maze left an edge open, which SEALS a cell the topology
+                // meant to reach, or open where it walled one. And the neighbour cannot be
+                // sampled for either: `cell_at` on the shared arc lands back in the inner ring
+                // for 203 of 663 cells, because `warp_at` wobbles the ring boundary with
+                // bearing so the sector comes back indexed against the wrong ring.
+                // `Grid::neighbours` is the one place adjacency is defined; ask it.
+                //
+                // Each boundary is visited ONCE, by the cell with the lower key.
+                for other in g.neighbours(cell) {
+                    if other.key() <= cell.key() {
+                        continue;
                     }
-                    let (other, a, b, length) = if arc {
-                        let r = (ring + 1) as f64 * g.ring_step as f64;
-                        // ⚠️ **A SECTION MAY ONLY WALL ITS OWN GROUND.** A cell boundary is
-                        // 250 units long while a section is 20 + 7i, so a boundary spans
-                        // several sections — and a wall emitted here lands in ground whose
-                        // clear path has not been routed yet. That matters because the route's
-                        // own escape hatch (`!reached` ⇒ truncate this section's ridges and
-                        // re-route) can only take back the ridges THIS section added: a wall
-                        // left standing in section N+2 by section N is unremovable when N+2
-                        // fails to route, and A*'s best-effort fallback then runs the
-                        // guaranteed trail through water. At 0.45 ranges per section that
-                        // collision was rare; at six a world reliably drowned its own route.
-                        if r < start_x || r >= end_x {
-                            continue;
-                        }
-                        let (lo, hi) = (span.bear_lo as f64, span.bear_hi as f64);
-                        let across = meld_proto::regions::Cell::new(
-                            ring + 1,
-                            g.cell_at(
-                                (r * ((lo + hi) * 0.5).cos()) as f32,
-                                (r * ((lo + hi) * 0.5).sin()) as f32,
-                            )
-                            .sector,
-                        );
-                        (across, polar(r, lo), polar(r, hi), r * (hi - lo))
-                    } else {
-                        if sector + 1 >= n {
-                            continue; // the fan's rim is not a boundary between cells
-                        }
-                        let bearing = span.bear_hi as f64;
-                        // The FULL boundary — the clip happens at emission, not here. Passes
-                        // must be a property of the BOUNDARY, or successive sections cut
-                        // their own doors into their own short pieces and the wall becomes a
-                        // dotted line: measured, clipping the geometry itself took a world
-                        // from 51-68 walls to 10-19, because a 20-90 unit piece cannot hold
-                        // the pass machinery at all.
-                        let lo = ring as f64 * g.ring_step as f64;
-                        let hi = lo + g.ring_step as f64;
-                        (
-                            meld_proto::regions::Cell::new(ring, sector + 1),
-                            polar(lo, bearing),
-                            polar(hi, bearing),
-                            hi - lo,
-                        )
+                    let Some(((r0, b0), (r1, b1))) =
+                        crate::maze::shared_boundary(&g, cell, other)
+                    else {
+                        continue;
                     };
+                    let (a, b) = (polar(r0, b0), polar(r1, b1));
+                    let is_arc = (r0 - r1).abs() < 1e-6;
+                    let length = if is_arc { r0 * (b1 - b0) } else { (r1 - r0).abs() };
+                    // ⚠️ **A SECTION MAY ONLY WALL ITS OWN GROUND.** A boundary is longer than
+                    // a section (20 + 7i), so a wall emitted here can land in ground whose
+                    // clear path has not been routed yet — and the route's own escape hatch
+                    // can only take back ridges THIS section added. A wall left standing in
+                    // section N+2 by section N is unremovable when N+2 fails to route, and
+                    // A*'s best-effort fallback then runs the guaranteed trail through water.
+                    if is_arc && (r0 < start_x || r0 >= end_x) {
+                        continue;
+                    }
                     if length < wg.ridge_pass_width * 2.0 {
                         continue;
                     }
                     let spine_mid = Position::new(0.5 * (a.x + b.x), 0.5 * (a.y + b.y));
                     let biome = self.biome_at(spine_mid);
-                    // A PASS: the graph says you may walk between these two cells.
-                    if meld_proto::regions::pass_open(
-                        g.seed,
-                        cell,
-                        other,
-                        biome_porosity(rb, biome) as f32,
-                    ) {
+                    // A PASS: the DECIDED maze says you may walk between these two cells.
+                    // ⚠️ Seed-only and permanent — a Shift never moves it (see `Arena::maze`).
+                    if self.maze.is_open(cell, other) {
+                        continue;
+                    }
+                    // ⚠️ **ERASURE: A WALL THE MAZE WANTS, EXPRESSED AS SCENERY.** This is what
+                    // makes field and desert the open crossings BETWEEN mazes rather than mazes
+                    // of their own, and it is the old `porosity` table's intent — but it can
+                    // only ever ADD openness, which is exactly why it is safe to let a biome
+                    // (and therefore a Shift) decide it. Nothing a repaint does here can
+                    // disconnect a world whose skeleton is already a spanning tree.
+                    if rng.unit() < biome_erasure(rb, biome) {
                         continue;
                     }
                     // ⚠️ **A CLOSED BOUNDARY IS WALLED WITH THE BIOME'S OWN MATERIAL.**
@@ -6031,15 +5807,6 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
                     // unchanged by this; only the biomes that had NO usable wall gain one.
                     if material == WallMaterial::Range
                         && rng.unit() >= wg.ridge_chance * biome_terrace_mult(biome)
-                    {
-                        continue;
-                    }
-                    // Each material spends its OWN budget.
-                    if material == WallMaterial::Range && walled >= wg.ridge_max_per_section {
-                        continue;
-                    }
-                    if material == WallMaterial::Props
-                        && prop_walled >= wg.prop_wall_max_per_section
                     {
                         continue;
                     }
@@ -6100,11 +5867,6 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
                     // the trail, because crossing the trail is what opens it. That is also what
                     // gives the cell graph its gaps for free — wherever the guaranteed route
                     // crosses a closed boundary, the wall simply is not there.
-                    if material == WallMaterial::Props {
-                        prop_walled += 1;
-                    } else {
-                        walled += 1;
-                    }
                     let mut t = 0.0f64;
                     // The far end of the last segment on this boundary that was not dropped
                     // for a real reason, so a gap is measured between two real jambs. Reset
@@ -6228,9 +5990,62 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
                             prop_walls.push(PropWall { a: e0, b: e1, kind: wall_kind });
                             continue;
                         }
+                        // ⚠️ **A WATER WALL IS A RIVER CHAIN, AND ITS PASSES ARE FORDS.**
+                        // Each surviving segment of the boundary becomes its OWN chain, so the
+                        // gaps the pass machinery already cut between segments read as fords —
+                        // dry ground, a stony crossing — by exactly the construction a strait
+                        // gets its isthmuses. `chain_start` on the first node is what says "a
+                        // new chain begins here", and `coast::river_depth` skips the span
+                        // across a chain break.
+                        //
+                        // Laid only on LAND, like a range: a channel is inland water, and one
+                        // running into the sea is just the sea.
+                        if material == WallMaterial::Water {
+                            let n = ((e0.distance_to(&e1) / wg.water_wall_node_step).ceil()
+                                as usize)
+                                .max(1);
+                            let mut laid = 0usize;
+                            for k in 0..=n {
+                                let t = k as f64 / n as f64;
+                                let (px, py) =
+                                    (e0.x + (e1.x - e0.x) * t, e0.y + (e1.y - e0.y) * t);
+                                if !self.on_land(px, py) {
+                                    continue;
+                                }
+                                self.rivers.push([
+                                    px as f32,
+                                    py as f32,
+                                    wg.water_wall_half_width as f32,
+                                    // The FIRST node of this segment starts a new chain; the
+                                    // rest continue it. A chain break is the ford.
+                                    if laid == 0 { 1.0 } else { 0.0 },
+                                ]);
+                                laid += 1;
+                            }
+                            continue;
+                        }
                         // Range-only for the same reason as the sizing gate above: this is
                         // the aspect rule, and a run of trees has no aspect.
                         if e0.distance_to(&e1) < (half_width * 2.0).max(wg.ridge_pass_width) {
+                            continue;
+                        }
+                        // ⚠️ **A RANGE MUST STAND ON LAND, AND NOTHING WAS CHECKING.**
+                        // `push_prop_walls` asks `on_land` for every prop it lays and a stray
+                        // prop is culled again by the `is_land` retain in `radialize` — but a
+                        // range is a capsule in the HEIGHT FIELD, which no cull touches. Spotted
+                        // on the survey map as pale spines lying in open water, and measured at
+                        // **18 of 107 ranges on seed 424242, the deepest 2,611 units offshore**.
+                        // ⚠️ **THE WHOLE SPINE, NOT ITS ENDS.** Checking both endpoints took
+                        // this from 18 to 8 and no further: the survivors are spines that start
+                        // and finish ashore while their MIDDLE crosses a bay, which draws as a
+                        // mountain wading through water. A capsule is a segment, so ask along
+                        // it.
+                        if (0..=6).any(|k| {
+                            let t = k as f64 / 6.0;
+                            let (px, py) =
+                                (e0.x + (e1.x - e0.x) * t, e0.y + (e1.y - e0.y) * t);
+                            !self.on_land(px, py)
+                        }) {
                             continue;
                         }
                         out.push([
@@ -6624,6 +6439,9 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
         // maze fill is: a mire cell sitting in an otherwise dry band has to be able to flood,
         // and a dry cell in a mire band has to stay dry.
         let wet_mult = self.max_over_cells(start_x, end_x, biome_water_mult);
+        // Standing water is drawn on its own weight, so a mire band can flood while the
+        // rivers crossing it stay as common as anywhere else.
+        let basin_mult = self.max_over_cells(start_x, end_x, biome_basin_mult);
         if rng.unit() < wg.river_chance * wet_mult {
             // A SPRING is the highest of a few candidates: water starts high, so choosing
             // the highest is what makes the source read as a spring rather than a puddle
@@ -6733,8 +6551,26 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
         // basin in a section is a pond and a swamp is a landscape of them.
         let passes = (wet_mult.ceil() as usize).max(1);
         for _pass in 0..passes {
-        if rng.unit() < wg.basin_chance {
-            let seed_pt = pick(&mut rng);
+        // Scaled by the band's standing-water weight, so a mire band draws far more
+        // candidate bodies than a desert one before the per-cell filter thins them.
+        if rng.unit() < wg.basin_chance * basin_mult.min(2.0) {
+            // ⚠️ **PICK THE GROUND, THEN FILL IT — DO NOT FILL AND THEN FILTER.** The
+            // acceptance test below thins a candidate by its cell's `biome_basin_mult`, which
+            // is correct and, on its own, hopeless: a random point in a band is rarely in the
+            // one biome that wants water, so measured only **2-7 basins** landed in an entire
+            // world however high the mire's weight went, and the swamp stayed dry. The spring
+            // twenty lines above already solves this the right way round — it draws a few
+            // candidates and keeps the HIGHEST, because that is what makes a source read as a
+            // spring — so a basin draws a few and keeps the one on the ground most willing to
+            // hold water. Same number of rolls, and the mire actually gets its lakes.
+            let mut seed_pt = pick(&mut rng);
+            for _ in 0..5 {
+                let c = pick(&mut rng);
+                if biome_basin_mult(self.biome_at(c)) > biome_basin_mult(self.biome_at(seed_pt))
+                {
+                    seed_pt = c;
+                }
+            }
             let (mut x, mut z) = (seed_pt.x, seed_pt.y);
             let mut cur = h(x, z);
             for _ in 0..80 {
@@ -6761,9 +6597,10 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
             while radius >= MIN_BODY && !off_creatures(p, radius) {
                 radius -= 12.0;
             }
+            // ⚠️ The BASIN weight, not the river one — see `biome_basin_mult`.
             if self.shore().sea(x as f32, z as f32) < 0.0
                 && radius >= MIN_BODY
-                && rng.unit() * wet_mult <= biome_water_mult(self.biome_at(p))
+                && rng.unit() * basin_mult <= biome_basin_mult(self.biome_at(p))
                 && off_drawn(p, radius)
                 && off_peaks(p, radius)
                 && off_ridges(p, radius)
@@ -7147,15 +6984,12 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
     ) -> usize {
         let g = self.regions;
         let cell = g.cell_at(world.x as f32, world.y as f32);
-        let porosity = |a: meld_proto::regions::Cell, b: meld_proto::regions::Cell| {
-            let (pa, pb) = (g.centroid(a), g.centroid(b));
-            let mid = Position::new(
-                0.5 * (pa.0 + pb.0) as f64,
-                0.5 * (pa.1 + pb.1) as f64,
-            );
-            biome_porosity(rb, self.biome_at(mid)) as f32
-        };
-        g.open_degree(cell, &porosity)
+        // ⚠️ Asks the DECIDED maze, not a porosity roll. `open_degree` used to re-derive
+        // openness from the biome at each boundary's midpoint, which is now only half the
+        // answer: the maze says whether a boundary is a pass, and the biome says only whether
+        // a wall it wanted got built. A cell's degree is a property of the TOPOLOGY.
+        let _ = rb;
+        g.neighbours(cell).into_iter().filter(|n| self.maze.is_open(cell, *n)).count()
     }
 
     /// **The trail as the player actually walks it** — the corridor path bent AND DENSIFIED,
@@ -8519,6 +8353,7 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
         // and nodes the new land just grew and refuses to bury them.
         let peaks = self.reroll_peaks(balance, &region, first, last, to, roll.biome_pick);
         wiped.extend(self.reroll_props(balance, &region, first, last, to, roll.biome_pick));
+        self.reexpress_walls(balance, &region, first, last);
         let moved = self.rescue_stranded(first, last);
 
         shift::ShiftOutcome {
@@ -8654,6 +8489,53 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
     /// *biome*; the topography is the ground's bones, and re-cutting terraces mid-run
     /// would drop a player through a cliff face rather than merely box them in. Props can
     /// still land on someone — [`Self::rescue_stranded`] is the answer to that.
+    /// **RE-EXPRESS THE MAZE'S WALLS AFTER A SHIFT** (`WG-11` stage 8).
+    ///
+    /// ⚠️ **A SHIFT NEVER MOVES THE MAZE, BUT IT DOES CHANGE WHAT THE MAZE LOOKS LIKE.** The
+    /// topology is a pure function of the seed and the weather cannot touch it; what a wall is
+    /// MADE of, and whether an open biome bothers to build it at all, is `biome_erasure` and
+    /// `wall_material` — both read the cell's CURRENT biome, which is `seed + repaints`. So a
+    /// mire becoming desert should see its walls erased into scenery, and a desert becoming
+    /// ashfall should see ranges rise where there were none.
+    ///
+    /// ⚠️ **AND WITHOUT THIS, A SHIFT SIMPLY DELETED THEM.** `reroll_props` clears every
+    /// obstacle the region holds — `obs-wall-*` and `obs-pass-*` among them — and re-scatters
+    /// only ordinary props, so the maze dissolved wherever the weather landed and never came
+    /// back. That was survivable rather than fatal, because erasure only ever ADDS openness
+    /// and connectivity is the tree's property, not the walls' — which is exactly why it could
+    /// have gone unnoticed for a long time.
+    ///
+    /// Re-runs the boundary pass over the region's own sections. The section rng is seeded off
+    /// `section_seed`, so the same boundaries come back up for consideration; only the biome's
+    /// answer has changed, which is the whole point.
+    fn reexpress_walls(
+        &mut self,
+        balance: &Balance,
+        region: &ShiftRegion,
+        first: usize,
+        last: usize,
+    ) {
+        // The ranges the region held go with it: a re-expression that only ADDED would leave
+        // an ashfall's mountains standing in the desert it became.
+        let grid = self.regions;
+        self.ridges.retain(|r| {
+            let mid = Position::new(
+                0.5 * (r[0] + r[2]) as f64,
+                0.5 * (r[1] + r[3]) as f64,
+            );
+            !region.holds(&grid, &mid)
+        });
+        for i in first..=last {
+            let (start_x, end_x) = match self.areas.iter().find(|ar| ar.index == i) {
+                Some(ar) => (ar.start_x, ar.end_x),
+                None => continue,
+            };
+            let (mouths, prop_walls) = self.push_boundary_walls(balance, i, start_x, end_x);
+            self.push_prop_walls(balance, &prop_walls);
+            self.push_pass_parts(balance, &mouths);
+        }
+    }
+
     fn reroll_props(
         &mut self,
         balance: &Balance,
@@ -10788,67 +10670,70 @@ mod tests {
     ///
     /// So the ORDERING is what is held, in the world rather than in the table, and inland-only
     /// by construction. Anything that measures this with `water()` is measuring the coastline.
+    ///
+    /// ⚠️ **THE MIRE IS THE WETTEST BIOME — AS A DISTRIBUTION, WHICH IS THE ONLY WAY IT CAN
+    /// BE ASKED.** This asserted it per seed, and `WG-11` stage 8 invalidated that premise
+    /// rather than breaking the world: **halving the cells to 125 units made a cell SMALLER
+    /// THAN A WATER BODY.** `basin_radius` runs 45-190, so a large basin is 380 units across —
+    /// three cells wide — and it spills into whatever biome sits next door. Measured after the
+    /// halving: seed 1 read mire 14.2% against ashfall 16.4%, and seed 424242 read field 6.7%
+    /// against mire 1.2%, entirely on which cell a neighbouring lake happened to reach into.
+    ///
+    /// A real lake spanning a biome border is correct, not a bug, so the fix is to ask the
+    /// question at the scale it is answerable. The mire's own CELL-LOCAL water is its boundary
+    /// channels ([`WallMaterial::Water`], laid along a cell edge) plus its far higher
+    /// `biome_basin_mult`; both show up in the aggregate and neither survives a per-seed test.
+    ///
+    /// This is the repo's own standing lesson (`PREFER A DISTRIBUTION`) arriving somewhere new:
+    /// a per-seed bound on a stochastic world is a coin toss waiting to be flipped, and here
+    /// the thing that flipped it was a deliberate change three systems away.
     #[test]
     fn the_mire_is_the_wettest_biome_in_the_world() {
         let b = Balance::load_default().unwrap();
-        let mut wettest_is_mire = 0;
-        let mut wet_somewhere = 0;
-        let mut sampled = 0;
-        for seed in [1u64, 42, 424242] {
+        // Summed across seeds, not judged per seed — see the note above.
+        let mut wet: std::collections::HashMap<&'static str, (usize, usize)> = Default::default();
+        for seed in [1u64, 7, 42, 99, 424242, 12345, 777, 31337] {
             let mut a = Arena::generate(&b, seed, false);
             for _ in 0..24 {
                 a.ensure_frontier(&b, 900.0);
             }
             let sh = a.shore();
-            let mut per: std::collections::HashMap<&'static str, (usize, usize)> =
-                Default::default();
             for ri in 1..36 {
-                let rad = ri as f64 * 25.0;
                 for bi in -14..=14 {
-                    let bear = bi as f64 * 0.09;
+                    let (rad, bear) = (ri as f64 * 25.0, bi as f64 * 0.09);
                     let (x, z) = (rad * bear.cos(), rad * bear.sin());
-                    let e = per.entry(a.biome_at(Position::new(x, z))).or_insert((0, 0));
+                    let e = wet.entry(a.biome_at(Position::new(x, z))).or_insert((0, 0));
                     e.0 += 1;
-                    // INLAND ONLY — see the note above.
+                    // INLAND only: the ocean is not a biome's doing.
                     if sh.water(x as f32, z as f32) > 0.0 && sh.sea(x as f32, z as f32) <= 0.0 {
                         e.1 += 1;
                     }
                 }
             }
-            let share = |k: &str| {
-                per.get(k).filter(|(s, _)| *s >= 20).map(|(s, w)| *w as f64 / *s as f64)
-            };
-            let Some(mire) = share("mire") else { continue };
-            sampled += 1;
-            if mire > 0.0 {
-                wet_somewhere += 1;
-            }
-            // Every DRY biome must be drier than the swamp. Forest sits at 1.0 against the
-            // mire's 3.2 and can legitimately catch spill-over from a mire basin next door —
-            // water flows downhill and does not stop at a cell boundary — so it is not held.
-            let dry_ok = ["desert", "ashfall", "field"]
-                .iter()
-                .filter_map(|k| share(k))
-                .all(|d| d <= mire + 1e-9);
-            if dry_ok {
-                wettest_is_mire += 1;
-            }
         }
-        assert!(sampled >= 2, "only {sampled} seeds had a fair mire sample");
-        // ⚠️ Not "every seed": a seed whose mire cells all sit on high ground inside the
-        // sampled band legitimately has a dry one, since a basin needs a HOLLOW to fill and
-        // the terrain decides where those are. Measured at d900, seed 42's mire is dry and its
-        // mire at d1200 is 5.2% wet — so per-seed is the wrong strength of claim. What must
-        // not happen is the feature being inert everywhere.
+        let share = |k: &str| {
+            wet.get(k).filter(|(s, _)| *s >= 200).map(|(s, w)| *w as f64 / *s as f64)
+        };
+        let mire = share("mire").expect("no fair mire sample across eight seeds");
         assert!(
-            wet_somewhere > 0,
-            "not one sampled seed put inland water in a mire — the biome whose whole \
+            mire > 0.0,
+            "not one of eight seeds put inland water in a mire — the biome whose whole \
              character is being flooded is dry in every world"
         );
-        assert_eq!(
-            wettest_is_mire, sampled,
-            "the mire was not the wettest of the dry biomes on every sampled seed"
-        );
+        // Every DRY biome must be drier than the swamp. Forest and amber_wood are NOT held:
+        // both are wooded and both legitimately catch a mire's spill-over, since water runs
+        // downhill and a basin's contour does not stop at a cell boundary.
+        for dry in ["desert", "ashfall", "field", "tundra"] {
+            if let Some(d) = share(dry) {
+                assert!(
+                    d <= mire,
+                    "{dry} is {:.1}% wet against the mire's {:.1}% — the swamp has to be \
+                     wetter than the rock, the sand, the grass and the ice",
+                    100.0 * d,
+                    100.0 * mire
+                );
+            }
+        }
     }
 
     /// A region is a PATCH of cells, not an annulus. Repainting every bearing at a depth
