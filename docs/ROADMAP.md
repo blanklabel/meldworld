@@ -2512,6 +2512,24 @@ Make time in the field a living, dangerous place worth screenshotting.
       **nominal** extent of a cell, since `warp_at` already makes the true inner/outer
       bearing-dependent — so a bearing warp is the same approximation on the other axis rather
       than a new kind of lie, and `neighbours`/`cell_at` already tolerate it.
+    - ⚠️ **SOME CELLS ARE A MINIMAZE INSIDE THE MAZE — and that is what a DUNGEON is.**
+      Owner's direction. A cell's interior is not always open ground: some hold their own maze,
+      which gives **selective depth** instead of globally finer cells — structure where it is
+      interesting rather than halving `ring_step` again and paying for it everywhere. Stage 6's
+      `push_pass_parts` is already this one scale down (a mouth furnished with a chicane,
+      pillars or a throat).
+      - *It answers the dungeon question stage 8 had to back out of.* `dungeon_every` was
+        reverted because a dungeon was a whole radius BAND — a ring of the world, the exact
+        artifact `WG-11` retires. A cell whose INTERIOR is a maze is cell-scoped by
+        construction, and this item already says the reward belongs at the end of a dead-end
+        cell. "Some cells are a minimaze" and "enable dungeons properly" are one feature.
+      - ⚠️ **THE INTERIOR MAZE MUST CONNECT EVERY ONE OF THAT CELL'S OPEN BOUNDARIES.** The
+        macro maze guarantees the world is whole on the assumption that entering a cell means
+        you can cross it. An interior joining two of three passes and not the third voids that
+        guarantee and puts the world back to islands — the failure this whole arc exists to
+        remove. Satisfiable the same way the macro one is: a spanning tree over the cell's
+        sub-cells with the **pass mouths as terminals**, so every entrance is in the tree by
+        construction rather than by a check afterwards.
     - ⚠️ **PLACE FROM THE MAZE, DO NOT VALIDATE AGAINST THE GROUND.** Owner's direction:
       *"shouldn't you only plant creatures within the maze corridors? we literally know what
       and where those are."* Creature placement DOES reject water and unstandable ground —
