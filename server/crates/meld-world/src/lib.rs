@@ -3946,11 +3946,12 @@ impl Arena {
             if route.last().is_some_and(|p| p.distance_to(&exit_target) < 6.0) {
                 break;
             }
-            let Some(idx) = self.retire_range_blocking(entry, exit_target) else {
+            let Some((idx, delta)) = self.open_route_through_range(balance, entry, exit_target)
+            else {
                 break;
             };
             if idx < ridges_before {
-                ridges_before -= 1;
+                ridges_before = (ridges_before as i64 + delta).max(0) as usize;
             }
             route = self.astar_route(entry, exit_target);
         }
@@ -5269,19 +5270,103 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
     /// Sampled rather than solved: a strait is an annular sector and the run is a corridor
     /// chord, so the intersection has no closed form worth writing. Walking it at the A* cell
     /// size is both cheap and exactly the resolution the router will see.
-    /// Retire the range segment standing closest to the direct line from `entry` to `exit`,
-    /// returning whether one was found. The direct line rather than a second A* run because
-    /// that is exactly the precedent [`Arena::bridge_the_direct_line`] sets one call earlier:
-    /// the straight run is what the route WANTS to be, and a barrier on it is the barrier
-    /// worth yielding.
+    /// **CUT A DOOR THROUGH A RANGE** at the point on its spine nearest `at`, and report how
+    /// the ridge list's length changed so a caller can keep an index marker honest.
     ///
-    /// Returns the index removed, so the caller can keep its `ridges_before` marker honest —
-    /// retiring a range from an EARLIER section shifts everything above it down.
-    fn retire_range_blocking(&mut self, entry: Position, exit: Position) -> Option<usize> {
+    /// ⚠️ **THIS IS THE OPERATION, AND DELETING THE RANGE WAS NOT.** Both repairs that use it
+    /// used to retire the whole segment — knocking a wall down because a room had no exit.
+    /// For a maze that is backwards on every count: the walls ARE the content, the deep bands
+    /// lose the mountains that make them read as ashfall or tundra, and the guaranteed route
+    /// buys its way through by demolition. [`meld_proto::terrain::Ridge`] says how a pass is
+    /// made — *"a pass is the GAP BETWEEN TWO RIDGES, not a property of one"* — which is what
+    /// [`Arena::push_ridges`] does with `ridge_passes_*`, so a repair has only to do the same
+    /// thing in one more place rather than invent a cruder answer.
+    ///
+    /// The gap is `ridge_pass_width`, the same width every authored pass gets. A flank left
+    /// shorter than three times its own half-width is dropped rather than kept, because a
+    /// capsule wider than it is long renders as a featureless cone — the rule `push_ridges`
+    /// already caps `half_width` to hold. A range too short to survive a door on either side
+    /// is simply gone, which is the old behaviour kept as the degenerate case rather than as
+    /// the strategy.
+    fn cut_pass_through_range(&mut self, balance: &Balance, idx: usize, at: Position) -> i64 {
+        let r = self.ridges[idx];
+        let (a, b) = (
+            Position::new(r[0] as f64, r[1] as f64),
+            Position::new(r[2] as f64, r[3] as f64),
+        );
+        let len = a.distance_to(&b);
+        let half_width = r[4] as f64;
+        let min_flank = 3.0 * half_width;
+        if len <= 1e-6 {
+            self.ridges.remove(idx);
+            return -1;
+        }
+        let (ux, uy) = ((b.x - a.x) / len, (b.y - a.y) / len);
+        // Where along the spine the door belongs: the projection of the point that wanted
+        // through. For the route that is where its own direct line meets the wall, which is
+        // exactly where a door should be.
+        let t = (((at.x - a.x) * ux + (at.y - a.y) * uy) / len).clamp(0.0, 1.0);
+        let gap = balance.worldgen.ridge_pass_width;
+        let (lo, hi) = (t * len - gap * 0.5, t * len + gap * 0.5);
+        let seg = |s: f64, e: f64| -> meld_proto::terrain::Ridge {
+            [
+                (a.x + ux * s) as f32,
+                (a.y + uy * s) as f32,
+                (a.x + ux * e) as f32,
+                (a.y + uy * e) as f32,
+                r[4],
+                r[5],
+            ]
+        };
+        // ⚠️ **A SHORT FLANK IS NARROWED, NOT DROPPED.** Requiring `3 x half_width` of length
+        // and deleting anything shorter is demolition wearing a door's clothes: with
+        // `ridge_half_width_max` near 50 that floor is 150 units a side, so any spine under
+        // ~300 lost BOTH flanks and the range vanished exactly as before. Measured, that cost
+        // 24% of the world's mountain footprint and 51% of seed 1's.
+        //
+        // The no-cone rule is about the ASPECT, not the length, so a flank keeps its length
+        // and gives up width instead — which is also what a pass looks like: the ridge thins
+        // as it approaches the gap. Height comes down with it, because a range is authored at
+        // a fixed aspect and a narrower one is a proportionally lower one; scaling width alone
+        // would leave a short flank standing implausibly steep for its size.
+        let flank = |s: f64, e: f64| -> Option<meld_proto::terrain::Ridge> {
+            let flank_len = e - s;
+            if flank_len < min_flank.min(gap) {
+                return None;
+            }
+            let hw = half_width.min(flank_len / 3.0);
+            if hw <= 0.0 {
+                return None;
+            }
+            let mut out = seg(s, e);
+            out[4] = hw as f32;
+            out[5] = (r[5] as f64 * (hw / half_width)) as f32;
+            Some(out)
+        };
+        let flanks: Vec<meld_proto::terrain::Ridge> =
+            [flank(0.0, lo), flank(hi, len)].into_iter().flatten().collect();
+        let delta = flanks.len() as i64 - 1;
+        self.ridges.splice(idx..=idx, flanks);
+        delta
+    }
+
+    /// **Open a DOOR through the range standing on the direct line** from `entry` to `exit`,
+    /// at the point where that line meets the wall. Returns the index it acted on and how the
+    /// ridge list's length changed, so a caller can keep an index marker honest.
+    ///
+    /// The direct line rather than a second A* run because that is exactly the precedent
+    /// [`Arena::bridge_the_direct_line`] sets one call earlier: the straight run is what the
+    /// route WANTS to be, and where it meets a wall is where the way through belongs.
+    fn open_route_through_range(
+        &mut self,
+        balance: &Balance,
+        entry: Position,
+        exit: Position,
+    ) -> Option<(usize, i64)> {
         let pad = self.path_clear_radius + self.player_radius;
         let len = entry.distance_to(&exit).max(1.0);
         let steps = (len / 2.0).ceil().max(2.0) as i32;
-        let mut best: Option<(usize, f64)> = None;
+        let mut best: Option<(usize, f64, Position)> = None;
         for k in 0..=steps {
             let t = k as f64 / steps as f64;
             let w = self.to_world(Position::new(
@@ -5298,14 +5383,13 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
                     &Position::new(r[0] as f64, r[1] as f64),
                     &Position::new(r[2] as f64, r[3] as f64),
                 );
-                if d < hw + pad && best.is_none_or(|(_, bd)| d < bd) {
-                    best = Some((idx, d));
+                if d < hw + pad && best.is_none_or(|(_, bd, _)| d < bd) {
+                    best = Some((idx, d, w));
                 }
             }
         }
-        let (idx, _) = best?;
-        self.ridges.remove(idx);
-        Some(idx)
+        let (idx, _, at) = best?;
+        Some((idx, self.cut_pass_through_range(balance, idx, at)))
     }
 
     fn bridge_the_direct_line(&mut self, balance: &Balance, entry: Position, exit: Position) {
@@ -5497,7 +5581,11 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
             }
             // The seal: blocked ground touching BOTH sides. Vote for the range segment
             // nearest each seal cell, and drop the one holding the most of the wall.
-            let mut votes: std::collections::HashMap<usize, usize> = Default::default();
+            // Count the wall each seal cell belongs to, and keep one point ON that wall to
+            // put the door at — the seal cell nearest the segment, which is where the two
+            // sides of the severed ground come closest to meeting.
+            let mut votes: std::collections::HashMap<usize, (usize, f64, Position)> =
+                Default::default();
             let severed_set: std::collections::HashSet<(i64, i64)> =
                 severed.iter().copied().collect();
             for i in -n..=n {
@@ -5526,7 +5614,7 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
                         continue;
                     }
                     let p = Position::new(x, z);
-                    if let Some((k, _)) = self
+                    if let Some((k, d)) = self
                         .ridges
                         .iter()
                         .enumerate()
@@ -5538,22 +5626,26 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
                         })
                         .min_by(|x, y| x.1.partial_cmp(&y.1).unwrap())
                     {
-                        *votes.entry(k).or_default() += 1;
+                        let e = votes.entry(k).or_insert((0, f64::MAX, p));
+                        e.0 += 1;
+                        if d < e.1 {
+                            e.1 = d;
+                            e.2 = p;
+                        }
                     }
                 }
             }
-            let Some((&worst, _)) = votes.iter().max_by_key(|(_, v)| **v) else {
+            let Some((&worst, &(_, _, door))) = votes.iter().max_by_key(|(_, v)| v.0) else {
                 return;
             };
-            // ⚠️ **REMOVED, NOT ZEROED.** Leaving a zero-width spine in place looks harmless —
-            // `ridge_height` and `ridge_discs` both skip one — but it is still a range as far
-            // as everything that ITERATES the list is concerned: it rides the wire to the
-            // client, it consumes one of the fixed shader slots that are supposed to hold the
-            // ranges NEAREST the player, and `a_range_is_steeper_than_anything_may_be_walked`
-            // rightly fails on it, because a retired spine has no crest above its own foot.
-            self.ridges.remove(worst);
+            // ⚠️ **A DOOR, NOT A DEMOLITION.** This deleted the whole segment, which fixed
+            // connectivity by removing the maze — the deep bands losing exactly the mountains
+            // that make them read as ashfall or tundra. Cutting `ridge_pass_width` out of the
+            // spine leaves the wall standing either side of a way through, which is what
+            // `push_ridges` does for every authored pass.
+            let delta = self.cut_pass_through_range(balance, worst, door);
             if worst < *ridges_before {
-                *ridges_before -= 1;
+                *ridges_before = (*ridges_before as i64 + delta).max(0) as usize;
             }
         }
     }

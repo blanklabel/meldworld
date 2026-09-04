@@ -2224,6 +2224,21 @@ unreachable past that ring. `retire_range_blocking` drops whatever stands on the
 to the exit, wherever it was raised, bounded by `route_yield_max_ranges`: a section still
 unroutable after that has something other than a range in the way.
 
+⚠️ **A REPAIR CUTS A DOOR; IT DOES NOT KNOCK THE WALL DOWN.** Both repairs above first
+shipped by DELETING the offending range segment, which fixes connectivity by removing the
+maze — measured, that cost 24% of the world's mountain footprint and 51% of seed 1's, taking
+away exactly the ranges that make a deep band read as ashfall or tundra.
+[`meld_proto::terrain::Ridge`] already says how a way through is made — *"a pass is the GAP
+BETWEEN TWO RIDGES, not a property of one"* — so `cut_pass_through_range` splits the spine at
+the point that wanted through, leaving `ridge_pass_width` of gap and the wall standing either
+side. The route's door goes where its own direct line meets the wall, which is where a door
+belongs. ⚠️ **And a short flank is NARROWED, not dropped**: requiring `3 x half_width` of
+length before keeping a flank is demolition wearing a door's clothes, since with
+`ridge_half_width_max` near 50 that floor is 150 units a side and any spine under ~300 lost
+both flanks. The no-cone rule is about the ASPECT, so a flank keeps its length and gives up
+width — and its height with it, because a range is authored at a fixed aspect and a narrower
+one is a proportionally lower one.
+
 ⚠️ **`open_sealed_ground` AND THE ROUTE GUARD DIFFERENT PREDICATES, AND THE SEAM IS REAL.**
 The flood asks `WALKABLE_SLOPE` at `player_radius`; A* asks the stricter `ROUTE_SLOPE` at
 `route_pad`. So ground can be walkable-connected while staying unroutable, and the
