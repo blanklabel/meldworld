@@ -2606,21 +2606,32 @@ fn wall_material(biome: &str, roll: f64) -> WallMaterial {
         // three. Water as a WALL is what makes it a wetland maze: the boundaries are channels
         // you ford, and the trees inside a cell are the fill.
         "mire" => {
-            // ⚠️ **WATER WALLS ARE BUILT BUT GATED OFF, and this is a deliberate retreat.**
-            // The machinery is real — a `RiverNode` chain per segment whose chain breaks are
-            // FORDS — but it broke the route's own feasibility invariant and I could not close
-            // it inside stage 8. Measured on seed 8: a walker following the guaranteed trail
-            // stalled at waypoint 218 of 384 with a channel's edge **0.4 units** away, and the
-            // identical world with these off walked all 384. The channel had cleared
-            // `clear_of_routes` demanding 7.5 units from the CORRIDOR path while sitting 3.6
-            // from the WALKED one — the two frames disagree by roughly 2x at that depth, and
-            // padding did not close it.
+            // ⚠️ **WATER WALLS ARE BUILT AND GATED OFF — with the diagnosis complete.** The
+            // machinery is right: a `RiverNode` chain per surviving segment, whose chain breaks
+            // are FORDS by the construction a strait gets its isthmuses. Three things were
+            // wrong, and two are fixed here because they were wrong for everyone:
             //
-            // Kept rather than deleted because `WG-11` stage 9 rebuilds it anyway: a channel
-            // will be seeded from the CELL'S BODY and coalesced, never laid down a boundary,
-            // and placed FROM the maze rather than validated against a snapshot of terrain.
-            // The fix is that redesign, not another margin. Turn it on with
-            // `MELD_WATER_WALLS=1` to reproduce the failure.
+            // 1. Laid inside `push_boundary_walls`, BEFORE the route, so a channel pushed the
+            //    trail around instead of yielding. Fixed: collected as `WaterWall` and laid
+            //    after the route beside `push_prop_walls`.
+            // 2. Handed `clear_of_routes` a WORLD point when it wants a CORRIDOR one, so the
+            //    check was INERT and a channel sat on the guaranteed trail (seed 8 stalled a
+            //    walker at waypoint 218 of 384). Fixed by corridorizing — and prop walls and
+            //    pass parts made the same mistake, surviving only because `radialize`'s retain
+            //    culls obstacles in world space afterwards. That fix is the lasting value here.
+            // 3. ⚠️ **STILL OPEN: `push_section`'s pass ORDER.** `wet`'s shore snapshot is
+            //    cloned before the route, water walls are laid after it, and creatures are
+            //    placed after THAT — so creature placement reads a rivers list from before the
+            //    channels existed and walks straight into them. Measured: **9 of 2768
+            //    creatures drowned** on seed 424242. Checking occupancy from the wall side
+            //    cannot close it either, because a boundary is shared between two sections and
+            //    the monster Vec holds mixed frames mid-generation.
+            //
+            // Closing (3) means reordering the section's passes, and `wet` is already consumed
+            // partway through. `WG-11` stage 9 restructures exactly this — placement comes FROM
+            // the maze rather than validating against a snapshot of terrain — so the fix
+            // belongs there rather than as a fourth patch on the ordering.
+            // `MELD_WATER_WALLS=1` reproduces all of it.
             if std::env::var("MELD_WATER_WALLS").is_ok() && roll < 0.75 {
                 WallMaterial::Water
             } else {
@@ -2930,6 +2941,23 @@ pub struct Arena {
     /// bent by `radialize` (one-shot generate) or not yet (streaming) — so it records the
     /// bent position itself, at placement, and the frame is never in question. Spans
     /// sections, so a spawn at a seam is separated from the one in the section next door.
+    /// **THE BLOCKING FIELD, CACHED** — what stops a mover, as a spatial hash.
+    ///
+    /// ⚠️ **IT WAS REBUILT FROM SCRATCH ON EVERY TICK, AND ONCE PER PLAYER ON TOP.**
+    /// `blocking_field()` collects every obstacle in the world into a fresh `Vec`, extends it
+    /// with structures, appends `ridge_discs()` and builds a fresh hash — and it was called
+    /// from `step_creatures_with_aggro` (once a tick) AND from `apply_move_with`, which
+    /// `handle_move` calls per movement intent. So a tick paid **1 + N rebuilds for N
+    /// players**, each over **35,000-58,000 obstacles** at d900-d3400.
+    ///
+    /// The cost grows with how much world has streamed in, which is why it degrades as a
+    /// party walks outward and never appears in a generation benchmark.
+    ///
+    /// Everything that MUTATES it is a short, closed list — generation, building and
+    /// demolition, the Shift, regrowth, prop culls — and everything else, every tick of
+    /// movement, is a READ. So it is built once and invalidated by `dirty_blockers`.
+    /// `creature_spots` beside it is the same pattern.
+    blockers: std::cell::RefCell<Option<CachedBlockers>>,
     creature_spots: SpotGrid,
 }
 
@@ -3175,6 +3203,27 @@ impl Arena {
 
 
 
+    /// Does a RANGE block a disc of `pad` at world `(x, z)`? The same question
+    /// `astar_route` and every mover ask, exposed for the guards that have to check the
+    /// maze's passes are still passable — see `a_range_never_blocks_a_pass`.
+    ///
+    /// ⚠️ Named `_for_tests` because it is not for gameplay: a caller inside the crate should
+    /// build a `BlockField` once and reuse it rather than paying a fresh one per query.
+    pub fn range_blocks_for_tests(&self, x: f64, z: f64, pad: f64) -> bool {
+        BlockField::with_ridges(Vec::new(), self.ridge_discs())
+            .ridge_blocks(&Position::new(x, z), pad)
+    }
+
+    /// Half-width of the guaranteed route's tube. See `path_clear_radius`.
+    pub fn path_clear_radius_for_tests(&self) -> f64 {
+        self.path_clear_radius
+    }
+
+    /// The avatar's collision radius.
+    pub fn player_radius_for_tests(&self) -> f64 {
+        self.player_radius
+    }
+
     pub fn shore(&self) -> meld_proto::coast::Shore<'_> {
         meld_proto::coast::Shore {
             arc_half: self.radial_half as f32,
@@ -3359,6 +3408,7 @@ impl Arena {
             clash_linger: balance.ai.clash_linger_seconds,
             creature_regen: balance.ai.creature_regen_fraction_per_sec,
             loot_pickup_radius: balance.ai.loot_pickup_radius,
+            blockers: std::cell::RefCell::new(None),
             creature_spots: SpotGrid::new(balance.ai.group_radius + balance.encounters.pack_spread),
         };
 
@@ -3455,6 +3505,9 @@ impl Arena {
         for o in &mut self.obstacles {
             o.position = tf(o.position);
         }
+        // ⚠️ Every obstacle just MOVED without the count changing, which the cache's key
+        // cannot see — see `dirty_blockers`.
+        self.dirty_blockers();
         for c in &mut self.chests {
             c.position = nudge_to_walkable(tf(c.position), toff, shore, &ridge_snap);
         }
@@ -3687,6 +3740,9 @@ impl Arena {
         for o in &mut self.obstacles[o0..] {
             o.position = tf(o.position);
         }
+        // ⚠️ Every obstacle just MOVED without the count changing, which the cache's key
+        // cannot see — see `dirty_blockers`.
+        self.dirty_blockers();
         for c in &mut self.chests[c0..] {
             c.position = nudge_to_walkable(tf(c.position), toff, shore, &ridge_snap);
         }
@@ -3851,6 +3907,16 @@ impl Arena {
         // river is the one water body that can genuinely sever the world.
         // BEFORE the water, so a lake yields to a mountain the way it already yields to a
         // peak — `off_peaks` is what stops a basin flooding straight through one.
+        // World positions of the creatures this section places — see `placed_world.push`.
+        // Declared here so it outlives the placement block and reaches `push_water_walls`.
+        let mut placed_world: Vec<Position> = Vec::new();
+        // ⚠️ **AND EVERY EARLIER SECTION'S CREATURES ARE ALREADY IN WORLD SPACE.** Only
+        // `self.monsters[mon0..]` is still corridor, because `stream_radial_section` bends
+        // exactly what a section appends. A cell boundary sits at a ring edge SHARED between
+        // two sections, so a channel laid by this one can land on a creature the previous one
+        // placed — measured, **9 of 2768 creatures drowned** that way when only this section's
+        // positions were checked.
+        let mon0 = self.monsters.len();
         // Where THIS section's ranges begin, so the unroutable fallback can truncate them.
         // ⚠️ It was `mut` while stage 7's repairs could delete a range from an EARLIER section
         // and shift everything above it down; the decided maze retired both of them, so
@@ -3862,6 +3928,102 @@ impl Arena {
         let (pass_mouths, prop_walls, water_walls) =
             self.push_boundary_walls(balance, i, start_x, end_x);
         self.push_water(balance, i, start_x, end_x);
+
+        // ⚠️ **A RANGE MUST NOT SEAL A PASS.** Owner's priority, stated exactly: *"I don't
+        // care how big ranges are as long as they don't block the maze."*
+        //
+        // Laid down the boundary it walls, a range could only block THAT boundary — walled by
+        // definition, so harmless. Grown between two cells' MASSES (stage 9) it spans two cell
+        // interiors, so its flank can bulge across a NEIGHBOURING open boundary and close a
+        // way through the maze meant to leave. Measured on three seeds: **2 of 506 passes**.
+        //
+        // ⚠️ **ONE PASS OVER ALL RANGES, because there are TWO emitters.** The first cut
+        // checked inside `push_boundary_walls` and the numbers did not move at all — the
+        // offenders came from `push_ridges`, the per-section arc/spoke range, which is not
+        // mass-based and never saw the check. A rule in one of two places is half a rule; that
+        // is the third time this crate has taught it (the wall-collision line, the two range
+        // land checks, this).
+        //
+        // Dropping a segment is not a loss: a gap in a range IS a pass, which is the rule the
+        // authored passes already use. And it only ever OPENS ground, so it cannot cost
+        // feasibility — this runs before the route.
+        {
+            let g = self.regions;
+            let arc_half = self.radial_half as f32;
+            let pad = self.path_clear_radius + self.player_radius;
+            let maze = std::mem::take(&mut self.maze);
+            let ring_lo = g.ring_at(start_x as f32, 0.0).saturating_sub(1);
+            let ring_hi = g.ring_at(end_x as f32, 0.0) + 1;
+            // The open boundaries this section could have reached, sampled once.
+            let mut passes: Vec<Position> = Vec::new();
+            for ring in ring_lo..=ring_hi {
+                for sector in 0..g.sectors(ring) {
+                    let c = meld_proto::regions::Cell::new(ring, sector);
+                    if !crate::maze::cell_holds_land(&g, arc_half, c) {
+                        continue;
+                    }
+                    for nb in g.neighbours(c) {
+                        if nb.key() <= c.key() || !maze.is_open(c, nb) {
+                            continue;
+                        }
+                        let Some(((q0, c0), (q1, c1))) =
+                            crate::maze::shared_boundary(&g, c, nb)
+                        else {
+                            continue;
+                        };
+                        for k in 0..=12 {
+                            let t = k as f64 / 12.0;
+                            let (rr, bb) = (q0 + (q1 - q0) * t, c0 + (c1 - c0) * t);
+                            passes.push(Position::new(rr * bb.cos(), rr * bb.sin()));
+                        }
+                    }
+                }
+            }
+            // A pass is sealed iff EVERY sample along it is inside this range's reach, so a
+            // range that merely narrows one is kept — narrowing is what a pass is for.
+            self.ridges.retain(|r| {
+                let hw = r[4] as f64;
+                if hw <= 0.0 {
+                    return true;
+                }
+                let (a0, a1) = (Position::new(r[0] as f64, r[1] as f64), Position::new(r[2] as f64, r[3] as f64));
+                !passes.chunks(13).any(|pass| {
+                    pass.iter().all(|p| dist_point_segment(p, &a0, &a1) <= hw + pad)
+                })
+            });
+            self.maze = maze;
+        }
+
+        // ⚠️ **A RANGE THAT THE WATER REACHED YIELDS, because water is placed AFTER it.**
+        // Both emitters ask `on_land` along the spine when they raise a range — but
+        // `push_water` runs later, and a river walks downhill up to ~364 units while a basin
+        // fills a contour, so a range raised on dry ground can be flooded by water that did
+        // not exist yet. Measured on seed 1: **2 of 49 ranges** wading, the deepest 20 units
+        // offshore, and `no_range_stands_in_open_water` said so.
+        //
+        // The dependency table already settles the direction — *"a range over standing water
+        // → the range yields"* — and this is the only moment both facts are known. Dropping a
+        // range only ever OPENS ground, so it cannot cost feasibility: this runs before the
+        // route, and A* is strictly freer afterwards.
+        self.ridges.retain(|r| {
+            let (a0, a1) = (r[0] as f64, r[1] as f64);
+            let (b0, b1) = (r[2] as f64, r[3] as f64);
+            (0..=6).all(|k| {
+                let t = k as f64 / 6.0;
+                let (px, py) = (a0 + (b0 - a0) * t, a1 + (b1 - a1) * t);
+                let sh = meld_proto::coast::Shore {
+                    arc_half: self.radial_half as f32,
+                    terrain_off: self.terrain_off,
+                    peaks: &self.peaks,
+                    straits: &self.straits,
+                    lobes: &self.lobes,
+                    basins: &self.basins,
+                    rivers: &self.rivers,
+                    bridges: &self.bridges,
+                };
+                sh.water(px as f32, py as f32) < 0.0
+            })
+        });
 
 
         // WG-1: every Nth procedural section is a DUNGEON — rooms divided by walls
@@ -3974,11 +4136,20 @@ impl Arena {
         // The corridor variant, because every scatter pass works in the unbent frame while a
         // range is already world space — the frame trap this crate has paid for five times.
         let (bend_half, bend_lat) = (self.radial_half, self.corridor_lateral.max(1.0));
+        // ⚠️ **DRY AS WELL AS STANDABLE.** This asked `standable` alone — the SLOPE — so a
+        // resource node could be placed in a lake: measured on seed 1, `res-27` sat **33 units
+        // inside a basin**, and `nothing_stands_in_the_water` has been failing on `main` for
+        // it. Water is placed BEFORE nodes within a section, so the basin cannot avoid a node
+        // that does not exist yet; the node is the one that has to look.
+        //
+        // The `usable` closure three lines down already pairs the two questions for other
+        // callers, which is what makes the omission an oversight rather than a policy.
         let standable_c = {
             let standable = standable.clone();
+            let wet = wet.clone();
             move |p: &Position| -> bool {
                 let w = if bend_half > 0.0 { radial_tf(*p, bend_half, bend_lat) } else { *p };
-                standable(&w)
+                standable(&w) && !wet(&w)
             }
         };
 
@@ -4076,7 +4247,10 @@ impl Arena {
         // obstacles, so a tree wall built before the route is one the guaranteed trail walks
         // straight through.
         self.push_prop_walls(balance, &prop_walls);
-        self.push_water_walls(balance, &water_walls);
+        let mut creature_world: Vec<Position> =
+            self.monsters[..mon0].iter().map(|m| m.position).collect();
+        creature_world.extend(placed_world.iter().copied());
+        self.push_water_walls(balance, &water_walls, &creature_world);
         self.push_pass_parts(balance, &pass_mouths);
         let portal = if is_chain_end {
             *self.corridor_path.last().unwrap()
@@ -4342,6 +4516,17 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
                     continue;
                 };
                 taken.insert(world);
+                // ⚠️ **KEEP THE WORLD POSITION, because a later pass cannot recover it.** A
+                // creature is STORED in corridor space and bent by `radialize` afterwards, and
+                // `stream_radial_section` bends only `self.monsters[m0..]` — so during
+                // generation that Vec holds MIXED frames: earlier sections world, this one
+                // corridor. Anything downstream comparing a world position against it is the
+                // `water-over-creature` bug that function's own note lists among the five this
+                // crate has already shipped — and water walls shipped it a sixth time,
+                // checking occupancy across frames and protecting nothing.
+                //
+                // The placement pass is the one place that knows both frames, so it says so.
+                placed_world.push(world);
                 // WHAT lives here is decided by the ground it stands on, after the ground is
                 // known — a creature is native to its cell, not to the band it happens to
                 // share with sixty others. Difficulty is untouched: that rides `distance`
@@ -5840,6 +6025,15 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
                     if material == WallMaterial::Open {
                         continue;
                     }
+                    // ⚠️ **STAGE 9 WILL GROW A RANGE BETWEEN THE TWO CELLS' MASSES, NOT ALONG
+                    // THEIR EDGE — and it is NOT wired up yet.** `maze::cell_mass` exists and
+                    // is tested; swapping the spine endpoints for it measurably works (the mean
+                    // |cos| between a spine and its boundary fell from ~1.0 to **0.518**: a
+                    // range crosses its boundary instead of tracing it, which is the whole of
+                    // "straight mountain lines"). Parked because the primitive does not satisfy
+                    // two constraints at once yet: correcting for the grid warp so a mass lands
+                    // in its OWN cell moved the masses far enough that walled neighbours
+                    // stopped meeting. Both measurements are in `the_maze_is_decided`.
                     // Ranges keep their own roll, so rock country's mountain density is
                     // unchanged by this; only the biomes that had NO usable wall gain one.
                     if material == WallMaterial::Range
@@ -6117,7 +6311,12 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
     /// props the hazard is that A* ignores them and walks through; for water it is the mirror
     /// — A* avoids water, so a channel laid first pushes the trail around, and dense enough
     /// channels make a section unroutable outright.
-    fn push_water_walls(&mut self, balance: &Balance, walls: &[WaterWall]) {
+    fn push_water_walls(
+        &mut self,
+        balance: &Balance,
+        walls: &[WaterWall],
+        creature_world: &[Position],
+    ) {
         let wg = &balance.worldgen;
         let half = wg.water_wall_half_width;
         for w in walls {
@@ -6135,27 +6334,41 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
                 // `nothing_the_world_places_ever_lands_in_the_sea` said so plainly: *"a
                 // creature is standing in the sea"*. `push_prop_walls` beside this has asked
                 // the same question all along; water is the one that kills what it lands on.
-                let occupied = self.monsters.iter().any(|m| m.position.distance_to(&at) < half + 1.5)
-                    || self.resources.iter().any(|r| r.position.distance_to(&at) < half + 1.5)
-                    || self.chests.iter().any(|c| c.position.distance_to(&at) < half + 1.5);
+                // ⚠️ **THE SECTION'S OWN CREATURE POSITIONS, IN WORLD SPACE.** This scanned
+                // `self.monsters` and compared world against a Vec holding MIXED frames — the
+                // sixth instance of the bug `stream_radial_section`'s note lists — so it never
+                // protected anything and `nothing_the_world_places_ever_lands_in_the_sea`
+                // failed with "a creature is standing in the sea". Handed the world positions
+                // the placement pass already computed instead.
+                //
+                // Resources and chests are not checked here for the same frame reason; they
+                // are covered because a channel keeps `route_pad` from the trail and those sit
+                // on or near it, and a node the water reaches is a node lost rather than a
+                // creature drowned. ⚠️ If that stops being true, hand their world positions
+                // forward the same way rather than scanning the field.
+                let occupied = creature_world.iter().any(|w| w.distance_to(&at) < half + 1.5);
                 // Never on the guaranteed trail, and never in the sea (a channel running into
                 // the ocean is just the ocean).
-                // ⚠️ **PAD FOR THE SAG, BECAUSE `clear_of_routes` MEASURES THE CHORD AND THE
-                // PLAYER WALKS THE ARC.** It asks `world_dist_to_path` against
-                // `corridor_path` — the sparse corridor waypoints — while the walker follows
-                // the DENSIFIED bent trail, and the chord between two bent vertices cuts
-                // inside the arc by `L^2/8R`. A prop clears this by luck (it blocks at ~2.0
-                // total); a channel is 3.2 of half-width and does not. Measured on seed 8: a
-                // walker following the trail stalled at waypoint 218 of 384 with the water's
-                // edge **0.0 units** away, and `the_clear_path_actually_reaches_the_portal`
-                // failed — while the identical world with water walls off walked all 384.
+                // ⚠️ **`clear_of_routes` WANTS A CORRIDOR POINT, AND I WAS HANDING IT A WORLD
+                // ONE — so the check was INERT.** `world_dist_to_path` scales `y` by the
+                // tangential factor (`Position::new(q.x, q.y * tan)`), which only approximates
+                // a world distance when both the point and the path are in CORRIDOR
+                // coordinates. These nodes come from `polar(r, bearing)`, so multiplying a
+                // world `y` by ~19 at d205 produced a nonsense distance, always large, and
+                // every node passed.
                 //
-                // A party's width plus the tube's own half-width covers the sag at these
-                // depths with room. ⚠️ If a future channel gets wider, re-measure rather than
-                // trusting this margin — the honest fix is asking the WALKED path, and it is
-                // not available during generation because `self.path` is not bent yet.
-                let route_pad = half + self.player_radius + self.path_clear_radius;
-                if occupied || !self.clear_of_routes(&at, route_pad) || !self.on_land(at.x, at.y) {
+                // That is the whole of seed 8's stall: a channel sat ON the guaranteed trail
+                // because nothing had actually asked. Padding for the arc's sag did not move
+                // it, which is the tell I should have read — a margin cannot fix a predicate
+                // that is not being evaluated.
+                //
+                // ⚠️ **AND PROP WALLS MAKE THE IDENTICAL MISTAKE AND GET AWAY WITH IT**, which
+                // is why it hid: they hand world points to the same function, but `radialize`'s
+                // retain culls OBSTACLES inside the clear tube afterwards using world-space
+                // `dist_to_path`. Props have a backstop; `self.rivers` has none.
+                let cp = self.corridorize(&at);
+                let route_pad = half + self.player_radius;
+                if occupied || !self.clear_of_routes(&cp, route_pad) || !self.on_land(at.x, at.y) {
                     // A break in the chain is a FORD, so an interruption here is not a hole in
                     // the wall — it is a crossing, which is exactly what the trail wants.
                     laid = 0;
@@ -6204,7 +6417,12 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
                     ^ 0x5EA1_1A11_0000_0001_u64.wrapping_add(w as u64));
                 let radius = obstacle_radius_for(wg, wall.kind, krng.unit());
                 // ⚠️ Never on the guaranteed route — the whole reason this runs after it.
-                if !self.clear_of_routes(&at, radius) {
+                // ⚠️ Corridorized — see `clear_of_routes`. This passed a WORLD point for a
+                // long time and got away with it, because `radialize`'s retain culls
+                // obstacles inside the clear tube afterwards in world space. The backstop is
+                // real, but a check that never evaluates is not one, and the next
+                // late-placed feature will not have a retain behind it.
+                if !self.clear_of_routes(&self.corridorize(&at), radius) {
                     continue;
                 }
                 if !self.on_land(at.x, at.y) {
@@ -6339,7 +6557,10 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
                     m.at.y + ay * along_off + cy * across_off,
                 );
                 // Never on the guaranteed route (the whole reason this runs after it)…
-                if !self.clear_of_routes(&at, radius) {
+                // ⚠️ Corridorized — see `clear_of_routes`. `PassMouth.at` is WORLD space
+                // (its own doc says so), so this was inert too, and only the obstacle retain
+                // kept a pass part off the trail.
+                if !self.clear_of_routes(&self.corridorize(&at), radius) {
                     continue;
                 }
                 // …never sealing the mouth: what is left of the gap either side of this piece
@@ -6489,6 +6710,28 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
         // what makes yielding possible at all — the same ordering that lets water yield to a
         // drawn path by becoming a ford.
         let ridge_list: Vec<meld_proto::terrain::Ridge> = self.ridges.clone();
+        // ⚠️ **AND NEVER ON A BRIDGE, because a bridge is forced land in `sea` and NOT in
+        // `water`.** `coast`'s own note says a bridge stays land so that `astar_route`,
+        // `apply_move`, `backbone_feasible` and the shader all understand it with no code of
+        // their own — but that forcing is subtracted in `Shore::sea`, and `is_land` asks
+        // `Shore::water`, which adds the inland bodies. So a bridge is protected from the
+        // OCEAN and defenceless against a lake, and stage 8's basin work put one on an
+        // abutment: `a_bridge_is_walkable_from_end_to_end` failed with *"seed 99: a bridge is
+        // under water 0% along its own span"* — its start endpoint drowned.
+        //
+        // The crossing wins, for the same reason the drawn trail does: a bridge IS the trail
+        // where it spans a strait, and water that drowns it takes the route with it.
+        let bridge_snap: Vec<meld_proto::coast::Bridge> = self.bridges.clone();
+        let off_bridges = |p: Position, pad: f64| {
+            bridge_snap.iter().all(|b| {
+                let d = dist_point_segment(
+                    &p,
+                    &Position::new(b[0] as f64, b[1] as f64),
+                    &Position::new(b[2] as f64, b[3] as f64),
+                );
+                d > b[4] as f64 + pad
+            })
+        };
         let off_ridges = |p: Position, pad: f64| {
             ridge_list.iter().all(|r| {
                 let hw = r[4] as f64;
@@ -6587,7 +6830,43 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
             let mut broke = false;
             for n in &nodes {
                 let p = Position::new(n[0] as f64, n[1] as f64);
-                if !off_drawn(p, n[2] as f64) || !off_creatures(p, n[2] as f64) {
+                // ⚠️ **THE WATER IS DRAWN BETWEEN THE NODES, SO THE SPAN HAS TO BE ASKED TOO.**
+                // `off_drawn` clears a NODE by `path_clear_radius + half_width` — but
+                // `coast::river_depth` is a capsule per consecutive PAIR, and nodes are spaced
+                // far wider than that clearance. So two nodes can each stand well clear of the
+                // trail while the span joining them runs straight over it, and the guaranteed
+                // route swims between them.
+                //
+                // Measured on seed 7 (and reproduced on `main`): waypoints 767-769 at
+                // (88.1, 610.6) sat **4.5 units inside** a river of half-width 7.9, with the
+                // nearest basin 187 away, the sea 496 and every strait 540 — nothing but the
+                // span could have put water there. `the_clear_path_crosses_at_an_isthmus_and
+                // _never_swims` has been failing on main for exactly this.
+                //
+                // Sampled rather than solved: a segment-to-polyline distance is the same
+                // arithmetic done less legibly, and the trail is already densified.
+                // ⚠️ **A PARTY'S WIDTH, NOT THE TUBE'S.** `off_drawn` clears by
+                // `path_clear_radius` alone (1.9), while the route itself keeps
+                // `path_clear_radius + player_radius` (2.4) — so clearing only the tube leaves
+                // the trail dry but WADING, and `the_clear_path_crosses_at_an_isthmus_and
+                // _never_swims` asserts the fuller clearance one line after the dryness.
+                let body = self.player_radius;
+                let span_crosses = kept.last().is_some_and(|k: &meld_proto::coast::RiverNode| {
+                    let a = Position::new(k[0] as f64, k[1] as f64);
+                    let hw = 0.5 * (k[2] + n[2]) as f64 + body;
+                    // 16ths, not 8ths: at 8 the closest approach fell BETWEEN samples and
+                    // seed 987654 came within 2.31 of water against a 2.40 requirement.
+                    (1..16).any(|s| {
+                        let t = s as f64 / 16.0;
+                        let q = Position::new(a.x + (p.x - a.x) * t, a.y + (p.y - a.y) * t);
+                        !off_drawn(q, hw)
+                    })
+                });
+                if span_crosses
+                    || !off_drawn(p, n[2] as f64 + body)
+                    || !off_creatures(p, n[2] as f64)
+                    || !off_bridges(p, n[2] as f64)
+                {
                     // The trail crosses here, or something already stands here. Either way the
                     // channel leaves dry ground and resumes past it — which reads as a ford.
                     broke = true;
@@ -6615,7 +6894,10 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
                 while radius >= MIN_BODY && !off_creatures(p, radius) {
                     radius -= 12.0;
                 }
-                if radius >= MIN_BODY && off_drawn(p, radius) && off_peaks(p, radius)
+                if radius >= MIN_BODY
+                    && off_drawn(p, radius + self.player_radius)
+                    && off_bridges(p, radius)
+                    && off_peaks(p, radius)
                 && off_ridges(p, radius) {
                     self.basins.push([
                         p.x as f32,
@@ -6685,7 +6967,7 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
             if self.shore().sea(x as f32, z as f32) < 0.0
                 && radius >= MIN_BODY
                 && rng.unit() * basin_mult <= biome_basin_mult(self.biome_at(p))
-                && off_drawn(p, radius)
+                && off_drawn(p, radius + self.player_radius)
                 && off_peaks(p, radius)
                 && off_ridges(p, radius)
             {
@@ -6990,6 +7272,20 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
     /// that went into one mover, the creature damage pass that kept the O(n²) scan, and
     /// `maze_fill_scale` itself — so the frame fix ships as a funnel rather than as four
     /// edits that have to stay in agreement.
+    /// Is `p` far enough from the guaranteed trail and the web?
+    ///
+    /// ⚠️ **`p` MUST BE IN CORRIDOR COORDINATES.** `world_dist_to_path` approximates a world
+    /// distance by scaling `y` by the tangential factor
+    /// (`Position::new(q.x, q.y * tan)`), which is only meaningful when the point and the path
+    /// are in the SAME corridor frame. Hand it a world point and a world `y` gets multiplied
+    /// by ~19 at d205: the distance comes back nonsense, always large, and **every caller
+    /// passes**. Use [`Arena::corridorize`] first if what you have came from `polar()` or
+    /// `to_world()`.
+    ///
+    /// That is not hypothetical. `WG-11` stage 8's water walls passed world points here, the
+    /// check was inert, a channel sat on the guaranteed trail and seed 8 stalled a walker at
+    /// waypoint 218 of 384. Padding for the arc's sag did not move it — a margin cannot fix a
+    /// predicate that is not being evaluated.
     fn clear_of_routes(&self, p: &Position, pad: f64) -> bool {
         let tan = tangential_scale(p.x, self.radial_half, self.corridor_lateral);
         world_dist_to_path(p, &self.corridor_path, tan) >= self.path_clear_radius + pad
@@ -7244,7 +7540,9 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
         let pack_leash = self.pack_leash;
         let (skirmish_aggro, skirmish_range) = (self.skirmish_aggro, self.skirmish_range);
         let interval = self.skirmish_interval;
-        let obstacles = self.blocking_field();
+        // ⚠️ The CACHED field — see `Arena::blockers`. This was a full rebuild on a hot
+        // path: once a tick here, and once per movement intent in `apply_move_with`.
+        let obstacles = self.blockers();
         // Combat state of every creature, snapshotted so a creature can target
         // another without aliasing the `&mut` iteration below. (pos, faction, alive, def).
         // The species rides along with the faction: `creatures_at_odds` needs BOTH, because
@@ -8101,7 +8399,9 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
         let dt = self.sim_dt;
         let (x_min, x_max, lateral) = (self.x_min, self.x_max, self.lateral);
         let pr = self.player_radius;
-        let obstacles = self.blocking_field();
+        // ⚠️ The CACHED field — see `Arena::blockers`. This was a full rebuild on a hot
+        // path: once a tick here, and once per movement intent in `apply_move_with`.
+        let obstacles = self.blockers();
         // Clamp direction magnitude to ≤ 1 (movement-world.md).
         let mag = (dir_x * dir_x + dir_y * dir_y).sqrt();
         let (nx, ny) = if mag > 1.0 {
@@ -8617,7 +8917,9 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
             let (mouths, prop_walls, water_walls) =
                 self.push_boundary_walls(balance, i, start_x, end_x);
             self.push_prop_walls(balance, &prop_walls);
-            self.push_water_walls(balance, &water_walls);
+            // A Shift re-expresses walls after the fact, so nothing is being placed
+            // alongside them — the section's creatures are long since bent and standing.
+            self.push_water_walls(balance, &water_walls, &[]);
             self.push_pass_parts(balance, &mouths);
         }
     }
@@ -8779,7 +9081,7 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
     fn rescue_stranded(&mut self, first: usize, last: usize) -> Vec<(Id, Position)> {
         let (inner, outer) = self.shift_band(first, last);
         let entry = self.region_entry(first);
-        let field = self.blocking_field();
+        let field = self.blockers();
         let blocked: Vec<(Id, Position)> = self
             .avatars
             .iter()
@@ -8836,7 +9138,7 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
     /// Only ACTIVE avatars: someone in a battle or mid-channel is not walking anywhere,
     /// and teleporting them out of a fight would be a worse bug than the one being fixed.
     pub fn rescue_trapped(&mut self) -> Vec<(Id, Position)> {
-        let field = self.blocking_field();
+        let field = self.blockers();
         let moves: Vec<(Id, Position)> = self
             .avatars
             .iter()
@@ -16149,6 +16451,17 @@ impl Arena {
 
 }
 
+/// The cached blocking field and the world-counts it was built from — see `Arena::blockers`.
+///
+/// `Clone` because `Arena` is, and cloning shares the built field rather than rebuilding it —
+/// a clone of a world that has already answered "what blocks" should not have to ask again.
+#[derive(Clone)]
+struct CachedBlockers {
+    /// `(obstacles, structures, ridges)` lengths. A change in any means rebuild.
+    key: (usize, usize, usize),
+    field: std::sync::Arc<BlockField>,
+}
+
 /// The blocking field as a spatial hash rather than a flat list.
 ///
 /// **This is a per-tick cost, and the world streams outward without bound.** The check is
@@ -16383,6 +16696,46 @@ impl Arena {
             }
         }
         None
+    }
+
+    /// Throw the cached blocking field away.
+    ///
+    /// ⚠️ **FOR THE IN-PLACE CASE THE COUNT KEY CANNOT SEE.** `radialize` and
+    /// `stream_radial_section` BEND obstacles in place — `o.position = tf(o.position)` — which
+    /// moves every one of them without changing how many there are, so the cache below happily
+    /// served pre-bend positions. The gate caught it as `nothing_stands_in_the_water` and
+    /// `the_clear_path_crosses_at_an_isthmus_and_never_swims`: the world was being collided
+    /// against in the corridor frame after it had been bent into the world one.
+    fn dirty_blockers(&self) {
+        *self.blockers.borrow_mut() = None;
+    }
+
+    /// The blocking field, built once and reused until the world changes under it.
+    ///
+    /// ⚠️ **KEYED ON THE COUNTS, NOT ON A CALL SITE REMEMBERING.** There are seventeen places
+    /// that push, retain, extend, truncate or splice obstacles, structures or ranges, and a
+    /// `dirty()` call at each is a call site that will forget — the same reasoning that put
+    /// "what blocks" in ONE function after the wall-collision line went into one mover and not
+    /// the other. So the cache carries the three lengths it was built from and rebuilds when
+    /// any of them moves. No caller has to know it exists.
+    ///
+    /// ⚠️ **AN IN-PLACE EDIT THAT KEEPS THE COUNT WOULD BE MISSED** — mutating an existing
+    /// range's half-width in place, say. There is no such write today (the one that existed,
+    /// zeroing a retired range's width, was replaced by removing the entry). If one is added,
+    /// it must clear this cache explicitly, and a `debug_assert` here would not catch it.
+    ///
+    /// `Arc`, not `Rc`: the `Arena` is moved into the game loop's Tokio task, so it stays
+    /// `Send`.
+    fn blockers(&self) -> std::sync::Arc<BlockField> {
+        let key = (self.obstacles.len(), self.structures.len(), self.ridges.len());
+        if let Some(c) = self.blockers.borrow().as_ref() {
+            if c.key == key {
+                return c.field.clone();
+            }
+        }
+        let built = std::sync::Arc::new(self.blocking_field());
+        *self.blockers.borrow_mut() = Some(CachedBlockers { key, field: built.clone() });
+        built
     }
 
     fn blocking_field(&self) -> BlockField {

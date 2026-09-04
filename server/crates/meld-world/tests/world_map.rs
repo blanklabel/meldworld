@@ -45,7 +45,7 @@ fn biome_colour(b: &str) -> &'static str {
 #[ignore = "dev instrument: writes an SVG map; run with --ignored"]
 fn dump_world_map() {
     let b = Balance::load_default().unwrap();
-    for seed in [424242u64] {
+    for seed in [1u64, 42, 424242] {
         let mut a = Arena::generate(&b, seed, false);
         for _ in 0..40 {
             a.ensure_frontier(&b, REACH);
@@ -124,6 +124,8 @@ fn dump_world_map() {
             svg.push_str("<g id='maze'>\n");
             let mut walled = 0usize;
             let mut opens = 0usize;
+            // A boundary the maze walls with NOTHING standing on it.
+            let mut bare = 0usize;
             let rings = (REACH / g.ring_step as f64).ceil() as u32 + 1;
             for ring in 0..rings {
                 for sector in 0..g.sectors(ring) {
@@ -146,10 +148,50 @@ fn dump_world_map() {
                             continue;
                         }
                         let open = a.maze.is_open(c, other);
+                        // ⚠️ **IS THE WALL ACTUALLY THERE?** The maze says which boundaries
+                        // should be walls; whether the GROUND says so is a separate fact, and
+                        // the map had no way to show the difference. That gap is the whole
+                        // subject of stage 9 — a boundary the maze walls and the ground
+                        // ignores is a gate with nothing in it — so measure it here and draw
+                        // the two differently.
+                        let mut expressed = false;
+                        if !open {
+                            let sh = a.shore();
+                            for k in 0..=6 {
+                                let t = k as f64 / 6.0;
+                                let (r, bb) = (r0 + (r1 - r0) * t, b0 + (b1 - b0) * t);
+                                let (px, pz) = (r * bb.cos(), r * bb.sin());
+                                let at = meld_proto::common::Position::new(px, pz);
+                                let ranged = a.ridges.iter().any(|rg| {
+                                    let hw = rg[4] as f64;
+                                    if hw <= 0.0 { return false }
+                                    let (ax, az) = (rg[0] as f64, rg[1] as f64);
+                                    let (bx, bz) = (rg[2] as f64, rg[3] as f64);
+                                    let (dx, dz) = (bx - ax, bz - az);
+                                    let l2 = dx * dx + dz * dz;
+                                    let tt = if l2 > 1e-6 {
+                                        (((px - ax) * dx + (pz - az) * dz) / l2).clamp(0.0, 1.0)
+                                    } else { 0.0 };
+                                    (px - (ax + dx * tt)).hypot(pz - (az + dz * tt)) < hw + 4.0
+                                });
+                                let propped = a.obstacles.iter().any(|o| {
+                                    (o.entity_id.starts_with("obs-wall-")
+                                        || o.entity_id.starts_with("obs-pass-"))
+                                        && o.position.distance_to(&at) < 8.0
+                                });
+                                let wet = sh.water(px as f32, pz as f32) > -2.0;
+                                if ranged || propped || wet {
+                                    expressed = true;
+                                    break;
+                                }
+                            }
+                        }
                         if open {
                             opens += 1;
-                        } else {
+                        } else if expressed {
                             walled += 1;
+                        } else {
+                            bare += 1;
                         }
                         // An arc is drawn as a polyline so it curves; a spoke is a line.
                         let mut d = String::new();
@@ -170,6 +212,11 @@ fn dump_world_map() {
                             svg.push_str(&format!(
                                 "<path d='{d}' fill='none' stroke='#4de0a0' stroke-width='0.8' \
                                  stroke-opacity='0.30' stroke-dasharray='2 3'/>\n"
+                            ));
+                        } else if !expressed {
+                            svg.push_str(&format!(
+                                "<path d='{d}' fill='none' stroke='#8a4a52' stroke-width='1.2' \
+                                 stroke-opacity='0.55' stroke-dasharray='1 4'/>\n"
                             ));
                         } else {
                             svg.push_str(&format!(
@@ -199,8 +246,12 @@ fn dump_world_map() {
                 ));
             }
             svg.push_str("</g>\n");
-            println!("  maze: {walled} walled, {opens} passes, {} dead ends in view",
-                a.maze.dead_ends().len());
+            println!(
+                "  maze: {walled} walled AND built, {bare} walled but BARE ({:.0}% of walls \
+                 have nothing standing on them), {opens} passes, {} dead ends in view",
+                100.0 * bare as f64 / (walled + bare).max(1) as f64,
+                a.maze.dead_ends().len()
+            );
         }
 
         // ── SEA: the actual signed shoreline field, sampled and run-length encoded.
@@ -362,7 +413,8 @@ fn dump_world_map() {
             let (lx, ly, lw, row) = (14.0f64, 14.0f64, 268.0f64, 15.0f64);
             let rows: &[(&str, &str, &str)] = &[
                 ("head", "", "THE MAZE  (id=maze)"),
-                ("line-thick", "#ff5c4d", "walled boundary - no way through"),
+                ("line-thick", "#ff5c4d", "walled AND built - no way through"),
+                ("line-bare", "#8a4a52", "walled but BARE - nothing standing on it"),
                 ("line-dash", "#4de0a0", "pass - the maze's way through"),
                 ("ring", "#ffd166", "dead end - where the reward goes"),
                 ("head", "", "GROUND"),
@@ -374,9 +426,9 @@ fn dump_world_map() {
                 ("head", "", "WATER"),
                 ("swatch", "#1d4f7a", "ocean, straits, bays (id=sea)"),
                 ("disc", "#2f6ea8", "lake / basin - fills a contour"),
-                ("line", "#3f8ec9", "river & water wall - gaps are FORDS"),
+                ("line", "#3f8ec9", "river / water wall - gaps are FORDS"),
                 ("head", "", "ROUTE"),
-                ("line", "#ff4fa3", "guaranteed trail + web (id=route)"),
+                ("line", "#ff4fa3", "guaranteed trail plus web (id=route)"),
             ];
             let lh = row * (rows.len() as f64) + 30.0;
             svg.push_str(&format!(
@@ -408,6 +460,11 @@ fn dump_world_map() {
                     "line-thick" => svg.push_str(&format!(
                         "<path d='M{sx0:.0},{cy:.0} L{:.0},{cy:.0}' stroke='{colour}' \
                          stroke-width='2.2'/>\n",
+                        sx0 + 22.0
+                    )),
+                    "line-bare" => svg.push_str(&format!(
+                        "<path d='M{sx0:.0},{cy:.0} L{:.0},{cy:.0}' stroke='{colour}' \
+                         stroke-width='1.2' stroke-dasharray='1 4'/>\n",
                         sx0 + 22.0
                     )),
                     "line-dash" => svg.push_str(&format!(

@@ -363,3 +363,87 @@ pub fn shared_boundary(grid: &Grid, a: Cell, b: Cell) -> Option<((f64, f64), (f6
         Some(((r, lo), (r, hi)))
     }
 }
+
+/// **A CELL'S RELIEF MASS** — where its ground stands higher, and how far that reaches.
+///
+/// `WG-11` stage 9's primitive. Returns `None` for a cell the maze walls on no side: nothing
+/// to express, so it stays open ground.
+///
+/// ⚠️ **THE MASS SITS IN THE CELL'S BODY, NEVER ON A BOUNDARY.** Stage 8 laid a wall as a
+/// capsule down the shared edge, which is why the survey map reads as straight mountain lines
+/// — a boundary is a statement about connectivity, not a place to put things. So the mass is
+/// positioned inside the cell and only its REACH is the maze's business: walled means two
+/// cells' masses meet, open means they stay apart, and the gap between two masses IS the pass.
+///
+/// The centre is the cell's own centroid pulled toward the boundaries it walls, so a cell
+/// walled on one side grows a spur and a cell walled on three grows a lobed mass — and the
+/// union of neighbouring masses wanders, because it is a union of blobs rather than a line.
+/// Jittered from `(seed, cell)` so it is deterministic and does not sit on the centroid.
+pub fn cell_mass(grid: &Grid, m: &Maze, c: Cell, seed: u64) -> Option<(f64, f64, f64)> {
+    let walled: Vec<Cell> = grid
+        .neighbours(c)
+        .into_iter()
+        .filter(|n| !m.is_open(c, *n))
+        .collect();
+    if walled.is_empty() {
+        return None;
+    }
+    let (cx, cy) = grid.centroid(c);
+    let (cx, cy) = (cx as f64, cy as f64);
+    // Pull toward every walled neighbour. The SUM rather than the nearest, so three walls
+    // give a lobed mass leaning into all three instead of a blob hugging one.
+    let (mut px, mut py) = (0.0f64, 0.0f64);
+    for n in &walled {
+        let (nx, ny) = grid.centroid(*n);
+        let (dx, dy) = (nx as f64 - cx, ny as f64 - cy);
+        let d = dx.hypot(dy).max(1e-6);
+        px += dx / d;
+        py += dy / d;
+    }
+    let pull = px.hypot(py).max(1e-6);
+    // Deterministic jitter, so no mass sits exactly on its centroid and a run of them does
+    // not read as a row of beads.
+    let mut rng = Mrng::new(seed ^ (c.key() as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15));
+    let step = grid.ring_step.max(1.0) as f64;
+    let lean = step * (0.18 + 0.12 * (rng.below(1000) as f64 / 1000.0));
+    let jx = step * 0.10 * (rng.below(2001) as f64 / 1000.0 - 1.0);
+    let jy = step * 0.10 * (rng.below(2001) as f64 / 1000.0 - 1.0);
+    let (mx, my) = (cx + px / pull * lean + jx, cy + py / pull * lean + jy);
+    // ⚠️ **CORRECT FOR THE WARP, because `centroid` is NOMINAL and `cell_at` is not.**
+    // `Grid::cell_at` computes the ring from `r + warp_at(bearing)`, while `centroid` and
+    // `span` are a cell's nominal extent — and the warp (~40 units) is comparable to half a
+    // ring (62.5), so **a cell's own centroid is not reliably inside it** as `cell_at` sees it.
+    // Measured: the mass for ring 3 sector 4 on seed 1 landed in ring 2 sector 3, and pulling
+    // back toward the centroid could not fix it, because the centroid was outside too.
+    //
+    // The warp is a pure radius offset at a given bearing, so it inverts exactly: subtract it.
+    // Then verify with the function that decides, pulling toward a warp-corrected centroid as
+    // the floor.
+    let warped = |x: f64, y: f64| -> (f64, f64) {
+        let b = y.atan2(x);
+        let r = x.hypot(y) - grid.warp_at(b as f32) as f64;
+        (r * b.cos(), r * b.sin())
+    };
+    let (tx, ty) = warped(cx, cy);
+    let (mut mx, mut my) = warped(mx, my);
+    for _ in 0..8 {
+        if grid.cell_at(mx as f32, my as f32).key() == c.key() {
+            break;
+        }
+        mx = 0.5 * (mx + tx);
+        my = 0.5 * (my + ty);
+    }
+    let (mx, my) = (mx, my);
+
+    // Reach: far enough to MEET the nearest walled neighbour's mass, which is half the way to
+    // its centre. Two masses across a walled boundary therefore touch by construction rather
+    // than by a radius anyone tuned.
+    let reach = walled
+        .iter()
+        .map(|n| {
+            let (nx, ny) = grid.centroid(*n);
+            0.5 * (mx - nx as f64).hypot(my - ny as f64)
+        })
+        .fold(f64::MAX, f64::min);
+    Some((mx, my, reach))
+}
