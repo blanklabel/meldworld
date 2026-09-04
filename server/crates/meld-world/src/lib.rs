@@ -3505,6 +3505,9 @@ impl Arena {
         for o in &mut self.obstacles {
             o.position = tf(o.position);
         }
+        // ⚠️ Every obstacle just MOVED without the count changing, which the cache's key
+        // cannot see — see `dirty_blockers`.
+        self.dirty_blockers();
         for c in &mut self.chests {
             c.position = nudge_to_walkable(tf(c.position), toff, shore, &ridge_snap);
         }
@@ -3737,6 +3740,9 @@ impl Arena {
         for o in &mut self.obstacles[o0..] {
             o.position = tf(o.position);
         }
+        // ⚠️ Every obstacle just MOVED without the count changing, which the cache's key
+        // cannot see — see `dirty_blockers`.
+        self.dirty_blockers();
         for c in &mut self.chests[c0..] {
             c.position = nudge_to_walkable(tf(c.position), toff, shore, &ridge_snap);
         }
@@ -4130,11 +4136,20 @@ impl Arena {
         // The corridor variant, because every scatter pass works in the unbent frame while a
         // range is already world space — the frame trap this crate has paid for five times.
         let (bend_half, bend_lat) = (self.radial_half, self.corridor_lateral.max(1.0));
+        // ⚠️ **DRY AS WELL AS STANDABLE.** This asked `standable` alone — the SLOPE — so a
+        // resource node could be placed in a lake: measured on seed 1, `res-27` sat **33 units
+        // inside a basin**, and `nothing_stands_in_the_water` has been failing on `main` for
+        // it. Water is placed BEFORE nodes within a section, so the basin cannot avoid a node
+        // that does not exist yet; the node is the one that has to look.
+        //
+        // The `usable` closure three lines down already pairs the two questions for other
+        // callers, which is what makes the omission an oversight rather than a policy.
         let standable_c = {
             let standable = standable.clone();
+            let wet = wet.clone();
             move |p: &Position| -> bool {
                 let w = if bend_half > 0.0 { radial_tf(*p, bend_half, bend_lat) } else { *p };
-                standable(&w)
+                standable(&w) && !wet(&w)
             }
         };
 
@@ -6815,7 +6830,40 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
             let mut broke = false;
             for n in &nodes {
                 let p = Position::new(n[0] as f64, n[1] as f64);
-                if !off_drawn(p, n[2] as f64)
+                // ⚠️ **THE WATER IS DRAWN BETWEEN THE NODES, SO THE SPAN HAS TO BE ASKED TOO.**
+                // `off_drawn` clears a NODE by `path_clear_radius + half_width` — but
+                // `coast::river_depth` is a capsule per consecutive PAIR, and nodes are spaced
+                // far wider than that clearance. So two nodes can each stand well clear of the
+                // trail while the span joining them runs straight over it, and the guaranteed
+                // route swims between them.
+                //
+                // Measured on seed 7 (and reproduced on `main`): waypoints 767-769 at
+                // (88.1, 610.6) sat **4.5 units inside** a river of half-width 7.9, with the
+                // nearest basin 187 away, the sea 496 and every strait 540 — nothing but the
+                // span could have put water there. `the_clear_path_crosses_at_an_isthmus_and
+                // _never_swims` has been failing on main for exactly this.
+                //
+                // Sampled rather than solved: a segment-to-polyline distance is the same
+                // arithmetic done less legibly, and the trail is already densified.
+                // ⚠️ **A PARTY'S WIDTH, NOT THE TUBE'S.** `off_drawn` clears by
+                // `path_clear_radius` alone (1.9), while the route itself keeps
+                // `path_clear_radius + player_radius` (2.4) — so clearing only the tube leaves
+                // the trail dry but WADING, and `the_clear_path_crosses_at_an_isthmus_and
+                // _never_swims` asserts the fuller clearance one line after the dryness.
+                let body = self.player_radius;
+                let span_crosses = kept.last().is_some_and(|k: &meld_proto::coast::RiverNode| {
+                    let a = Position::new(k[0] as f64, k[1] as f64);
+                    let hw = 0.5 * (k[2] + n[2]) as f64 + body;
+                    // 16ths, not 8ths: at 8 the closest approach fell BETWEEN samples and
+                    // seed 987654 came within 2.31 of water against a 2.40 requirement.
+                    (1..16).any(|s| {
+                        let t = s as f64 / 16.0;
+                        let q = Position::new(a.x + (p.x - a.x) * t, a.y + (p.y - a.y) * t);
+                        !off_drawn(q, hw)
+                    })
+                });
+                if span_crosses
+                    || !off_drawn(p, n[2] as f64 + body)
                     || !off_creatures(p, n[2] as f64)
                     || !off_bridges(p, n[2] as f64)
                 {
@@ -6847,7 +6895,7 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
                     radius -= 12.0;
                 }
                 if radius >= MIN_BODY
-                    && off_drawn(p, radius)
+                    && off_drawn(p, radius + self.player_radius)
                     && off_bridges(p, radius)
                     && off_peaks(p, radius)
                 && off_ridges(p, radius) {
@@ -6919,7 +6967,7 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
             if self.shore().sea(x as f32, z as f32) < 0.0
                 && radius >= MIN_BODY
                 && rng.unit() * basin_mult <= biome_basin_mult(self.biome_at(p))
-                && off_drawn(p, radius)
+                && off_drawn(p, radius + self.player_radius)
                 && off_peaks(p, radius)
                 && off_ridges(p, radius)
             {
@@ -16648,6 +16696,18 @@ impl Arena {
             }
         }
         None
+    }
+
+    /// Throw the cached blocking field away.
+    ///
+    /// ⚠️ **FOR THE IN-PLACE CASE THE COUNT KEY CANNOT SEE.** `radialize` and
+    /// `stream_radial_section` BEND obstacles in place — `o.position = tf(o.position)` — which
+    /// moves every one of them without changing how many there are, so the cache below happily
+    /// served pre-bend positions. The gate caught it as `nothing_stands_in_the_water` and
+    /// `the_clear_path_crosses_at_an_isthmus_and_never_swims`: the world was being collided
+    /// against in the corridor frame after it had been bent into the world one.
+    fn dirty_blockers(&self) {
+        *self.blockers.borrow_mut() = None;
     }
 
     /// The blocking field, built once and reused until the world changes under it.
