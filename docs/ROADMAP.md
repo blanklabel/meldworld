@@ -2464,6 +2464,142 @@ Make time in the field a living, dangerous place worth screenshotting.
     read as entirely ocean against a 0.05-rad corridor. **A cell is land if its wedge
     INTERSECTS the corridor.**
 
+  - ⬜ *Stage 9 — **PER-CELL GROUND, THEN COALESCE IT.*** Owner's direction, and it is the
+    answer to what stage 8 shipped looking like: *"straight mountain lines and weird circular
+    water features."* Both are the same mistake — a landform DRAWN as a global shape. A range
+    is a capsule laid along a cell boundary, so it is straight; a strait is
+    `[r_c, r_half, th_c, th_half]`, an annular sector, so it is a circle. Neither has anything
+    to do with the ground it stands on.
+    - *The pipeline is **maze → seed material along the walled boundaries → COALESCE**.* The
+      maze stays authoritative about WHERE a wall belongs — it is not reduced to a bias — and
+      what changes is that a boundary gets **material seeded along it** (water, mountain,
+      props) rather than a capsule drawn down it. The shape comes from the sweep afterwards.
+    - *Then sweep the whole map and union what touches.* The landform is **discovered**:
+      | the maze walled | coalescence makes |
+      |---|---|
+      | a LINE of water boundaries | a river |
+      | a CLUSTER of water boundaries | a lake with a ragged edge |
+      | a cell ENCLOSED by water | that lake's **island** |
+      | a line of mountain boundaries | a range that wanders |
+    - ⚠️ **THE ISLAND IS WHY THIS IS THE RIGHT SHAPE, and it is already load-bearing
+      elsewhere.** The maze guarantees no cell has degree 0, so a wholly sealed island cannot
+      happen — but a **degree-1 cell can, and that is a DEAD END**. So a dead end in a wet
+      region becomes an island reached by a single ford. This item already says dead ends are
+      where the reward goes and `maze_braid` spends them deliberately; an island with treasure
+      on it, reachable by one causeway, is what a dead end in a flooded region already IS.
+      Nobody places it.
+    - *A cell still carries its own **wetness share** and prop density* — that is the ambient
+      the boundaries structure, and it is the same unit the biome already uses, so there is no
+      scale mismatch.
+    - ⚠️ **COALESCENCE CROSSES BIOMES, AND THAT IS WHAT RETIRES THE SQUARES.** A mire cell and
+      a forest cell that both grew water get ONE lake spanning both, so a region's identity
+      comes from what is growing there rather than from a flat colour per tile, and the border
+      stops being a line where one thing ends.
+    - ⚠️ **BUT THE GROUND MUST BLEND TOO, OR THE SQUARES SURVIVE IN THE RENDERING.**
+      `biome_at` returns exactly ONE biome per position, so the ground texture snaps at a cell
+      edge — the landforms would bleed while the colour still switched, which is most of what
+      reads as squares on the survey map. `regions` already has *"distance from (x, z) to the
+      nearest cell boundary, in WORLD units, and the cell on the other side of it"*, so a
+      blend weight is a smoothstep over that distance and it mirrors into WGSL as the existing
+      function plus a lerp.
+    - ⚠️ **A SPOKE BOUNDARY IS AN EXACT RADIAL RAY, AND THAT IS THE BIGGEST TELL.** `warp_at`
+      perturbs a RING's radius by a sum of two sines, deliberately, *"so they do not read as
+      arcs"* — but `sector_bounds` is pure arithmetic on the sector index, so **half of every
+      cell's edges are dead-straight lines from the hub** and no amount of coalescence hides
+      one. The missing half is the mirror of what exists: rings wobble with BEARING, so sectors
+      must wobble with RADIUS. Same shape of function, same cost, same WGSL mirror. And it is
+      safe for the same reason the existing warp is: `Grid::span` is already documented as the
+      **nominal** extent of a cell, since `warp_at` already makes the true inner/outer
+      bearing-dependent — so a bearing warp is the same approximation on the other axis rather
+      than a new kind of lie, and `neighbours`/`cell_at` already tolerate it.
+    - ⚠️ **PLACE FROM THE MAZE, DO NOT VALIDATE AGAINST THE GROUND.** Owner's direction:
+      *"shouldn't you only plant creatures within the maze corridors? we literally know what
+      and where those are."* Creature placement DOES reject water and unstandable ground —
+      but at the moment it runs, so anything laid afterwards invalidates it. That is the shape
+      of nearly every bug this arc has produced: a range in the sea, a creature drowned by a
+      water wall laid later, props culled by a range that rose after them.
+      **The portal is the one placement that never breaks**, and the reason is that it is
+      DERIVED — taken from the route, then forced to be the clear path's last vertex. Creatures,
+      nodes and chests should come from the maze's own walkable cell interiors the same way,
+      which deletes the ordering sensitivity instead of patching it.
+      ⚠️ It re-rolls every creature position in every seeded world, so it wants its own branch
+      and its own gate.
+    - ⚠️ **THE EDGE IS NOT A PLACE — NOTHING IS EVER POSITIONED RELATIVE TO IT.** An earlier
+      draft of this said "seed the material off the line, with lateral jitter", and that is
+      still wrong for the same reason stage 8 was: it treats a boundary as somewhere to put
+      things. A boundary is a **statement about connectivity**. So the material goes in the
+      CELL'S BODY, and the maze decides only whether neighbouring masses **touch**:
+      - boundary **walled** → the two cells' masses grow toward each other until they MEET,
+        giving a continuous barrier with no line in it;
+      - boundary **open** → they stay apart, and the way through is **the gap between two
+        masses** — which is what a mountain pass actually is.
+
+      A cell with three walled boundaries grows a lobed mass reaching toward three neighbours;
+      one with a single walled boundary grows a spur. Every shape is blob-derived, so no edge
+      is ever traced and none can be seen.
+    - ⚠️ **THIS DEFUSES THE SPOKE-RAY PROBLEM, which is worth the ordering.** If nothing is
+      positioned relative to a boundary, an exact radial edge stops mattering — so the
+      `sector_bounds` bearing warp drops from "the biggest tell" to "nice later". That matters
+      because warping it re-rolls EVERY seeded world (it feeds `span`, `neighbours`, `cell_at`
+      and the maze's own adjacency), which is the hazard that got `radial_arc_degrees` backed
+      out at 300° → 280°. Do the masses first; the warp may never be needed.
+    - ⚠️ **`ridge_pass_width` CHANGES MEANING.** Today a pass is a length subtracted from a
+      drawn spine. Under masses it is a **minimum separation** between two blobs — a constraint
+      to verify rather than a gap to author — and A* still needs `route_pad` through whatever
+      it leaves.
+    - *Prop and creature density blend at a cell edge too*, or a hard change in what is growing
+      (and in how often you are ambushed) is felt at a line even when nothing is seen.
+    - ⚠️ **APPEARANCE BLENDS; DECISIONS STAY DISCRETE.** A creature roster, a node's yield, an
+      obstacle's KIND and the maze's own material choice each have to resolve to ONE answer —
+      blend those and you get half-desert half-forest wildlife and a wall made of two materials
+      at once. So `biome_at` keeps returning one biome for gameplay and a separate blend weight
+      drives the shader and the coalescence. The same split as `Area.biome` being a section's
+      representative theme while the scatter asks the cell under its own feet.
+    - *WATER IS A WALL MATERIAL, and a cell's **wet share** is the ambient around it.* ⚠️ An
+      earlier draft of this item called for *"water as GROUND"* — a cell's base state being
+      wet with land carved through it. **That was never asked for and is struck.** The owner's
+      direction is that water paints the maze's BARRIERS (*"paint the maze boundary in a mire
+      with water… e.g. a wall"*), and when asked how much of a mire should be water the answer
+      chosen was explicitly **walls only, accepting that surface coverage stays far below
+      80%**. So `WallMaterial::Water` (stage 8) is the mechanism, and stage 9 only changes its
+      SHAPE — the channel is seeded from the cell's body and coalesced rather than drawn down
+      the boundary.
+    - *A cell's **wet share** decides how readily it holds standing water*, as `height < level`
+      where the level is that share's quantile of the cell's own terrain, interpolated between
+      neighbours. That is the local lever the downhill basin walk never had — water fills the
+      low ground (a noise threshold puts ponds on hillsides) and a mire beside a forest gets a
+      shore that wanders instead of a cell-edge ring. It is the AMBIENT the coalesced channels
+      structure, not a replacement for them.
+    - ⚠️ **AND `the_mire_is_the_wettest_biome` BEING ~8-14% IS THE CHOSEN OUTCOME, NOT A GAP.**
+      Stage 8 carried it as unfinished work for a while on the strength of the struck
+      "water as ground" idea. Walls-only was picked deliberately; the swamp reads as a maze you
+      ford rather than as a flood.
+    - *What it DELETES:* `basin_chance`, `basin_radius_min`/`max`, `biome_basin_mult` and the
+      downhill basin walk — a lake becomes a cell with a high wet share. Also the whole class
+      of bug behind stage 8's mire work, where **a basin (radius 45-190) was bigger than a cell
+      (125)** so one lake spilled across three cells and per-seed biome wetness stopped being
+      answerable at all.
+    - ⚠️ **Three things to get right, all of them load-bearing:**
+      - **A PEAK IS DELIBERATELY WALKABLE** (`terrain.rs`: *"a range is authored to block; a
+        peak is authored to be climbed"*, flanks under `WALKABLE_SLOPE`). A relief blob meant
+        to WALL needs a steeper aspect — a parameter or a sibling primitive. Reusing
+        `peak_height` gives organic mountains you can stroll over.
+      - **THE COALESCENCE PASS MUST CHECK ITS OWN WORK.** An emergent wall may not actually
+        block, and "feasible by luck" is what this whole arc exists to remove. The instrument
+        already exists (the connectivity flood), so the sweep verifies and hands unblocked
+        boundaries to the prop fallback — the same shape as the bridging pass checking whether
+        its deck really carries the trail.
+      - **THE CAUSEWAY MUST BE GUARANTEED LAND.** A* needs `route_pad` of dry ground and a cell
+        at 0.8 wet has almost none, so the route's tube has to be CARVED OUT of the water field
+        the way it is already carved out of props.
+    - ⚠️ **The level must be SHIPPED, not derived per fragment**: a quantile needs sampling and
+      sorting, which a shader cannot do. One float per cell, ridden like `Repaints` rides
+      biomes — and the mirror gets a test against the FIELD, never against the other copy of
+      itself, because that is exactly how `coast::city_sea_depth` drifted for 31 merges.
+    - ⚠️ **`MAX_RIDGES` (16) gets TIGHTER, not looser.** A coalesced range is many blobs and the
+      shader window holds the sixteen nearest; past that a range renders flat while
+      `ridge_blocks` still refuses it. That budget is part of this stage, not a follow-up.
+
   - ⬜ *Stage 8 — **BUILD THE MAZE, THEN MAKE IT LOOK LIKE A PLACE.*** Owner's direction, and
     it inverts the order stages 5-7 have been fighting. Today terrain goes down FIRST (straits,
     lobes, ranges, water) and each cell boundary rolls its wall INDEPENDENTLY — which is the

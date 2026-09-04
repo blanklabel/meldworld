@@ -1753,16 +1753,18 @@ ridge_half_width_max = 52.0     # widest. A range's height is `half_width * ridg
 ridge_aspect = 1.35             # height / half_width — and because a ridge's falloff is LINEAR, this IS its slope. MUST stay above `terrain::WALKABLE_SLOPE` (0.75) or the range is a hill you stroll over; held by test.
 ridge_pass_width = 30.0         # world units of gap between two segments — the PASS. Must stay well above `2 * (path_clear_radius + player_radius)` so a party fits and A* can find it; held by test.
 
-# ── CONNECTIVITY REPAIR (WG-11). ────────────────────────────────────────────────────────
-# A range cuts its OWN passes, so it is passable in isolation — but nothing stopped a later
-# section's range body standing in an earlier one's gap. Measured, seed 1 lost 37% of its
-# walkable ground to exactly that while every range's own guarantee held, and every other
-# seed read 99.6-100%: the failure is COMPOSITION, which is why no single-mechanism test saw
-# it. These size the flood that finds a seal and the carve that opens it.
-route_yield_max_ranges = 3      # how many range segments the guaranteed route may retire when it cannot reach its own exit. The rule "a range yields to the route" already existed but only for ranges the SAME section raised — a range reaches BACK, so a section that raised none had no fallback and its trail ended as a STUB (measured, seed 1: the world streamed to d1333 with its route ending at d945). Bounded, because a section still unroutable after this has something other than a range in the way. [TUNABLE]
-connectivity_cell = 8.0         # world units per flood cell. Coarser is cheaper and blinder; must stay under `ridge_pass_width` or a real pass reads as sealed. [TUNABLE]
-connectivity_min_cells = 24     # ignore a pocket smaller than this many cells — a nook behind a boulder is scenery, not a severed region. [TUNABLE]
-connectivity_max_carves = 4     # how many range segments one section may drop to reconnect itself. A cap, so a pathological seed degrades instead of deleting its mountains. [TUNABLE]
+# ── WG-11 stage 8: the decided maze (`meld_world::maze`). ───────────────────────────────
+maze_horizon = 3200.0            # how far out the topology is built. `coast::TAPER_END`: past it the teardrop is a ~200-unit corridor holding one or two cells a ring, and a corridor is not a choice — walling it would be a gate with nothing behind it. A boundary outside the maze is OPEN, so nothing beyond the horizon can ever be a sealed pocket. [TUNABLE]
+maze_braid = 0.10                # share of DEAD ENDS given a second way out. Dead ends rather than walls is the unit on purpose: a dead end is where WG-11 hangs its reward, so braiding one SPENDS a dungeon site and the trade is legible. Measured on the 125-unit grid: 0.00 gives 0 loops / 217 dead ends, 0.10 gives 22 loops / 189, 0.20 gives 43 loops / 164. A spanning tree alone is a PERFECT maze (one path between any two cells), which is the opposite of "multiple explorable paths". [TUNABLE]
+water_wall_half_width = 3.2      # half-width of a mire boundary CHANNEL, in world units. Wide enough to be water you ford rather than step over, narrow enough that a cell stays a place you walk around in. Must stay under `path_clear_radius + player_radius` x 2 or A* cannot thread a ford. [TUNABLE]
+water_wall_node_step = 6.0       # spacing of the chain's nodes along the boundary. `river_depth` is a capsule per consecutive pair, so this is how finely the channel follows the arc — too coarse and an arc boundary is drawn as a chord across its own curve. [TUNABLE]
+
+# ⚠️ **THE CONNECTIVITY REPAIR IS GONE (`WG-11` stage 8).** `connectivity_cell`,
+# `connectivity_min_cells`, `connectivity_max_carves` and `route_yield_max_ranges` all existed
+# to REPAIR a world whose maze was rolled per boundary and came out in pieces — measured, an
+# ashfall region was 37 islands. A decided topology is connected by construction, so there is
+# nothing to repair: verified by running `the_world_is_explorable_and_not_just_routable` and
+# `deep_start_lands_on_the_route` with both repairs disabled, and both passed.
 # ⚠️ HOW TIGHTLY A PROP WALL IS PACKED, as a share of the widest gap a party cannot pass
 # (`2*obstacle_min_radius + 2*player_radius` = 3.2). Below 1.0 so a wall built on the threshold
 # actually CLOSES rather than landing exactly on it — a hedge you can slip through is worse
@@ -2590,8 +2592,8 @@ wll_per_level = 2
 # radius, an anchor's hold and the maze's routes all read. The STRUCTURE is code; these
 # are its coefficients. [TUNABLE]
 [region]
-ring_step = 250.0        # radial thickness of one ring of cells. With `cell_width` this is a cell's size: ~250 units on a side is a region you cross in well under a minute but never mistake for the one next door. Deliberately CONSTANT, unlike a section's length (20 + 7i), so a region means the same thing at the hub and at the frontier.
-cell_width = 250.0       # target arc width of one cell. The sector COUNT rides the radius to hold this roughly fixed — 8 cells around the arc at r=400, 65 at r=3000 — which is what stops a cell being a sliver near the hub and a province deep.
+ring_step = 125.0        # radial thickness of one ring of cells. With `cell_width` this is a cell's size: ~250 units on a side is a region you cross in well under a minute but never mistake for the one next door. Deliberately CONSTANT, unlike a section's length (20 + 7i), so a region means the same thing at the hub and at the frontier.
+cell_width = 125.0       # target arc width of one cell. The sector COUNT rides the radius to hold this roughly fixed — 8 cells around the arc at r=400, 65 at r=3000 — which is what stops a cell being a sliver near the hub and a province deep.
 
 boundary_warp = 88.0     # how far a ring boundary wanders with bearing. Its whole job is to stop the boundary reading as an ARC; it depends on bearing alone, which is what keeps the ring index monotone along every ray and the partition well-defined at any magnitude.
 blend_width = 26.0       # world units the ground cross-fades across a cell boundary. A boundary is 2D now, so this is a distance rather than the old per-ring band — and the fade is symmetric from both sides, or a boundary seams.
@@ -2604,26 +2606,33 @@ blend_width = 26.0       # world units the ground cross-fades across a cell boun
 # simply only ever met 2400 units out. Each biome keeps ONE faction, so a biome is at
 # peace with itself and at war with its neighbours (CR-13). All [TUNABLE].
 
-# ── WG-11: THE CELL GRAPH IS THE MAZE ────────────────────────────────────────────────────
-# Each boundary between two adjacent cells is either a PASS you can walk or a BARRIER made
-# of the biome's own material. `porosity` is the SHARE OF A REGION'S BOUNDARIES THAT STAY
-# OPEN, which is what makes each biome maze in its own way rather than differ by density:
-# field and desert are the open crossings BETWEEN mazes, ashfall is where you hunt for a
-# pass. Ordering is the design and is held by test; the values are [TUNABLE].
+# ── WG-11 stage 8: THE MAZE IS DECIDED, AND A BIOME ERASES ─────────────────────────────
+# The topology is a spanning tree over the land cells (Houston's algorithm, `meld_world::maze`)
+# plus `maze_braid` of its dead ends given a second way out. That is CONNECTED BY CONSTRUCTION
+# and it is a pure function of the seed, so a Shift never moves it.
 #
-# ⚠️ Feasibility is NOT bought here. A barrier is laid like any other prop and is refused
-# inside the route tube (`clear_of_routes`), so wherever the guaranteed clear path or a web
-# trail crosses a closed boundary it cuts its own gap. The way out stays feasible by
-# construction, exactly as it was before, and no barrier code needs to know about it.
+# ⚠️ **THESE ARE NOT THE OLD `porosity_*` NUMBERS.** Porosity was the share of boundaries that
+# stayed OPEN, rolled independently per boundary — measured, that left an ashfall region in
+# **37 pieces** with the largest holding 28% of the world's cells, because a random graph needs
+# `mean_degree x p > ln(N)` (about 0.94 here) to be whole while the table ran 0.30-0.92. Both
+# ashfall and mire sat BELOW the `(N-1)/E` floor of 0.360 and so could not be connected by any
+# arrangement at all.
+#
+# `erase_*` is the share of the WALLS the maze wants here that this biome does not bother to
+# build, leaving passable scenery instead. It can only ever ADD openness, which is what makes it
+# safe for a biome — and therefore for a Shift — to decide: nothing here can disconnect a world
+# whose skeleton is already a tree. The tree opens ~36% of boundaries, so **no biome can be
+# tighter than that**: ashfall and mire erase nothing and sit exactly on the floor, which is what
+# their old 0.30/0.35 was reaching for. Ordering is the design; values are [TUNABLE].
 [region_barrier]
-porosity_field = 0.92            # a crossing: you are getting OVER this to the next biome
-porosity_desert = 0.90
-porosity_forest = 0.55           # a wood you have to find your way through
-porosity_amber_wood = 0.60
-porosity_tundra = 0.38           # trees AND ranges
-porosity_mire = 0.35             # trees AND water
-porosity_ashfall = 0.30          # ranges: the tightest, you are hunting a pass
-porosity_default = 0.55          # the deep authored biomes until they are tuned
+erase_field = 0.88               # a crossing: you are getting OVER this to the next biome, not through it
+erase_desert = 0.85
+erase_forest = 0.30              # a wood you have to find your way through
+erase_amber_wood = 0.38
+erase_tundra = 0.03              # trees AND ranges
+erase_mire = 0.0                 # trees AND water: builds every wall the maze asks for
+erase_ashfall = 0.0              # ranges: the tightest, you are hunting a pass
+erase_default = 0.30             # the deep authored biomes until they are tuned
 # How a barrier is drawn along the boundary it closes.
 # WG-11 stage 2: DEAD ENDS ARE THE CONTENT. A cell whose only open boundary is the one you
 # came in by leads nowhere — so the through-route is for PROGRESS and the dead ends are for

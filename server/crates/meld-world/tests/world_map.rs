@@ -18,7 +18,11 @@
 use meld_balance::Balance;
 use meld_world::Arena;
 
-const REACH: f64 = 1500.0;
+/// ⚠️ **FAR ENOUGH TO SEE THE TEARDROP.** This was 1500 — and `coast::TAPER_START` is 1200
+/// with `TAPER_END` at 3200, so the map stopped 300 units after the taper BEGAN and showed
+/// only the fat end of the fan. Reported as "this doesn't look like a teardrop", and it did
+/// not, because the shape lives entirely outside what the picture covered.
+const REACH: f64 = 3400.0;
 
 fn biome_colour(b: &str) -> &'static str {
     match b {
@@ -41,7 +45,7 @@ fn biome_colour(b: &str) -> &'static str {
 #[ignore = "dev instrument: writes an SVG map; run with --ignored"]
 fn dump_world_map() {
     let b = Balance::load_default().unwrap();
-    for seed in [1u64, 42, 424242] {
+    for seed in [424242u64] {
         let mut a = Arena::generate(&b, seed, false);
         for _ in 0..40 {
             a.ensure_frontier(&b, REACH);
@@ -108,6 +112,96 @@ fn dump_world_map() {
             }
         }
         svg.push_str("</g>\n");
+
+        // ── THE MAZE: which cell boundaries the decided topology WALLED, and where the
+        // dead ends are. This is the layer the whole of `WG-11` stage 8 is about — the cells
+        // layer shows what biome a region is, and this shows whether you can walk out of it.
+        //
+        // Drawn from the same `maze::shared_boundary` the wall placement uses, so the picture
+        // cannot disagree with the world about where a wall stands.
+        {
+            let arc_half = a.radial_half() as f32;
+            svg.push_str("<g id='maze'>\n");
+            let mut walled = 0usize;
+            let mut opens = 0usize;
+            let rings = (REACH / g.ring_step as f64).ceil() as u32 + 1;
+            for ring in 0..rings {
+                for sector in 0..g.sectors(ring) {
+                    let c = meld_proto::regions::Cell::new(ring, sector);
+                    if !meld_world::maze::cell_holds_land(&g, arc_half, c) {
+                        continue;
+                    }
+                    for other in g.neighbours(c) {
+                        if other.key() <= c.key()
+                            || !meld_world::maze::cell_holds_land(&g, arc_half, other)
+                        {
+                            continue;
+                        }
+                        let Some(((r0, b0), (r1, b1))) =
+                            meld_world::maze::shared_boundary(&g, c, other)
+                        else {
+                            continue;
+                        };
+                        if r0 > REACH {
+                            continue;
+                        }
+                        let open = a.maze.is_open(c, other);
+                        if open {
+                            opens += 1;
+                        } else {
+                            walled += 1;
+                        }
+                        // An arc is drawn as a polyline so it curves; a spoke is a line.
+                        let mut d = String::new();
+                        let steps = if (r0 - r1).abs() < 1e-6 { 8 } else { 1 };
+                        for k in 0..=steps {
+                            let t = k as f64 / steps as f64;
+                            let (r, bb) = (r0 + (r1 - r0) * t, b0 + (b1 - b0) * t);
+                            d.push_str(&format!(
+                                "{}{:.1},{:.1} ",
+                                if k == 0 { "M" } else { "L" },
+                                sx(r * bb.cos()),
+                                sy(r * bb.sin())
+                            ));
+                        }
+                        // A WALL is solid and hot; a PASS is a faint dash. The eye should read
+                        // the walls as the structure and the passes as the gaps between them.
+                        if open {
+                            svg.push_str(&format!(
+                                "<path d='{d}' fill='none' stroke='#4de0a0' stroke-width='0.8' \
+                                 stroke-opacity='0.30' stroke-dasharray='2 3'/>\n"
+                            ));
+                        } else {
+                            svg.push_str(&format!(
+                                "<path d='{d}' fill='none' stroke='#ff5c4d' stroke-width='2.2' \
+                                 stroke-opacity='0.85'/>\n"
+                            ));
+                        }
+                    }
+                }
+            }
+            // Dead ends: where WG-11 hangs its reward.
+            for &k in a.maze.dead_ends() {
+                let c = meld_proto::regions::Cell::from_key(k);
+                let sp = g.span(c);
+                let (r, bb) = (
+                    0.5 * (sp.inner + sp.outer) as f64,
+                    0.5 * (sp.bear_lo + sp.bear_hi) as f64,
+                );
+                if r > REACH {
+                    continue;
+                }
+                svg.push_str(&format!(
+                    "<circle cx='{:.1}' cy='{:.1}' r='3.5' fill='none' stroke='#ffd166' \
+                     stroke-width='1.6' stroke-opacity='0.9'/>\n",
+                    sx(r * bb.cos()),
+                    sy(r * bb.sin())
+                ));
+            }
+            svg.push_str("</g>\n");
+            println!("  maze: {walled} walled, {opens} passes, {} dead ends in view",
+                a.maze.dead_ends().len());
+        }
 
         // ── SEA: the actual signed shoreline field, sampled and run-length encoded.
         //
@@ -259,7 +353,140 @@ fn dump_world_map() {
                 k[2] as f64 / (2.0 * span) * size
             ));
         }
-        svg.push_str("</g>\n</svg>\n");
+        svg.push_str("</g>\n");
+
+        // ── LEGEND. A survey nobody can read is a picture rather than an instrument — and
+        // every layer here is a toggleable `<g id=…>`, so the key names the layer too.
+        {
+            svg.push_str("<g id='legend'>\n");
+            let (lx, ly, lw, row) = (14.0f64, 14.0f64, 268.0f64, 15.0f64);
+            let rows: &[(&str, &str, &str)] = &[
+                ("head", "", "THE MAZE  (id=maze)"),
+                ("line-thick", "#ff5c4d", "walled boundary - no way through"),
+                ("line-dash", "#4de0a0", "pass - the maze's way through"),
+                ("ring", "#ffd166", "dead end - where the reward goes"),
+                ("head", "", "GROUND"),
+                ("capsule", "#e8dcc8", "mountain range - blocks by slope"),
+                ("dot", "#d8c8a0", "peak - climbable, crowned (id=peaks)"),
+                ("dot", "#9db98a", "scatter prop (id=scatter)"),
+                ("dot", "#ffcf6b", "prop wall - boundary walled with trees"),
+                ("dot", "#ff7b4a", "pass part - micro maze inside a mouth"),
+                ("head", "", "WATER"),
+                ("swatch", "#1d4f7a", "ocean, straits, bays (id=sea)"),
+                ("disc", "#2f6ea8", "lake / basin - fills a contour"),
+                ("line", "#3f8ec9", "river & water wall - gaps are FORDS"),
+                ("head", "", "ROUTE"),
+                ("line", "#ff4fa3", "guaranteed trail + web (id=route)"),
+            ];
+            let lh = row * (rows.len() as f64) + 30.0;
+            svg.push_str(&format!(
+                "<rect x='{lx}' y='{ly}' width='{lw}' height='{lh:.0}' rx='5' fill='#0b0d12' \
+                 fill-opacity='0.85' stroke='#3a4152'/>\n"
+            ));
+            svg.push_str(&format!(
+                "<text x='{:.0}' y='{:.0}' fill='#e8edf6' font-family='monospace' \
+                 font-size='11' font-weight='bold'>seed {seed} - d0..{:.0} - {} cells</text>\n",
+                lx + 10.0,
+                ly + 18.0,
+                REACH,
+                cells
+            ));
+            let mut y = ly + 36.0;
+            for (kind, colour, label) in rows {
+                let (sx0, tx) = (lx + 12.0, lx + 44.0);
+                let cy = y - 3.0;
+                match *kind {
+                    "head" => {
+                        svg.push_str(&format!(
+                            "<text x='{:.0}' y='{y:.0}' fill='#8f9bb3' font-family='monospace' \
+                             font-size='9' letter-spacing='1'>{label}</text>\n",
+                            lx + 10.0
+                        ));
+                        y += row;
+                        continue;
+                    }
+                    "line-thick" => svg.push_str(&format!(
+                        "<path d='M{sx0:.0},{cy:.0} L{:.0},{cy:.0}' stroke='{colour}' \
+                         stroke-width='2.2'/>\n",
+                        sx0 + 22.0
+                    )),
+                    "line-dash" => svg.push_str(&format!(
+                        "<path d='M{sx0:.0},{cy:.0} L{:.0},{cy:.0}' stroke='{colour}' \
+                         stroke-width='1' stroke-dasharray='2 3'/>\n",
+                        sx0 + 22.0
+                    )),
+                    "line" => svg.push_str(&format!(
+                        "<path d='M{sx0:.0},{cy:.0} L{:.0},{cy:.0}' stroke='{colour}' \
+                         stroke-width='1.6'/>\n",
+                        sx0 + 22.0
+                    )),
+                    "capsule" => svg.push_str(&format!(
+                        "<path d='M{sx0:.0},{cy:.0} L{:.0},{cy:.0}' stroke='{colour}' \
+                         stroke-width='7' stroke-linecap='round'/>\n",
+                        sx0 + 22.0
+                    )),
+                    "ring" => svg.push_str(&format!(
+                        "<circle cx='{:.0}' cy='{cy:.0}' r='3.5' fill='none' stroke='{colour}' \
+                         stroke-width='1.6'/>\n",
+                        sx0 + 11.0
+                    )),
+                    "disc" => svg.push_str(&format!(
+                        "<circle cx='{:.0}' cy='{cy:.0}' r='5' fill='{colour}' \
+                         fill-opacity='0.75'/>\n",
+                        sx0 + 11.0
+                    )),
+                    "swatch" => svg.push_str(&format!(
+                        "<rect x='{sx0:.0}' y='{:.0}' width='22' height='8' fill='{colour}'/>\n",
+                        cy - 4.0
+                    )),
+                    _ => svg.push_str(&format!(
+                        "<circle cx='{:.0}' cy='{cy:.0}' r='2.4' fill='{colour}'/>\n",
+                        sx0 + 11.0
+                    )),
+                }
+                svg.push_str(&format!(
+                    "<text x='{tx:.0}' y='{y:.0}' fill='#cdd6e5' font-family='monospace' \
+                     font-size='10'>{label}</text>\n"
+                ));
+                y += row;
+            }
+            svg.push_str("</g>\n");
+
+            // ── BIOME KEY: what a cell's fill means.
+            svg.push_str("<g id='biome-key'>\n");
+            let biomes = [
+                "field", "forest", "amber_wood", "mire", "tundra", "desert", "ashfall",
+                "hearth_plains", "seized_engine", "seraphic_oubliette", "nestiphian_cradle",
+            ];
+            let bh = row * biomes.len() as f64 + 26.0;
+            let by = size - bh - 14.0;
+            svg.push_str(&format!(
+                "<rect x='14' y='{by:.0}' width='200' height='{bh:.0}' rx='5' fill='#0b0d12' \
+                 fill-opacity='0.85' stroke='#3a4152'/>\n"
+            ));
+            svg.push_str(&format!(
+                "<text x='24' y='{:.0}' fill='#8f9bb3' font-family='monospace' font-size='9' \
+                 letter-spacing='1'>BIOME  (cell fill, id=cells)</text>\n",
+                by + 17.0
+            ));
+            let mut y = by + 34.0;
+            for b in biomes {
+                svg.push_str(&format!(
+                    "<rect x='26' y='{:.0}' width='12' height='9' fill='{}' fill-opacity='0.5' \
+                     stroke='#0b0d12' stroke-width='0.5'/>\n",
+                    y - 8.0,
+                    biome_colour(b)
+                ));
+                svg.push_str(&format!(
+                    "<text x='48' y='{y:.0}' fill='#cdd6e5' font-family='monospace' \
+                     font-size='10'>{b}</text>\n"
+                ));
+                y += row;
+            }
+            svg.push_str("</g>\n");
+        }
+
+        svg.push_str("</svg>\n");
 
         let path = format!("/tmp/meld-map-{seed}.svg");
         std::fs::write(&path, &svg).unwrap();

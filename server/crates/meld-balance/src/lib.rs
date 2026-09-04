@@ -754,14 +754,14 @@ pub struct Region {
 /// open crossings between mazes, ashfall is where you hunt for a pass.
 #[derive(Debug, Clone, Deserialize)]
 pub struct RegionBarrier {
-    pub porosity_field: f64,
-    pub porosity_desert: f64,
-    pub porosity_forest: f64,
-    pub porosity_amber_wood: f64,
-    pub porosity_tundra: f64,
-    pub porosity_mire: f64,
-    pub porosity_ashfall: f64,
-    pub porosity_default: f64,
+    pub erase_field: f64,
+    pub erase_desert: f64,
+    pub erase_forest: f64,
+    pub erase_amber_wood: f64,
+    pub erase_tundra: f64,
+    pub erase_mire: f64,
+    pub erase_ashfall: f64,
+    pub erase_default: f64,
     pub dead_end_chest_tier_bonus: i32,
     pub band_half_width: f64,
     pub prop_spacing: f64,
@@ -1292,14 +1292,14 @@ pub struct WorldGen {
     pub ridge_half_width_max: f64,
     pub ridge_aspect: f64,
     pub ridge_pass_width: f64,
-    /// How many range segments the guaranteed route may retire to reach its own exit.
-    pub route_yield_max_ranges: usize,
-    /// World units per cell of the connectivity flood that finds range-sealed ground.
-    pub connectivity_cell: f64,
-    /// A severed pocket smaller than this many cells is scenery, not a severed region.
-    pub connectivity_min_cells: usize,
-    /// How many range segments one section may drop to reconnect itself.
-    pub connectivity_max_carves: usize,
+    /// How far out the decided maze is built. Past the taper the world is a corridor.
+    pub maze_horizon: f64,
+    /// Share of the maze's DEAD ENDS given a second way out, so it is not a bare tree.
+    pub maze_braid: f64,
+    /// Half-width of a mire boundary channel, in world units.
+    pub water_wall_half_width: f64,
+    /// Spacing of a water wall's chain nodes along the boundary.
+    pub water_wall_node_step: f64,
     /// How tightly a PROP wall is packed, as a share of the widest impassable gap.
     pub prop_wall_tightness: f64,
     /// `WG-11` stage 6: share of passes that get a part at all (0..1).
