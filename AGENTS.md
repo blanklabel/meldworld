@@ -2185,6 +2185,67 @@ The tell that you have hit one is a guarantee that holds in isolation and fails 
 world. And the reason props resolve OPPOSITELY to creatures is the whole point: yielding is not
 a default, it is a judgement about which thing carries meaning.
 
+⚠️ **AND EVERY GUARANTEE HERE IS ABOUT THE ROUTE, WHICH A WORLD THAT IS ONE CORRIDOR
+SATISFIES PERFECTLY.** Reported from play as *"the mountains cut off most of the world."*
+Measured: seed 1 could reach **62.8%** of its own walkable ground on foot, against 99.6-100%
+on four other seeds — and **nothing in this file was violated**. A range cuts its own passes
+(`ridge_passes_*`) and every one of them held; a river guarantees its fords; a strait
+guarantees its isthmus. What nothing owned was their COMPOSITION: a range reaches BACK into
+sections already generated, so a later one's body stands in an earlier one's gap, and both
+subsystems stay green. **ROUTABLE IS NOT EXPLORABLE**, and until `open_sealed_ground` there
+was no assertion anywhere that a player can leave the trail and come back a different way.
+The repair floods from the hub once every blocker for a section is down and drops the range
+segment holding a severed pocket; the flood is the **whole disc**, because a band-scoped one
+cannot see a seal that formed retroactively at r=301 while the section raising its last wall
+sits at r=900 (the same cross-section reach as the river that walks 364 units into its
+neighbour). It costs ~13% of generation and only fires where a range was raised.
+
+⚠️ **AND TWO WAYS TO MEASURE IT WRONG, both of which produced confident numbers first.**
+**Flood wider than you judge** — cutting both at the same radius scores a pocket that
+reconnects further out as severed (seed 1 read 73% at a 700-unit cut and 100% at 1200); the
+tell is **zero seal cells with ground still stranded**, since a real wall always leaves
+blocked ground touching both sides. And **scatter is not a barrier** — at any affordable cell
+size the grid cannot resolve the gaps between trunks, so counting trees makes a wood read as
+solid and the flood dies inside the hub ring at 0.1% reached. Deliberate prop WALLS are
+counted and, measured, seal nothing on any seed. ⚠️ `BlockField::with_ridges(items, ridges)`
+puts its first argument in the PROPS half, which `ridge_blocks` does not consult — passing
+barriers there tests nothing and reports it as a clean result.
+
+⚠️ **AND "A RANGE YIELDS TO THE ROUTE" WAS SCOPED TO ONE SECTION, SO THE TRAIL COULD END.**
+`push_section` retires the ranges it raised when A* cannot reach its own exit — correct, and
+useless for a section that raised NONE, which then had no fallback at all: `astar_route`
+stops where it can and the trail is a **stub**. A range reaches BACK across sections, so
+scoping the yield to the current one always left this hole; it needs a seed whose blocking
+range sits in an earlier band, which is why it hid. Measured on seed 1: the world streamed to
+d1333 with its guaranteed route ending at **d945**, each successive section escaping further
+BACKWARDS (x=825, 705, 585 against targets of 1098/1204/1332) — so `route_point_at(1269)`
+answered d945, and the deep portal, the Gatekeeper in the pass and the end fight were all
+unreachable past that ring. `retire_range_blocking` drops whatever stands on the direct line
+to the exit, wherever it was raised, bounded by `route_yield_max_ranges`: a section still
+unroutable after that has something other than a range in the way.
+
+⚠️ **A REPAIR CUTS A DOOR; IT DOES NOT KNOCK THE WALL DOWN.** Both repairs above first
+shipped by DELETING the offending range segment, which fixes connectivity by removing the
+maze — measured, that cost 24% of the world's mountain footprint and 51% of seed 1's, taking
+away exactly the ranges that make a deep band read as ashfall or tundra.
+[`meld_proto::terrain::Ridge`] already says how a way through is made — *"a pass is the GAP
+BETWEEN TWO RIDGES, not a property of one"* — so `cut_pass_through_range` splits the spine at
+the point that wanted through, leaving `ridge_pass_width` of gap and the wall standing either
+side. The route's door goes where its own direct line meets the wall, which is where a door
+belongs. ⚠️ **And a short flank is NARROWED, not dropped**: requiring `3 x half_width` of
+length before keeping a flank is demolition wearing a door's clothes, since with
+`ridge_half_width_max` near 50 that floor is 150 units a side and any spine under ~300 lost
+both flanks. The no-cone rule is about the ASPECT, so a flank keeps its length and gives up
+width — and its height with it, because a range is authored at a fixed aspect and a narrower
+one is a proportionally lower one.
+
+⚠️ **`open_sealed_ground` AND THE ROUTE GUARD DIFFERENT PREDICATES, AND THE SEAM IS REAL.**
+The flood asks `WALKABLE_SLOPE` at `player_radius`; A* asks the stricter `ROUTE_SLOPE` at
+`route_pad`. So ground can be walkable-connected while staying unroutable, and the
+explorability guard will happily pass a world whose guaranteed trail is a stub. They are
+guarding different properties on purpose — a player may scramble where the trail may not —
+but do not read either as covering the other.
+
 ⚠️ **AND A DECK IS A STRAIGHT SEGMENT WHILE A CROSSING CAN BE A CURVE.** `bridge_span`
 collapses a run of drowned trail into ONE straight capsule from its first vertex to its last,
 so where the trail crosses at an angle — or bows around a range, a peak, a lake — the deck

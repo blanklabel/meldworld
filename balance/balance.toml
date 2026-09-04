@@ -1454,7 +1454,7 @@ area_count = 8                   # how many areas to pre-generate for the instan
 # `meld-dungeon`'s authored parts with derived openings, which is what `WG-8` always proposed.
 # Until then the world simply has no ring-dungeons, and that is strictly better than a quarter
 # of it being a branchless band with a broken wall across it.
-dungeon_every = 0                # 0 disables dungeons; else every Nth section (i>0) is one
+dungeon_every = 0                # 0 disables dungeons; else every Nth SECTION (i>0) is one. ⚠️ **KEEP AT 0 UNTIL A DUNGEON IS CELL-SCOPED.** A section IS a radius band, so any non-zero value makes whole RINGS of the world a dungeon — the exact ring-world artifact `WG-11` exists to retire, and `no_ring_of_the_world_is_a_dungeon_and_none_is_branchless` fails on it (it did: set to 6, seed 1 went red). Re-enabling dungeons is real work, not this dial: the roadmap already specs them as the reward at the end of a DEAD-END CELL. [TUNABLE]
 dungeon_rooms = 3                # rooms per dungeon (this many − 1 internal divider walls)
 dungeon_creature_mult = 1.9      # creature density multiplier inside a dungeon
 dungeon_wall_radius = 1.1        # radius of each obstacle in a divider wall
@@ -1570,6 +1570,14 @@ desert_obstacle_mult = 0.8       # open desert — a scattering of cacti (the br
 ashfall_obstacle_mult = 2.5      # scattered rock — the RANGES do this biome's mazing, not the scatter (see TERRACE_MULT)
 tundra_obstacle_mult = 4.0       # a snowed-in conifer wood: trees AND mountains, not bare spires
 mire_obstacle_mult = 7.5         # MOSTLY water: the swamp is a flooded maze, land is the trail
+
+# ⚠️ WHAT SHARE OF THE MAZE FILL IS THE BIOME'S SIGNATURE KIND. Below 1.0 because the fill
+# had become a biome's ENTIRE population: measured, a mire held 10,364 obstacles that were 99%
+# `mire_root`, and its `mire_tree` and `fungal_wall` — the two that make a swamp read as a
+# swamp — never appeared at all. The signature stays dominant (a wood must still read as a
+# wood from a distance); the rest is drawn from `obstacles_for_biome`. Count is unchanged, only
+# the mix, so no density or feasibility invariant moves. [TUNABLE]
+fill_signature_share = 0.72
 maze_obstacle_mult = 2.0         # fallback for any unlisted biome
 # Radial density compensation: the WG-4 fan bends the fixed-width corridor into an arc
 # that widens with radius, so a per-area obstacle count spreads ever thinner at depth (a
@@ -1726,6 +1734,7 @@ ridge_spoke_rings_max = 4
 # and deliberately is not bounded to its own section band). The fix belongs with water's
 # cross-section yielding, and the maze turns on by raising this number once it lands.
 ridge_max_per_section = 6
+prop_wall_max_per_section = 24   # …and PROP walls get their own, larger budget. A range is a capsule sampled into the height field at ~300 points per spine and re-checked against the trail, the water and everything standing — a dozen is tens of millions of distance tests. A prop wall is a line of ordinary obstacles in the `BlockField` every mover already reads: O(boundary length), no per-sample geometry. Sharing one budget put 232 wall props in a whole world, ~2.4 boundaries' worth, because the ranges spent it first. [TUNABLE]
 ridge_passes_min = 1            # interior passes per range. With the boundary's two ends that is at least three ways past — one door is the retired `Seam` again.
 ridge_passes_max = 3
 ridge_pass_share = 0.09         # a pass's width as a share of the range's own length, floored at `ridge_pass_width`. A share so the gap scales with the wall.
@@ -1743,6 +1752,24 @@ ridge_half_width_min = 26.0     # narrowest range, world units from spine to foo
 ridge_half_width_max = 52.0     # widest. A range's height is `half_width * ridge_aspect`, so this also sets how tall it stands.
 ridge_aspect = 1.35             # height / half_width — and because a ridge's falloff is LINEAR, this IS its slope. MUST stay above `terrain::WALKABLE_SLOPE` (0.75) or the range is a hill you stroll over; held by test.
 ridge_pass_width = 30.0         # world units of gap between two segments — the PASS. Must stay well above `2 * (path_clear_radius + player_radius)` so a party fits and A* can find it; held by test.
+
+# ── CONNECTIVITY REPAIR (WG-11). ────────────────────────────────────────────────────────
+# A range cuts its OWN passes, so it is passable in isolation — but nothing stopped a later
+# section's range body standing in an earlier one's gap. Measured, seed 1 lost 37% of its
+# walkable ground to exactly that while every range's own guarantee held, and every other
+# seed read 99.6-100%: the failure is COMPOSITION, which is why no single-mechanism test saw
+# it. These size the flood that finds a seal and the carve that opens it.
+route_yield_max_ranges = 3      # how many range segments the guaranteed route may retire when it cannot reach its own exit. The rule "a range yields to the route" already existed but only for ranges the SAME section raised — a range reaches BACK, so a section that raised none had no fallback and its trail ended as a STUB (measured, seed 1: the world streamed to d1333 with its route ending at d945). Bounded, because a section still unroutable after this has something other than a range in the way. [TUNABLE]
+connectivity_cell = 8.0         # world units per flood cell. Coarser is cheaper and blinder; must stay under `ridge_pass_width` or a real pass reads as sealed. [TUNABLE]
+connectivity_min_cells = 24     # ignore a pocket smaller than this many cells — a nook behind a boulder is scenery, not a severed region. [TUNABLE]
+connectivity_max_carves = 4     # how many range segments one section may drop to reconnect itself. A cap, so a pathological seed degrades instead of deleting its mountains. [TUNABLE]
+# ⚠️ HOW TIGHTLY A PROP WALL IS PACKED, as a share of the widest gap a party cannot pass
+# (`2*obstacle_min_radius + 2*player_radius` = 3.2). Below 1.0 so a wall built on the threshold
+# actually CLOSES rather than landing exactly on it — a hedge you can slip through is worse
+# than no wall, because the cell graph has already promised it is a barrier. This is what makes
+# a forest or a mire boundary walled at all: a range is the wrong material for a wood, so
+# before this those boundaries were closed on paper and walkable in fact. [TUNABLE]
+prop_wall_tightness = 0.8
 ridge_segments_min = 2          # fewest segments per range. TWO, so there is always at least one interior pass — plus the boundary's two ends, which is three ways past every range. One door is the `Seam` again.
 ridge_segments_max = 4
 # BRIDGES: where the clear trail crosses a strait, the crossing is SPANNED rather than the
@@ -1804,13 +1831,13 @@ isle_offshore_max = 130.0        # furthest. Past the interest radius it is neve
 # "Rivers flow to the ocean" is therefore not a check that can fail.
 water_min_section = 5            # earliest section index that may hold inland water.
 water_min_reach = 150.0          # nearest hub distance. The on-ramp stays dry: a river across the first minutes is a barrier before a player knows what a ford is. [TUNABLE]
-river_chance = 0.35              # chance a deep-enough section springs a river (0..1). [TUNABLE]
+river_chance = 0.70              # chance a deep-enough section springs a river (0..1). ⚠️ DOUBLED from 0.35: measured, a world out to d1500 held 16-31 river nodes and 3-7 basins — a handful of bodies across an enormous area. A river that reaches the drawn trail becomes a FORD rather than a barrier, so more water is more crossings, not less feasibility. [TUNABLE]
 river_step = 26.0                # world units between river nodes. Small enough to follow a valley, large enough that a river reaches the sea inside `river_max_nodes`. [TUNABLE]
 river_max_nodes = 14             # nodes before a river gives up and pools into a lake. Caps both the wire payload and the descent cost. [TUNABLE]
 river_half_width_min = 5.0       # half-width of a CREEK, world units. [TUNABLE]
 river_half_width_max = 13.0      # …and of a river. Kept well under `[ai] group_radius` scale so a channel reads as something you cross, not a region. [TUNABLE]
 river_ford_every = 4             # a FORD every this many nodes. ⚠️ A GUARANTEE, not a decoration: connectedness is what a river IS, and a connected impassable line is exactly what disconnects a world — same contract as a strait's isthmus. [TUNABLE]
-basin_chance = 0.40              # chance a section also holds a standing body with no river feeding it (0..1). [TUNABLE]
+basin_chance = 0.80              # chance a section also holds a standing body with no river feeding it (0..1). ⚠️ DOUBLED from 0.40 alongside `river_chance` — see the note there. [TUNABLE]
 basin_radius_min = 45.0          # bound on how far a basin may spread, smallest. The SHAPE is the terrain's contour; this only stops a flat hollow flooding the whole ring. [TUNABLE]
 basin_radius_max = 190.0         # …and largest. [TUNABLE]
 basin_fill = 3.5                 # how far above a hollow's floor the water surface sits, in HEIGHT units (the field runs about +/-16). Deeper fills flood wider, because the contour is wider higher up. [TUNABLE]

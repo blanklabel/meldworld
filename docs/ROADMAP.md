@@ -2406,6 +2406,116 @@ Make time in the field a living, dangerous place worth screenshotting.
     connectivity guaranteed by construction, deliberately not a tree, with terminal
     branches. *The micro maze is authored parts inside a pass* (the old `WG-8`), because a
     cell is ~260 units across at r=400 and cannot make a 20-unit corridor.
+  - ✅ *Stage 7 — **the world is EXPLORABLE, not merely routable.*** Reported from play:
+    *"seems like we need multiple explorable paths… make it so the mountains can't cut off
+    most of the world they do in seed 1."* Measured, and true: seed 1 could reach **62.8%**
+    of its own walkable ground, against 99.6-100% on seeds 7/42/99/424242. **No guarantee in
+    the repo was violated** — every range cuts its own passes, and every one of them held.
+    The failure is COMPOSITION: a range reaches BACK into sections already generated, so a
+    later range's body stands in an earlier one's gap, and each subsystem's own test stays
+    green. Every existing guarantee is about *the guaranteed route staying feasible*, which a
+    world that is one corridor and nothing else satisfies perfectly — so nothing was asking
+    the question at all. `Arena::open_sealed_ground` floods from the hub after each section's
+    blockers are down and drops the range segment holding any severed pocket; the flood is
+    the **whole disc**, because a band-scoped one cannot see a seal that formed retroactively
+    at r=301 while the section raising its last wall sits at r=900. Cost, measured A/B on the
+    tunable: streaming to d1500 goes **5.01 s → 5.67 s**, and only sections that actually
+    raised a range pay it. Every sampled seed now reaches 100%.
+    `the_world_is_explorable_and_not_just_routable` is the guard, and it FAILS at 27% stranded
+    with the repair disabled. ⚠️ Two traps for whoever tunes this: **flood wider than you
+    judge** (cutting both at the same radius counts a pocket that reconnects further out as
+    severed — the tell is zero seal cells with ground still stranded), and **scatter is not a
+    barrier** (at any affordable cell size the grid cannot resolve the gaps between trunks, so
+    counting trees makes a wood read as solid and the flood dies in the hub ring, at 0.1%).
+    Prop walls ARE counted and, measured, seal nothing on any seed: stage 6's mouths work.
+    ⚠️ *And it exposed a bigger one beside it:* **"a range yields to the route" only ever
+    covered ranges the SAME section raised**, so a section that raised none had no fallback and
+    its trail ended as a STUB — seed 1 streamed to d1333 with its guaranteed route ending at
+    **d945**, which is what made `route_point_at(1269)` answer d945 and left the deep portal,
+    the Gatekeeper and the end fight unreachable past that ring. Fixed by scope, not by
+    judgement (`retire_range_blocking`, `route_yield_max_ranges`).
+  - ⚠️ **MEASURED: THE MAZE HAS NEVER BEEN CONNECTED, AND WAS NEVER TRYING TO BE.**
+    `regions::pass_open` rolls each boundary independently at the biome's `porosity`, and its
+    own doc says so outright — *"connectivity is NOT this function's job"*, delegated to the
+    routes carved through the world, which cut their own gaps. Measured over the teardrop's
+    **172 land cells / 475 boundaries** (mean degree 5.52), against the shipped
+    `[region_barrier]` table:
+
+    | porosity | boundaries open | components | largest holds |
+    |---|---|---|---|
+    | 0.30 ashfall | 147/475 | **37** | 28% |
+    | 0.35 mire | 172/475 | 21 | 38% |
+    | 0.38 tundra | 188/475 | 17 | 57% |
+    | 0.55 forest | 258/475 | 7 | 97% |
+    | 0.92 field | 422/475 | 1 | 100% |
+    | 1.00 all open | 475/475 | 1 | 100% |
+
+    The **floor** is `(N-1)/E` = **0.360** — the share a perfect spanning tree needs, below
+    which no arrangement connects — so **ashfall (0.30) and mire (0.35) are unconnectable by
+    construction**, and the independent roll is far worse than the floor besides, because a
+    random graph needs `mean_degree x p > ln(N)` (≈0.94 here) to be whole. An ashfall region
+    is **37 islands**. That is the root cause of everything stage 7 repaired: the repair was
+    patching a symptom of a design with disconnection built in. Reported by
+    `tests/the_maze_graph.rs` (`--ignored`). ⚠️ The last-row check matters and caught an
+    instrument error: at p=1.00 the graph IS whole, so the adjacency is sound. An earlier run
+    of this report said the end of the world was its own component, because it classified a
+    cell as land by its MIDPOINT — and `span` returns bearings over the FULL fan while
+    `sectors` counts against the TAPERED one, so a 5-sector ring at d2750 (each wedge 1.05 rad)
+    read as entirely ocean against a 0.05-rad corridor. **A cell is land if its wedge
+    INTERSECTS the corridor.**
+
+  - ⬜ *Stage 8 — **BUILD THE MAZE, THEN MAKE IT LOOK LIKE A PLACE.*** Owner's direction, and
+    it inverts the order stages 5-7 have been fighting. Today terrain goes down FIRST (straits,
+    lobes, ranges, water) and each cell boundary rolls its wall INDEPENDENTLY — which is the
+    whole reason stage 7 exists: nothing planned the topology, so connectivity had to be
+    repaired afterwards. Decide the maze first and the conflicts stop existing, because a range
+    is only raised where a wall is wanted and a gap only left where the topology says pass.
+    - *The topology:* **Houston's algorithm** (Robin Houston — Aldous-Broder until ~⅓ of the
+      grid is carved, then Wilson's, taking the fast half of each and inheriting Wilson's
+      UNIFORM spanning tree). ⚠️ At this size the performance argument is moot and the quality
+      one is the point: measured, the teardrop holds **156 land cells** (208 total), funnelling
+      to a SINGLE cell by d3000 — so any algorithm runs in microseconds. ⚠️ And a spanning tree
+      is a **perfect** maze, one path between any two cells, which is the opposite of the
+      "deliberately not a tree, with terminal branches" this item already asks for and of the
+      *"multiple explorable paths"* the owner asked for directly. **Braiding is not optional**:
+      knock out a share of walls to make loops, keep some dead ends for the dungeons.
+    - *The grid halves* — `ring_step` and `cell_width` 250 → 125, so ~156 land cells becomes
+      ~600 and the maze is a labyrinth rather than a 10-14 decision route network. Key packing
+      survives (`Cell::key` is `ring << 7 | sector`, peak sectors ~24 → ~50 against
+      `MAX_SECTORS` 128). ⚠️ Watch the noise floor `Grid::sectors`' own comment warns about: at
+      125 a biome blob is half as wide, and that function exists because a bug once cut the
+      deep corridor into 3-unit cells.
+    - *Then EXPRESS the maze, most organic first* — a resolution chain, not a biome lookup:
+      **(1) reuse what is already lying on the edge** (a strait, a lake shore, a mountain that
+      already runs along a maze boundary IS that wall — free, and the most organic outcome
+      available); **(2) add the biome's own landform** where nothing coincides (a range in
+      ashfall, a water channel in mire, a lake spur where the terrain has a hollow);
+      **(3) fall back to props and built walls** where terrain cannot express it — a treeline,
+      a rock line, an explicit wall. The passes invert identically: a strait's **isthmus**, a
+      river's **ford**, a range's **gap** and a treeline's **opening** are one thing seen
+      through four materials, and every one of those primitives already exists. What is missing
+      is only the topology telling them where to be.
+    - *Water is a wall material* (`WallMaterial::Water`), which is what makes the mire a
+      wetland maze: `RiverNode` is already a polyline with a half-width where **a chain break
+      IS a ford** — a wall with doors, already collided against by `apply_move`, already
+      land-checked by `astar_route`, already drawn. ⚠️ Verified `river_depth` reads no elevation
+      and no flow direction, so reusing chains as walls costs a doc correction (not every chain
+      descends the terrain any more) and no invariant. ⚠️ It needs a `drown_proof` row: boundary
+      channels go down before creatures, nodes and chests are placed, and that sweep is scoped
+      to "the water just added".
+    - *The per-section wall CAPS come out.* `ridge_max_per_section` and
+      `prop_wall_max_per_section` truncate the maze to a budget, which is incoherent once
+      topology decides what is a wall — and halving `ring_step` doubles the boundaries inside a
+      section, so the caps would silently bind harder and leave MORE boundaries with LESS
+      walling. Disabling ranges becomes `ridge_chance = 0`, one meaning per tunable.
+      ⚠️ **`MAX_RIDGES` is 16 and the shader window is nearest-first**, so a range past the
+      sixteenth renders as flat ground while `ridge_blocks` still refuses it — measure ranges
+      in view before raising the population.
+    - *What this DELETES:* `open_sealed_ground`, `route_yield_max_ranges`,
+      `cut_pass_through_range`, `connectivity_max_carves`. All of stage 7 exists to repair
+      topology that was never planned; under maze-first it is dead code, and
+      `the_world_is_explorable_and_not_just_routable` becomes a cheap assertion that the
+      algorithm did its job rather than a repair's guard.
   - *The teardrop:* rather than choosing which portion of the deep band is the prison —
     today `EXCLUSIVE` makes it the WHOLE annulus past d3000, ~15,700 units of arc you can
     arrive at anywhere along — **taper the land** by making `arc_half_rad` a function of
