@@ -181,7 +181,12 @@ pub(crate) fn spawn_hero_actor(
                     shadow_maps_enabled: true,
                     ..default()
                 },
-                Transform::from_xyz(0.0, 1.6, 0.0),
+                // ⚠️ AT HEAD HEIGHT, NOT AT THE WAIST. At 1.6 the lamp sat BELOW the
+                // faces around it, and inverse-square falloff over a ~2.5-unit sprite left
+                // every head markedly darker than the chest under it — the party lit itself
+                // from the waist down and read as hooded. `LAMP_HEIGHT` clears the tallest
+                // hero so the light arrives from above, the way a carried lantern does.
+                Transform::from_xyz(0.0, LAMP_HEIGHT, 0.0),
             ));
             // A bust has no legs to ground, so it skips the contact shadow.
             if !bust {
@@ -309,6 +314,38 @@ pub(crate) fn spawn_enemy_actor(
                     .with_rotation(Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2))
                     .with_scale(Vec3::new(h * 0.42, h * 0.23, 1.0)),
             ));
+            // ⚠️ A BOSS LIGHTS ITS OWN GROUND. The party carried every light in the arena,
+            // so the far rank was lit only by whatever spilled across it and a named boss
+            // arrived as a silhouette — the one creature the whole walk out is pointed at,
+            // and you could not see it. A leader gets a dimmer one: it is the pack's
+            // elite, and the fight should read at a glance as "that one is in charge".
+            //
+            // ⚠️ It keys off `boss:` and `pack:leader` because those are the only "this one
+            // is special" markers that REACH the battle view. `encounter_class`
+            // (elite/gatekeeper) never crosses the wire into a fight, so a true elite that
+            // is not leading a pack goes unlit until the server sends it.
+            if let Some(strength) = creature_lamp_strength(&c.statuses) {
+                p.spawn((
+                    BattlePartyLamp { strength },
+                    PointLight {
+                        // Cold and hostile, against the party's warm lanterns, so the two
+                        // sides of the arena never read as the same light.
+                        color: Color::srgb(0.75, 0.55, 1.0),
+                        intensity: 0.0,
+                        range: LAMP_REACH * 0.6,
+                        radius: LAMP_RADIUS,
+                        shadow_maps_enabled: true,
+                        ..default()
+                    },
+                    // ⚠️ CLEAR OF ITS OWN BILLBOARD. At `h * 0.6` this sat barely 0.2 units
+                    // from the quad's centre, and a point light that close to a plane blows
+                    // it out: the boss lit ITSELF to a near-white silhouette and lost the
+                    // art it was promoted to show. The party's lamps hang ~2 units above
+                    // their own quads, which is why they light the room and not themselves;
+                    // this hangs the same distance over the creature's head.
+                    Transform::from_xyz(0.0, h + 1.0, 0.0),
+                ));
+            }
             p.spawn((
                 TargetDiamond { id: c.id.clone(), base_y: marker_y },
                 Mesh3d(wa.sprite_quad.clone()),
@@ -542,6 +579,22 @@ const LAMP_STRENGTH: f32 = 140_000.0;
 const LAMP_REACH: f32 = 34.0 * crate::overworld::LAMP_REACH_MULT;
 /// Source SIZE, not distance — it softens the falloff, and is deliberately unchanged.
 const LAMP_RADIUS: f32 = 0.6;
+/// How high the carried lamp hangs. Above head height on purpose — see the spawn site.
+const LAMP_HEIGHT: f32 = 2.7;
+
+/// What a creature's own light is worth, or `None` for the rank and file. A named boss
+/// burns brightest; a pack leader is the elite of its group and glows enough to be picked
+/// out of the line. Deliberately under the party's `LAMP_STRENGTH`: the arena should read
+/// as the party's lanterns pushing INTO the dark, not as a lit room.
+fn creature_lamp_strength(statuses: &[String]) -> Option<f32> {
+    if statuses.iter().any(|s| s.starts_with("boss:")) {
+        Some(LAMP_STRENGTH * 0.55)
+    } else if statuses.iter().any(|s| s == "pack:leader") {
+        Some(LAMP_STRENGTH * 0.2)
+    } else {
+        None
+    }
+}
 
 /// The clip every class has: its basic battle attack.
 const GENERIC_STRIKE: &str = "attack";
@@ -3545,6 +3598,26 @@ mod pack_tests {
 
 #[cfg(test)]
 mod watch_banner_tests {
+    /// ⚠️ ONLY A BOSS OR A LEADER LIGHTS ITSELF — the rank and file stay dark, or the
+    /// arena becomes a lit room and the party's lanterns stop meaning anything. Reads the
+    /// same wire statuses the sprite choice does, so a creature cannot be drawn as a boss
+    /// and lit as a nobody.
+    #[test]
+    fn a_boss_lights_its_own_ground_and_a_footsoldier_does_not() {
+        let boss = vec!["boss:ironmaw".to_string()];
+        let leader = vec!["pack:leader".to_string()];
+        let minion = vec!["pack:minion".to_string()];
+        let plain: Vec<String> = vec![];
+        let b = creature_lamp_strength(&boss).expect("a named boss carries a light");
+        let l = creature_lamp_strength(&leader).expect("a pack leader carries a light");
+        assert!(creature_lamp_strength(&minion).is_none(), "a minion is rank and file");
+        assert!(creature_lamp_strength(&plain).is_none(), "a plain creature is unlit");
+        assert!(b > l, "a named boss must out-burn the leader of a pack: {b} vs {l}");
+        // And neither may out-shine the party, whose lanterns are the reason the arena is
+        // visible at all.
+        assert!(b < LAMP_STRENGTH, "a boss must not out-light the party: {b}");
+    }
+
     /// ⚠️ A CLASS WITH NO ABILITY ART MUST STILL READ AS DOING SOMETHING, AND THE
     /// STAND-IN MUST NOT LIE. Measured when this landed: 74 of the registry's 92
     /// abilities had no clip, so the fallback is the common case rather than the edge —
