@@ -536,6 +536,17 @@ fn biome_water_mult(biome: &str) -> f64 {
 /// nothing anywhere saying so: the five biomes `#327` added went in against a six-arm match
 /// and inherited desert for a release. As a table it can be ENUMERATED, which is what lets
 /// `every_biome_says_how_much_mountain_it_grows` refuse the next one.
+/// How far past its own radius band a route may wander, and therefore how wide a slice of
+/// the shoreline `astar_route` has to consider. The A* search box carries 80 cells of slack
+/// either side; this is that, rounded up generously. A landform further out than this cannot
+/// touch the route, so it is dead weight on every one of the route's samples.
+const ROUTE_BAND_SLACK: f64 = 400.0;
+
+/// How far apart `astar_route` samples a candidate edge, in world units. Under the route's
+/// own clearance (`path_clear_radius + player_radius`) so a feature is still caught from a
+/// pad away rather than having to be hit exactly.
+const ROUTE_SAMPLE_STEP: f64 = 2.0;
+
 const TERRACE_MULT: &[(&str, f64)] = &[
     // ⚠️ **ASHFALL MAZES WITH MOUNTAINS, NOT WITH SCATTER.** This is the volcanic region,
     // so its walls are RANGES: this weight gates the range roll (`push_ridges` multiplies
@@ -2464,6 +2475,73 @@ pub struct Avatar {
 
 /// The generated overworld for one MazeInstance (spike scope): a seeded chain of
 /// biome areas along a walkable corridor, streamed section-by-section on demand.
+/// **WHAT A BIOME WALLS A CLOSED BOUNDARY WITH** (`WG-11`).
+///
+/// `regions::pass_open` decides whether a cell boundary is a pass or a barrier, purely from
+/// the seed and the biome's porosity. This decides what a barrier is MADE OF — and until now
+/// the answer was always "a mountain range", which is the wrong material for three quarters of
+/// the world:
+///
+/// > *"A range is still the wrong material for a wood: a ridge raises `ridge_height` and
+/// > blocks by SLOPE."*
+///
+/// ⚠️ **So a closed boundary in a forest or a mire was closed on paper and walkable in fact.**
+/// It got a range on a `ridge_chance x biome_terrace_mult` roll — 0.36 in a forest, 0.135 in a
+/// field — and nothing at all the rest of the time. The graph said barrier, the ground said
+/// stroll through. Measured, that is why the maze read as *"weird rings on a map with some
+/// paths through"* everywhere except beside Last City, where the SCATTER is dense enough
+/// (31 props per 1000 u² against 1.8 at d1500) to maze on its own.
+///
+/// The split follows `AGENTS.md`'s own sentence — *field and desert wide open; forest its
+/// trees; ashfall ranges of mountains; the mire water and trees; the tundra trees AND
+/// mountains* — because a biome's barrier material is what makes it feel like a place rather
+/// than a density.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum WallMaterial {
+    /// A raised range: impassable by SLOPE. Rock country.
+    Range,
+    /// A dense line of the biome's own props, tight enough to actually block.
+    Props,
+    /// Nothing — the open crossings BETWEEN mazes. Their porosity is near 1.0 anyway, so
+    /// few of their boundaries are closed in the first place.
+    Open,
+}
+
+/// What `biome` walls with. `Both` is expressed as a roll rather than a variant: the tundra
+/// is the one biome that mazes with trees AND mountains, and which one a given boundary gets
+/// should vary along it rather than being decided once for the whole biome.
+fn wall_material(biome: &str, roll: f64) -> WallMaterial {
+    match biome {
+        // The open crossings. You are meant to be able to see across these.
+        "field" | "desert" | "hearth_plains" => WallMaterial::Open,
+        // Rock country: the range IS the right material.
+        "ashfall" | "seraphic_oubliette" | "seized_engine" => WallMaterial::Range,
+        // Trees AND mountains — the one biome that uses both primitives at once.
+        "tundra" => {
+            if roll < 0.5 {
+                WallMaterial::Range
+            } else {
+                WallMaterial::Props
+            }
+        }
+        // Wooded and flooded: trees do the walling.
+        _ => WallMaterial::Props,
+    }
+}
+
+/// **A RUN OF A CLOSED CELL BOUNDARY TO BE WALLED WITH PROPS** — see [`WallMaterial`].
+///
+/// Recorded by [`Arena::push_boundary_walls`] and laid by [`Arena::push_prop_walls`] AFTER the
+/// route, for the same reason the pass parts are: `astar_route` collides with ranges and
+/// terrain but NOT with obstacles, so a prop wall built before the route is one the guaranteed
+/// trail walks straight through.
+#[derive(Clone, Copy, Debug)]
+pub struct PropWall {
+    pub a: Position,
+    pub b: Position,
+    pub kind: &'static str,
+}
+
 /// **THE MOUTH OF A PASS** — where a walled cell boundary has its gap, which is the one
 /// place a party can cross it.
 ///
@@ -2515,6 +2593,7 @@ impl ShiftRegion {
     }
 }
 
+#[derive(Clone)]
 pub struct Arena {
     /// The seed this world was generated from (determinism / debugging).
     pub seed: u64,
@@ -2958,6 +3037,9 @@ impl Arena {
         }
         out
     }
+
+
+
 
     pub fn shore(&self) -> meld_proto::coast::Shore<'_> {
         meld_proto::coast::Shore {
@@ -3626,9 +3708,14 @@ impl Arena {
         // peak — `off_peaks` is what stops a basin flooding straight through one.
         let ridges_before = self.ridges.len();
         self.push_ridges(balance, i, start_x, end_x);
-        // The mouths of this section's walled boundaries — consumed once the route exists.
-        let pass_mouths = self.push_boundary_walls(balance, i, start_x, end_x);
+        // The mouths of this section's walled boundaries, and the boundaries a PROP wall has
+        // to be laid along — both consumed once the route exists.
+        let (pass_mouths, prop_walls) = self.push_boundary_walls(balance, i, start_x, end_x);
         self.push_water(balance, i, start_x, end_x);
+
+        // ⚠️ Every blocker for this band is now down, which is the only moment the question
+        // "is any of this severed" can be asked — see `open_sealed_ground`.
+        self.open_sealed_ground(balance, end_x);
 
         // WG-1: every Nth procedural section is a DUNGEON — rooms divided by walls
         // with a door on the clear path (connectivity guaranteed like a biome seam),
@@ -3836,6 +3923,11 @@ impl Arena {
         // ── `WG-11` stage 6: the MICRO maze. Now that the trail exists, shape what stands
         // inside each pass — `A*` does not collide with obstacles, so this cannot run before
         // the route without the guaranteed trail running through the parts.
+        // ── `WG-11`: **THE WALL A WOOD IS MADE OF.** Laid here rather than with the ranges
+        // for the same reason the pass parts are — `astar_route` does not collide with
+        // obstacles, so a tree wall built before the route is one the guaranteed trail walks
+        // straight through.
+        self.push_prop_walls(balance, &prop_walls);
         self.push_pass_parts(balance, &pass_mouths);
         let portal = if is_chain_end {
             *self.corridor_path.last().unwrap()
@@ -4626,7 +4718,39 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
                 if frng.unit() * maze_mult > biome_obstacle_mult(wg, here) {
                     continue;
                 }
-                let fill_kind = fill_kind_for_biome(here);
+                // ⚠️ **THE SIGNATURE FILL IS A BIOME'S FACE, AND IT HAD BECOME ITS WHOLE
+                // POPULATION.** `fill_kind_for_biome` is deliberately ONE kind — what a biome
+                // reads as from a distance, so a tundra is a snowed conifer wood rather than a
+                // field of spires — and the sparse pass above scatters the authored variety.
+                // But sparse places `obstacles_per_area` while this places
+                // `biome_obstacle_mult × that × radial_scale`, up to 180x as many. Measured,
+                // the variety was **1%** of a biome's props: a mire held 10,364 obstacles that
+                // were **99% `mire_root`**, and its `mire_tree` and `fungal_wall` — the two
+                // things that make a swamp read as a swamp — never appeared at all. Every
+                // biome was a monoculture of one kind. Reported from play as "a mire without
+                // any of the new swamp trees".
+                //
+                // So the fill draws its signature MOST of the time and the biome's own list
+                // otherwise. The COUNT is untouched — same number of props, different mix — so
+                // no density invariant and no feasibility guarantee is affected.
+                //
+                // ⚠️ Keyed off the POSITION rather than `frng`, on purpose: taking a draw from
+                // the fill stream would shift every placement after it and re-roll every
+                // seeded world (the trap `[worldgen]` retunes keep falling into). A position
+                // hash leaves the stream byte-aligned.
+                let kinds = obstacles_for_biome(here);
+                let fill_kind = if kinds.len() > 1 {
+                    let mut krng = Rng((ox.to_bits() ^ oy.to_bits().rotate_left(23))
+                        .wrapping_mul(0x9E37_79B9_7F4A_7C15)
+                        ^ 0xF111_0000_F111_0000);
+                    if krng.unit() > wg.fill_signature_share {
+                        kinds[krng.below(kinds.len())]
+                    } else {
+                        fill_kind_for_biome(here)
+                    }
+                } else {
+                    fill_kind_for_biome(here)
+                };
                 let radius = obstacle_radius_for(wg, fill_kind, frng.unit());
                 let pos = Position::new(ox, oy);
                 if !self.clear_of_routes(&pos, radius) {
@@ -5190,6 +5314,167 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
     /// and the Shift already use), so the spine is chosen FIRST and the roll is weighted by the
     /// biome of the cell it stands in — which is a thing only worth doing now that a biome is a
     /// property of a cell rather than of a whole ring.
+    /// ⚠️ **A RANGE GUARANTEES ITS OWN PASS; TWO RANGES GUARANTEE NOTHING.**
+    ///
+    /// [`Arena::push_ridges`] cuts `ridge_passes_*` gaps into every spine, so a range is
+    /// passable in isolation and its guarantee is real. Nothing stopped a LATER section's
+    /// range body from standing in an earlier one's gap — and a range reaches back into
+    /// sections already generated, exactly like the river and lake walks the dependency-order
+    /// table warns about.
+    ///
+    /// Measured at d1200: seed 1 could reach **62.8%** of its own walkable ground, severed by
+    /// SIX flood cells spread over radii 301..1005, while seeds 7/42/99/424242 read
+    /// 99.6-100%. Every range's own test passed throughout, because the failure is
+    /// COMPOSITION — the same shape as the bridge that spans a curve as a chord, and the same
+    /// reason nothing caught it: every existing guarantee is about **the route staying
+    /// feasible**, which a world that is one corridor and nothing else satisfies perfectly.
+    ///
+    /// So this asks the question no per-mechanism guarantee can: flood the band from ground
+    /// already known to connect inward, and where a pocket is severed, DROP the range segment
+    /// that seals it. A range is made of several segments and "a section with no range" is
+    /// already a legal outcome here, so dropping one degrades gracefully; the cap keeps a
+    /// pathological seed from deleting its mountains rather than opening a pass in them.
+    ///
+    /// Scatter is deliberately NOT consulted. A tree is dodgeable, and at this cell size the
+    /// grid cannot resolve the gaps between trunks — counting it made a wood read as solid
+    /// and the flood die inside the hub ring (measured: 0.1% reached). Prop WALLS are checked
+    /// and, measured, seal nothing on any seed: their mouths work.
+    fn open_sealed_ground(&mut self, balance: &Balance, end_x: f64) {
+        let wg = &balance.worldgen;
+        // Only a section that actually raised a range can have sealed anything with one, and
+        // that is rare — which is what keeps this off the tick in the common case.
+        if self.tutorial || self.radial_half <= 0.0 || wg.connectivity_max_carves == 0 {
+            return;
+        }
+        let cell = wg.connectivity_cell.max(1.0);
+        // ⚠️ **THE FLOOD IS THE WHOLE DISC, NOT THE BAND.** Scoping it to the new section's
+        // own band was the first cut and it fixed nothing on the seed that motivated it: a
+        // range reaches BACK, so the seal forms retroactively in ground generated long ago —
+        // measured, seed 1's seal spans radii 301..1005 while the section raising the last
+        // wall of it sits far outside that. A band-scoped flood cannot see a pocket at r=301
+        // while generating at r=900, and the section that owned r=301 was sound when it was
+        // built. Same cross-section trap as the river that walks 364 units into its
+        // neighbour. Flooding from the hub is the only framing in which the question is
+        // answerable, and it is affordable because a range is RARE.
+        let (ox, oz) = self.terrain_off;
+        let pad = self.player_radius;
+        let arc_half = self.radial_half;
+        if !self
+            .ridges
+            .iter()
+            .any(|r| {
+                let m = (0.5 * (r[0] + r[2]) as f64).hypot(0.5 * (r[1] + r[3]) as f64);
+                m <= end_x + wg.ridge_half_width_max
+            })
+        {
+            return;
+        }
+        let n = (end_x / cell).ceil() as i64;
+        for _ in 0..wg.connectivity_max_carves {
+            let shore = self.shore();
+            let field = BlockField::with_ridges(Vec::new(), self.ridge_discs());
+            let open = |i: i64, j: i64| -> bool {
+                let (x, z) = (i as f64 * cell, j as f64 * cell);
+                let r = x.hypot(z);
+                r <= end_x
+                    && z.atan2(x).abs() <= arc_half
+                    && !field.ridge_blocks(&Position::new(x, z), pad)
+                    && meld_proto::terrain::walkable(x as f32, z as f32, ox, oz)
+                    && shore.water(x as f32, z as f32) < -(pad as f32)
+            };
+            let mut all = std::collections::HashSet::new();
+            for i in -n..=n {
+                for j in -n..=n {
+                    if open(i, j) {
+                        all.insert((i, j));
+                    }
+                }
+            }
+            // Seeds: the inner margin, which the previous section already vouched for.
+            let mut seen = std::collections::HashSet::new();
+            let mut stack: Vec<(i64, i64)> = all
+                .iter()
+                // The hub is connected to itself by definition; everything else is measured.
+                .filter(|(i, j)| {
+                    (*i as f64 * cell).hypot(*j as f64 * cell) <= self.regions.ring_step as f64
+                })
+                .copied()
+                .collect();
+            for c in &stack {
+                seen.insert(*c);
+            }
+            if stack.is_empty() {
+                return;
+            }
+            while let Some((i, j)) = stack.pop() {
+                for (di, dj) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+                    let c = (i + di, j + dj);
+                    if all.contains(&c) && seen.insert(c) {
+                        stack.push(c);
+                    }
+                }
+            }
+            let severed: Vec<(i64, i64)> =
+                all.iter().filter(|c| !seen.contains(c)).copied().collect();
+            if severed.len() < wg.connectivity_min_cells {
+                return;
+            }
+            // The seal: blocked ground touching BOTH sides. Vote for the range segment
+            // nearest each seal cell, and drop the one holding the most of the wall.
+            let mut votes: std::collections::HashMap<usize, usize> = Default::default();
+            let severed_set: std::collections::HashSet<(i64, i64)> =
+                severed.iter().copied().collect();
+            for i in -n..=n {
+                for j in -n..=n {
+                    if all.contains(&(i, j)) {
+                        continue;
+                    }
+                    let (x, z) = (i as f64 * cell, j as f64 * cell);
+                    let r = x.hypot(z);
+                    if r > end_x || z.atan2(x).abs() > arc_half {
+                        continue;
+                    }
+                    let mut touches_in = false;
+                    let mut touches_out = false;
+                    for (di, dj) in
+                        [(1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (-1, -1), (1, -1), (-1, 1)]
+                    {
+                        let c = (i + di, j + dj);
+                        if severed_set.contains(&c) {
+                            touches_out = true;
+                        } else if seen.contains(&c) {
+                            touches_in = true;
+                        }
+                    }
+                    if !(touches_in && touches_out) {
+                        continue;
+                    }
+                    let p = Position::new(x, z);
+                    if let Some((k, _)) = self
+                        .ridges
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, r)| r[4] > 0.0)
+                        .map(|(k, r)| {
+                            let a = Position::new(r[0] as f64, r[1] as f64);
+                            let b = Position::new(r[2] as f64, r[3] as f64);
+                            (k, dist_point_segment(&p, &a, &b))
+                        })
+                        .min_by(|x, y| x.1.partial_cmp(&y.1).unwrap())
+                    {
+                        *votes.entry(k).or_default() += 1;
+                    }
+                }
+            }
+            let Some((&worst, _)) = votes.iter().max_by_key(|(_, v)| **v) else {
+                return;
+            };
+            // Zeroing the half-width retires the segment without disturbing the indices
+            // anything else may hold, and `ridge_discs` already skips a zero-width spine.
+            self.ridges[worst][4] = 0.0;
+        }
+    }
+
     fn push_ridges(&mut self, balance: &Balance, i: usize, start_x: f64, end_x: f64) {
         let wg = &balance.worldgen;
         // No fan means no cells to lay a boundary along.
@@ -5376,16 +5661,17 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
         i: usize,
         start_x: f64,
         end_x: f64,
-    ) -> Vec<PassMouth> {
+    ) -> (Vec<PassMouth>, Vec<PropWall>) {
         let mut mouths: Vec<PassMouth> = Vec::new();
+        let mut prop_walls: Vec<PropWall> = Vec::new();
         if balance.worldgen.ridge_max_per_section == 0 {
-            return mouths;
+            return (mouths, prop_walls);
         }
         let wg = &balance.worldgen;
         let rb = &balance.region_barrier;
         // No fan means no cells to lay a boundary along.
         if self.radial_half <= 0.0 || i < wg.ridge_min_section || self.tutorial {
-            return mouths;
+            return (mouths, prop_walls);
         }
         let mut rng = Rng(section_seed(self.seed_base, i) ^ 0x21D6_E51D_6E51_D6E5);
         let g = self.regions;
@@ -5468,10 +5754,24 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
         // several ridge entries — its own passes cut it into segments, and the section clip
         // cuts those again — so counting `out.len()` silently made "six walls" mean two.
         let mut walled = 0usize;
+        // ⚠️ **PROP WALLS GET THEIR OWN, MUCH LARGER BUDGET, and the reason is cost.**
+        // `ridge_max_per_section` is small because a RANGE is expensive: it is a capsule
+        // sampled into the height field and re-checked against the trail, the water and
+        // everything standing at ~300 points per spine, and the comment above notes a dozen of
+        // them is tens of millions of distance tests inside the authoritative tick. A prop wall
+        // is a line of ordinary obstacles in the `BlockField` every mover already consults —
+        // O(boundary length), with none of that per-sample geometry.
+        //
+        // Sharing one budget is why the first cut put **232 wall props in an entire world,
+        // about 2.4 boundaries' worth**: ranges spent the allowance and the wooded boundaries
+        // never got considered.
+        let mut prop_walled = 0usize;
         'walls: for ring in ring_lo..=ring_hi {
             let n = g.sectors(ring).max(1);
             for sector in 0..n {
-                if walled >= wg.ridge_max_per_section {
+                if walled >= wg.ridge_max_per_section
+                    && prop_walled >= wg.prop_wall_max_per_section
+                {
                     break 'walls;
                 }
                 let cell = meld_proto::regions::Cell::new(ring, sector);
@@ -5543,10 +5843,32 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
                     ) {
                         continue;
                     }
-                    // …and a wall here is only a RANGE where the biome mazes with ranges.
-                    if rng.unit() >= wg.ridge_chance * biome_terrace_mult(biome) {
+                    // ⚠️ **A CLOSED BOUNDARY IS WALLED WITH THE BIOME'S OWN MATERIAL.**
+                    // This used to be a bare `ridge_chance x biome_terrace_mult` roll, so a
+                    // closed boundary in a wood got a MOUNTAIN 36% of the time and nothing the
+                    // rest — the graph said barrier and the ground said stroll through. See
+                    // [`WallMaterial`] for what that cost.
+                    let material = wall_material(biome, rng.unit());
+                    if material == WallMaterial::Open {
                         continue;
                     }
+                    // Ranges keep their own roll, so rock country's mountain density is
+                    // unchanged by this; only the biomes that had NO usable wall gain one.
+                    if material == WallMaterial::Range
+                        && rng.unit() >= wg.ridge_chance * biome_terrace_mult(biome)
+                    {
+                        continue;
+                    }
+                    // Each material spends its OWN budget.
+                    if material == WallMaterial::Range && walled >= wg.ridge_max_per_section {
+                        continue;
+                    }
+                    if material == WallMaterial::Props
+                        && prop_walled >= wg.prop_wall_max_per_section
+                    {
+                        continue;
+                    }
+                    let wall_kind = fill_kind_for_biome(biome);
 
                     let passes = wg.ridge_passes_min
                         + rng.below(wg.ridge_passes_max.saturating_sub(wg.ridge_passes_min) + 1);
@@ -5571,7 +5893,16 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
                     let half_width = (wg.ridge_half_width_min
                         + rng.unit() * (wg.ridge_half_width_max - wg.ridge_half_width_min).max(0.0))
                         .min(seg_len / 3.0);
-                    if half_width < wg.ridge_half_width_min * 0.5 {
+                    // ⚠️ **RANGE-ONLY.** This rejects the whole BOUNDARY when its segments
+                    // are too short to carry a capsule without becoming a cone — which is
+                    // right for a mountain and wrong for a line of trees, because a prop wall
+                    // has no spine to be wider than. Applying it to both is why the first cut
+                    // of prop walls put only 164 props in the entire world: the gates that
+                    // size a mountain were throwing away the wooded boundaries before they
+                    // were ever recorded.
+                    if material == WallMaterial::Range
+                        && half_width < wg.ridge_half_width_min * 0.5
+                    {
                         continue;
                     }
                     // A ridge's falloff is LINEAR, so this ratio IS its slope, at every point
@@ -5594,7 +5925,11 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
                     // the trail, because crossing the trail is what opens it. That is also what
                     // gives the cell graph its gaps for free — wherever the guaranteed route
                     // crosses a closed boundary, the wall simply is not there.
-                    walled += 1;
+                    if material == WallMaterial::Props {
+                        prop_walled += 1;
+                    } else {
+                        walled += 1;
+                    }
                     let mut t = 0.0f64;
                     // The far end of the last segment on this boundary that was not dropped
                     // for a real reason, so a gap is measured between two real jambs. Reset
@@ -5614,9 +5949,17 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
                                 p0.x + (p1.x - p0.x) * f,
                                 p0.y + (p1.y - p0.y) * f,
                             );
-                            path_field.blocks(&q, half_width)
-                                || placed_water.blocks(&q, half_width)
-                                || standing.blocks(&q, half_width)
+                            // A PROP wall is a couple of units wide, not tens — clearing it
+                            // by a mountain's half-width would reject a wooded boundary for
+                            // passing anywhere near a trail it does not actually touch.
+                            let pad = if material == WallMaterial::Range {
+                                half_width
+                            } else {
+                                wg.obstacle_max_radius
+                            };
+                            path_field.blocks(&q, pad)
+                                || placed_water.blocks(&q, pad)
+                                || standing.blocks(&q, pad)
                                 // …and never over an authored PEAK. A peak is crowned with a
                                 // gate boss or a guaranteed chest, and that reward is the
                                 // entire reason the climb exists — a range swallowing the
@@ -5624,7 +5967,7 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
                                 // refuses to put the reward there, and the landmark becomes a
                                 // hill with nothing on it. `push_strait` and `push_water` both
                                 // refuse a peak for the same reason.
-                                || !self.clear_of_peaks(q, half_width)
+                                || !self.clear_of_peaks(q, pad)
                         });
                         if crosses {
                             // Dropped for a REAL reason, so its own gaps are ordinary country
@@ -5695,6 +6038,23 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
                         // featureless cone. Measured, one came out 36 long and 37 wide.
                         // Dropping such a piece is not a loss — it is a gap, and gaps are
                         // passes.
+                        // ── **A PROP WALL IS THE CLIPPED PIECE, EXACTLY AS A RANGE IS.**
+                        //
+                        // ⚠️ It used to be claimed by whichever section contained the
+                        // segment's MIDPOINT — the rule the pass MOUTHS use, which is right
+                        // for a point and wrong for a run. An arc boundary sits at one fixed
+                        // radius, so only one section in five ever contained it: measured, the
+                        // whole world got 232 wall props across 12 sections, with placement
+                        // accepting nearly everything it was offered (274 of 276). The
+                        // segments were never recorded, not rejected. Clipping is what the
+                        // ranges already do, and it hands every section the part of the
+                        // boundary that is actually inside it.
+                        if material == WallMaterial::Props {
+                            prop_walls.push(PropWall { a: e0, b: e1, kind: wall_kind });
+                            continue;
+                        }
+                        // Range-only for the same reason as the sizing gate above: this is
+                        // the aspect rule, and a run of trees has no aspect.
                         if e0.distance_to(&e1) < (half_width * 2.0).max(wg.ridge_pass_width) {
                             continue;
                         }
@@ -5711,7 +6071,89 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
             }
         }
         self.ridges.extend(out);
-        mouths
+        (mouths, prop_walls)
+    }
+
+    /// **LAY A CLOSED BOUNDARY'S WALL OUT OF THE BIOME'S OWN PROPS** (`WG-11`).
+    ///
+    /// ⚠️ **THIS IS WHAT MAKES A CLOSED BOUNDARY CLOSED IN THREE QUARTERS OF THE WORLD.**
+    /// `regions::pass_open` has decided which boundaries are barriers since stage 1, but the
+    /// only material available was a RANGE — impassable by slope, and *"the wrong material for
+    /// a wood"* by its own comment. So a closed boundary in a forest or a mire got a mountain
+    /// on a 0.36 roll and nothing the rest of the time: the graph said barrier and the ground
+    /// said stroll through.
+    ///
+    /// Reported from play as the maze being *"perfect next to Last City"* and absent
+    /// everywhere else — and measured, that is exactly right, because near the hub the
+    /// SCATTER is dense enough to maze on its own: **31 props per 1000 u² at d125-250 against
+    /// 1.8 at d1375-1500**, a 17x collapse. Scatter cannot fix the far world, either:
+    /// `maze_fill_scale`'s compensation is capped (`maze_radial_scale_cap = 24`, binding from
+    /// r ~ 100-260 depending on section thickness), and lifting the cap enough to restore
+    /// density at d1500 would want ~29x more props — tens of thousands in one section. A WALL
+    /// costs O(boundary length) rather than O(area), which is the whole reason `WG-11`
+    /// introduced a cell graph: **the maze at depth comes from boundaries, not from fill.**
+    ///
+    /// Spacing is what makes it a wall rather than a hedge you slip through: `2 x
+    /// obstacle_min_radius + 2 x player_radius` is the widest gap a party cannot pass, so the
+    /// step is a share of that, and the props are NOT entered into the scatter's spacing grid
+    /// (which enforces the opposite — that nothing touches). Same exemption water already has,
+    /// for the same reason: a wall has to be able to close.
+    fn push_prop_walls(&mut self, balance: &Balance, walls: &[PropWall]) {
+        let wg = &balance.worldgen;
+        if walls.is_empty() {
+            return;
+        }
+        // The widest gap a party CANNOT get through, times a margin so a wall built on it
+        // actually closes rather than landing exactly on the threshold.
+        let step = (2.0 * wg.obstacle_min_radius + 2.0 * wg.player_radius) * wg.prop_wall_tightness;
+        for (w, wall) in walls.iter().enumerate() {
+            let len = wall.a.distance_to(&wall.b);
+            if len < step * 2.0 {
+                continue;
+            }
+            // Same rule as the pass parts: names the BOUNDARY globally, not its index
+            // within a section.
+            let wall_id = (wall.a.x.to_bits() ^ wall.b.y.to_bits().rotate_left(29))
+                .wrapping_mul(0x9E37_79B9_7F4A_7C15)
+                >> 40;
+            let n = (len / step.max(0.5)).floor() as usize;
+            for k in 0..=n {
+                let t = k as f64 / n.max(1) as f64;
+                let at = Position::new(
+                    wall.a.x + (wall.b.x - wall.a.x) * t,
+                    wall.a.y + (wall.b.y - wall.a.y) * t,
+                );
+                // Seeded off the position so a wall is the same every time this world is
+                // generated, and so no draw is taken from a section's own stream.
+                let mut krng = Rng((at.x.to_bits() ^ at.y.to_bits().rotate_left(31))
+                    .wrapping_mul(0x9E37_79B9_7F4A_7C15)
+                    ^ 0x5EA1_1A11_0000_0001_u64.wrapping_add(w as u64));
+                let radius = obstacle_radius_for(wg, wall.kind, krng.unit());
+                // ⚠️ Never on the guaranteed route — the whole reason this runs after it.
+                if !self.clear_of_routes(&at, radius) {
+                    continue;
+                }
+                if !self.on_land(at.x, at.y) {
+                    continue;
+                }
+                // …and never on top of anything that already means something. A creature
+                // carries a pack and a difficulty gate, a node is a crafter's reason to be
+                // here, a chest is a reward — none of them are scenery a wall may bury.
+                if self.monsters.iter().any(|m| m.position.distance_to(&at) < radius + 1.5)
+                    || self.resources.iter().any(|r| r.position.distance_to(&at) < radius + 1.5)
+                    || self.chests.iter().any(|c| c.position.distance_to(&at) < radius + 1.5)
+                    || self.stations.iter().any(|st| st.position.distance_to(&at) < radius + 2.0)
+                {
+                    continue;
+                }
+                self.obstacles.push(Obstacle {
+                    entity_id: format!("obs-wall-{}-{:x}", self.obstacles.len(), wall_id),
+                    kind: wall.kind.to_string(),
+                    position: at,
+                    radius,
+                });
+            }
+        }
     }
 
     /// **WHAT STANDS INSIDE A PASS** (`WG-11` stage 6, the MICRO maze).
@@ -5746,9 +6188,25 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
         if mouths.is_empty() || wg.pass_part_chance <= 0.0 {
             return;
         }
+        // ⚠️ **HELD APART ACROSS THE WHOLE CALL, NOT PER MOUTH.** `mine` was scoped to one
+        // mouth, which is right until two mouths are CO-LOCATED — and they are: a boundary
+        // can record the same gap twice, and `mouth_id` is hashed from the mouth's position,
+        // so the duplicates shared an id and each got a fresh, empty exclusion list. Measured,
+        // two pieces 1.6 units apart carrying radii of 2.6 and 1.8, pushed back to back.
+        // Scoping it to the call is the fix that does not depend on the mouth list being
+        // duplicate-free, and the id carries the mouth's INDEX so co-located mouths stay
+        // distinguishable in a report.
+        let mut mine: Vec<(Position, f64)> = Vec::new();
         for (k, m) in mouths.iter().enumerate() {
             // Seeded off the mouth's own position, so a pass looks the same every time this
             // world is generated and never depends on how many sections came before it.
+            // ⚠️ The id token below identifies the MOUTH globally. It used to be the
+            // mouth's index within its own section, which collides across sections — so a
+            // test grouping by it measured gaps between props on unrelated passes and
+            // reported an overlap of -2.3 units where there was none.
+            let mouth_id = (m.at.x.to_bits() ^ m.at.y.to_bits().rotate_left(17))
+                .wrapping_mul(0x9E37_79B9_7F4A_7C15)
+                >> 40;
             let mut rng = Rng(
                 (m.at.x.to_bits() ^ m.at.y.to_bits().rotate_left(17) ^ (k as u64))
                     .wrapping_mul(0x9E37_79B9_7F4A_7C15)
@@ -5792,6 +6250,13 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
                     }
                 }
             }
+            // ⚠️ **A MOUTH'S OWN PIECES MUST NOT OVERLAP EACH OTHER.** The check below
+            // clears everything ALREADY in the world at `radius + o.radius * 0.5`, which is
+            // deliberately loose — a prop WALL is packed tighter than its radii sum, because
+            // that is what closes a boundary. But the same looseness let two pieces of one
+            // throat land on top of each other: measured, a mouth's pieces overlapped by 2.3
+            // units, which renders as one prop growing out of another. So a throat's pieces
+            // are held apart from each OTHER at their full radii.
             for (along_off, across_off) in spots {
                 let kind = kinds[rng.below(kinds.len())];
                 let radius = obstacle_radius_for(wg, kind, rng.unit());
@@ -5823,8 +6288,20 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
                 if !self.on_land(at.x, at.y) {
                     continue;
                 }
+                // ⚠️ **ASK THE SEPARATION IN WORLD UNITS.** `push_section` appends in CORRIDOR
+                // space and `stream_radial_section` bends the result afterwards, so comparing
+                // corridor distances against world-space radii is the bent-frame trap — the
+                // same one that made the forest ask for 392 trees and place 90, and that put
+                // a Shift's mountain most of the way around the fan. Measured, two pieces
+                // that cleared this check by a corridor margin landed 1.6 world units apart
+                // carrying radii of 2.6 and 1.8.
+                let at_w = self.to_world(at);
+                if mine.iter().any(|(p, r)| p.distance_to(&at_w) < radius + r) {
+                    continue;
+                }
+                mine.push((at_w, radius));
                 self.obstacles.push(Obstacle {
-                    entity_id: format!("obs-pass-{}-{}", self.obstacles.len(), k),
+                    entity_id: format!("obs-pass-{}-{:x}{k:02x}", self.obstacles.len(), mouth_id),
                     kind: kind.to_string(),
                     position: at,
                     radius,
@@ -6132,11 +6609,99 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
         let half = self.radial_half;
         let lat = self.corridor_lateral.max(1.0);
         let (ox, oz) = self.terrain_off;
-        // The whole shoreline, so the guaranteed backbone routes AROUND an inland sea and
-        // through an isthmus, and around a bay, by itself — no second copy of "what is
-        // water" anywhere in the pathfinder, which is the drift that has bitten this repo
-        // three times.
-        let shore = self.shore();
+        // ⚠️ **THE SHORELINE, NARROWED TO THIS SECTION'S BAND — and that is a 30-130x
+        // saving, not a micro-optimisation.**
+        //
+        // `Shore::water` walks every strait, lobe, basin, river node and bridge in the WORLD,
+        // and `dry` below calls it once per sample of every edge A* considers. Profiled at
+        // d1500: **985,671 samples against 92 landforms — ~90 million shore evaluations for
+        // ONE section**, which is 93-96% of the whole cost of generating it and the 1.4 s
+        // stall the tick pays. The landform count grows without bound as the world streams,
+        // so the factor gets worse the further out you go.
+        //
+        // The search itself was never the problem: iterations run 99-4,089 against a cap of
+        // 300,000. It is the cost of a sample, multiplied by a great many samples.
+        //
+        // A route cannot leave its own radius band by more than the search box allows, so
+        // every landform outside that band is dead weight on every one of those samples.
+        // Same rule `push_boundary_walls` states twenty lines away: *linear scans here were
+        // fine for one range and are not for a dozen.*
+        //
+        // ⚠️ **RIVERS ARE FILTERED BY CHAIN, NEVER BY NODE.** A chain's ORDER is the channel
+        // and a `chain_start` node marks a FORD, so dropping a node mid-chain reconnects a
+        // river's head to a downstream node and draws water across open country — the same
+        // trap the client's river windowing already documents.
+        let (band_lo, band_hi) = {
+            let lo = entry.x.min(exit_target.x) - ROUTE_BAND_SLACK;
+            let hi = entry.x.max(exit_target.x) + ROUTE_BAND_SLACK;
+            (lo, hi)
+        };
+        let in_band = |r: f64, pad: f64| r + pad >= band_lo && r - pad <= band_hi;
+        let near_straits: Vec<meld_proto::coast::Strait> = self
+            .straits
+            .iter()
+            .filter(|s| in_band(s[0] as f64, s[1] as f64))
+            .copied()
+            .collect();
+        let near_lobes: Vec<meld_proto::coast::Lobe> = self
+            .lobes
+            .iter()
+            .filter(|l| in_band((l[0] as f64).hypot(l[1] as f64), l[2] as f64))
+            .copied()
+            .collect();
+        let near_basins: Vec<meld_proto::coast::Basin> = self
+            .basins
+            .iter()
+            .filter(|b| in_band((b[0] as f64).hypot(b[1] as f64), b[2] as f64))
+            .copied()
+            .collect();
+        let near_bridges: Vec<meld_proto::coast::Bridge> = self
+            .bridges
+            .iter()
+            .filter(|b| {
+                in_band((b[0] as f64).hypot(b[1] as f64), b[4] as f64)
+                    || in_band((b[2] as f64).hypot(b[3] as f64), b[4] as f64)
+            })
+            .copied()
+            .collect();
+        let near_peaks: Vec<[f32; 4]> = self
+            .peaks
+            .iter()
+            .filter(|k| in_band((k[0] as f64).hypot(k[1] as f64), k[2] as f64))
+            .copied()
+            .collect();
+        // Whole chains: a run from one `chain_start` to the next, kept if ANY of its nodes
+        // touches the band.
+        let near_rivers: Vec<meld_proto::coast::RiverNode> = {
+            let mut out = Vec::new();
+            let mut chain: Vec<meld_proto::coast::RiverNode> = Vec::new();
+            let mut keep = false;
+            for n in &self.rivers {
+                if n[3] >= 0.5 && !chain.is_empty() {
+                    if keep {
+                        out.extend(chain.iter().copied());
+                    }
+                    chain.clear();
+                    keep = false;
+                }
+                keep |= in_band((n[0] as f64).hypot(n[1] as f64), n[2] as f64);
+                chain.push(*n);
+            }
+            if keep {
+                out.extend(chain.iter().copied());
+            }
+            out
+        };
+        let shore = meld_proto::coast::Shore {
+            arc_half: self.radial_half as f32,
+            terrain_off: self.terrain_off,
+            peaks: &near_peaks,
+            straits: &near_straits,
+            lobes: &near_lobes,
+            basins: &near_basins,
+            rivers: &near_rivers,
+            bridges: &near_bridges,
+        };
         // A corridor cell is passable iff its BENT (world) position is walkable ground.
         // The RANGES too, so the guaranteed backbone finds a PASS by itself rather than being
         // told where one is — the same way it already finds an isthmus through a strait.
@@ -6185,7 +6750,18 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
             let (wa, wb) = (radial_tf(ca, half, lat), radial_tf(cb, half, lat));
             // Sample at ≤1 world unit (min 2 steps ⇒ always incl. the midpoint), so the
             // ~2u-thick cliff ring is never skipped even on short near-hub edges.
-            let steps = (wa.distance_to(&wb)).ceil().max(2.0) as i32;
+            // ⚠️ **SAMPLED AT FEATURE SCALE, NOT AT ONE WORLD UNIT.** This used to step every
+            // 1.0 units along the BENT arc — and in the fan one corridor cell step spans a
+            // great many world units tangentially at depth, so a single grid edge cost 73-134
+            // samples. Every one of them pays for a shoreline query.
+            //
+            // Nothing is lost by stepping wider: both predicates are asked with the route's
+            // own `route_pad` clearance, so a feature is caught from `pad` away rather than
+            // needing to be landed on. `ROUTE_SAMPLE_STEP` stays well under that pad, which
+            // is what keeps the ~2-unit cliff ring the old comment worried about from
+            // slipping between samples.
+            let steps =
+                (wa.distance_to(&wb) / ROUTE_SAMPLE_STEP).ceil().max(2.0) as i32;
             for s in 0..=steps {
                 let t = s as f64 / steps as f64;
                 let c = Position::new(ca.x + (cb.x - ca.x) * t, ca.y + (cb.y - ca.y) * t);
@@ -6455,6 +7031,11 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
     fn fan_half_at(&self, r: f64) -> f64 {
         arc_half_at_f64(r, self.radial_half)
     }
+
+
+
+
+
 
     /// How many range segments stand in this world — the maze's walls (`WG-11`).
     pub fn ridge_count(&self) -> usize {
@@ -9779,7 +10360,66 @@ mod tests {
             assert!(landed >= 5, "only {landed} Shifts actually changed the ground");
         }
 
-        /// ⚠️ **A FEATURE WITH NO INSTANCES PASSES EVERY TEST IT HAS.** The bridges shipped
+        /// **A CLOSED BOUNDARY IN A WOOD IS ACTUALLY WALLED** (`WG-11`).
+    ///
+    /// ⚠️ `regions::pass_open` has decided which cell boundaries are barriers since stage 1,
+    /// but the only material was a RANGE — impassable by slope, and *"the wrong material for a
+    /// wood"* by its own comment. So a closed boundary in a forest or a mire got a mountain on
+    /// a 0.36 roll and nothing the rest of the time: **the graph said barrier and the ground
+    /// said stroll through**, in four of six biomes.
+    ///
+    /// Reported from play as the maze being *"perfect next to Last City"* and absent
+    /// everywhere else — which measured out exactly: the SCATTER near the hub is dense enough
+    /// to maze on its own (31 props per 1000 u² at d125-250 against **1.8** at d1375-1500, a
+    /// 17x collapse), and scatter cannot carry the far world because `maze_fill_scale`'s
+    /// compensation is capped and lifting it enough would want ~29x more props.
+    ///
+    /// Two-sided: the walls must EXIST, and they must be tight enough to actually stop a
+    /// party. A hedge you slip through is worse than no wall, because the cell graph has
+    /// already promised it is a barrier.
+    #[test]
+    fn a_closed_boundary_in_a_wood_is_actually_walled() {
+        let b = Balance::load_default().unwrap();
+        let mut a = Arena::generate(&b, 424242, false);
+        for _ in 0..30 {
+            a.ensure_frontier(&b, 1200.0);
+        }
+        let walls: Vec<&Obstacle> =
+            a.obstacles.iter().filter(|o| o.entity_id.starts_with("obs-wall-")).collect();
+        assert!(
+            !walls.is_empty(),
+            "not one cell boundary in the world is walled with its biome's own props — \
+             `pass_open` calls them barriers and nothing stands on them"
+        );
+        // ⚠️ **ASKED WITHOUT GROUPING, on purpose.** The first cut of this test bucketed
+        // props by the wall index in their entity id — which collides across sections, so it
+        // was measuring the gap between props on unrelated boundaries and reported a median
+        // 4.93 against an impassable 3.20. The property that matters needs no grouping at all:
+        // a wall is packed if each of its props has a NEIGHBOUR close enough that a party
+        // cannot fit between them.
+        let impassable = 2.0 * b.worldgen.obstacle_min_radius + 2.0 * b.worldgen.player_radius;
+        let mut has_neighbour = 0usize;
+        for o in &walls {
+            if walls.iter().any(|q| {
+                !std::ptr::eq(*q, *o) && q.position.distance_to(&o.position) <= impassable
+            }) {
+                has_neighbour += 1;
+            }
+        }
+        let share = has_neighbour as f64 / walls.len() as f64;
+        // Not 100%: a run legitimately ends at its own pass, at the clear tube, and at
+        // anything standing it refused to bury, and each of those leaves a prop with no close
+        // neighbour on one side. What must not happen is a "wall" of isolated props.
+        assert!(
+            share >= 0.80,
+            "only {:.0}% of {} wall props have a neighbour within the impassable gap of \
+             {impassable:.2} — that is a line of scenery, not a barrier",
+            share * 100.0,
+            walls.len()
+        );
+    }
+
+    /// ⚠️ **A FEATURE WITH NO INSTANCES PASSES EVERY TEST IT HAS.** The bridges shipped
     /// entirely inert once — straits in every world, the trail inside none of them, zero spans
     /// built, and all four of their invariants green over an empty set. So the FIRST thing
     /// asserted about the micro maze is that any of it exists.
@@ -9831,22 +10471,38 @@ mod tests {
             if group.len() < 2 {
                 continue;
             }
-            // Project onto the line through the group and look for the widest gap between
-            // consecutive pieces' near edges. It must admit a party somewhere.
-            let mut edges: Vec<(f64, f64)> = group
-                .iter()
-                .map(|o| (o.position.x.hypot(o.position.y), o.radius))
-                .collect();
-            edges.sort_by(|x, y| x.0.total_cmp(&y.0));
-            let widest = edges
-                .windows(2)
-                .map(|w| (w[1].0 - w[1].1) - (w[0].0 + w[0].1))
-                .fold(f64::MIN, f64::max);
-            assert!(
-                widest > party || group.len() < 3,
-                "mouth {key}: its pieces leave only {widest:.1} between them, under a \
-                 party's {party:.1}"
-            );
+            // ⚠️ **ASK IT IN 2-D. THIS ASSERTION HAS BEEN IN THE WRONG FRAME TWICE.**
+            // It first projected onto RADIUS, which is the right axis only for a mouth in a
+            // radial boundary — an arc boundary's pieces sit at near-constant radius and vary
+            // in bearing, so every gap collapsed to noise. Projecting onto the group's own
+            // principal axis fixed that and was still wrong, because a CHICANE offsets its
+            // pieces perpendicular to the mouth on purpose: flattening to one axis throws the
+            // perpendicular separation away and reports an overlap that is not there.
+            //
+            // A pairwise distance has no frame to be wrong about. And non-overlap is all this
+            // test can honestly claim: whether a party fits THROUGH a mouth depends on the
+            // boundary wall that is not in `parts`, and that property is measured for real,
+            // against a flood, by `the_world_is_explorable_and_not_just_routable`.
+            for (i, a) in group.iter().enumerate() {
+                for b in group.iter().skip(i + 1) {
+                    let d = a.position.distance_to(&b.position);
+                    assert!(
+                        d >= a.radius + b.radius - 0.001,
+                        "mouth {key}: two pieces overlap by {:.2} — {} at ({:.0},{:.0}) r{:.1} \
+                         and {} at ({:.0},{:.0}) r{:.1}, centres {d:.1} apart",
+                        a.radius + b.radius - d,
+                        a.entity_id,
+                        a.position.x,
+                        a.position.y,
+                        a.radius,
+                        b.entity_id,
+                        b.position.x,
+                        b.position.y,
+                        b.radius
+                    );
+                }
+            }
+            let _ = party;
         }
     }
 
@@ -9875,6 +10531,149 @@ mod tests {
             a.ensure_frontier(&b, 1600.0);
         }
         (b, a)
+    }
+
+    /// ⚠️ **A BIOME'S AUTHORED VARIETY MUST ACTUALLY STAND IN THE WORLD.**
+    ///
+    /// Measured before this existed: a mire held **10,364 obstacles that were 99%
+    /// `mire_root`**, and its `mire_tree` and `fungal_wall` — the two kinds that make a swamp
+    /// read as a swamp — were **0%**. Every biome was a monoculture of its signature fill,
+    /// because the sparse variety pass places `obstacles_per_area` while the maze fill places
+    /// `biome_obstacle_mult x that x radial_scale`, up to 180x as many. Reported from play as
+    /// "a mire without any of the new swamp trees".
+    ///
+    /// ⚠️ **`each_biome_mazes_with_its_own_primitive` could not catch it, and that is the
+    /// lesson.** It asserts ORDERINGS ON THE TUNABLES — 3.2 > 0.25 in a table — and stayed
+    /// green throughout. A test on the constants is not a test on the world; this one counts
+    /// what is standing. Same blind spot as the ring-density guard that passed for the whole
+    /// life of the fanned clear-tube bug.
+    ///
+    /// Two-sided on purpose: every authored kind has to APPEAR, and the signature still has
+    /// to DOMINATE, or the fix slides from a monoculture into uniform noise and a wood stops
+    /// reading as a wood from a distance.
+    #[test]
+    fn every_biome_grows_everything_it_authored() {
+        let b = Balance::load_default().unwrap();
+        let mut mix: std::collections::HashMap<&'static str, std::collections::HashMap<String, usize>> =
+            Default::default();
+        for seed in [1u64, 42, 424242] {
+            let mut a = Arena::generate(&b, seed, false);
+            for _ in 0..24 {
+                a.ensure_frontier(&b, 900.0);
+            }
+            for o in &a.obstacles {
+                let bio = a.biome_at(o.position);
+                *mix.entry(bio).or_default().entry(o.kind.clone()).or_insert(0) += 1;
+            }
+        }
+        let mut checked = 0;
+        for (bio, kinds) in &mix {
+            let total: usize = kinds.values().sum();
+            // Only biomes with enough ground to be a fair sample.
+            if total < 400 {
+                continue;
+            }
+            for want in obstacles_for_biome(bio) {
+                let n = kinds.get(*want).copied().unwrap_or(0);
+                let share = n as f64 / total as f64;
+                assert!(
+                    share >= 0.02,
+                    "{bio} authored `{want}` and grew {n} of {total} ({:.1}%) — its authored \
+                     variety is not in the world",
+                    share * 100.0
+                );
+            }
+            // …and the SIGNATURE still reads from a distance.
+            let sig = fill_kind_for_biome(bio);
+            let sig_share = kinds.get(sig).copied().unwrap_or(0) as f64 / total as f64;
+            assert!(
+                sig_share >= 0.5,
+                "{bio}'s signature `{sig}` is only {:.0}% of it — a wood has to read as a \
+                 wood from a distance, not as a uniform scatter",
+                sig_share * 100.0
+            );
+            checked += 1;
+        }
+        assert!(checked >= 4, "only {checked} biomes had a fair sample");
+    }
+
+    /// **THE MIRE IS THE WETTEST BIOME, AND `Shore::water` CANNOT TELL YOU THAT.**
+    ///
+    /// ⚠️ This test exists because of a false alarm I raised and chased. Measuring wetness
+    /// with `Shore::water` said mire came out 11-23% wet against desert 7-16%, with desert
+    /// WETTER on one seed — so `biome_water_mult`'s 12.8x mire:desert ratio looked inert, and
+    /// a change was written to scale basin size by it. The measurement was the bug: `water()`
+    /// folds in the OCEAN and the straits, so a coastal desert cell reads as wet with no
+    /// basin or river within sight of it. `AGENTS.md` already warns that `sea` and `water` are
+    /// not interchangeable; that warning applies to instruments, not just to code.
+    ///
+    /// Asked inland-only, the ordering was correct all along: mire 17.3% / 5.2% / 7.1% against
+    /// ~0% for every dry biome. The scaling change was reverted — it moved two seeds up and
+    /// one down, which is untuned tuning on a false premise.
+    ///
+    /// So the ORDERING is what is held, in the world rather than in the table, and inland-only
+    /// by construction. Anything that measures this with `water()` is measuring the coastline.
+    #[test]
+    fn the_mire_is_the_wettest_biome_in_the_world() {
+        let b = Balance::load_default().unwrap();
+        let mut wettest_is_mire = 0;
+        let mut wet_somewhere = 0;
+        let mut sampled = 0;
+        for seed in [1u64, 42, 424242] {
+            let mut a = Arena::generate(&b, seed, false);
+            for _ in 0..24 {
+                a.ensure_frontier(&b, 900.0);
+            }
+            let sh = a.shore();
+            let mut per: std::collections::HashMap<&'static str, (usize, usize)> =
+                Default::default();
+            for ri in 1..36 {
+                let rad = ri as f64 * 25.0;
+                for bi in -14..=14 {
+                    let bear = bi as f64 * 0.09;
+                    let (x, z) = (rad * bear.cos(), rad * bear.sin());
+                    let e = per.entry(a.biome_at(Position::new(x, z))).or_insert((0, 0));
+                    e.0 += 1;
+                    // INLAND ONLY — see the note above.
+                    if sh.water(x as f32, z as f32) > 0.0 && sh.sea(x as f32, z as f32) <= 0.0 {
+                        e.1 += 1;
+                    }
+                }
+            }
+            let share = |k: &str| {
+                per.get(k).filter(|(s, _)| *s >= 20).map(|(s, w)| *w as f64 / *s as f64)
+            };
+            let Some(mire) = share("mire") else { continue };
+            sampled += 1;
+            if mire > 0.0 {
+                wet_somewhere += 1;
+            }
+            // Every DRY biome must be drier than the swamp. Forest sits at 1.0 against the
+            // mire's 3.2 and can legitimately catch spill-over from a mire basin next door —
+            // water flows downhill and does not stop at a cell boundary — so it is not held.
+            let dry_ok = ["desert", "ashfall", "field"]
+                .iter()
+                .filter_map(|k| share(k))
+                .all(|d| d <= mire + 1e-9);
+            if dry_ok {
+                wettest_is_mire += 1;
+            }
+        }
+        assert!(sampled >= 2, "only {sampled} seeds had a fair mire sample");
+        // ⚠️ Not "every seed": a seed whose mire cells all sit on high ground inside the
+        // sampled band legitimately has a dry one, since a basin needs a HOLLOW to fill and
+        // the terrain decides where those are. Measured at d900, seed 42's mire is dry and its
+        // mire at d1200 is 5.2% wet — so per-seed is the wrong strength of claim. What must
+        // not happen is the feature being inert everywhere.
+        assert!(
+            wet_somewhere > 0,
+            "not one sampled seed put inland water in a mire — the biome whose whole \
+             character is being flooded is dry in every world"
+        );
+        assert_eq!(
+            wettest_is_mire, sampled,
+            "the mire was not the wettest of the dry biomes on every sampled seed"
+        );
     }
 
     /// A region is a PATCH of cells, not an annulus. Repainting every bearing at a depth
@@ -11782,6 +12581,19 @@ mod tests {
                     .obstacles
                     .iter()
                     .filter(|o| {
+                        // ⚠️ **SCATTERED props only.** `maze_radial_scale_cap` governs the
+                        // SCATTER, which is what these tests are about — so a boundary WALL or
+                        // a pass THROAT must not be counted, or the measurement stops being
+                        // about the thing under test. It mattered most for the vacuity check:
+                        // with the compensation switched off, prop walls alone put enough at
+                        // depth that the deep ring measured 24.5-tile spacing and no longer
+                        // read as the plain that check needs. That is the walls working — the
+                        // maze at depth is supposed to come from BOUNDARIES rather than from
+                        // fill — and the instrument looking at the wrong population.
+                        !o.entity_id.starts_with("obs-wall-")
+                            && !o.entity_id.starts_with("obs-pass-")
+                    })
+                    .filter(|o| {
                         let r = o.position.x.hypot(o.position.y);
                         r >= lo && r < hi
                     })
@@ -12677,6 +13489,260 @@ mod tests {
     /// past the point where `maze_radial_scale_cap` starts to bind. A per-section COUNT is
     /// not a density, and the ring's area grows quadratically — this is what a player
     /// walking out there actually experiences.
+    /// What share of the fan's walkable ground a player can actually reach on foot from the
+    /// hub, as `(walkable cells, cells reached)`. Ranges, inland water and terrain slope
+    /// block; deliberate prop WALLS block; scatter does not — a tree is dodgeable, and at
+    /// this cell size the grid cannot resolve the gaps between trunks, so counting it makes a
+    /// wood read as solid (measured: 0.1% reached, entirely an artifact).
+    /// ⚠️ **FLOOD WIDER THAN YOU JUDGE.** Cutting the flood at the same radius you score
+    /// counts a pocket that reconnects further out as SEVERED — measured, seed 1 scored 73%
+    /// at a 700-unit cut with ZERO seal cells, which is the tell: a real wall leaves blocked
+    /// ground touching both sides, and an artifact of truncation leaves none. The same seed
+    /// and the same world read 100% when the flood was allowed to run to 1200.
+    fn reach_share(a: &Arena, flood: f64, judge: f64, cell: f64) -> (usize, usize) {
+        let sh = a.shore();
+        let (ox, oz) = a.terrain_off;
+        let ridge = BlockField::with_ridges(Vec::new(), a.ridge_discs());
+        // ⚠️ Barriers go in the RIDGES slot: `ridge_blocks` consults only that half, and
+        // passing them as `items` silently tests nothing — which is exactly the bug that made
+        // an earlier run of this report say obstacles seal nothing when it had not looked.
+        let walls = BlockField::with_ridges(
+            Vec::new(),
+            a.obstacles
+                .iter()
+                .filter(|o| {
+                    o.entity_id.starts_with("obs-wall-") || o.entity_id.starts_with("obs-pass-")
+                })
+                .map(|o| (o.position, o.radius))
+                .collect(),
+        );
+        let pad = a.player_radius;
+        let n = (flood / cell).ceil() as i64;
+        let open = |i: i64, j: i64| -> bool {
+            let (x, z) = (i as f64 * cell, j as f64 * cell);
+            let r = x.hypot(z);
+            r <= flood
+                && z.atan2(x).abs() <= a.radial_half
+                && !ridge.ridge_blocks(&Position::new(x, z), pad)
+                && !walls.ridge_blocks(&Position::new(x, z), pad)
+                && meld_proto::terrain::walkable(x as f32, z as f32, ox, oz)
+                && sh.water(x as f32, z as f32) < -(pad as f32)
+        };
+        let mut all = std::collections::HashSet::new();
+        for i in -n..=n {
+            for j in -n..=n {
+                if open(i, j) {
+                    all.insert((i, j));
+                }
+            }
+        }
+        let mut seen = std::collections::HashSet::new();
+        let mut stack: Vec<(i64, i64)> = all
+            .iter()
+            .filter(|(i, j)| (*i as f64 * cell).hypot(*j as f64 * cell) <= a.regions.ring_step as f64)
+            .copied()
+            .collect();
+        for c in &stack {
+            seen.insert(*c);
+        }
+        while let Some((i, j)) = stack.pop() {
+            for (di, dj) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+                let c = (i + di, j + dj);
+                if all.contains(&c) && seen.insert(c) {
+                    stack.push(c);
+                }
+            }
+        }
+        // Score only the inner disc; the outer margin exists so a legitimate way round is
+        // available to the flood rather than being cut off by where the report stops.
+        let scored = |c: &&(i64, i64)| (c.0 as f64 * cell).hypot(c.1 as f64 * cell) <= judge;
+        (all.iter().filter(scored).count(), seen.iter().filter(scored).count())
+    }
+
+    /// ⚠️ **THE WORLD MUST BE EXPLORABLE, NOT MERELY ROUTABLE.**
+    ///
+    /// Every other guarantee in this file is about the guaranteed ROUTE staying feasible —
+    /// which a world that is one corridor and nothing else satisfies perfectly. This is the
+    /// only assertion that a player can leave the trail and come back a different way.
+    ///
+    /// It exists because seed 1 could reach **62.8%** of its own walkable ground: severed by
+    /// ranges whose own per-range pass guarantee held throughout, because the failure is
+    /// COMPOSITION — a later section's range body standing in an earlier one's gap. Four of
+    /// five seeds read 99.6-100%, which is why a spot check never caught it.
+    ///
+    /// ⚠️ **Assert the DISTRIBUTION's floor, never a per-seed equality.** This world re-rolls
+    /// entirely when anything upstream of placement moves, so a bound sitting on its own edge
+    /// is a coin toss waiting to be flipped by an unrelated retune — the lesson
+    /// `a_wandering_creature_actually_goes_somewhere` learned the hard way. 95% is far below
+    /// the 100% every seed now measures and far above the 62.8% that motivated it.
+    #[test]
+    fn the_world_is_explorable_and_not_just_routable() {
+        let b = Balance::load_default().unwrap();
+        let (flood, judge) = (1400.0, 700.0);
+        let mut worst = (f64::MAX, 0u64);
+        for seed in [1u64, 7, 424242] {
+            let mut a = Arena::generate(&b, seed, false);
+            let mut r = 0.0;
+            while r < flood {
+                r += 50.0;
+                a.ensure_frontier(&b, r);
+            }
+            let (walkable, reached) = reach_share(&a, flood, judge, 8.0);
+            assert!(walkable > 1000, "seed {seed} has almost no walkable ground: {walkable}");
+            let share = reached as f64 / walkable as f64;
+            if share < worst.0 {
+                worst = (share, seed);
+            }
+        }
+        assert!(
+            worst.0 >= 0.95,
+            "seed {} strands {:.1}% of its own walkable ground behind ranges or water — the \
+             route is feasible but the world is not explorable",
+            worst.1,
+            100.0 * (1.0 - worst.0)
+        );
+    }
+
+    /// Flood the fan from the hub over ground a PLAYER can walk, then classify the SEAL:
+    /// the blocked cells that separate what you can reach from what you cannot. Each is
+    /// attributed to a range, to water, or to both — which is what says whether the two
+    /// guarantees are failing separately or failing *at each other*.
+    fn seal_census(a: &Arena, reach: f64, cell: f64) {
+        let sh = a.shore();
+        let (ox, oz) = a.terrain_off;
+        let ridge = BlockField::with_ridges(Vec::new(), a.ridge_discs());
+        // ⚠️ Obstacles go in the RIDGES slot: `ridge_blocks` consults only that half, and
+        // passing them as `items` silently tests nothing.
+        let obs = BlockField::with_ridges(
+            Vec::new(),
+            a.obstacles
+                .iter()
+                .filter(|o| {
+                    // Deliberate BARRIERS only. Scatter is dodgeable, and a 6-unit grid cannot
+                    // resolve the gaps between tree trunks — counting it makes a wood read as
+                    // solid and the flood dies inside the hub ring (measured: 0.1% reached).
+                    o.entity_id.starts_with("obs-wall-") || o.entity_id.starts_with("obs-pass-")
+                })
+                .map(|o| (o.position, o.radius))
+                .collect(),
+        );
+        let pad = a.player_radius;
+        let n = (reach / cell).ceil() as i64;
+        let inside = |x: f64, z: f64| x.hypot(z) <= reach && z.atan2(x).abs() <= a.radial_half;
+        let by_ridge = |x: f64, z: f64| ridge.ridge_blocks(&Position::new(x, z), pad);
+        let by_water = |x: f64, z: f64| sh.water(x as f32, z as f32) >= -(pad as f32);
+        let by_slope = |x: f64, z: f64| !meld_proto::terrain::walkable(x as f32, z as f32, ox, oz);
+        let by_obs = |x: f64, z: f64| obs.ridge_blocks(&Position::new(x, z), pad);
+        let open = |i: i64, j: i64| -> bool {
+            let (x, z) = (i as f64 * cell, j as f64 * cell);
+            inside(x, z) && !by_ridge(x, z) && !by_slope(x, z) && !by_water(x, z) && !by_obs(x, z)
+        };
+        let mut all = std::collections::HashSet::new();
+        for i in -n..=n {
+            for j in -n..=n {
+                if open(i, j) {
+                    all.insert((i, j));
+                }
+            }
+        }
+        let start = *all
+            .iter()
+            .min_by(|p, q| {
+                let d = |c: &(i64, i64)| (c.0 * c.0 + c.1 * c.1) as f64;
+                d(p).partial_cmp(&d(q)).unwrap()
+            })
+            .unwrap();
+        let mut seen = std::collections::HashSet::new();
+        let mut stack = vec![start];
+        seen.insert(start);
+        while let Some((i, j)) = stack.pop() {
+            for (di, dj) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+                let c = (i + di, j + dj);
+                if all.contains(&c) && seen.insert(c) {
+                    stack.push(c);
+                }
+            }
+        }
+        // A SEAL cell is blocked ground touching both a reached and an unreached open cell.
+        let (mut r_only, mut w_only, mut both, mut slope_only, mut seal) = (0, 0, 0, 0, 0);
+        let mut where_at: Vec<(f64, f64)> = Vec::new();
+        for i in -n..=n {
+            for j in -n..=n {
+                let (x, z) = (i as f64 * cell, j as f64 * cell);
+                if !inside(x, z) || all.contains(&(i, j)) {
+                    continue;
+                }
+                let mut touches_in = false;
+                let mut touches_out = false;
+                for (di, dj) in [(1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (-1, -1), (1, -1), (-1, 1)] {
+                    let c = (i + di, j + dj);
+                    if all.contains(&c) {
+                        if seen.contains(&c) { touches_in = true } else { touches_out = true }
+                    }
+                }
+                if !(touches_in && touches_out) {
+                    continue;
+                }
+                seal += 1;
+                where_at.push((x, z));
+                match (by_ridge(x, z), by_water(x, z), by_obs(x, z)) {
+                    (true, _, _) => r_only += 1,
+                    (false, true, _) => w_only += 1,
+                    (false, false, true) => both += 1,
+                    _ => slope_only += 1,
+                }
+            }
+        }
+        let rad: Vec<f64> = where_at.iter().map(|(x, z)| x.hypot(*z)).collect();
+        let (lo, hi) = if rad.is_empty() {
+            (0.0, 0.0)
+        } else {
+            (
+                rad.iter().cloned().fold(f64::MAX, f64::min),
+                rad.iter().cloned().fold(0.0, f64::max),
+            )
+        };
+        println!(
+            "  seal {seal}: range {r_only}, water {w_only}, obstacle {both}, \
+             slope {slope_only}; radii {lo:.0}..{hi:.0}; reached {}/{} = {:.1}%",
+            seen.len(),
+            all.len(),
+            100.0 * seen.len() as f64 / all.len().max(1) as f64
+        );
+    }
+
+    /// ⚠️ **DEV TOOL — the report behind `the_world_is_explorable_and_not_just_routable`.**
+    ///
+    /// ```sh
+    /// cargo test -p meld-world reachable_share -- --ignored --nocapture   # MELD_REACH=1200
+    /// ```
+    ///
+    /// The guard says only pass/fail; this says WHAT the wall is made of, which is the whole
+    /// difference between "seed 1 is broken" and "ranges and water each keep their own
+    /// promise and break each other's". Read the attribution first: a seal of range cells is
+    /// a composition failure between sections, a seal of water cells at the outer radius is
+    /// usually the report's own horizon rather than a wall, and **zero seal cells with ground
+    /// still severed means the flood was truncated, not that anything is sealed** — a real
+    /// wall always leaves blocked ground touching both sides. Raise `MELD_REACH` when that
+    /// happens rather than believing the share.
+    #[test]
+    #[ignore]
+    fn reachable_share() {
+        let b = Balance::load_default().unwrap();
+        let lim: f64 =
+            std::env::var("MELD_REACH").ok().and_then(|v| v.parse().ok()).unwrap_or(1200.0);
+        for seed in [1u64, 7, 42, 99, 424242] {
+            let mut a = Arena::generate(&b, seed, false);
+            let mut reach = 0.0;
+            while reach < lim {
+                reach += 50.0;
+                a.ensure_frontier(&b, reach);
+            }
+            println!("seed {seed}");
+            seal_census(&a, lim, 8.0);
+        }
+    }
+
     fn obstacle_density_by_ring(b: &Balance, seed: u64, rings: &[(f64, f64)]) -> Vec<f64> {
         // ONE biome for every section. Each biome has its own fill multiplier (forest 7.0
         // against tundra 1.6), and which biome a ring happens to draw is a per-seed
@@ -12697,6 +13763,19 @@ mod tests {
                 let n = a
                     .obstacles
                     .iter()
+                    .filter(|o| {
+                        // ⚠️ **SCATTERED props only.** `maze_radial_scale_cap` governs the
+                        // SCATTER, which is what these tests are about — so a boundary WALL or
+                        // a pass THROAT must not be counted, or the measurement stops being
+                        // about the thing under test. It mattered most for the vacuity check:
+                        // with the compensation switched off, prop walls alone put enough at
+                        // depth that the deep ring measured 24.5-tile spacing and no longer
+                        // read as the plain that check needs. That is the walls working — the
+                        // maze at depth is supposed to come from BOUNDARIES rather than from
+                        // fill — and the instrument looking at the wrong population.
+                        !o.entity_id.starts_with("obs-wall-")
+                            && !o.entity_id.starts_with("obs-pass-")
+                    })
                     .filter(|o| {
                         let r = o.position.x.hypot(o.position.y);
                         r >= lo && r < hi

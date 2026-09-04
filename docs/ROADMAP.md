@@ -2406,6 +2406,28 @@ Make time in the field a living, dangerous place worth screenshotting.
     connectivity guaranteed by construction, deliberately not a tree, with terminal
     branches. *The micro maze is authored parts inside a pass* (the old `WG-8`), because a
     cell is ~260 units across at r=400 and cannot make a 20-unit corridor.
+  - ✅ *Stage 7 — **the world is EXPLORABLE, not merely routable.*** Reported from play:
+    *"seems like we need multiple explorable paths… make it so the mountains can't cut off
+    most of the world they do in seed 1."* Measured, and true: seed 1 could reach **62.8%**
+    of its own walkable ground, against 99.6-100% on seeds 7/42/99/424242. **No guarantee in
+    the repo was violated** — every range cuts its own passes, and every one of them held.
+    The failure is COMPOSITION: a range reaches BACK into sections already generated, so a
+    later range's body stands in an earlier one's gap, and each subsystem's own test stays
+    green. Every existing guarantee is about *the guaranteed route staying feasible*, which a
+    world that is one corridor and nothing else satisfies perfectly — so nothing was asking
+    the question at all. `Arena::open_sealed_ground` floods from the hub after each section's
+    blockers are down and drops the range segment holding any severed pocket; the flood is
+    the **whole disc**, because a band-scoped one cannot see a seal that formed retroactively
+    at r=301 while the section raising its last wall sits at r=900. Cost, measured A/B on the
+    tunable: streaming to d1500 goes **5.01 s → 5.67 s**, and only sections that actually
+    raised a range pay it. Every sampled seed now reaches 100%.
+    `the_world_is_explorable_and_not_just_routable` is the guard, and it FAILS at 27% stranded
+    with the repair disabled. ⚠️ Two traps for whoever tunes this: **flood wider than you
+    judge** (cutting both at the same radius counts a pocket that reconnects further out as
+    severed — the tell is zero seal cells with ground still stranded), and **scatter is not a
+    barrier** (at any affordable cell size the grid cannot resolve the gaps between trunks, so
+    counting trees makes a wood read as solid and the flood dies in the hub ring, at 0.1%).
+    Prop walls ARE counted and, measured, seal nothing on any seed: stage 6's mouths work.
   - *The teardrop:* rather than choosing which portion of the deep band is the prison —
     today `EXCLUSIVE` makes it the WHOLE annulus past d3000, ~15,700 units of arc you can
     arrive at anywhere along — **taper the land** by making `arc_half_rad` a function of

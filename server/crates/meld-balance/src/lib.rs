@@ -1217,6 +1217,9 @@ pub struct WorldGen {
     pub ashfall_obstacle_mult: f64,
     pub tundra_obstacle_mult: f64,
     pub mire_obstacle_mult: f64,
+    /// Share of the maze fill that is the biome's SIGNATURE kind; the rest is drawn from
+    /// its authored `obstacles_for_biome` list.
+    pub fill_signature_share: f64,
     /// Fallback fill density for any biome without its own multiplier.
     pub maze_obstacle_mult: f64,
     /// Cap on the radial density compensation: a deep area's arc is much wider than the
@@ -1279,6 +1282,9 @@ pub struct WorldGen {
     pub ridge_spoke_rings_min: u32,
     pub ridge_spoke_rings_max: u32,
     pub ridge_max_per_section: usize,
+    /// Boundaries per section that may be walled with PROPS (its own budget — see the
+    /// note in `balance.toml`; a prop wall costs O(length), a range costs per-sample geometry).
+    pub prop_wall_max_per_section: usize,
     pub ridge_passes_min: usize,
     pub ridge_passes_max: usize,
     pub ridge_pass_share: f64,
@@ -1286,6 +1292,14 @@ pub struct WorldGen {
     pub ridge_half_width_max: f64,
     pub ridge_aspect: f64,
     pub ridge_pass_width: f64,
+    /// World units per cell of the connectivity flood that finds range-sealed ground.
+    pub connectivity_cell: f64,
+    /// A severed pocket smaller than this many cells is scenery, not a severed region.
+    pub connectivity_min_cells: usize,
+    /// How many range segments one section may drop to reconnect itself.
+    pub connectivity_max_carves: usize,
+    /// How tightly a PROP wall is packed, as a share of the widest impassable gap.
+    pub prop_wall_tightness: f64,
     /// `WG-11` stage 6: share of passes that get a part at all (0..1).
     pub pass_part_chance: f64,
     /// How far a part's piece sits off the crossing's centre line, in world units.
