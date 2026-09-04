@@ -118,3 +118,69 @@ fn braiding_buys_loops_and_spends_dead_ends() {
         );
     }
 }
+
+/// **A RELIEF MASS SITS IN ITS OWN CELL, AND MEETS THE ONES IT SHOULD** (`WG-11` stage 9).
+///
+/// The two properties that make `maze::cell_mass` the right primitive rather than merely a
+/// function: a mass is INSIDE the cell that grew it (so nothing is positioned relative to a
+/// boundary, which is what made stage 8's walls straight lines), and two masses across a
+/// boundary the maze WALLS reach each other (so the wall exists as terrain rather than as a
+/// line drawn on the edge).
+#[test]
+fn a_relief_mass_stays_home_and_meets_its_walled_neighbours() {
+    let b = Balance::load_default().unwrap();
+    for seed in [1u64, 42, 424242] {
+        let a = Arena::generate(&b, seed, false);
+        let g = a.regions();
+        let arc_half = a.radial_half() as f32;
+        let land = land_of(&g, arc_half);
+        let m = maze::build(&g, seed, 3200.0, 0.10, &land);
+        let mut checked = 0usize;
+        let mut met = 0usize;
+        let mut pairs = 0usize;
+        for ring in 1..12u32 {
+            for sector in 0..g.sectors(ring) {
+                let c = Cell::new(ring, sector);
+                if !land(c) {
+                    continue;
+                }
+                let Some((mx, my, reach)) = maze::cell_mass(&g, &m, c, seed) else { continue };
+                checked += 1;
+                // ⚠️ **INSIDE ITS OWN CELL.** Not on the boundary, not in the neighbour.
+                let here = g.cell_at(mx as f32, my as f32);
+                assert_eq!(
+                    here.key(),
+                    c.key(),
+                    "seed {seed}: the mass for ring {ring} sector {sector} landed in ring {} \
+                     sector {} — a mass belongs to the cell that grew it, or it is being \
+                     positioned relative to a boundary again",
+                    here.ring,
+                    here.sector
+                );
+                assert!(reach > 0.0, "a mass with no reach walls nothing");
+                // …and it reaches its walled neighbours' masses.
+                for n in g.neighbours(c) {
+                    if !land(n) || m.is_open(c, n) {
+                        continue;
+                    }
+                    let Some((nx, ny, nreach)) = maze::cell_mass(&g, &m, n, seed) else { continue };
+                    pairs += 1;
+                    if (mx - nx).hypot(my - ny) <= reach + nreach + 1e-6 {
+                        met += 1;
+                    }
+                }
+            }
+        }
+        assert!(checked > 20, "seed {seed}: only {checked} cells grew a mass");
+        assert!(pairs > 20, "seed {seed}: only {pairs} walled pairs to check");
+        // ⚠️ The RATIO, not every pair: `reach` is half the way to the NEAREST walled
+        // neighbour, so a cell walled on several sides under-reaches the further ones. That is
+        // the spur work this primitive is the foundation for, and it is honest to say the
+        // shortfall is bounded rather than to claim it does not exist.
+        assert!(
+            met * 4 >= pairs * 3,
+            "seed {seed}: only {met} of {pairs} walled pairs have masses that meet — a wall \
+             the ground does not express is a gate with nothing in it"
+        );
+    }
+}

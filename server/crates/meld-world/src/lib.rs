@@ -6582,6 +6582,28 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
         // what makes yielding possible at all — the same ordering that lets water yield to a
         // drawn path by becoming a ford.
         let ridge_list: Vec<meld_proto::terrain::Ridge> = self.ridges.clone();
+        // ⚠️ **AND NEVER ON A BRIDGE, because a bridge is forced land in `sea` and NOT in
+        // `water`.** `coast`'s own note says a bridge stays land so that `astar_route`,
+        // `apply_move`, `backbone_feasible` and the shader all understand it with no code of
+        // their own — but that forcing is subtracted in `Shore::sea`, and `is_land` asks
+        // `Shore::water`, which adds the inland bodies. So a bridge is protected from the
+        // OCEAN and defenceless against a lake, and stage 8's basin work put one on an
+        // abutment: `a_bridge_is_walkable_from_end_to_end` failed with *"seed 99: a bridge is
+        // under water 0% along its own span"* — its start endpoint drowned.
+        //
+        // The crossing wins, for the same reason the drawn trail does: a bridge IS the trail
+        // where it spans a strait, and water that drowns it takes the route with it.
+        let bridge_snap: Vec<meld_proto::coast::Bridge> = self.bridges.clone();
+        let off_bridges = |p: Position, pad: f64| {
+            bridge_snap.iter().all(|b| {
+                let d = dist_point_segment(
+                    &p,
+                    &Position::new(b[0] as f64, b[1] as f64),
+                    &Position::new(b[2] as f64, b[3] as f64),
+                );
+                d > b[4] as f64 + pad
+            })
+        };
         let off_ridges = |p: Position, pad: f64| {
             ridge_list.iter().all(|r| {
                 let hw = r[4] as f64;
@@ -6680,7 +6702,10 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
             let mut broke = false;
             for n in &nodes {
                 let p = Position::new(n[0] as f64, n[1] as f64);
-                if !off_drawn(p, n[2] as f64) || !off_creatures(p, n[2] as f64) {
+                if !off_drawn(p, n[2] as f64)
+                    || !off_creatures(p, n[2] as f64)
+                    || !off_bridges(p, n[2] as f64)
+                {
                     // The trail crosses here, or something already stands here. Either way the
                     // channel leaves dry ground and resumes past it — which reads as a ford.
                     broke = true;
@@ -6708,7 +6733,10 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
                 while radius >= MIN_BODY && !off_creatures(p, radius) {
                     radius -= 12.0;
                 }
-                if radius >= MIN_BODY && off_drawn(p, radius) && off_peaks(p, radius)
+                if radius >= MIN_BODY
+                    && off_drawn(p, radius)
+                    && off_bridges(p, radius)
+                    && off_peaks(p, radius)
                 && off_ridges(p, radius) {
                     self.basins.push([
                         p.x as f32,

@@ -953,7 +953,28 @@ impl<'a> Shore<'a> {
     /// **All water, salt and fresh** — the union of [`Self::sea`] and [`Self::inland`], and
     /// the field every "can I stand here" question is a sign test of.
     pub fn water(&self, x: f32, z: f32) -> f32 {
-        self.sea(x, z).max(self.inland(x, z))
+        let d = self.sea(x, z).max(self.inland(x, z));
+        // ⚠️ **A BRIDGE BEATS EVERY WATER TERM — AND `sea` IS NOT EVERY TERM.**
+        // [`Self::sea`] applies `bridge_clearance` last, saying exactly this in its own
+        // comment: "it is the thing put there so a crossing exists, so nothing may drown it."
+        // But `water` then takes the MAX with `inland`, which puts a lake straight back on top
+        // of the deck — so a bridge was forced land against the OCEAN and defenceless against
+        // a basin. Measured: `a_bridge_is_walkable_from_end_to_end` failed with "seed 99: a
+        // bridge is under water 0% along its own span", its start endpoint drowned by a basin.
+        //
+        // ⚠️ And it cannot be fixed where the water is PLACED, which was the first attempt:
+        // `bridge_the_direct_line` runs after `push_water`, so when a basin is accepted the
+        // bridge that will span that ground does not exist yet.
+        //
+        // This is not a "walkable over water" special case — the thing `coast`'s own header
+        // forbids. It is the existing rule applied where it was always meant to reach: a
+        // bridge is LAND, and the deck standing above the waterline with water drawn beneath
+        // its parapets is what makes it read as a bridge.
+        let span = bridge_clearance(x, z, self.bridges);
+        if span < 0.0 {
+            return d.min(span);
+        }
+        d
     }
 
     /// Is `(x, z)` water? The sign of [`Self::water`], so the water a player SEES and the
