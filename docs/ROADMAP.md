@@ -2561,6 +2561,18 @@ Make time in the field a living, dangerous place worth screenshotting.
       because warping it re-rolls EVERY seeded world (it feeds `span`, `neighbours`, `cell_at`
       and the maze's own adjacency), which is the hazard that got `radial_arc_degrees` backed
       out at 300° → 280°. Do the masses first; the warp may never be needed.
+    - ✅ **DONE — the spine runs MASS TO MASS.** Measured on seed 424242: ranges in the world
+      **35 → 143**, mean |cos| between a spine and its boundary **0.720 → 0.609**, near-parallel
+      walls (tracing the grid) **63% → 20%**, passes blocked by a range **0**. A maze wall is
+      CONTINUOUS with it, and the stage-6 pass mouth moved to the OPEN boundaries — those gaps
+      are what a mountain pass is, and stage 6's own gaps no longer exist to furnish.
+      - ⚠️ **A 4x RANGE COUNT MAKES THE `MAX_RIDGES` WINDOW URGENT, not academic.** 143 ranges
+        against 16 uniform slots: a range past the window renders FLAT while `ridge_blocks`
+        still refuses it, which is an invisible wall a player walks into. The window is already
+        nearest-first, so the question is answerable server-side and cheaply — **how many
+        ranges stand within one interest radius (128 units) of a player?** If that is under 16
+        the window is sufficient and the GPU cost never has to be paid. Measure that before
+        touching the bound.
     - ⚠️ **`ridge_pass_width` CHANGES MEANING.** Today a pass is a length subtracted from a
       drawn spine. Under masses it is a **minimum separation** between two blobs — a constraint
       to verify rather than a gap to author — and A* still needs `route_pad` through whatever
