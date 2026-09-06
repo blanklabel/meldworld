@@ -1,0 +1,134 @@
+# The Chaos Sanctuary — a hand-authored ASHFALL dungeon recreating Diablo II's final
+# level (structure, not a pixel-copy). One floor, because the Sanctuary IS one floor: a
+# cruciform hall reached by the long east corridor, with the pentagram chamber sealed at
+# its west end.
+#
+# THE FIVE SEALS are the whole dungeon. Three of them stand behind a one-cell choke with
+# a super-unique guardian in it — the Grand Vizier of Chaos (north), Lord De Seis (south),
+# the Infector of Blood (east) — so those three are MANDATORY fights, and the door behind
+# each opens only on `boss_dead`. Two more sit unguarded in the hall. All five open the
+# pentagram, and Diablo is behind it.
+#
+# In the original, breaking a seal SPAWNS its guardian; here the guardian stands between
+# you and the seal. Same contract — you cannot have the seal without the fight — expressed
+# in the vocabulary the engine actually has (`meld-dungeon`'s monotone barriers).
+#
+# Ashfall's first authored dungeon. `[biome_gate] ashfall = 250` is exactly
+# `[worldgen] dungeon_min_distance`, so ashfall is the SHALLOWEST biome a dungeon can
+# appear in — and its pool was empty, so the first one a player could ever find did
+# not exist.
+#
+# Soloable (`bodies_required() == 1`): the seals are LEVERS. Five momentary plates in one
+# `all[...]` would cost five bodies, which is past the party cap of four — see
+# `Condition::bodies_required` and `a_co_op_gate_is_visible_from_the_definition`.
+
+name  = "chaos_sanctuary"
+biome = "ashfall"
+
+[legend]
+a = "lever L1"
+b = "lever L2"
+d = "lever L3"
+e = "lever L4"
+f = "lever L5"
+X = "door D1"
+Z = "door D2"
+V = "door D3"
+Y = "gate G1"
+"1" = "boss B1"
+"2" = "boss B2"
+"3" = "boss B3"
+"4" = "boss B4"
+r = "trap chaos_rune"
+x = "trap boiling_blood"
+p = "trap collapsed_floor"
+A = "chest hall_north"
+B = "chest hall_south"
+C = "chest approach"
+N = "chest vault"
+
+[[floor]]
+grid = """
+#############################################
+#############################################
+####################.....####################
+####################..a..####################
+####################.....####################
+######################X######################
+######################.###########.....######
+######################1###########..d..######
+###.........#...................##.....######
+###.........#...................####V########
+###..N......#...e..........A....####.########
+###.........#...................####3########
+###.........#.............................###
+###.........#...............................#
+###....4....Y......x.....p.........r..C....>#
+###.........#...............................#
+###.........#.............................###
+###.........#...................#############
+###....<....#...f..........B....#############
+###.........#...................#############
+###.........#...................#############
+######################2######################
+######################.######################
+######################Z######################
+####################.....####################
+####################..b..####################
+####################.....####################
+#############################################
+#############################################
+"""
+
+# Each guardian's fall opens the way to the seal it was set over.
+[door.D1]
+when = "boss_dead(B1)"
+[door.D2]
+when = "boss_dead(B2)"
+[door.D3]
+when = "boss_dead(B3)"
+
+# All five seals broken — the pentagram opens.
+[gate.G1]
+when = "all[L1,L2,L3,L4,L5]"
+
+# The three seal guardians, each its own thing: a fire-caster over the north seal, a
+# risen lord over the south, a blood-thing over the east. Three identical bodies would
+# be one fight served three times (`d5f9b3e0`: an elite that was wire-identical to a
+# footsoldier fought in the dark).
+[boss.B1]
+sprite = "pyrewarden"
+on_enter_spawn = true
+[boss.B2]
+sprite = "hollowbishop"
+on_enter_spawn = true
+[boss.B3]
+sprite = "rustfang"
+on_enter_spawn = true
+
+# Diablo. The biome's own leviathan is the largest thing ashfall has.
+[boss.B4]
+sprite = "ashenleviathan"
+on_enter_spawn = true
+
+[trap.chaos_rune]
+kind = "rune"
+disarmable = true
+[trap.boiling_blood]
+kind = "acid"
+disarmable = false
+[trap.collapsed_floor]
+kind = "pit"
+disarmable = false
+
+[chest.hall_north]
+loot = "rolled"
+[chest.hall_south]
+loot = "rolled"
+[chest.approach]
+loot = "rolled"
+
+# The drop this dungeon is famous for — sealed until Diablo falls.
+[chest.vault]
+when = "boss_dead(B4)"
+loot = "rolled"

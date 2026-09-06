@@ -1458,6 +1458,43 @@ design for this epic: [`proposals/worldgen-wg.md`](proposals/worldgen-wg.md).
     bridge), then a three-boss tower gauntlet behind boss-gated doors ends at Kefka +
     the vault (9 bosses, 13 treasures). All authored purely in the glyph grid, gate-
     verified solvable, rendered by the DG-6b re-skin. Tests green; gate-failure verified.
+    - *(content) THE POOL COVERS EVERY BIOME A DUNGEON CAN BE ROLLED IN, and it did not.*
+      `roll_entrance` returns `None` for a biome with an empty pool, and a streamed
+      section reads that as "no dungeon here" — indistinguishable from a failed spawn
+      roll. **Three of the seven ordinary biomes were in that state**: `ashfall` (whose
+      `[biome_gate]` of 250 is exactly `dungeon_min_distance`, making it the SHALLOWEST
+      biome a dungeon can appear in), `tundra` (550), and `amber_wood` (gated at 0, so
+      reachable on the first step of a dive). Every section of those three rolled for an
+      entrance and hosted nothing, with the whole suite green — a feature with no
+      instances passes every test it has. Five more recreations of the genre's
+      best-known dungeons close it, each exercising a different corner of the DG-1
+      vocabulary: **`bleak_falls_barrow`** (tundra — Skyrim; `all[seq[P1,P2,P3], L1]`,
+      the pillar order AND the lever, plus the Golden Claw as `has_key`),
+      **`chaos_sanctuary`** (ashfall — Diablo II; the five seals as `all[L1..L5]`, three
+      of them behind a one-cell choke with a super-unique in it),
+      **`water_temple`** (mire — Ocarina of Time; the three water levels as three
+      FLOORS, since a monotone barrier can express a level that only ever falls, and
+      Dark Link gating the Longshot), **`forest_temple`** (amber_wood — Ocarina of Time;
+      the four Poe sisters as `all[boss_dead x4]`, a hub you leave and return to four
+      times — no prior content used `boss_dead` inside an `all[…]`), and
+      **`the_deadmines`** (forest — WoW; a three-floor descent to the Ironclad Cove,
+      `boss_dead` → `all[L1,L2]` → `has_key` chained across the three floors). Between
+      them they also lean on the primitive the pool had barely touched: it used TWO trap
+      kinds, `thorns` and `dart`, so four of the six four-sprite sets had shipped and
+      never once been shown to a player. All six are in use now, the barrow's Hall of
+      Stories carrying the most at eleven. Every one is gate-verified solvable and
+      soloable except the Water Temple's OPTIONAL two-body vault — nothing on a critical
+      path wants a second body, because a dungeon takes no Town Portal and a co-op gate
+      between a solo player and the boss key seals them in.
+      `every_biome_a_dungeon_can_appear_in_has_a_dungeon_to_place` holds the coverage
+      against `regions::BIOMES`, exempting only the four deep world-boss arenas (and
+      asserting they are the deep ones). Two more free-string holes closed with it:
+      `[boss.*] sprite` and `[trap.*] kind` both select client art by name and neither
+      was checked, so a typo rendered a set-piece boss as a hashed 32px billboard —
+      which is what `twingolem` did in the Ocean Palace for a long time. The bespoke
+      sprite list moved to `meld_proto::bosses::DUNGEON_SPRITES` (one registry both
+      sides read) and `every_authored_boss_sprite_has_art` /
+      `every_authored_trap_kind_has_art` hold the content to it.
   - [x] **DG-3** — runtime subinstance. ✅ *DG-3a (the pure engine) shipped:*
     `meld-dungeon-run` — the `Location` model, a live `DungeonInstance` (barrier/
     emitter puzzle state that opens doors/gates as the group solves them, stairs

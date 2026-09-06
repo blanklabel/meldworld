@@ -9,6 +9,10 @@ description = "Authored dungeon content (DG-2): every *.dungeon.toml under conte
 meld-dungeon = { path = "../meld-dungeon" }
 serde_json = { workspace = true }
 
+[dev-dependencies]
+# Tests hold every authored `[boss.*] sprite` to the one registry the client loads from.
+meld-proto.workspace = true
+
 [build-dependencies]
 # The build script reuses the real parser/validator so the compile IS the gate.
 meld-dungeon = { path = "../meld-dungeon" }

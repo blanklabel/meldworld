@@ -118,6 +118,61 @@ mod tests {
         }
     }
 
+    /// EVERY AUTHORED `sprite` MUST BE ART THE CLIENT ACTUALLY LOADS.
+    ///
+    /// `[boss.B1] sprite` is a free string — the parser takes anything, and the
+    /// solvability gate does not care what a boss looks like. So a typo (`sepulchre`)
+    /// compiles, validates, ships, and then `creature_sprite` HASHES the unknown kind
+    /// into the fallback pool: the set piece the whole dungeon points at renders as a
+    /// random 32px billboard, and nothing anywhere says so. `twingolem` did exactly that
+    /// in the Ocean Palace for a long time.
+    ///
+    /// Held against `meld_proto::bosses::sprite_is_loadable` because that is the same list
+    /// the client's `boss_keys()` loads from — the two sides cannot drift.
+    #[test]
+    fn every_authored_boss_sprite_has_art() {
+        let mut checked = 0;
+        for d in all() {
+            for (id, kind) in &d.objects {
+                if let ObjectKind::Boss { sprite, .. } = kind {
+                    assert!(
+                        meld_proto::bosses::sprite_is_loadable(sprite),
+                        "{}'s {id} names sprite {sprite:?}, which the client loads no art \
+                         for — it would draw as a hashed fallback billboard. Use a \
+                         `meld_proto::bosses` key, or declare it in `bosses::DUNGEON_SPRITES` \
+                         and install the art under `client/.../assets/bosses/{sprite}/`.",
+                        d.name,
+                    );
+                    checked += 1;
+                }
+            }
+        }
+        assert!(checked > 0, "the pool has bosses to check");
+    }
+
+    /// A TRAP'S `kind` PICKS ITS ART, and there are exactly six sets drawn.
+    ///
+    /// Same free-string trap as the sprite above, one object type over: `kind` reaches the
+    /// client as `trap:<kind>` and selects `trap_<kind>_0..3`. An unauthored kind draws
+    /// nothing recognisable, and a trap is the one thing whose warning has to be legible
+    /// before you step on it.
+    #[test]
+    fn every_authored_trap_kind_has_art() {
+        // The four-sprite sets installed under the client's assets (world_render::PROP_KEYS).
+        const DRAWN: &[&str] = &["thorns", "dart", "snare", "rune", "acid", "pit"];
+        for d in all() {
+            for (id, kind) in &d.objects {
+                if let ObjectKind::Trap { kind: k, .. } = kind {
+                    assert!(
+                        DRAWN.contains(&k.as_str()),
+                        "{}'s {id} is a {k:?} trap, and only {DRAWN:?} have art",
+                        d.name,
+                    );
+                }
+            }
+        }
+    }
+
     #[test]
     fn every_embedded_dungeon_revalidates_at_runtime() {
         // Belt-and-suspenders: the build already validated these, but prove the
