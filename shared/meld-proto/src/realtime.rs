@@ -1297,6 +1297,23 @@ pub mod run {
         const TYPE: &'static str = "run.open_chest";
     }
 
+    /// C2S — attempt to DISARM the dungeon trap the avatar is standing on (DG-4).
+    ///
+    /// A Dex check the **Shifter** is far better at, and **failure springs the trap** — so
+    /// this is a gamble against the alternative of routing around the cell, not a free
+    /// cleanup. Deliberate and explicit: the trap is a hazard you choose to touch.
+    ///
+    /// ⚠️ The engine for this (`meld_dungeon_run::attempt_disarm`) shipped with DG-4a and
+    /// had **no call site anywhere** until this message existed, so every
+    /// `disarmable = true` in every authored dungeon was inert.
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct DisarmTrap {
+        pub entity_id: Id,
+    }
+    impl Message for DisarmTrap {
+        const TYPE: &'static str = "run.disarm_trap";
+    }
+
     /// C2S — raise a field workstation where the avatar stands (MS-1). Costs ore from
     /// the run backpack and a Meld skill level in the trade, both checked server-side.
     /// Deliberate and explicit (a menu choice, not a hotkey) because it spends what you

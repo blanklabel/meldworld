@@ -322,4 +322,55 @@ grid = """
         let errs = validate(&parse_str(src).unwrap());
         assert!(errs.iter().any(|e| matches!(e, DungeonError::BadStair { .. })));
     }
+
+    /// `seq[P1,P1]` is refused: consecutive presses of one emitter count ONCE, so that
+    /// step could never be satisfied — and the solvability search, which reads `seq`
+    /// order-agnostically, would have called the dungeon solvable anyway. It is the only
+    /// way ordering can seal a party in, so the shape is rejected rather than searched.
+    #[test]
+    fn a_sequence_cannot_ask_for_the_same_press_twice_running() {
+        let src = r#"
+name = "doublepress"
+biome = "forest"
+[legend]
+"1" = "plate P1 latching"
+"2" = "plate P2 latching"
+Y = "gate G1"
+[gate.G1]
+when = "seq[P1,P1,P2]"
+[[floor]]
+grid = """
+###########
+#>.1.2.Y.<#
+###########
+"""
+"#;
+        let errs = validate(&parse_str(src).unwrap());
+        assert!(
+            errs.iter().any(|e| matches!(e, DungeonError::BadCondition { .. })),
+            "expected the doubled press to be refused, got {errs:?}"
+        );
+    }
+
+    /// …and the same ids NOT adjacent are fine, because an unrelated press separates them.
+    #[test]
+    fn a_sequence_may_revisit_an_emitter_with_something_in_between() {
+        let src = r#"
+name = "revisit"
+biome = "forest"
+[legend]
+"1" = "plate P1 latching"
+"2" = "plate P2 latching"
+Y = "gate G1"
+[gate.G1]
+when = "seq[P1,P2,P1]"
+[[floor]]
+grid = """
+###########
+#>.1.2.Y.<#
+###########
+"""
+"#;
+        assert!(validate(&parse_str(src).unwrap()).is_empty());
+    }
 }

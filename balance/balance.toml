@@ -1475,6 +1475,23 @@ dungeon_spawn_chance = 0.12      # per streamed non-tutorial section (DG-3b)
 dungeon_min_distance = 250.0
 dungeon_depth_level_step = 25    # effective-distance added per floor descended (DG-3/DG-5)
 dungeon_trap_damage = 30         # base HP a sprung dungeon trap deals; scaled up by depth (DG-3b/DG-4)
+# DISARMING a trap (DG-4a's `attempt_disarm`, finally reachable). `p = dex / divisor
+# (+ bonus for a Shifter)`, clamped to [0.05, 0.95], and FAILURE SPRINGS IT — so trying is
+# a real gamble against simply routing around the cell.
+#
+# ⚠️ THE ENGINE TOOK THESE AS PARAMETERS AND NOTHING EVER PASSED THEM. `attempt_disarm`
+# shipped with DG-4a and had no call site anywhere outside its own crate, so every
+# `disarmable = true` in every authored dungeon was inert and a trap was a pure hazard.
+# The Shifter's trap-SENSE below was built, tuned and shipped on top of that gap — its own
+# comment frames it as serving "the Shifter's whole disarm advantage", an advantage that
+# had never once existed in play.
+#
+# The divisor is sized against Dex, not level: a hero's Dex runs ~8 at level 1 to ~60 deep,
+# so 120 puts a fresh party near the 0.05 floor and a deep one around 0.5 — a coin-flip you
+# think about. The Shifter's bonus is deliberately LARGER than anything levelling buys, or
+# the class whose fantasy this is would just be a slightly better rogue. [TUNABLE]
+dungeon_disarm_dex_divisor = 120.0
+dungeon_disarm_shifter_bonus = 0.35
 # WG-4: crossing this far WEST of the hub (behind spawn) returns you to Last City —
 # the safe anchor is always just to the west. Negative = behind the origin.
 # ⚠️ MUST stay outside `coast::NECK_REACH`, or the peninsula is invisible. It was -20

@@ -17,6 +17,7 @@ pub fn validate(d: &DungeonDef) -> Vec<DungeonError> {
     structural(d, &mut errs);
     placements(d, &mut errs);
     references(d, &mut errs);
+    sequences(d, &mut errs);
     stairs(d, &mut errs);
     // Only attempt the solvability search once the graph is well-formed; a
     // dangling reference or unpaired stair would make it meaningless.
@@ -87,6 +88,47 @@ fn references(d: &DungeonDef, errs: &mut Vec<DungeonError>) {
                     },
                 });
             }
+        }
+    }
+}
+
+/// A `seq[…]` must never ask for the same press TWICE IN A ROW.
+///
+/// This is the one hole in "ordering can never make a dungeon unsolvable". The runtime
+/// dedupes consecutive presses of one emitter — it has to, or standing on a plate would
+/// flood the activation log — so `seq[P1,P1]` needs some OTHER emitter pressed in between
+/// to separate them. Where none is reachable the lock can never open, and the solvability
+/// search cannot see it: that search evaluates `seq` order-agnostically (correctly — see
+/// `Condition::eval_ordered`), so it would call the dungeon solvable.
+///
+/// Refusing the shape is far better than teaching the search about it. A dungeon takes no
+/// Town Portal, so a barrier that can never open is a party sealed in.
+fn sequences(d: &DungeonDef, errs: &mut Vec<DungeonError>) {
+    fn walk(id: &Id, c: &Condition, errs: &mut Vec<DungeonError>) {
+        match c {
+            Condition::Seq(ids) => {
+                for w in ids.windows(2) {
+                    if w[0] == w[1] {
+                        errs.push(DungeonError::BadCondition {
+                            id: id.clone(),
+                            reason: format!(
+                                "seq[...] names {:?} twice in a row; consecutive presses of one                                  emitter count once, so that step can never be satisfied",
+                                w[0]
+                            ),
+                        });
+                    }
+                }
+            }
+            Condition::Not(inner) => walk(id, inner, errs),
+            Condition::All(cs) | Condition::Any(cs) | Condition::Count(_, cs) => {
+                cs.iter().for_each(|c| walk(id, c, errs))
+            }
+            _ => {}
+        }
+    }
+    for (id, kind) in &d.objects {
+        if let Some(c) = kind.condition() {
+            walk(id, c, errs);
         }
     }
 }

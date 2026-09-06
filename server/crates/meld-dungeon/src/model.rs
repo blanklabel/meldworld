@@ -176,16 +176,47 @@ impl Condition {
     /// `boss_dead` / `room_clear` share the same id-membership space as `Ref`
     /// (a key is "active" once held, a boss once dead) — see the solvability search.
     pub fn eval(&self, active: &HashSet<Id>) -> bool {
+        self.eval_ordered(active, None)
+    }
+
+    /// Evaluate, honouring `seq[…]` ORDER against the sequence emitters were actually
+    /// triggered in. `order` is the activation log, oldest first; `None` falls back to
+    /// order-agnostic evaluation (what [`eval`](Self::eval) does).
+    ///
+    /// ⚠️ **`seq` USED TO MEAN `all`, EVERYWHERE.** Its arm was
+    /// `ids.iter().all(|id| active.contains(id))` and the RUNTIME evaluated barriers
+    /// through that same function against a `HashSet<Id>` — a set has no order, so
+    /// "step the plates in order", which DG-1 calls a first-class part of the grammar,
+    /// was enforced nowhere. `sunken_vault` advertised it from the day DG-2 shipped and
+    /// never once checked.
+    ///
+    /// **The SOLVABILITY search deliberately keeps passing `None`, and that is exact
+    /// rather than a concession.** Reachability there is monotone (a barrier only ever
+    /// opens), so once an emitter is reachable it stays reachable — which means at the
+    /// moment every element of a `seq` is in `active`, all of them are *simultaneously*
+    /// reachable and a party could have walked them in whatever order the author asked
+    /// for. Ordering can therefore never be the thing that makes a dungeon unsolvable,
+    /// and the gate does not have to search permutations to know it.
+    pub fn eval_ordered(&self, active: &HashSet<Id>, order: Option<&[Id]>) -> bool {
         match self {
             Condition::Ref(id)
             | Condition::HasKey(id)
             | Condition::BossDead(id)
             | Condition::RoomClear(id) => active.contains(id),
-            Condition::Not(c) => !c.eval(active),
-            Condition::All(cs) => cs.iter().all(|c| c.eval(active)),
-            Condition::Any(cs) => cs.iter().any(|c| c.eval(active)),
-            Condition::Seq(ids) => ids.iter().all(|id| active.contains(id)),
-            Condition::Count(n, cs) => cs.iter().filter(|c| c.eval(active)).count() >= *n,
+            Condition::Not(c) => !c.eval_ordered(active, order),
+            Condition::All(cs) => cs.iter().all(|c| c.eval_ordered(active, order)),
+            Condition::Any(cs) => cs.iter().any(|c| c.eval_ordered(active, order)),
+            Condition::Seq(ids) => match order {
+                // Every id present, in this relative order — a SUBSEQUENCE of the log, so
+                // stepping something unrelated in between is fine. Stepping them out of
+                // order is not, and re-walking them in the right order afterwards fixes
+                // it, which is how a combination lock should behave.
+                Some(log) => ids.iter().all(|id| active.contains(id)) && is_subsequence(ids, log),
+                None => ids.iter().all(|id| active.contains(id)),
+            },
+            Condition::Count(n, cs) => {
+                cs.iter().filter(|c| c.eval_ordered(active, order)).count() >= *n
+            }
         }
     }
 
@@ -229,6 +260,17 @@ impl Condition {
             Condition::Count(_, cs) => cs.iter().for_each(|c| c.referenced(out)),
         }
     }
+}
+
+/// Do `needles` appear in `log` in this relative order (not necessarily adjacently)?
+///
+/// Greedy is correct here and the greedy choice is the EARLIEST match: taking the first
+/// occurrence of each needle leaves the longest possible tail for the rest, so if any
+/// embedding exists this finds one. A repeated id in `needles` therefore wants that many
+/// separate activations in the log.
+fn is_subsequence(needles: &[Id], log: &[Id]) -> bool {
+    let mut it = log.iter();
+    needles.iter().all(|n| it.any(|l| l == n))
 }
 
 /// What type a condition expects the id it names to be — used by validation to

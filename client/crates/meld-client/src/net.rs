@@ -71,6 +71,8 @@ pub enum ClientCmd {
     /// BD-9: build at a chosen spot with a facing — what one piece of a dragged run is.
     BuildStructureAt { function: String, at: (f64, f64), yaw: f64 },
     RepairStructure { entity_id: String },
+    /// DG-4 — try to defuse a dungeon trap in reach. Failure springs it.
+    DisarmTrap { entity_id: String },
     DemolishStructure { entity_id: String },
     /// Ask whoever raised this station to do a piece of work for you: the smith's
     /// services on YOUR OWN gear, or a brew at a Keeper's alembic.
@@ -2260,6 +2262,9 @@ impl Inner {
             }
             ClientCmd::RepairStructure { entity_id } => {
                 self.send_env(wr::RepairStructure::TYPE, json!({ "entity_id": entity_id }))
+            }
+            ClientCmd::DisarmTrap { entity_id } => {
+                self.send_env(wr::DisarmTrap::TYPE, json!({ "entity_id": entity_id }))
             }
             ClientCmd::DemolishStructure { entity_id } => {
                 self.send_env(wr::DemolishStructure::TYPE, json!({ "entity_id": entity_id }))

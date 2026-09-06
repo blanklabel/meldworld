@@ -923,6 +923,13 @@ pub(crate) fn overworld_input(
                 return;
             }
         }
+        // Nor does autoplay defuse anything. Failure SPRINGS the trap, and a demo that
+        // wipes itself on a corridor of them is worse than one that walks around — the
+        // same "deliberate answer to the prompt, never an unattended one" rule as the
+        // co-op door above.
+        if matches!(target, Interact::DisarmTrap { .. }) {
+            return;
+        }
         // Autoplay acts on its own, but throttled: firing every frame would flood the
         // server while the channel it just opened is still starting. A throttle rather
         // than a once-per-target latch, so a send the server refused is retried instead
@@ -941,6 +948,7 @@ pub(crate) fn overworld_input(
         Interact::MendStructure { entity_id, .. } => {
             net.0.send(ClientCmd::RepairStructure { entity_id })
         }
+        Interact::DisarmTrap { entity_id, .. } => net.0.send(ClientCmd::DisarmTrap { entity_id }),
         // A station is a bench, not a one-shot: [E] opens it and the keys work from
         // there, the same way the city anvil does.
         Interact::UseStation { entity_id, kind, jobs } => {
@@ -975,6 +983,9 @@ pub(crate) enum Interact {
     /// Spend a unit of ore mending a player-built structure. `hp_pct` is what it has
     /// left, so the prompt says whether it is worth the ore before you spend it.
     MendStructure { entity_id: String, name: String, hp_pct: u8 },
+    /// Defuse a dungeon trap you are standing NEXT TO (DG-4). `kind` names it, because
+    /// what you are about to touch is the one thing the prompt has to say.
+    DisarmTrap { entity_id: String, kind: String },
     Extract,
 }
 
@@ -991,6 +1002,7 @@ impl Interact {
                 let bench = if kind == "alembic" { "still" } else { "forge" };
                 format!("Use the {bench} ({jobs} left)")
             }
+            Interact::DisarmTrap { kind, .. } => format!("Disarm the {kind} trap"),
             Interact::MendStructure { name, hp_pct, .. } => {
                 let what = meld_proto::structures::structure(name)
                     .map(|d| d.name)
@@ -1011,7 +1023,8 @@ impl Interact {
             | Interact::OpenChest { entity_id }
             | Interact::EnterDungeon { entity_id }
             | Interact::UseStation { entity_id, .. }
-            | Interact::MendStructure { entity_id, .. } => Some(entity_id),
+            | Interact::MendStructure { entity_id, .. }
+            | Interact::DisarmTrap { entity_id, .. } => Some(entity_id),
             Interact::JoinFight | Interact::Extract => None,
         }
     }
@@ -1092,6 +1105,14 @@ pub(crate) fn interact_target(world: &Overworld, session: &Session) -> Option<In
                 jobs: e.bodies_required,
             }),
             EntityKind::Portal => Some(Interact::Extract),
+            // A trap is reached from BESIDE it, never from on top: stepping onto the cell
+            // is what springs it (`spring_trap` fires on the move), so the reach check is
+            // the whole affordance. Only a revealed trap is ever in the snapshot, so this
+            // prompt appears exactly when the party can actually see the thing.
+            EntityKind::Trap => Some(Interact::DisarmTrap {
+                entity_id: id.clone(),
+                kind: e.name.clone().unwrap_or_else(|| "rigged".into()),
+            }),
             // Mending is what holding ground actually costs, so it is on the one
             // interact key beside every other thing you do by standing near it.
             EntityKind::Structure => Some(Interact::MendStructure {
@@ -5108,6 +5129,9 @@ pub(crate) fn do_interact(
             station.open = Some(entity_id);
             station.kind = kind;
             station.jobs = jobs;
+        }
+        Some(Interact::DisarmTrap { entity_id, .. }) => {
+            net.send(ClientCmd::DisarmTrap { entity_id })
         }
         Some(Interact::MendStructure { entity_id, .. }) => {
             net.send(ClientCmd::RepairStructure { entity_id })
