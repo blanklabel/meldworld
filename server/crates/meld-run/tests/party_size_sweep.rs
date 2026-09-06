@@ -197,6 +197,16 @@ fn fight_at(
 
 /// The table. Not an assertion — a printout, because every number in it is `[TUNABLE]`.
 ///
+/// ⚠️ **`#[ignore]`d, AND THAT IS NOT LAZINESS.** It generates and streams a world per cell
+/// — 4 party sizes x 5 seeds x 10 depths, several of them past d1200 — which is 200 world
+/// generations. In release that is ~3 minutes; **in the DEBUG build `make check` uses it ran
+/// for 34 minutes before it was caught**, and a gate that takes an hour is a gate everyone
+/// learns to skip, which is the same reasoning that keeps `qa/` out of CI. Run it on purpose:
+///
+/// ```sh
+/// cargo test --release -p meld-run --test party_size_sweep -- --ignored --nocapture
+/// ```
+#[ignore = "generates 200 worlds; run it explicitly in release for the table"]
 /// ⚠️ **FIVE SEEDS PER CELL, AND THAT IS NOT OPTIONAL.** The first cut sampled ONE world
 /// per depth and read as non-monotonic — d400 lost at every party size while d600 and d800
 /// won — because which species, which kit and which formation happen to stand nearest a
@@ -208,9 +218,10 @@ fn how_deep_can_each_party_size_go() {
     let b = Balance::load_default().unwrap();
     const SEEDS: [u64; 5] = [424_242, 7, 99, 1, 20_260_906];
     let depths = [25.0_f64, 50.0, 100.0, 150.0, 200.0, 300.0, 400.0, 600.0, 800.0, 1200.0];
+    let started = std::time::Instant::now();
     println!(
         "\n  ORDINARY encounters, {} worlds each — ungeared, no potions, attack-only.\n           A FLOOR, not a verdict: gear is ~3.5x survivability and the kit is ~42% more \n           effective HP again. `won` is out of {}; `hp` is the median survivor share.\n\
-         \n  depth  lvl  foes | {:>14} {:>14} {:>14} {:>14}",
+         \n  depth  lvl  foes | {:>14} {:>14} {:>14} {:>14}\n           (won/5, median survivor HP, median seconds of the wins)",
         SEEDS.len(),
         SEEDS.len(),
         "1 hero",
@@ -228,8 +239,22 @@ fn how_deep_can_each_party_size_go() {
             let mut hp: Vec<f64> = fights.iter().map(|f| f.hp_left).collect();
             hp.sort_by(f64::total_cmp);
             let med = hp.get(hp.len() / 2).copied().unwrap_or(0.0);
+            // The other half of the design claim: mustering buys a SHORTER fight. Median
+            // over the wins only — how long a fight you lost ran is a measure of how long
+            // you survived it, which is a different question.
+            let mut secs: Vec<f64> =
+                fights.iter().filter(|f| f.won).map(|f| f.seconds).collect();
+            secs.sort_by(f64::total_cmp);
+            let med_s = secs.get(secs.len() / 2).copied().unwrap_or(0.0);
+            // `ordinary_only` has to actually hold, or this table is quietly reporting
+            // gatekeepers and calling them ordinary encounters — which is exactly how the
+            // single-seed version read as non-monotonic.
+            assert!(
+                fights.iter().all(|f| f.class != "gatekeeper" && f.class != "world_end"),
+                "a boss got into the ORDINARY table at d{d}"
+            );
             foes.extend(fights.iter().map(|f| f.foes));
-            cells.push(format!("won {won}/{}  hp {:>3.0}%", SEEDS.len(), med * 100.0));
+            cells.push(format!("{won}/{} {:>3.0}% {:>3.0}s", SEEDS.len(), med * 100.0, med_s));
         }
         foes.sort_unstable();
         println!(
@@ -243,7 +268,7 @@ fn how_deep_can_each_party_size_go() {
             cells[3]
         );
     }
-    println!();
+    println!("\n  ({:.0}s)\n", started.elapsed().as_secs_f64());
 }
 
 /// **MUSTERING HAS TO BUY SOMETHING, AND THE WALL HAS TO ARRIVE.**
@@ -259,7 +284,11 @@ fn how_deep_can_each_party_size_go() {
 fn a_bigger_party_survives_deeper_and_the_wall_really_arrives() {
     let b = Balance::load_default().unwrap();
     let mut solo_wall = None;
-    for &d in &[100.0_f64, 400.0, 800.0, 1200.0, 1600.0] {
+    // SHALLOW ON PURPOSE. This runs in the DEBUG gate, and every extra ring is a world
+    // streamed one section at a time — the printout above went to d1200 and cost `make
+    // check` 34 minutes. d300 is where the wall measured, so sampling past it buys nothing
+    // the assertion needs and costs minutes.
+    for &d in &[100.0_f64, 200.0, 300.0] {
         let (Some(solo), Some(full)) = (fight_at(d, 1, 424_242, &b, true), fight_at(d, 4, 424_242, &b, true))
         else {
             continue;

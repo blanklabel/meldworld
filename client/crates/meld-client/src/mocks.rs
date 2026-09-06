@@ -200,6 +200,19 @@ pub(crate) fn mock_battle_setup(
     // the condition a player most needs to spot across the arena and the one that had no
     // visual at all: `wight` reads red and stands larger than the boar beside it.
     add(&mut battle, "wight", &["frenzied"]);
+    // A creature mid-TELEGRAPH, so the wind-up has a subject in the fixture. This is the
+    // one mechanic in the game built to be reacted to, and until it had a visual it was a
+    // line of text over a sprite that looked exactly as it had a moment earlier.
+    hitfx.callouts.push(Callout {
+        // On a LIVE body: `stalker` is the fixture's KO'd creature, and `react_to_conditions`
+        // holds a downed sprite at rest, so a corpse telegraphing would show nothing and
+        // read as the wind-up being broken.
+        combatant_id: "grendel".into(),
+        text: "THE DEPTHS RECLAIM!".into(),
+        age: 0.9,
+        ttl: 3.0,
+        flashing: true,
+    });
     // Grendel carries the Explorer's work too, so the new badges are screenshottable:
     // blazed by Trailblaze and distracted by Misdirection (the icon cycles through them).
     add(&mut battle, "grendel", &["poison", "burn", "marked", "distracted"]);
@@ -323,6 +336,7 @@ pub(crate) fn mock_battle_fx(
             ("wight".to_string(), 21, 48),
             ("h3".to_string(), 14, 40),
         ],
+        false,
     );
 }
 

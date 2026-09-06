@@ -374,6 +374,34 @@ is what mustering buys.** Scaling the world to the party is what made depth mean
 time a hero was added, and depth is the only difficulty axis this game has. So the early game
 IS easy, and it balances later because you have to walk further to find anything.
 
+**SO WHEN DO YOU REALLY NEED FOUR HEROES? MEASURED: AROUND d300 / LEVEL 24.**
+`party_size_sweep` plays the real encounter the world generates nearest a ring, at the level
+that depth grants, over FIVE worlds per cell — ungeared, no potions, attack-only, so read
+every number as a FLOOR (gear is ~3.5x survivability and the starting kit ~42% more
+effective HP again):
+
+| depth | lvl | foes | 1 hero | 2 | 3 | 4 |
+|---|---|---|---|---|---|---|
+| 25-100 | 3-9 | 1 | won 5/5, 88-92% left | 5/5 | 5/5 | 5/5, ~100% |
+| 150 | 13 | 1 | 4/5, 60% | 4/5, 74% | 4/5, 87% | **5/5, 96%** |
+| 200 | 17 | 2 | 4/5, 42% | 5/5, 58% | 5/5, 82% | **5/5, 93%** |
+| **300** | **24** | **3** | **0/5** | 3/5 | 3/5 | **5/5, 92%** |
+| 400+ | 32+ | 4-5 | 0/5 | 0-1/5 | 0-2/5 | 1-4/5 |
+
+The shape: **the first 100 tiles are a solo game**, one hero clears everything at ~90% health.
+**d150-200 is where a lone hero starts losing fights** — still winnable, but on 42% health
+against a party of four's 93%. **d300 is the wall**: a lone hero wins nothing, and only a full
+party clears it comfortably. Past d400 the floor policy loses at every size, which is where
+gear, skills and potions stop being optional rather than where the game ends.
+
+⚠️ **The sweep levels the party WITH the depth (`base_run_level`), and real play does not.**
+A continuous expedition reaches ~d1150 at level ~43, so a real player at d1200 is roughly
+half the level this table assumes. The real wall arrives EARLIER than d300 for anyone who
+walked there. ⚠️ And five seeds is not optional: the first cut sampled one world per depth
+and read as non-monotonic (d400 lost at every size while d600 and d800 won), because which
+species and formation stand nearest a ring is a coin toss — the same lesson recorded twice
+below for world geometry.
+
 **The XP split is what keeps it honest.** A fixed creature pays a fixed pool, divided among the
 heroes still STANDING: a lone hero kills it in four times the turns for four times the share,
 so **XP per hero per unit of real time is identical at every party size**. Only fight LENGTH
@@ -703,7 +731,51 @@ the wire as `damage_type`, stamped centrally by `Battle::stamped` off `apply_typ
 resolvers: a resolver that lands a new kind of blow gets its VFX the day it is written.
 The `kind` numbers are a uniform shared with two WGSL files, so renumbering one side draws
 fire where ice should be, silently — `the_kind_numbers_match_the_shader` reads the shader's
-own constants.
+own constants, and `the_blow_tells_the_client_what_it_was_made_of` asserts the PAYLOAD a
+session receives rather than the engine's own struct (this repo ships features that are
+generated correctly and never consumed — see `bridges`, `pack:` and the whole inland-water
+system).
+
+⚠️ **THE STAMP IS TAKEN, NOT READ, AND UPKEEP HAS TO TAKE IT TOO.** A burn or poison tick
+runs inside `start_of_turn` through `apply_typed_damage` like everything else, so it SETS
+the element — and when the fighter dies to its own DoT that upkeep rides its OWN resolution.
+Left unconsumed there, the Fire would be taken by the next thing `stamped` saw and a hero's
+sword swing would be reported as fire. `upkeep_only` takes it as well, which is also the
+right look: a poison tick draws a small poison puff. And `apply_damage` — the untyped
+physical path, eleven call sites — stamps the ACTOR's own weapon type, or those abilities
+land with no effect at all.
+
+**THE LUNGE GOES AT THE DEFENDER.** It rode `SpriteQuad::forward`, fixed at spawn as the way
+that hero's whole row faces, so an attacker stepped generically "toward the enemies" whoever
+it was actually swinging at — in a five-body pack that reads as a twitch. `HitFx::act_target`
+records who was hit. The RECOIL still rides `forward`: being knocked back is about which way
+you face, and the attacker's aim is not a fact the victim's sprite has access to.
+
+**CARE GETS ITS OWN SHAPE, NOT AN IMPACT SHAPE.** A slash or a plume over an ally the healer
+just tended reads as the healer attacking them — but drawing NOTHING left the most common
+friendly action in the game with no visual on its target at all, just a green number. A mend
+draws the holy COLUMN (`queue_mend`), at ~half a blow's loudness, never shakes the camera, and
+washes the screen only when it reached three or more bodies. Only when the action did nothing
+else: an ability that damages *and* heals is a blow.
+
+**YOU CAN SEE THE BIG ONE COMING.** A telegraphed creature ability shouted a bubble and did
+nothing else to the creature, so the one mechanic in the game *built to be reacted to* was a
+line of text over a sprite that looked exactly as it had a moment earlier. A channeling body
+now swells and winds UP, and the pulse **quickens** as the cast approaches — the beat itself
+says "soon", so it needs no cast bar over the arena. The source is the `flashing` callout that
+already draws the shout (`HitFx::charging`), never a second piece of state beside it: a
+creature cannot then be shouting without winding up, or winding up with nothing on screen
+saying why. It outranks every other swell on the body, because whatever else is true of a
+creature, the thing about to land is what you have to answer.
+
+**THE CAMERA FEELS A HEAVY BLOW.** A per-sprite shake says "that body was hit"; only the
+camera says "that hit was BIG", and the arena had just the first. `BattleFx::shake` is an
+IMPULSE on the resource rather than a property of a cast, so the loudest blow of a frame wins
+instead of a five-target sweep shaking five times over. Applied to the camera's TRANSLATION
+after `looking_at` — rotating it swings the whole arena and reads as the world moving rather
+than as impact — and cleared by `reset_battle_fx`, or it follows the camera onto the
+overworld where nothing is hitting anybody. A **crit** lifts both the burst and the shake:
+the number already says CRIT!, and text being the loudest feedback in a fight is the gap.
 
 ⚠️ **`make check` NEVER BOOTS THE APP, so a WGSL error ships green.** `MELD_FX=<element>|all`
 fires casts on a loop inside the `MELD_BATTLE` mockup — which otherwise resolves nothing, so

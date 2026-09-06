@@ -2377,7 +2377,23 @@ impl WorldActor {
         // — you can see a brawl in front of you without a Hunter in the party.
         let clashing: std::collections::HashSet<String> =
             self.arena.clashing().into_iter().map(String::from).collect();
-        for m in self.arena.monsters.iter().filter(|m| !m.defeated && cull.sees(&m.position)) {
+        for m in self
+            .arena
+            .monsters
+            .iter()
+            // ⚠️ A BOUNTY MARK IS FORCE-INCLUDED AT ANY DISTANCE, so it must survive the
+            // pre-cull unconditionally. Its owner's per-player filter adds it to `marked`
+            // with NO distance test at all — a contract with your name on it is tracked
+            // wherever it is standing — so culling it here by reach would silently delete
+            // the one creature the whole walk out is pointed at, and only for contracts
+            // sighted past the interest radius, which is most of them.
+            //
+            // Materialised for everyone rather than only for its owner: marks are one or
+            // two per player, and the `hidden` set below already drops it from every other
+            // player's snapshot. Keeping the pre-cull ignorant of WHO is the point — it is
+            // a superset filter, and the per-viewer rules stay in one place.
+            .filter(|m| !m.defeated && (!m.owner.is_empty() || cull.sees(&m.position)))
+        {
             mob_index.push((
                 entities.len(),
                 m.position,
@@ -13163,6 +13179,237 @@ mod watching_tests {
             "a player in a battle is still being counted as a snapshot recipient"
         );
         assert!(w.snapshot_msgs().is_empty(), "a fighting player was sent an overworld snapshot");
+    }
+
+    /// **THE PRE-CULL MUST NEVER DROP WHAT A PERK EARNED.**
+    ///
+    /// `SC-5` builds the snapshot for the audience rather than for the world, so an entity
+    /// outside every viewer's reach is never materialised at all. That is only safe while
+    /// "reach" is the WIDEST way a viewer has of seeing something — and the per-player
+    /// filters downstream are a pile of separate radii: the base interest cull, the
+    /// Psyker/Iron Hull mob reveal, a hunt's quarry sense, and a crafter's node sense.
+    ///
+    /// A pre-cull that used only the base radius would compile, pass every existing test,
+    /// and silently delete the one thing a Smithwright levelled its whole trade for. This
+    /// puts an ore vein in the band between the two radii and insists it arrives.
+    ///
+    /// The SC-1 equivalence oracle cannot catch this: it compares the grid cull against a
+    /// naive scan over an entity list that has ALREADY been built, which is exactly the
+    /// step this change moved.
+    #[test]
+    fn a_perk_still_reaches_past_the_cull_that_was_added_under_it() {
+        let (mut w, _) = a_deep_world_with_one_player();
+        // A Smithwright deep enough that its Prospector's Eye out-reaches the base
+        // interest radius — otherwise the band this test needs does not exist.
+        w.party_classes.insert("p1".to_string(), vec![CharacterClass::Smithwright]);
+        for r in w.run.runs.iter_mut() {
+            r.run_level = 100;
+        }
+        let cell = w.balance.world.chunk_size.max(1) as f64;
+        let radius = w.balance.world.interest_radius_chunks.max(0) as f64 * cell;
+        let ore_reach = w.perks_for("p1").smithwright_ore_radius as f64;
+        assert!(
+            ore_reach > radius,
+            "the fixture's Smithwright senses ore at {ore_reach} against a base cull of \
+             {radius}, so there is no band to test in"
+        );
+
+        // An ore kind, taken from the registry rather than named — a hand-written key is a
+        // key that gets renamed out from under the test.
+        let ore_kind = w
+            .balance
+            .resource
+            .iter()
+            .find(|(_, r)| {
+                meld_proto::materials::material(&r.material)
+                    .is_some_and(|m| m.class == meld_proto::materials::MaterialClass::Ore)
+            })
+            .map(|(k, _)| k.clone())
+            .expect("no ore resource in balance");
+
+        let me = w.arena.avatar("p1").expect("no avatar").position;
+        let put = |w: &mut WorldActor, id: &str, out: f64| {
+            w.arena.resources.push(meld_world::ResourceNode {
+                entity_id: id.to_string(),
+                kind: ore_kind.clone(),
+                position: Position::new(me.x + out, me.y),
+                elevation: 0,
+                remaining: 5,
+                spent_tick: 0,
+            });
+        };
+        // One in the band the perk opens, one past everything.
+        put(&mut w, "vein-sensed", (radius + ore_reach) / 2.0);
+        put(&mut w, "vein-far", ore_reach * 3.0);
+
+        let out = w.snapshot_msgs();
+        let seen: Vec<String> = out
+            .iter()
+            .filter(|o| o.player_id == "p1" && o.msg_type == wm::Snapshot::TYPE)
+            .filter_map(|o| serde_json::from_str::<serde_json::Value>(o.payload.get()).ok())
+            .flat_map(|v| {
+                v["entities"]
+                    .as_array()
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|e| e["entity_id"].as_str().map(String::from))
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default()
+            })
+            .collect();
+        assert!(
+            seen.iter().any(|id| id == "vein-sensed"),
+            "a vein inside the Smithwright's own sense radius was culled before it was \
+             ever built — the pre-cull is narrower than the filters it is supposed to be a \
+             superset of"
+        );
+        // …and the cull still culls, or this test would pass on a world that builds
+        // everything and proves nothing.
+        assert!(
+            !seen.iter().any(|id| id == "vein-far"),
+            "a vein three times past every radius was sent anyway"
+        );
+    }
+
+    /// **THE ELEMENT REALLY REACHES THE CLIENT.** `battle.action_resolved` carries the
+    /// `BattleActionKind` and never the ability, and a creature's kit lives in
+    /// `meld-world`, which the client does not have — so without `damage_type` on the wire
+    /// a fireball and a sword are indistinguishable and `battle_fx` has nothing to draw.
+    ///
+    /// This repo's recurring failure is a feature that is *generated* correctly and never
+    /// consumed: a whole inland-water system rendered nothing, `pack:` drove combat for
+    /// releases without reaching the client, and `bridges` was plumbed proto-to-view-struct
+    /// with no consumer at all. Every one of those had a green suite. So this asserts the
+    /// PAYLOAD a session actually receives, not the engine's own struct.
+    #[test]
+    fn the_blow_tells_the_client_what_it_was_made_of() {
+        let mut w = a_fight_and_a_bystander();
+        let hero = w.battles[0]
+            .player_combatants
+            .get("p1")
+            .and_then(|h| h.first())
+            .cloned()
+            .expect("the fixture fielded nobody");
+        let foe = w.battles[0]
+            .monster_combatants
+            .values()
+            .next()
+            .cloned()
+            .expect("the fixture has nothing to hit");
+
+        // Swing until one lands. The gauge has to fill first, so most submits are refused
+        // — and a refusal is free, which is the whole point of `Battle::precheck`.
+        //
+        // The BATTLE is ticked, never the world: `a_fight_and_a_bystander` streams a world
+        // out to d900, and six hundred full world ticks is minutes of wall clock for a
+        // question that has nothing to do with the overworld.
+        let bid = w.battles[0].battle_id.clone();
+        let mut stamped = None;
+        let landed = |v: &serde_json::Value| {
+            v["effects"]
+                .as_array()
+                .is_some_and(|e| e.iter().any(|x| x["amount"].as_i64().unwrap_or(0) > 0))
+        };
+        for n in 0..600 {
+            let evs = match w.battle_by_id_mut(&bid) {
+                Some(slot) => {
+                    let mut evs = slot.battle.tick();
+                    if let Ok(more) = slot.battle.submit(
+                        &hero,
+                        format!("a{n}"),
+                        BattleActionKind::Attack,
+                        Some(vec![foe.clone()]),
+                        None,
+                        None,
+                    ) {
+                        evs.extend(more);
+                    }
+                    evs
+                }
+                None => break,
+            };
+            let (out, _) = w.emit_battle_events(&bid, evs);
+            if let Some(v) = sent(&out, "p1", wb::ActionResolved::TYPE).filter(&landed) {
+                stamped = Some(v);
+                break;
+            }
+        }
+        let v = stamped.expect("nothing landed a damaging blow in 60s of fighting");
+        assert!(
+            !v["damage_type"].is_null(),
+            "a blow that did damage reached the client with no element on it, so the arena \
+             has nothing to draw: {v}"
+        );
+        // And it must be a type the client's own table knows, or it draws nothing anyway.
+        let ty: meld_proto::enums::DamageType =
+            serde_json::from_value(v["damage_type"].clone()).expect("damage_type is not a type");
+        assert_ne!(
+            ty,
+            meld_proto::enums::DamageType::None,
+            "a hero's basic attack rode the wire as TRUE damage — `UNARMED_ATTACK_TYPE` is \
+             Blunt precisely so this cannot happen"
+        );
+    }
+
+    /// **A CONTRACT WITH YOUR NAME ON IT IS TRACKED WHEREVER IT STANDS.**
+    ///
+    /// An FS-4 bounty mark is force-included in its owner's snapshot with NO distance test
+    /// — that is what makes a contract findable rather than something you stumble on — and
+    /// a mark is sighted at the depth the hunter's rank earned, which is usually well past
+    /// the interest radius.
+    ///
+    /// `SC-5`'s pre-cull is positional, so it deletes exactly that. This is the case the
+    /// audience cannot express as a radius, and the only entity in the world that needs an
+    /// unconditional exemption from it.
+    #[test]
+    fn a_bounty_mark_survives_the_cull_however_far_out_it_stands() {
+        let (mut w, _) = a_deep_world_with_one_player();
+        let cell = w.balance.world.chunk_size.max(1) as f64;
+        let radius = w.balance.world.interest_radius_chunks.max(0) as f64 * cell;
+        let me = w.arena.avatar("p1").expect("no avatar").position;
+
+        // Stand a mark for p1 far outside every radius anyone has, and an ownerless
+        // creature beside it as the control.
+        let out = radius * 8.0;
+        for (id, owner) in [("mark-mine", "p1"), ("wild-thing", "")] {
+            let mut m = w.arena.monsters[0].clone();
+            m.entity_id = id.to_string();
+            m.owner = owner.to_string();
+            m.bounty = if owner.is_empty() { String::new() } else { "c1".to_string() };
+            m.position = Position::new(me.x + out, me.y);
+            m.defeated = false;
+            m.in_battle = false;
+            w.arena.monsters.push(m);
+        }
+
+        let seen: Vec<String> = w
+            .snapshot_msgs()
+            .iter()
+            .filter(|o| o.player_id == "p1" && o.msg_type == wm::Snapshot::TYPE)
+            .filter_map(|o| serde_json::from_str::<serde_json::Value>(o.payload.get()).ok())
+            .flat_map(|v| {
+                v["entities"]
+                    .as_array()
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|e| e["entity_id"].as_str().map(String::from))
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default()
+            })
+            .collect();
+        assert!(
+            seen.iter().any(|id| id == "mark-mine"),
+            "a player's own bounty mark was culled for standing too far away — the one \
+             creature a contract exists to point at"
+        );
+        // The control: an ordinary creature at the same spot is still culled, or the
+        // exemption has quietly become "build the whole world".
+        assert!(
+            !seen.iter().any(|id| id == "wild-thing"),
+            "an ownerless creature {out} units out was sent anyway"
+        );
     }
 
     /// …and the cost follows the audience. A RATIO rather than a duration, for the same

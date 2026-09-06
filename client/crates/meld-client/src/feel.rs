@@ -60,6 +60,21 @@ pub(crate) struct BattleFeel {
     /// How fast a sprite eases toward its wanted scale (per second). A snap reads as a
     /// glitch; too slow and a boon landing has no beat at all.
     pub buff_ease: f32,
+    /// How long the CAMERA shake from a heavy blow runs. Short: a camera that is still
+    /// moving when the next turn starts reads as a broken camera rather than as impact.
+    pub shake_ttl: f32,
+    /// World units the camera is thrown at full amplitude. Small — this is a punctuation
+    /// mark, and a camera that travels is a camera the player fights instead of reading.
+    pub cam_shake: f32,
+    /// Oscillations per second of that throw.
+    pub cam_shake_hz: f32,
+    /// Extra scale a body mid-telegraph takes while it winds up.
+    pub charge_swell: f32,
+    /// Where the wind-up pulse starts, in beats per second…
+    pub charge_hz_base: f32,
+    /// …and how fast it quickens. The QUICKENING is the tell: the beat itself says
+    /// "soon" without needing a cast bar over the arena.
+    pub charge_hz_ramp: f32,
 }
 
 impl Default for BattleFeel {
@@ -89,6 +104,12 @@ impl Default for BattleFeel {
             buff_breath_hz: 2.4,
             rage_swell: 0.09,
             buff_ease: 9.0,
+            shake_ttl: 0.28,
+            cam_shake: 0.16,
+            cam_shake_hz: 26.0,
+            charge_swell: 0.14,
+            charge_hz_base: 4.0,
+            charge_hz_ramp: 3.0,
         }
     }
 }
@@ -133,6 +154,12 @@ impl BattleFeel {
                 "buff_breath_hz" => self.buff_breath_hz = v,
                 "rage_swell" => self.rage_swell = v,
                 "buff_ease" => self.buff_ease = v,
+                "shake_ttl" => self.shake_ttl = v,
+                "cam_shake" => self.cam_shake = v,
+                "cam_shake_hz" => self.cam_shake_hz = v,
+                "charge_swell" => self.charge_swell = v,
+                "charge_hz_base" => self.charge_hz_base = v,
+                "charge_hz_ramp" => self.charge_hz_ramp = v,
                 _ => warn!("MELD_FEEL: no such knob `{key}`"),
             }
         }
@@ -165,6 +192,7 @@ mod tests {
             ("atb_flash_ttl", f.atb_flash_ttl),
             ("fx_ttl", f.fx_ttl),
             ("wash_ttl", f.wash_ttl),
+            ("shake_ttl", f.shake_ttl),
         ] {
             assert!(ttl > 0.0, "{name} must be positive, got {ttl}");
         }

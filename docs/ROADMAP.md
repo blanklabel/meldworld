@@ -3521,6 +3521,21 @@ budgeted so the creature sim never threatens the single-owner loop or the server
     escalates it from there. Same declaration `warbands` already makes one tier up — a boss
     says how many parties it is for, and **a lone hero loses to a Gatekeeper because they
     brought one hero, not because the world resized itself down to meet them.**
+  - **MEASURED — you really need four heroes around d300 / level 24.** `party_size_sweep`
+    plays the real encounter nearest a ring at the level that depth grants, over five worlds
+    per cell, ungeared and attack-only (a FLOOR — gear is ~3.5x survivability and the kit
+    ~42% more effective HP again). d25-d100 a lone hero clears everything at ~90% health;
+    d150-200 it starts dropping fights and finishes on 42% against a full party's 93%; at
+    **d300 a lone hero wins 0/5 and a full party 5/5 at 92%**. Past d400 the floor policy
+    loses at every size, which is where gear and potions stop being optional.
+    - ⚠️ The sweep levels the party WITH the depth; real play does not (~d1150 at level 43),
+      so the real wall arrives earlier for anyone who walked there.
+    - ⚠️ Five seeds per cell is not optional — one world per depth read as non-monotonic
+      (d400 lost at every size while d600 and d800 won) because which species and formation
+      stand nearest a ring is a coin toss.
+    - ⚠️ And its first cut scored WINS AS LOSSES: the outcome comes back from `submit`, not
+      from the next `tick`, since the killing blow ends the fight inside the call that lands
+      it. It reported a level-3 party of four losing to one creature at d25.
   - Three tests asserted the retired rule and are replaced by two asserting the new one:
     `a_creature_is_the_same_creature_however_many_heroes_face_it` (every stat, at every
     party size) and `nothing_about_the_party_reaches_the_creature_it_is_fighting` (roster
@@ -4712,6 +4727,37 @@ only the things that can't be class-gated.
     `MELD_FX=<element>|all` fires casts on a loop inside the `MELD_BATTLE` mockup, which
     otherwise resolves nothing at all — and re-fires just under the burst's TTL, because a
     capture is one frame and a slower cadence means most screenshots catch the gap.
+  - **The lunge goes AT the defender** (`HitFx::act_target`); it rode `SpriteQuad::forward`,
+    fixed at spawn, so an attacker stepped generically toward the enemy row whoever it was
+    hitting. The recoil still rides `forward` — being knocked back is about which way you
+    face, and the attacker's aim is not a fact the victim's sprite has access to.
+  - **A mend draws care in its own shape** (`queue_mend`), and
+    **`frenzied` reddens** — the tint was Hunter-Adrenaline only, so the condition that takes
+    the choice away and swings on its own had no visual at all.
+  - ⚠️ **A burn tick would have leaked Fire onto the next sword swing.** A DoT runs through
+    `apply_typed_damage` like everything else and, when it kills its host, rides its own
+    resolution that `stamped` never saw. `upkeep_only` consumes it now; `apply_damage` (the
+    untyped physical path) stamps the actor's own weapon type.
+  - ⚠️ **`SC-5`'s pre-cull deleted bounty marks.** An FS-4 mark is force-included in its
+    owner's snapshot with NO distance test — that is what makes a contract findable — and it
+    is sighted at the depth the hunter's rank earned, usually well past the interest radius.
+    It is the one entity that needs an unconditional exemption from a positional cull, and
+    `a_bounty_mark_survives_the_cull_however_far_out_it_stands` holds it (with an ownerless
+    control at the same spot, or the exemption quietly becomes "build the whole world").
+    `a_perk_still_reaches_past_the_cull_that_was_added_under_it` covers the other half — the
+    SC-1 equivalence oracle cannot, because it compares culls over a list already built.
+  - **The camera feels a heavy blow, a crit looks like one, and a telegraph winds up.** A
+    per-sprite shake says "that body was hit"; only the camera says "that hit was BIG".
+    `BattleFx::shake` is an impulse on the resource rather than a property of a cast, so the
+    loudest blow of a frame wins instead of a five-target sweep shaking five times — applied
+    to the camera's TRANSLATION after `looking_at`, since rotating it swings the whole arena.
+    A **telegraph** now swells the channeling body with a *quickening* pulse, read off the
+    same `flashing` callout that draws its shout: the one mechanic built to be reacted to was
+    a line of text over an unchanged sprite.
+  - **Care got its own shape.** The first cut drew nothing on a healed ally, on the argument
+    that an impact shape over a friend reads as an attack. Right about the shape, wrong about
+    the conclusion — it left the most common friendly action in the game with no visual on its
+    target at all. A mend draws the holy COLUMN at ~half a blow's loudness and never shakes.
   - **The party HUD** spawned four slots and filled the empty ones with flex-grow spacers, so
     two heroes bunched against the left edge with a hole on the right. A cell is a quarter of
     the row at every party size now and the row centres them. The arena already had this

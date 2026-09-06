@@ -1009,6 +1009,9 @@ pub(crate) fn battle_camera(
     look: Res<hd2d::Look>,
     battle: Res<BattleData>,
     bcam: Res<BattleCam>,
+    time: Res<Time>,
+    feel: Res<BattleFeel>,
+    fx: Res<crate::battle_fx::BattleFx>,
     mut cam_q: Query<
         (
             &mut Transform,
@@ -1033,6 +1036,16 @@ pub(crate) fn battle_camera(
         // sky or ground.
         *t = Transform::from_translation(Vec3::new(0.0, 8.6, 11.2) * dist)
             .looking_at(Vec3::new(0.0, 0.9, -1.6), Vec3::Y);
+        // A HEAVY BLOW MOVES THE WHOLE FRAME. Applied AFTER `looking_at` and to the
+        // translation only, so the camera is displaced rather than re-aimed — rotating it
+        // swings the whole arena and reads as the world moving, not as an impact.
+        // Two axes at different rates so it reads as a jolt instead of a pendulum.
+        if fx.shake > 0.0 {
+            let s = fx.shake * feel.cam_shake;
+            let e = time.elapsed_secs() * feel.cam_shake_hz;
+            t.translation.x += (e).sin() * s;
+            t.translation.y += (e * 1.7).cos() * s * 0.6;
+        }
         // Battle gets its own mood: a punchier bloom so hits/markers glow, and a
         // tighter fog that closes the arena in (the walkable field beyond hazes off)
         // — without disturbing the shared overworld look. The fog distances scale

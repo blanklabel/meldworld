@@ -55,8 +55,13 @@ pub(crate) struct BattleFxRoot;
 pub(crate) struct FxBurst {
     age: f32,
     ttl: f32,
-    /// Which combatant it is pinned over, so it tracks a recoiling sprite instead of
-    /// detaching from it.
+    /// Which combatant it is pinned over.
+    ///
+    /// The ACTOR's position, which does not move during a fight — the lunge and recoil are
+    /// on the billboard CHILD, and re-reading them here would need a `GlobalTransform` that
+    /// is a frame stale anyway. A burst is ~2 world units across and a recoil is 0.35, so
+    /// the mismatch is invisible; what this buys is a burst that lands on the right body
+    /// when combatants are added mid-fight and indices shift.
     follow: String,
     /// World-space height above the actor's feet.
     lift: f32,
@@ -191,31 +196,41 @@ pub(crate) struct Cast {
     /// 0..1: how hard it hit, as a share of the target's max HP. Scales the burst and the
     /// wash, so a scratch and an apocalypse do not look alike.
     pub(crate) power: f32,
+    /// Overall loudness, 0..1. A blow is 1.0; a mend is well under, because care should
+    /// never be the brightest thing on a screen with something trying to kill you.
+    ///
+    /// The CAMERA is not on this struct on purpose: a shake is an impulse on the resource
+    /// rather than a property of a cast, so the loudest blow of a frame wins instead of
+    /// five sweep targets shaking five times. `queue_cast` raises it and `queue_mend`
+    /// deliberately does not touch it.
+    pub(crate) strength: f32,
 }
 
-/// **A PARTY-WIDE BOON WASHES THE SCREEN AND THROWS NO BURSTS.**
+/// **CARE GETS ITS OWN SHAPE, NOT AN IMPACT SHAPE.**
 ///
-/// `queue_cast` is for blows; this is its opposite number, and it is deliberately only
-/// half the effect. A burst is an IMPACT shape — a slash, a plume, a shockwave — so
-/// putting one over an ally the healer just mended reads as the healer attacking them,
-/// which is the exact confusion `a_cast_that_damaged_nobody_draws_nothing` exists to
-/// prevent. What a party-wide mend or ward earns is the SCREEN: a calm gold-green lift
-/// with nothing over anybody's head.
+/// The rule this started as was "a mend draws nothing over the target", on the argument
+/// that a burst over an ally the healer just tended reads as the healer attacking them.
+/// That argument is right about the SHAPE and wrong about the conclusion: a slash or a
+/// plume over an ally reads as an attack, but a soft rising column of light is what every
+/// game in this lineage uses for healing, and drawing nothing left the single most common
+/// friendly action in the game with no visual on its target at all — just a green number.
 ///
-/// Same three-body bar as a blow, for the same reason — a single heal is a number over
-/// one hero, and washing the screen for it would make every Resonant turn a strobe.
-pub(crate) fn queue_boon(fx: &mut BattleFx, mended: usize) {
-    if mended < 3 {
+/// So a mend always draws `KIND_HOLY` (a column, not a burst) at a fraction of a blow's
+/// loudness, never shakes the camera, and washes the screen only when it reached three or
+/// more bodies — the same bar a blow answers to, for the same reason: a wash for a single
+/// heal would make every Resonant turn a strobe.
+pub(crate) fn queue_mend(fx: &mut BattleFx, mended: &[String]) {
+    if mended.is_empty() {
         return;
     }
     fx.queue.push(Cast {
-        // No targets: the wash is the whole effect.
-        targets: Vec::new(),
+        targets: mended.to_vec(),
         element: Element { kind: 9.0, rgb: Vec3::new(1.6, 2.4, 1.3) },
-        wide: true,
-        // Well under a blow's, so the loudest thing on screen is still whatever is
-        // trying to kill you.
+        wide: mended.len() >= 3,
+        // Well under a blow's, so the loudest thing on screen is still whatever is trying
+        // to kill you.
         power: 0.15,
+        strength: 0.55,
     });
 }
 
@@ -224,6 +239,15 @@ pub(crate) fn queue_boon(fx: &mut BattleFx, mended: usize) {
 pub(crate) struct BattleFx {
     pub(crate) queue: Vec<Cast>,
     seed: u32,
+    /// Camera-shake amplitude, 0..1, decayed by [`advance_ability_fx`] and read by
+    /// `battle_camera`.
+    ///
+    /// THE CAMERA IS THE ONLY THING THAT MOVES THE WHOLE FRAME, which is why a heavy blow
+    /// needs it: a per-sprite shake says "that body was hit" and a camera shake says "that
+    /// hit was BIG". Every JRPG this is modelled on uses both, and the arena had only the
+    /// first. Held as an impulse the loudest blow wins rather than a sum, so a five-target
+    /// sweep resolving on one frame shakes once instead of five times as hard.
+    pub(crate) shake: f32,
     /// ONE unit quad, shared by every burst ever spawned, sized through the transform.
     ///
     /// A `Rectangle::new(scale, scale)` per burst allocates a mesh asset per target per
@@ -247,7 +271,12 @@ impl BattleFx {
 /// `hits` is `(target, damage, max_hp)` for every combatant the action actually damaged —
 /// a heal or a pure buff queues nothing, because those have their own tell (the sprite
 /// swell in [`react_to_conditions`]) and a burst over a healed ally reads as an attack.
-pub(crate) fn queue_cast(fx: &mut BattleFx, ty: Option<DamageType>, hits: &[(String, i32, i32)]) {
+pub(crate) fn queue_cast(
+    fx: &mut BattleFx,
+    ty: Option<DamageType>,
+    hits: &[(String, i32, i32)],
+    crit: bool,
+) {
     if hits.is_empty() {
         return;
     }
@@ -260,13 +289,33 @@ pub(crate) fn queue_cast(fx: &mut BattleFx, ty: Option<DamageType>, hits: &[(Str
     // say it was.
     let power = hits
         .iter()
-        .map(|(_, dmg, max)| (*dmg as f32 / (*max).max(1) as f32).clamp(0.0, 1.0))
+        .map(|(_, dmg, max)| {
+            // ⚠️ A MISSING max_hp IS NOT A KILLING BLOW. `.max(1)` on an unknown pool turns
+            // any damage at all into 1.0 — the largest burst and the loudest wash the game
+            // has — so a combatant the client has not got a view of yet (a reinforcement
+            // arriving mid-frame) would draw an apocalypse for a scratch. Unknown reads as
+            // an ordinary hit instead.
+            if *max <= 0 {
+                0.5
+            } else {
+                (*dmg as f32 / *max as f32).clamp(0.0, 1.0)
+            }
+        })
         .fold(0.0f32, f32::max);
+    // A CRIT LOOKS LIKE ONE. The number already says "CRIT!"; the burst should agree, or
+    // the loudest feedback in the fight is a line of text. It lifts the floor rather than
+    // the ceiling, so a critical scratch still reads as a scratch.
+    let power = if crit { (power * 1.25).max(0.55) } else { power };
+    let wide = hits.len() >= 3;
+    // The camera feels the worst single blow, and a wide one harder. Capped at 1.0 by the
+    // clamp; `max` rather than `+=` so a sweep resolving on one frame shakes once.
+    fx.shake = fx.shake.max((power * if wide { 1.0 } else { 0.6 }).clamp(0.0, 1.0));
     fx.queue.push(Cast {
         targets: hits.iter().map(|(t, _, _)| t.clone()).collect(),
         element,
-        wide: hits.len() >= 3,
+        wide,
         power,
+        strength: 1.0,
     });
 }
 
@@ -293,9 +342,10 @@ pub(crate) fn spawn_ability_fx(
     let casts: Vec<Cast> = std::mem::take(&mut fx.queue);
     for cast in casts {
         let seed = fx.next_seed();
-        // ⚠️ A CAST WITH NO TARGETS IS STILL A CAST. `queue_boon` uses exactly that shape
-        // — wash, no bursts — so the target loop below must be allowed to do nothing and
-        // fall through to the wash rather than being guarded on a non-empty list.
+        // ⚠️ THE TARGET LOOP MUST BE ALLOWED TO DO NOTHING and still fall through to the
+        // wash below, rather than being guarded on a non-empty list: a cast whose targets
+        // have all left the arena (a reinforcement felled on the frame it arrived) still
+        // has a screen to answer for.
         // A hit's size drives how big the burst draws — a scratch should not look like a
         // capstone. Floored well above zero so a 1-damage poke still reads.
         let scale = feel.fx_size * (0.7 + cast.power * 0.9);
@@ -304,7 +354,7 @@ pub(crate) fn spawn_ability_fx(
                 continue;
             };
             let mat = mats.add(AbilityFx {
-                params: Vec4::new(cast.element.kind, 0.0, seed, 1.0),
+                params: Vec4::new(cast.element.kind, 0.0, seed, cast.strength),
                 tint: cast.element.rgb.extend(1.0),
             });
             commands.spawn((
@@ -330,7 +380,8 @@ pub(crate) fn spawn_ability_fx(
         // THE WASH. Reuse the standing quad if there is one — a second blast during the
         // first simply restarts it, which is what "the screen answers the newest thing"
         // should mean.
-        let params = Vec4::new(cast.element.kind, 0.0, seed, (0.45 + cast.power).min(1.0));
+        let params =
+            Vec4::new(cast.element.kind, 0.0, seed, ((0.45 + cast.power) * cast.strength).min(1.0));
         let tint = cast.element.rgb.extend(1.0);
         if let Some((e, handle)) = existing_wash.iter().next() {
             if let Some(mut m) = washes.get_mut(&handle.0) {
@@ -361,6 +412,8 @@ pub(crate) fn spawn_ability_fx(
 pub(crate) fn advance_ability_fx(
     mut commands: Commands,
     time: Res<Time>,
+    feel: Res<BattleFeel>,
+    mut fx: ResMut<BattleFx>,
     mut mats: ResMut<Assets<AbilityFx>>,
     actors: Query<(&crate::battle::BattleActor, &Transform), Without<FxBurst>>,
     mut q: Query<(
@@ -371,6 +424,10 @@ pub(crate) fn advance_ability_fx(
     )>,
 ) {
     let dt = time.delta_secs();
+    // The camera's shake decays here rather than in its own system: it is queued by the
+    // same event that spawns a burst and lives about as long, so keeping the two together
+    // means one place to look when the arena is jittering.
+    fx.shake = (fx.shake - dt / feel.shake_ttl.max(1e-3)).max(0.0);
     for (e, mut burst, mut tf, mat) in &mut q {
         burst.age += dt;
         if burst.age >= burst.ttl {
@@ -434,12 +491,23 @@ pub(crate) fn advance_screen_wash(
 pub(crate) fn react_to_conditions(
     time: Res<Time>,
     battle: Res<crate::BattleData>,
+    hitfx: Res<crate::HitFx>,
     feel: Res<BattleFeel>,
     mut q: Query<(&crate::battle::SpriteQuad, &mut Transform)>,
 ) {
     let t = time.elapsed_secs();
     let dt = time.delta_secs();
     for (s, mut tf) in &mut q {
+        // **YOU CAN SEE THE BIG ONE COMING.** A telegraphed creature ability shouted a
+        // bubble and did nothing else to the creature, so the one mechanic in the game
+        // built to be REACTED to was a line of text over a sprite that looked exactly like
+        // it had a moment earlier. A channeling body swells and winds UP — the pulse
+        // quickens as the cast approaches — which is the affordance that makes a telegraph
+        // a decision rather than an announcement.
+        let charging = hitfx
+            .charging()
+            .find(|(id, _)| *id == s.id.as_str())
+            .map(|(_, age)| age);
         let want = match battle.view(&s.id) {
             // A DOWNED body does not swell. Its boons are still on the wire — a Barrier
             // does not clear because its holder fell — so without this a corpse keeps
@@ -471,7 +539,17 @@ pub(crate) fn react_to_conditions(
                 } else {
                     0.0
                 };
-                1.0 + swell + breath + rage
+                // The wind-up outranks everything else on the body: whatever else is
+                // true of a creature, the thing about to land is what you have to answer.
+                let wind = charging
+                    .map(|age| {
+                        // Quickening: the pulse rate climbs with age, so the beat itself
+                        // says "soon" without needing a bar.
+                        let hz = feel.charge_hz_base + age * feel.charge_hz_ramp;
+                        feel.charge_swell * (0.55 + 0.45 * (age * hz).sin())
+                    })
+                    .unwrap_or(0.0);
+                1.0 + swell + breath + rage + wind
             }
             // A sprite with no combatant behind it any more eases home rather than
             // freezing mid-swell.
@@ -492,6 +570,9 @@ pub(crate) fn react_to_conditions(
 pub(crate) fn reset_battle_fx(mut fx: ResMut<BattleFx>) {
     fx.queue.clear();
     fx.seed = 0;
+    // A shake left running would follow the camera onto the overworld, where nothing is
+    // hitting anybody.
+    fx.shake = 0.0;
     // The shared quad is deliberately KEPT. It is one unit mesh with no per-fight state,
     // and dropping it means re-uploading it at the first blow of the next battle.
 }
@@ -575,9 +656,9 @@ mod tests {
     #[test]
     fn a_cast_that_damaged_nobody_draws_nothing() {
         let mut fx = BattleFx::default();
-        queue_cast(&mut fx, Some(DamageType::Fire), &[]);
+        queue_cast(&mut fx, Some(DamageType::Fire), &[], false);
         assert!(fx.queue.is_empty(), "an effect-less action queued a burst");
-        queue_cast(&mut fx, Some(DamageType::Fire), &[("a".into(), 40, 100)]);
+        queue_cast(&mut fx, Some(DamageType::Fire), &[("a".into(), 40, 100)], false);
         assert_eq!(fx.queue.len(), 1);
     }
 
@@ -589,7 +670,7 @@ mod tests {
             let mut fx = BattleFx::default();
             let hits: Vec<(String, i32, i32)> =
                 (0..n).map(|i| (format!("t{i}"), 10, 100)).collect();
-            queue_cast(&mut fx, Some(DamageType::Fire), &hits);
+            queue_cast(&mut fx, Some(DamageType::Fire), &hits, false);
             fx.queue[0].wide
         };
         assert!(!hit(1), "a single-target hit washed the screen");
@@ -607,10 +688,11 @@ mod tests {
             &mut fx,
             Some(DamageType::Fire),
             &[("a".into(), 5, 100), ("b".into(), 5, 100), ("c".into(), 5, 100)],
+            false,
         );
         let chip = fx.queue[0].power;
         let mut fx2 = BattleFx::default();
-        queue_cast(&mut fx2, Some(DamageType::Fire), &[("a".into(), 80, 100)]);
+        queue_cast(&mut fx2, Some(DamageType::Fire), &[("a".into(), 80, 100)], false);
         assert!(
             fx2.queue[0].power > chip,
             "a chip on three bodies ({chip}) out-ranked a hit that took 80% of one"
@@ -627,27 +709,52 @@ mod tests {
         assert_ne!(a, b);
     }
 
-    /// A party-wide mend lifts the SCREEN and throws no bursts — an impact shape over an
-    /// ally the healer just tended reads as the healer attacking them.
+    /// **CARE GETS ITS OWN SHAPE.** A mend draws — drawing nothing left the most common
+    /// friendly action in the game with no visual on its target at all — but it draws the
+    /// holy COLUMN rather than an impact shape, quieter than a blow, and it never shakes
+    /// the camera. It washes the screen only when it reached three or more bodies, the same
+    /// bar a blow answers to.
     #[test]
-    fn a_party_wide_mend_washes_the_screen_and_hits_nobody() {
+    fn a_mend_draws_care_rather_than_an_impact() {
         let mut fx = BattleFx::default();
-        queue_boon(&mut fx, 2);
-        assert!(fx.queue.is_empty(), "mending two heroes washed the screen");
-        queue_boon(&mut fx, 4);
-        let cast = fx.queue.first().expect("a party-wide mend did nothing at all");
-        assert!(cast.wide, "a party-wide mend did not reach the screen");
-        assert!(cast.targets.is_empty(), "a mend threw an impact at somebody");
+        queue_mend(&mut fx, &[]);
+        assert!(fx.queue.is_empty(), "mending nobody drew something");
+
+        queue_mend(&mut fx, &["a".into()]);
+        let one = fx.queue.pop().expect("a single mend drew nothing at all");
+        assert_eq!(one.targets.len(), 1, "a mend did not reach its target");
+        assert!(!one.wide, "a single heal washed the screen");
+        assert_eq!(fx.shake, 0.0, "care shook the camera");
+        assert_eq!(one.element.kind, 9.0, "a mend drew an impact shape instead of a column");
+
+        queue_mend(&mut fx, &["a".into(), "b".into(), "c".into()]);
+        assert!(fx.queue.pop().expect("no cast").wide, "a party-wide mend did not wash");
+
         // And it must stay quieter than a blow, or the loudest thing on screen is the
         // healer rather than whatever is trying to kill you.
         let mut hit = BattleFx::default();
-        queue_cast(&mut hit, Some(DamageType::Fire), &[("a".into(), 40, 100)]);
+        queue_cast(&mut hit, Some(DamageType::Fire), &[("a".into(), 40, 100)], false);
+        let blow = &hit.queue[0];
         assert!(
-            cast.power < hit.queue[0].power,
-            "a mend ({}) is louder than a blow that took 40% of a hero ({})",
-            cast.power,
-            hit.queue[0].power
+            one.power * one.strength < blow.power * blow.strength,
+            "a mend is louder than a blow that took 40% of a hero"
         );
+        assert!(hit.shake > 0.0, "a blow did not move the camera");
+    }
+
+    /// A CRIT LOOKS LIKE ONE. The number says "CRIT!" already; if the burst does not agree
+    /// then the loudest feedback in a fight is a line of text.
+    #[test]
+    fn a_crit_hits_harder_on_screen_too() {
+        let mk = |crit: bool| {
+            let mut fx = BattleFx::default();
+            queue_cast(&mut fx, Some(DamageType::Slash), &[("a".into(), 12, 100)], crit);
+            (fx.queue[0].power, fx.shake)
+        };
+        let (plain, plain_shake) = mk(false);
+        let (crit, crit_shake) = mk(true);
+        assert!(crit > plain, "a crit drew the same burst as a graze ({crit} vs {plain})");
+        assert!(crit_shake > plain_shake, "a crit did not move the camera any harder");
     }
 
     /// The queue must not survive the fight it belongs to: a cast queued on the frame the
@@ -655,7 +762,7 @@ mod tests {
     #[test]
     fn the_queue_does_not_outlive_the_fight() {
         let mut fx = BattleFx::default();
-        queue_cast(&mut fx, Some(DamageType::Fire), &[("a".into(), 40, 100)]);
+        queue_cast(&mut fx, Some(DamageType::Fire), &[("a".into(), 40, 100)], false);
         let _ = fx.next_seed();
         fx.queue.clear();
         fx.seed = 0;

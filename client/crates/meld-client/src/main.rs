@@ -1819,6 +1819,47 @@ struct HitFx {
     /// channel window; an instant ability's callout pops briefly.
     callouts: Vec<Callout>,
 }
+impl HitFx {
+    /// Everyone mid-telegraph right now, with how long they have been winding up.
+    ///
+    /// A telegraph is a `flashing` callout — the same record that draws the shout bubble —
+    /// rather than a second piece of state beside it. One source, so a creature cannot be
+    /// shouting and not charging, or charging with nothing on screen to say why.
+    fn charging(&self) -> impl Iterator<Item = (&str, f32)> {
+        self.callouts
+            .iter()
+            .filter(|c| c.flashing)
+            .map(|c| (c.combatant_id.as_str(), c.age))
+    }
+}
+
+#[cfg(test)]
+mod telegraph_tests {
+    use super::*;
+
+    /// A telegraph is a `flashing` callout and nothing else — one source, so a creature
+    /// cannot be shouting without winding up, or winding up with nothing on screen saying
+    /// why. An INSTANT ability's shout is not a telegraph and must not charge.
+    #[test]
+    fn only_a_telegraph_winds_up() {
+        let mut fx = HitFx::default();
+        let say = |fx: &mut HitFx, id: &str, flashing: bool, age: f32| {
+            fx.callouts.push(Callout {
+                combatant_id: id.into(),
+                text: "x".into(),
+                age,
+                ttl: 3.0,
+                flashing,
+            });
+        };
+        say(&mut fx, "boss", true, 0.5);
+        say(&mut fx, "runt", false, 0.5);
+        let charging: Vec<&str> = fx.charging().map(|(id, _)| id).collect();
+        assert_eq!(charging, vec!["boss"], "an instant shout was drawn as a wind-up");
+        assert_eq!(fx.charging().next().map(|(_, age)| age), Some(0.5));
+    }
+}
+
 struct Hit {
     target: String,
     text: String,
