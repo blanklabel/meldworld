@@ -1229,6 +1229,19 @@ struct WorldActor {
     /// lifecycle logic (deaths, etc.) can enqueue writes without touching the Router.
     db_writes: mpsc::UnboundedSender<DbWrite>,
     arena: Arena,
+    /// **A FRONTIER BEING GROWN OFF THE TICK** — `WG-11` stage 9.
+    ///
+    /// `tick` runs in the same `select!` arm as every other event, so generating a section
+    /// here stalls battles, movement and messaging alike: measured in release, the worst
+    /// section is **971 ms against a 100 ms tick**. The work goes to a blocking thread against
+    /// a CLONE of the arena and comes back as the world this one would have become; see
+    /// `Arena::adopt_grown` for why the merge runs grown-to-live rather than the other way.
+    ///
+    /// ⚠️ It is a PREFETCH, not a replacement: `stream_lookahead` is the slack it runs inside,
+    /// and if a player actually reaches the frontier before the job lands, the tick still
+    /// generates synchronously. A player must never be able to walk off the world because a
+    /// thread was slow.
+    pending_frontier: Option<tokio::sync::oneshot::Receiver<Arena>>,
     run: InstanceRun,
     /// Every battle currently running in the instance. Independent parties fight
     /// separate encounters at the same time; each is one [`BattleSlot`].
@@ -5034,6 +5047,7 @@ impl GameState {
                     Some(save) => restore_world(&balance, save),
                     None => Arena::generate_with(&balance, seed, tutorial, force_biome),
                 },
+                pending_frontier: None,
                 run: InstanceRun::new(instance_id, departure_hub_distance, &balance, now_ms()),
                 battles: Vec::new(),
                 hero_hp: HashMap::new(),
@@ -9787,7 +9801,55 @@ impl WorldActor {
                 .map(|a| if radial { a.position.x.hypot(a.position.y) } else { a.position.x })
                 .fold(f64::NEG_INFINITY, f64::max);
             if reach.is_finite() {
-                created_sections = self.arena.ensure_frontier(&balance, reach);
+                // ── `WG-11` stage 9: **GROW THE FRONTIER OFF THE TICK.**
+                //
+                // Measured in release, the worst section costs **971 ms** and this arm runs in
+                // the same `select!` as every other event, so generating here stalls battles,
+                // movement and messaging alike.
+                //
+                // First: has a job finished? Adopt it. `adopt_grown` refuses when the world
+                // moved underneath it (a Shift landed), and then we simply ask again.
+                // A oneshot rather than awaiting the handle: `tick` is synchronous and inside
+                // the runtime, where blocking on a JoinHandle is not allowed. `try_recv` is a
+                // poll — if the thread is still working, this costs nothing.
+                if let Some(rx) = self.pending_frontier.as_mut() {
+                    match rx.try_recv() {
+                        Ok(grown) => {
+                            self.pending_frontier = None;
+                            let before = self.arena.areas.len();
+                            if self.arena.adopt_grown(grown) {
+                                created_sections = (before..self.arena.areas.len()).collect();
+                            }
+                        }
+                        Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
+                            self.pending_frontier = None;
+                        }
+                        Err(tokio::sync::oneshot::error::TryRecvError::Empty) => {}
+                    }
+                }
+                let lookahead = balance.worldgen.stream_lookahead;
+                // ⚠️ **THE SYNCHRONOUS PATH SURVIVES, AND THAT IS THE POINT.** This is a
+                // PREFETCH inside `stream_lookahead`'s slack, not a replacement: if a player
+                // has actually reached the frontier, the world is generated here and now. A
+                // player must never walk off the edge because a thread was slow — the stall is
+                // a performance bug, and an unreachable world is a broken one.
+                if self.arena.cursor() < reach {
+                    self.pending_frontier = None;
+                    let made = self.arena.ensure_frontier(&balance, reach);
+                    created_sections.extend(made);
+                } else if self.pending_frontier.is_none() && self.arena.cursor() < reach + lookahead
+                {
+                    // Room to work ahead: hand a CLONE to a blocking thread.
+                    let mut clone = self.arena.clone();
+                    let b = balance.clone();
+                    let want = reach + lookahead;
+                    let (tx, rx) = tokio::sync::oneshot::channel();
+                    tokio::task::spawn_blocking(move || {
+                        clone.ensure_frontier(&b, want);
+                        let _ = tx.send(clone);
+                    });
+                    self.pending_frontier = Some(rx);
+                }
             }
         }
         // AD-4: stand up any bounty mark the world has now grown out far enough to hold.
@@ -12451,6 +12513,7 @@ mod shifting_lands_tests {
             balance: balance.clone(),
             db_writes: tx,
             arena,
+            pending_frontier: None,
             run: InstanceRun::new("w".into(), 0, &balance, 0),
             battles: Vec::new(),
             hero_hp: HashMap::new(),

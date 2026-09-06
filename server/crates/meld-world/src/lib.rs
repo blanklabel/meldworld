@@ -3699,6 +3699,85 @@ impl Arena {
     /// `player_x`. Sections beyond the initial chain are endless and reproducible
     /// (each from `section_seed(seed, n)`). Returns the indices of any sections
     /// newly created this call (so the caller can stream their terrain to clients).
+    /// **ADOPT A FRONTIER GROWN OFF THE TICK** — `WG-11` stage 9's answer to a 971 ms section
+    /// on a 100 ms authoritative loop.
+    ///
+    /// `WorldActor::tick` runs in the same `select!` arm as every other event, so a section
+    /// generated there stalls battles, movement and messaging alike. The work is handed to a
+    /// blocking thread against a CLONE of this arena; when it comes back, `grown` is the world
+    /// this one would have become, plus the new sections.
+    ///
+    /// ⚠️ **THE MERGE RUNS THE OTHER WAY ROUND ON PURPOSE.** An `Arena` has 27 public fields
+    /// and more private ones, and folding the generated tail of each into the live world is
+    /// precisely the shape of bug this crate keeps paying for — `GearBonus` declared twice,
+    /// `city_sea_depth` drifting for 31 merges, a property that reaches one copy and not the
+    /// other. So the GROWN world is taken whole and the short list of LIVE-ONLY state is put
+    /// back on top of it. That list is the one persistence already keeps (§W5), and the failure
+    /// mode if something is missing from it is loud — a player's structure or a creature's
+    /// wound visibly reverts — rather than silent geometry that is wrong forever.
+    ///
+    /// Returns false and changes nothing when the world moved underneath the job: a **Shift**
+    /// landed (the grown world does not have it) or another frontier already streamed. The
+    /// caller simply asks again.
+    /// How far the generated world reaches, in corridor units — which `radialize` maps to a
+    /// RADIUS, so it compares directly against a player's distance from the hub.
+    pub fn cursor(&self) -> f64 {
+        self.cursor
+    }
+
+    pub fn adopt_grown(&mut self, grown: Arena) -> bool {
+        if grown.areas.len() <= self.areas.len() || grown.seed != self.seed {
+            return false;
+        }
+        // A Shift repaints biomes and re-scatters props, and the grown world was built before
+        // it. Discard rather than merge: `shifted_at` on the shared prefix is the record.
+        for (a, b) in self.areas.iter().zip(grown.areas.iter()) {
+            if a.shifted_at != b.shifted_at {
+                return false;
+            }
+        }
+        let live = std::mem::replace(self, grown);
+        // ── The live-only state, put back.
+        self.avatars = live.avatars;
+        self.structures = live.structures;
+        self.stations = live.stations;
+        self.ground_loot = live.ground_loot;
+        self.clashes = live.clashes;
+        self.fallen = live.fallen;
+        // A creature's POSITION and WOUND are live; its existence is generated. Keep the live
+        // one only where it still stands on land in the world that just arrived — generation
+        // moves creatures out of water it lays (`drown_proof`), and taking the live position
+        // unconditionally would undo that and leave a creature standing in a new channel.
+        let mut fixed = 0usize;
+        for (i, m) in live.monsters.into_iter().enumerate() {
+            if i >= self.monsters.len() {
+                break;
+            }
+            if self.on_land(m.position.x, m.position.y) {
+                self.monsters[i] = m;
+            } else {
+                fixed += 1;
+            }
+        }
+        let _ = fixed;
+        // Harvested stock and opened chests are live; where they stand is generated.
+        for (i, r) in live.resources.iter().enumerate() {
+            if let Some(dst) = self.resources.get_mut(i) {
+                dst.remaining = r.remaining;
+                dst.spent_tick = r.spent_tick;
+            }
+        }
+        for (i, c) in live.chests.iter().enumerate() {
+            if let Some(dst) = self.chests.get_mut(i) {
+                dst.opened = c.opened;
+                dst.opened_tick = c.opened_tick;
+            }
+        }
+        // Anything the world was told to forget stays forgotten.
+        self.dirty_blockers();
+        true
+    }
+
     pub fn ensure_frontier(&mut self, balance: &Balance, reach: f64) -> Vec<usize> {
         let lookahead = balance.worldgen.stream_lookahead;
         // Cap growth per call so a teleport can't explode work in one tick.
