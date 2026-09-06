@@ -2619,7 +2619,13 @@ fn wall_material(biome: &str, roll: f64) -> WallMaterial {
             //    walker at waypoint 218 of 384). Fixed by corridorizing — and prop walls and
             //    pass parts made the same mistake, surviving only because `radialize`'s retain
             //    culls obstacles in world space afterwards. That fix is the lasting value here.
-            // 3. ⚠️ **STILL OPEN: `push_section`'s pass ORDER.** `wet`'s shore snapshot is
+            // 3. ⚠️ **STILL OPEN, but much narrower: 9 drowned creatures became 1.** Two more
+            //    causes found and fixed (both kept, both correct with or without these walls):
+            //    the creature pass read a wetness snapshot taken BEFORE the channels were laid,
+            //    and the wall's own occupancy check tested each NODE when `river_depth` draws a
+            //    capsule per consecutive PAIR — the identical point-vs-segment error that had
+            //    the guaranteed route swimming. Measured after both: **1 of 2757** creatures on
+            //    seed 424242, 1.3 units inside a channel, cause not yet found. Was: `wet`'s shore snapshot is
             //    cloned before the route, water walls are laid after it, and creatures are
             //    placed after THAT — so creature placement reads a rivers list from before the
             //    channels existed and walks straight into them. Measured: **9 of 2768
@@ -4471,7 +4477,37 @@ impl Arena {
         // excludes most of a wood — measured, a uniform 4.3-unit exclusion halved the deep
         // population again. A creature standing against a tree is ordinary; a creature inside
         // one is the bug.
-let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
+// ⚠️ **THE CREATURE PASS NEEDS THE WATER THAT EXISTS NOW, NOT AT THE SNAPSHOT.**
+        // `wet` above closes over `self.rivers` as it stood at its own line — which is BEFORE
+        // `push_water_walls` adds the mire's boundary channels. Creatures are placed after
+        // those, so they were being tested against a world that had less water in it than the
+        // one they were about to stand in: measured, **9 of 2768 creatures on seed 424242**
+        // stood in a channel, and `nothing_the_world_places_ever_lands_in_the_sea` said so.
+        //
+        // This is the same shape as the other water bugs in this stage — a fact captured at
+        // one moment and consumed at another — so it is rebuilt here rather than the snapshot
+        // being moved, because `standable_c` above legitimately wants the earlier view: nodes
+        // are placed before the channels and cannot be asked about water that does not exist.
+        let wet_now = {
+            let (basins, rivers) = (self.basins.clone(), self.rivers.clone());
+            let (peaks, straits, lobes) = (self.peaks.clone(), self.straits.clone(), self.lobes.clone());
+            let bridges = self.bridges.clone();
+            let (arc_half, toff) = (self.radial_half as f32, self.terrain_off);
+            move |w: &Position| -> bool {
+                meld_proto::coast::Shore {
+                    arc_half,
+                    terrain_off: toff,
+                    peaks: &peaks,
+                    straits: &straits,
+                    lobes: &lobes,
+                    basins: &basins,
+                    rivers: &rivers,
+                    bridges: &bridges,
+                }
+                .is_ocean(w.x as f32, w.y as f32)
+            }
+        };
+        let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
         // ⚠️ **CREATURES DRAW FROM THEIR OWN STREAM.** Sharing the section's main `rng` with the
         // obstacles, terraces and chests below couples them: any world-generation edit changes
         // how many draws precede this loop and so moves every creature in every seeded world.
@@ -4509,7 +4545,7 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
                     // creature could be dropped on a flank too steep to leave and simply stood
                     // there. Measured: mean wander excursion collapsed and
                     // `a_wandering_creature_actually_goes_somewhere` failed.
-                    (!taken.crowded(&w) && !wet(&w) && standable(&w)).then_some((p, w))
+                    (!taken.crowded(&w) && !wet_now(&w) && standable(&w)).then_some((p, w))
                 }) else {
                     let gap = creature_spacing * (1.0 + wg.monster_spacing_jitter * rng.signed());
                     x += gap.max(2.0);
@@ -6346,7 +6382,28 @@ let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
                 // on or near it, and a node the water reaches is a node lost rather than a
                 // creature drowned. ⚠️ If that stops being true, hand their world positions
                 // forward the same way rather than scanning the field.
-                let occupied = creature_world.iter().any(|w| w.distance_to(&at) < half + 1.5);
+                // ⚠️ **THE SPAN, NOT THE NODE — the identical point-vs-segment error that had
+                // the guaranteed route swimming.** `coast::river_depth` draws a capsule per
+                // consecutive PAIR of nodes, and nodes are spaced `water_wall_node_step` apart
+                // — far wider than this clearance. So a creature can stand clear of every node
+                // and still be under the span joining two of them, which is exactly how
+                // `nothing_the_world_places_ever_lands_in_the_sea` kept reporting a drowned
+                // creature after the node check was added.
+                //
+                // Checking the segment from the PREVIOUS laid node to this one covers the
+                // water that will actually exist. The first node of a chain has no predecessor
+                // and is a point, which is correct: a chain break is a ford, so nothing is
+                // drawn across the gap.
+                let occupied = creature_world.iter().any(|w| match self.rivers.last() {
+                    Some(prev) if laid > 0 => {
+                        dist_point_segment(
+                            w,
+                            &Position::new(prev[0] as f64, prev[1] as f64),
+                            &at,
+                        ) < half + 1.5
+                    }
+                    _ => w.distance_to(&at) < half + 1.5,
+                });
                 // Never on the guaranteed trail, and never in the sea (a channel running into
                 // the ocean is just the ocean).
                 // ⚠️ **`clear_of_routes` WANTS A CORRIDOR POINT, AND I WAS HANDING IT A WORLD
