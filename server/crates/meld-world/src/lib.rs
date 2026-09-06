@@ -3606,37 +3606,74 @@ impl Arena {
     /// every section, and that call is not free.
     fn drown_proof(&mut self, lo: f64, hi: f64) {
         let reach = 48.0f64;
-        let taken: Vec<(usize, Position)> = self
-            .monsters
-            .iter()
-            .enumerate()
-            .filter(|(_, m)| {
-                let r = m.position.x.hypot(m.position.y);
-                r >= lo && r < hi
-            })
-            .filter(|(_, m)| !self.on_land(m.position.x, m.position.y))
-            .map(|(i, m)| (i, m.position))
-            .collect();
-        for (i, at) in taken {
-            let mut best: Option<(f64, Position)> = None;
-            for ring in 1..=8 {
-                let r = ring as f64 * (reach / 8.0);
+        // ⚠️ **A PACK IS MOVED TOGETHER, OR IT STOPS BEING A PACK.** Moving one member to the
+        // nearest dry ground can carry it tens of units from its leader, and a pack is held
+        // together by proximity — `group_around` pulls in what is within `[ai] group_radius`.
+        // Measured when this moved creatures one at a time: "a pack of 3 has no front rank but
+        // its leader" and "a rite pulled only 2 into the fight". The note above the bend has
+        // said "by pack" all along; this is what it meant.
+        //
+        // So the whole pack takes ONE offset, which keeps its formation exactly and only moves
+        // where it stands. A loner is a pack of one and needs no special case.
+        let mut packs: std::collections::HashMap<Id, Vec<usize>> = Default::default();
+        for (i, m) in self.monsters.iter().enumerate() {
+            let r = m.position.x.hypot(m.position.y);
+            if r >= lo && r < hi {
+                packs.entry(m.pack.clone()).or_default().push(i);
+            }
+        }
+        for (_, members) in packs {
+            let wet = members
+                .iter()
+                .any(|&i| !self.on_land(self.monsters[i].position.x, self.monsters[i].position.y));
+            if !wet {
+                continue;
+            }
+            let mut best: Option<(f64, f64, f64)> = None; // (distance, dx, dy)
+            'search: for ring in 1..=8 {
+                let d = ring as f64 * (reach / 8.0);
                 for k in 0..16 {
                     let th = std::f64::consts::TAU * (k as f64) / 16.0;
-                    let p = Position::new(at.x + r * th.cos(), at.y + r * th.sin());
-                    if self.on_land(p.x, p.y) && self.t_walkable(p.x, p.y) {
-                        let d = at.distance_to(&p);
-                        if best.as_ref().is_none_or(|(bd, _)| d < *bd) {
-                            best = Some((d, p));
+                    let (dx, dy) = (d * th.cos(), d * th.sin());
+                    let all_dry = members.iter().all(|&i| {
+                        let p = self.monsters[i].position;
+                        let q = Position::new(p.x + dx, p.y + dy);
+                        self.on_land(q.x, q.y) && self.t_walkable(q.x, q.y)
+                    });
+                    if all_dry {
+                        best = Some((d, dx, dy));
+                        break 'search;
+                    }
+                }
+            }
+            if let Some((_, dx, dy)) = best {
+                for &i in &members {
+                    let p = self.monsters[i].position;
+                    self.monsters[i].position = Position::new(p.x + dx, p.y + dy);
+                }
+                continue;
+            }
+            // ⚠️ **AND WHEN NO OFFSET FITS THE WHOLE PACK, THE WET ONES MOVE ALONE.** Leaving
+            // them was the first cut and it put a creature straight back in the sea — cohesion
+            // is worth preserving, standing in water is not something to preserve it WITH. A
+            // pack wide enough that no single offset lands all of it is one whose formation is
+            // already loose.
+            for &i in &members {
+                let at = self.monsters[i].position;
+                if self.on_land(at.x, at.y) {
+                    continue;
+                }
+                'alone: for ring in 1..=8 {
+                    let d = ring as f64 * (reach / 8.0);
+                    for k in 0..16 {
+                        let th = std::f64::consts::TAU * (k as f64) / 16.0;
+                        let q = Position::new(at.x + d * th.cos(), at.y + d * th.sin());
+                        if self.on_land(q.x, q.y) && self.t_walkable(q.x, q.y) {
+                            self.monsters[i].position = q;
+                            break 'alone;
                         }
                     }
                 }
-                if best.is_some() {
-                    break;
-                }
-            }
-            if let Some((_, p)) = best {
-                self.monsters[i].position = p;
             }
         }
     }
