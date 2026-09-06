@@ -399,3 +399,44 @@ fn a_minimaze_is_actually_built() {
         );
     }
 }
+
+/// **A CLUSTER OF WATER BOUNDARIES COALESCES INTO A LAKE** (`WG-11` stage 9).
+///
+/// The landform is DISCOVERED, not drawn: the maze says which boundaries are walls,
+/// `wall_material` says a mire walls with water, and what shape that makes falls out of how
+/// they land — a LINE of water boundaries is a river and a CLUSTER of them is a lake. Nothing
+/// places a lake.
+///
+/// ⚠️ **IT IS RARE BY CONSTRUCTION, AND THAT IS NOT THE SAME AS BROKEN.** A spanning tree
+/// leaves a cell about TWO walled boundaries on average, so "walled with water on three sides"
+/// is close to the tail of the distribution: measured over five seeds out to d900, endpoints
+/// run 93-108 per world with the mode at multiplicity 2 (49-58 of them) and only **0-2** at 3.
+/// So this asserts across the seed SET rather than per seed. Lowering `lake_boundary_min` to 2
+/// was measured too — 27 basins become **185**, mean radius 60 to 29 — which is not a lake
+/// district, it is puddles, and it would remake the mire's character rather than express it.
+#[test]
+fn a_cluster_of_water_boundaries_becomes_a_lake() {
+    let base = Balance::load_default().unwrap();
+    let mut off = base.clone();
+    // A cell has four neighbours, so this is unreachable: coalescence switched off.
+    off.worldgen.lake_boundary_min = 99;
+    let (mut with, mut without) = (0usize, 0usize);
+    for seed in [1u64, 42, 424242, 7, 99] {
+        for (b, tally) in [(&base, &mut with), (&off, &mut without)] {
+            let mut a = Arena::generate(b, seed, false);
+            let mut r = 0.0f64;
+            while r < 900.0 {
+                r += 60.0;
+                a.ensure_frontier(b, r);
+            }
+            *tally += a.basins.len();
+        }
+    }
+    println!("basins across five seeds: {without} without coalescence, {with} with");
+    assert!(
+        with > without,
+        "coalescence produced no lakes at all across five seeds ({with} against {without}) — a \
+         feature with no instances passes every test it has, and this stage has already shipped \
+         bridges that were never built and inland water the client never drew"
+    );
+}
