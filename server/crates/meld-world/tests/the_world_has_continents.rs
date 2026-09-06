@@ -403,12 +403,22 @@ fn a_river_long_enough_to_block_you_has_a_ford() {
 #[test]
 fn a_world_holds_lakes_and_rivers_worth_the_name() {
     let seeds = [1u64, 7, 42, 99, 424242, 987654];
-    let (mut basins, mut nodes, mut radius_sum) = (0usize, 0usize, 0.0f32);
+    let (mut basins, mut nodes) = (0usize, 0usize);
+    // ⚠️ **THE BIG ONES, NOT THE AVERAGE.** When this was written every basin came from
+    // `push_water`, so a mean was a fair summary of the population. A cell's WET SHARE (stage 9)
+    // adds a second, far more numerous source — the ambient fill, roughly a cell across and
+    // shrunk further wherever it yields to a trail, a range or a creature — so the mean now
+    // moves when a great many ponds appear even though every lake is untouched. That is not the
+    // clamped fill this test exists to catch, and the way to keep catching THAT is to ask
+    // whether the large bodies are still there.
+    let mut biggest: Vec<f32> = Vec::new();
     for seed in seeds {
         let a = deep_world(seed);
         basins += a.basins.len();
         nodes += a.rivers.len();
-        radius_sum += a.basins.iter().map(|b| b[2]).sum::<f32>();
+        let mut rs: Vec<f32> = a.basins.iter().map(|b| b[2]).collect();
+        rs.sort_by(|x, y| y.partial_cmp(x).unwrap_or(std::cmp::Ordering::Equal));
+        biggest.extend(rs.into_iter().take(5));
     }
     assert!(
         basins >= 30,
@@ -417,11 +427,12 @@ fn a_world_holds_lakes_and_rivers_worth_the_name() {
         seeds.len()
     );
     assert!(nodes >= 60, "only {nodes} river nodes across {} deep worlds", seeds.len());
-    let mean = radius_sum / basins.max(1) as f32;
+    let mean = biggest.iter().sum::<f32>() / biggest.len().max(1) as f32;
     assert!(
         mean >= 60.0,
-        "mean lake radius is {mean:.0} — that is a pond. Something is clamping the fill, \
-         which is exactly the regression this test exists for (see the note above)."
+        "the five largest lakes of each world average {mean:.0} — that is a pond. Something is \
+         clamping the fill, which is exactly the regression this test exists for (see the note \
+         above)."
     );
 }
 
