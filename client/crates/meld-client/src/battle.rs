@@ -720,8 +720,15 @@ pub(crate) fn animate_battle_actors(
     feel: Res<BattleFeel>,
     sky: Res<Sky>,
     mut mats: ResMut<Assets<StandardMaterial>>,
+    // Where every combatant is standing, so a lunge can aim at the body it is hitting
+    // rather than at the direction its own row happens to face. Disjoint from the sprite
+    // query below: an actor ROOT carries `BattleActor`, its billboard child `SpriteQuad`.
+    actors: Query<(&BattleActor, &Transform), Without<SpriteQuad>>,
     mut q: Query<(&mut Transform, &SpriteQuad, Has<PlayerGlowSprite>)>,
 ) {
+    // Actor id → where it stands, resolved once rather than per sprite.
+    let at: std::collections::HashMap<&str, Vec3> =
+        actors.iter().map(|(a, tf)| (a.id.as_str(), tf.translation)).collect();
     // The night glow is folded in HERE rather than left to `illuminate_players`, which
     // owns it everywhere else. Both systems wrote `emissive` on the same battle-hero
     // material with no ordering between them, so whichever the scheduler ran second that
@@ -781,23 +788,53 @@ pub(crate) fn animate_battle_actors(
         } else {
             0.0
         };
-        let perp = Vec3::new(s.forward.z, 0.0, -s.forward.x);
-        let off = s.forward * (lunge - recoil) + perp * shake;
+        // AT THE DEFENDER. `SpriteQuad::forward` is fixed at spawn — the way this hero's
+        // whole row faces — so a lunge along it steps generically "toward the enemies"
+        // whoever is actually being hit, and in a five-body pack that reads as a twitch
+        // rather than as an attack on somebody. Fall back to `forward` when there is no
+        // recorded target (a recoil has no aim of its own, and neither does a burst that
+        // arrived before its actor was spawned).
+        let toward = hitfx
+            .act_target
+            .get(&s.id)
+            .and_then(|t| Some((at.get(s.id.as_str())?, at.get(t.as_str())?)))
+            .map(|(from, to)| *to - *from)
+            .filter(|d| d.length_squared() > 1e-4)
+            .map(|d| Vec3::new(d.x, 0.0, d.z).normalize_or_zero())
+            .filter(|d| *d != Vec3::ZERO)
+            .unwrap_or(s.forward);
+        let perp = Vec3::new(toward.z, 0.0, -toward.x);
+        // The RECOIL still rides `forward`: being knocked back is about which way you are
+        // facing, not about who hit you — and the attacker's aim is not a fact the victim's
+        // sprite has any access to.
+        let off = toward * lunge - s.forward * recoil + perp * shake;
         tf.translation.x = off.x;
         tf.translation.z = off.z;
 
-        // Explorer "rage": as banked Adrenaline climbs toward max, redden the sprite
-        // and add a faint hot glow so a Explorer *looks* angrier the more it's built.
-        // Only Hunters carry adrenaline_max > 0, so every other class stays neutral.
+        // RAGE REDDENS. Two sources, and the hotter wins:
+        //
+        // - a Hunter's banked **Adrenaline** climbing toward its max, so the class that
+        //   pays in fury visibly builds it (nothing else carries `adrenaline_max`, so
+        //   every other class reads 0 here);
+        // - **`frenzied`**, which is the affliction that takes the choice away and swings
+        //   on its own. That is the one condition that should look like anger rather than
+        //   sickness, and it applies to CREATURES as much as heroes — a pack leader that
+        //   has gone berserk is the most important thing on the field to notice.
+        //
+        // Colour lives here and nowhere else. `battle_fx::react_to_conditions` swells the
+        // same sprite but deliberately touches only the transform: two systems writing one
+        // material is the flicker the night-glow note above records.
         let rage = battle
             .view(&s.id)
             .map(|c| {
                 let max = status_num(&c.statuses, "adrenaline_max:");
-                if max > 0 {
+                let banked = if max > 0 {
                     status_num(&c.statuses, "adrenaline:") as f32 / max as f32
                 } else {
                     0.0
-                }
+                };
+                let frenzied = c.statuses.iter().any(|x| x == "frenzied");
+                banked.max(if frenzied { 1.0 } else { 0.0 })
             })
             .unwrap_or(0.0)
             .clamp(0.0, 1.0);
@@ -3030,6 +3067,18 @@ pub(crate) fn ally_cell(
 /// Immediate-mode party window (bottom-left): one row per hero with HP bar, ATB
 /// gauge, the active-hero highlight, a ready flag, and the queued-order icon.
 /// One Lufia-style party window (name + Lv, HP + ATB bars, portrait, order icon).
+/// How many heroes a player may field. Mirrors `[runs] party_size_per_player`, which the
+/// client cannot read — it is a separate workspace with no balance loader.
+const PARTY_SLOTS: usize = 4;
+
+/// A party cell's share of the HUD row, as a percentage.
+///
+/// A FIXED share rather than `flex_grow`, which is what makes the row build out from the
+/// centre: below a full party there is nothing to shrink, so two heroes are two
+/// quarter-width cells in the middle of the bar instead of two half-screen ones jammed
+/// against the left edge.
+const PARTY_CELL_PCT: f32 = 100.0 / PARTY_SLOTS as f32;
+
 pub(crate) fn party_cell(
     parent: &mut ChildSpawnerCommands,
     battle: &BattleData,
@@ -3072,8 +3121,19 @@ pub(crate) fn party_cell(
             PartyCellButton { id: id.to_string() },
             Node {
                 border_radius: BorderRadius::all(Val::Px(10.0)),
-                flex_grow: 1.0,
-                flex_basis: Val::Px(0.0),
+                // ⚠️ A CELL IS A QUARTER OF THE ROW WHATEVER THE PARTY SIZE, and the row
+                // CENTRES them. `flex_grow: 1.0` with a zero basis made every cell share
+                // the full width instead, so a party of two got two enormous half-screen
+                // cells and a party of three three fat ones — the HUD changed shape with
+                // the roster, and the readout inside it stretched with it.
+                //
+                // Shrink stays on so four cells plus their gaps still fit exactly; below
+                // four there is nothing to shrink and a cell is its true quarter, which is
+                // what makes two heroes read as two cells in the middle of the bar rather
+                // than as a different HUD.
+                flex_grow: 0.0,
+                flex_shrink: 1.0,
+                flex_basis: Val::Percent(PARTY_CELL_PCT),
                 flex_direction: FlexDirection::Row,
                 column_gap: Val::Px(8.0),
                 padding: UiRect::all(Val::Px(7.0)),
@@ -3254,21 +3314,20 @@ pub(crate) fn render_party_window(
                 height: Val::Px(92.0),
                 flex_direction: FlexDirection::Row,
                 column_gap: Val::Px(8.0),
+                // BUILD OUT FROM THE CENTRE. A party of two or three used to be laid out
+                // as four slots with the empty ones spawned as flex-grow spacers, so the
+                // heroes bunched against the LEFT edge and the right of the bar was a hole
+                // — which reads as a missing panel rather than as a smaller party.
+                justify_content: JustifyContent::Center,
                 ..default()
             },
         ))
         .with_children(|row| {
-            for i in 0..4 {
-                match ids.get(i) {
-                    Some(id) => party_cell(row, &battle, &hitfx, &feel, &menu, &flash, id, i),
-                    None => {
-                        row.spawn(Node {
-                            flex_grow: 1.0,
-                            flex_basis: Val::Px(0.0),
-                            ..default()
-                        });
-                    }
-                }
+            // Only the heroes we actually field. No placeholder slots: an empty slot is
+            // not a thing the player has, and spawning one is what pushed the party off
+            // centre in the first place.
+            for (i, id) in ids.iter().take(PARTY_SLOTS).enumerate() {
+                party_cell(row, &battle, &hitfx, &feel, &menu, &flash, id, i);
             }
         });
 }
@@ -3340,6 +3399,10 @@ pub(crate) fn advance_hit_fx(time: Res<Time>, feel: Res<BattleFeel>, mut hitfx: 
         *a += dt;
         *a < feel.lunge_ttl
     });
+    // The aim dies with the lunge it belongs to, or the next swing inherits the last
+    // one's direction until it happens to be overwritten.
+    let lunging: Vec<String> = hitfx.acts.keys().cloned().collect();
+    hitfx.act_target.retain(|actor, _| lunging.contains(actor));
 }
 
 /// Immediate-mode overlay: draw each floating number, rising and fading, anchored over
@@ -3548,6 +3611,33 @@ pub(crate) fn push_hit_fx(hitfx: &mut HitFx, e: &HitEffect, show_elements: bool)
 #[cfg(test)]
 mod pack_tests {
     use super::*;
+
+    /// **A FULL PARTY IS EXACTLY THE ROW, AND A SMALLER ONE IS CENTRED IN IT.** The cells
+    /// are a fixed share rather than `flex_grow` — that is what centres a party of two or
+    /// three — so the share has to tile a full party precisely. Over a quarter and four
+    /// heroes overflow the bar; under it and a full party leaves a hole, which is the bug
+    /// this replaced wearing different clothes.
+    ///
+    /// `flex_shrink` stays on to absorb the 8px gaps at exactly four; it must never be
+    /// absorbing the CELLS, or the HUD changes size with the roster again.
+    #[test]
+    fn a_full_party_is_exactly_the_hud_row() {
+        let full = PARTY_CELL_PCT * PARTY_SLOTS as f32;
+        assert!(
+            (full - 100.0).abs() < 0.01,
+            "{PARTY_SLOTS} cells at {PARTY_CELL_PCT}% each is {full}% of the row"
+        );
+        // The centring claim itself: below a full party the cells cannot fill the row, so
+        // `justify_content: Center` has slack to work with and puts them in the middle.
+        for fielded in 1..PARTY_SLOTS {
+            let used = PARTY_CELL_PCT * fielded as f32;
+            assert!(
+                used < 100.0,
+                "a party of {fielded} already fills the row ({used}%), so there is nothing \
+                 for the centring to centre"
+            );
+        }
+    }
 
     /// The condition palette: afflictions read warm-to-sour, boons read cool herb/metal, and
     /// an affliction outranks a boon — "something is being done to me" is the more urgent news.

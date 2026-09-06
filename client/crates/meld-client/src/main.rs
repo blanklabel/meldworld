@@ -1801,6 +1801,16 @@ struct HitFx {
     /// Attacker id → seconds since it landed a damaging action (dropped past
     /// [`BattleFeel::lunge_ttl`]); [`animate_battle_actors`] lunges that sprite.
     acts: HashMap<String, f32>,
+    /// Attacker id → who it actually hit, so the lunge goes AT THE DEFENDER.
+    ///
+    /// The lunge used to ride `SpriteQuad::forward`, which is fixed at spawn — the
+    /// direction that hero's whole row faces. So an attacker stepped generically
+    /// "toward the enemies" whoever it was swinging at, and in a five-body pack that
+    /// reads as a twitch rather than as an attack on somebody.
+    ///
+    /// Kept beside `acts` and cleared with it, since it is only meaningful for the
+    /// length of one lunge.
+    act_target: HashMap<String, String>,
     /// Actor id → the animation clip to play once for a just-resolved action (its
     /// `attack` or a specific special). Consumed by `drive_battle_action_clips`,
     /// which hands it to the actor's `hd2d::CharSprite`.

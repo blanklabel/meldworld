@@ -4686,6 +4686,36 @@ only the things that can't be class-gated.
   social, and shared — nothing to gate). Distinct from the maze minimap, which is
   the Shifter's overworld perk (CL-2). Client UX over the Last City scene
   ([`proposals/last-city.md`](proposals/last-city.md)).
+- [x] **UX-5 — An ability looks like what it is, and the HUD builds from the centre.**
+  Reported from play: *"when you're hit with a fireball, the screen shows you're getting hit
+  by a fireball… if a creature buffs, maybe make their sprite bigger; if they rage, turn the
+  sprite redder"*, and *"make sure the menu boxes line up properly with party's that are two
+  or 3 — basically build out from the center"*. Dragon Quest is the reference.
+  - **Three tiers, two shaders** ([`battle_fx.rs`](../client/crates/meld-client/src/battle_fx.rs)):
+    sprite swell/breath/rage on the billboard that already exists (no shader, and where most
+    of the readability comes from); ONE WGSL impact material with a `kind` uniform covering
+    all sixteen damage types (`ability_fx.wgsl`); and a camera-locked full-frame wash
+    (`screen_wash.wgsl`) for a blow that landed on three or more bodies. A camera-locked
+    quad rather than a post-process `ViewNode`, so teardown is the same
+    `despawn::<BattleFxRoot>` every other battle entity uses.
+  - ⚠️ **The client could not tell a fireball from a sword.** `battle.action_resolved` carries
+    the `BattleActionKind`, never the ability, and creature kits live in `meld-world`. So
+    `damage_type` rides the wire, stamped centrally by `Battle::stamped` off
+    `apply_typed_damage` — the one point every typed blow passes through — rather than
+    threaded through twelve resolvers.
+  - ⚠️ **Additive and alpha-capped, which is the fourth closing of this trap.** The first cut
+    of the wash multiplied the element's authored colour (up to 3.4, deliberately over 1.0 so
+    a small burst blooms) across every pixel and painted the whole arena flat orange with the
+    sprites inside it. It normalises to a HUE now and takes its intensity from a `WASH_PEAK`
+    budget of 0.22, so a hotter element can never make it louder.
+  - ⚠️ **`make check` never boots the app**, so a WGSL error would ship green.
+    `MELD_FX=<element>|all` fires casts on a loop inside the `MELD_BATTLE` mockup, which
+    otherwise resolves nothing at all — and re-fires just under the burst's TTL, because a
+    capture is one frame and a slower cadence means most screenshots catch the gap.
+  - **The party HUD** spawned four slots and filled the empty ones with flex-grow spacers, so
+    two heroes bunched against the left edge with a hole on the right. A cell is a quarter of
+    the row at every party size now and the row centres them. The arena already had this
+    right; it was the HUD alone.
 - [ ] **UX-2 — Accessibility & non-color legibility.** Danger and state must never
   depend on **color alone** — CR-1's deep-biome palette shift is a *bonus* cue, so
   pair it with universally-available redundant signals (creature level tags,

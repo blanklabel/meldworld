@@ -5217,8 +5217,16 @@ impl Battle {
         res
     }
 
-    fn upkeep_only(&self, actor_i: usize, effects: Vec<ResolvedEffect>) -> Resolution {
-        Resolution { damage_type: None,
+    /// ⚠️ **`&mut self` BECAUSE IT CONSUMES THE ELEMENT TOO.** A burn or poison tick runs
+    /// inside `start_of_turn` and goes through `apply_typed_damage` like everything else,
+    /// so it SETS `last_damage_type` — and upkeep rides its own resolution. Left
+    /// unconsumed here, that Fire would be taken by the next thing `stamped` saw, and a
+    /// hero's sword swing after a burn tick would be reported to the client as fire.
+    ///
+    /// Consuming it is also the right *look*: a poison tick drawing a small poison puff
+    /// over the victim is exactly the feedback a condition ticking should give.
+    fn upkeep_only(&mut self, actor_i: usize, effects: Vec<ResolvedEffect>) -> Resolution {
+        Resolution { damage_type: self.last_damage_type.take(),
             action_id: None,
             actor_id: self.fighters[actor_i].combatant_id.clone(),
             action: BattleActionKind::Defend,
@@ -5603,6 +5611,15 @@ impl Battle {
     /// Physical damage — the default path. A blow with no declared type is a weapon
     /// blow, so it answers to the back row like every other one.
     fn apply_damage(&mut self, target_i: usize, dmg: i32) -> Vec<ResolvedEffect> {
+        // …and it DRAWS as the weapon it was. This path skips `apply_typed_damage`, so
+        // without this the client is told nothing and eleven abilities land with no
+        // effect at all. The actor's own basic type is the honest answer: a blow that
+        // declares nothing is the swing that hero already makes.
+        self.last_damage_type = self
+            .active_actor
+            .map(|a| self.fighters[a].basic_attack_type)
+            .filter(|ty| *ty != DamageType::None)
+            .or(Some(UNARMED_ATTACK_TYPE));
         self.apply_damage_reaching(target_i, dmg, true)
     }
 

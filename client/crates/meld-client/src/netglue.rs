@@ -469,10 +469,18 @@ pub(crate) fn pump_net(
                 // where the authoritative numbers are; the arena's transforms are a frame
                 // away, which is why the cast is QUEUED rather than spawned.
                 let mut struck: Vec<(String, i32, i32)> = Vec::new();
+                // …and who it MENDED, which is the other half. A party-wide heal or ward
+                // gets the screen and no bursts (`queue_boon`): an impact shape over an
+                // ally the healer just tended reads as the healer attacking them.
+                let mut mended: std::collections::HashSet<String> =
+                    std::collections::HashSet::new();
                 for e in effects {
                     // Reflect the authoritative HP immediately + spawn feedback.
                     if let Some(c) = battle.combatants.iter_mut().find(|c| c.id == e.target) {
                         c.hp = e.hp_after;
+                    }
+                    if e.kind.eq_ignore_ascii_case("heal") && e.amount.unwrap_or(0) > 0 {
+                        mended.insert(e.target.clone());
                     }
                     if e.kind.eq_ignore_ascii_case("damage") && e.amount.unwrap_or(0) > 0 {
                         did_damage = true;
@@ -486,14 +494,27 @@ pub(crate) fn pump_net(
                     }
                     push_hit_fx(&mut hitfx, &e, show_elements);
                 }
-                // A damaging action makes its actor lunge in to strike.
+                // A damaging action makes its actor lunge in to strike — AT the body it
+                // hit. The first target rather than a centroid: an all-enemy blast has no
+                // single direction to step in, and stepping at the middle of the pack is a
+                // motion nobody reads as aimed at anything.
                 if did_damage {
                     hitfx.acts.insert(actor.clone(), 0.0);
+                    if let Some((first, _, _)) = struck.first() {
+                        hitfx.act_target.insert(actor.clone(), first.clone());
+                    }
                 }
                 // …and throws its element over everyone it hit. An IMMUNE hit is
                 // deliberately not in `struck` (it did 0), so "your fire did nothing"
                 // reads as the number it is rather than as a fireball that worked.
                 crate::battle_fx::queue_cast(battle_fx, damage_type, &struck);
+                // A mend only lifts the screen when the action did NOTHING else: an
+                // ability that damages and heals (the Resonant's Transfuse pays out of its
+                // own HP, the Keeper drains as it strikes) is a blow, and it should read
+                // as one rather than as two effects arguing over the same frame.
+                if !did_damage {
+                    crate::battle_fx::queue_boon(battle_fx, mended.len());
+                }
                 // Pick the sprite clip: the basic `attack`, or the exact skill the
                 // client last fired (the wire `action` is only Attack/Skill/…). A
                 // non-damaging skill (heal/buff) still plays its clip, just no lunge.

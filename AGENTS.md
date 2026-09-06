@@ -670,6 +670,53 @@ so an ambusher hunted the back rank with its claws and the weakest hero with its
 **gang-up mark is shouted** when set or moved, because a pack converging on your healer
 with no explanation reads as the game cheating.
 
+**AN ABILITY LOOKS LIKE WHAT IT IS, IN THREE TIERS — AND ONLY TWO OF THEM ARE SHADERS**
+([`battle_fx.rs`](client/crates/meld-client/src/battle_fx.rs)). Dragon Quest is the
+reference and the right one for HD-2D billboards: short, punchy, readable, a colour wash on
+the big spells and nothing that outlasts the turn.
+**(1) Sprite reactions** — a body carrying boons swells and breathes, a `frenzied` one
+swells harder, and rage reddens. Transform and material writes on the billboard that
+already exists; no shader, and it is where most of the readability comes from.
+**(2) Impact bursts** — ONE WGSL material with a `kind` uniform (`ability_fx.wgsl`) on a
+camera-facing quad over whoever was struck, covering all sixteen damage types. One shader
+rather than one per element, for the reason a registry beats a list everywhere else here.
+**(3) The screen wash** — the same idea full-frame (`screen_wash.wgsl`) on a quad parented
+to the battle camera, and ONLY for a blow that landed on three or more bodies, because a
+wash on every basic attack is a strobe. A camera-locked quad rather than a post-process
+`ViewNode` on purpose: cleanup is then the same `despawn::<BattleFxRoot>` every other
+battle entity uses instead of a render-graph edge somebody has to remember to remove.
+
+⚠️ **EVERYTHING IS ADDITIVE AND ALPHA-CAPPED, WHICH IS THE FOURTH TIME THIS TRAP HAS BEEN
+CLOSED.** `sprite_material`'s note records the first three: a full-quad effect painting over
+the art. An impact sits directly on top of a sprite, so its alpha is clamped (0.85) and the
+wash's whole budget is `WASH_PEAK` = 0.22 of the frame — the first cut of the wash multiplied
+the element's authored colour (up to 3.4, deliberately over 1.0 so a small additive burst
+blooms) across every pixel and **painted the entire arena flat orange with the sprites inside
+it**. The wash normalises the tint to a HUE and takes its intensity from the budget, so
+choosing a hotter element can never make it louder.
+
+⚠️ **AND THE CLIENT COULD NOT TELL A FIREBALL FROM A SWORD.** `battle.action_resolved`
+carries `action` — the `BattleActionKind` (Attack / Skill / Item), never the ability — and a
+creature's kit lives in `meld-world`, which the client does not have. So the element rides
+the wire as `damage_type`, stamped centrally by `Battle::stamped` off `apply_typed_damage`
+(the one point every typed blow passes through) rather than threaded through twelve
+resolvers: a resolver that lands a new kind of blow gets its VFX the day it is written.
+The `kind` numbers are a uniform shared with two WGSL files, so renumbering one side draws
+fire where ice should be, silently — `the_kind_numbers_match_the_shader` reads the shader's
+own constants.
+
+⚠️ **`make check` NEVER BOOTS THE APP, so a WGSL error ships green.** `MELD_FX=<element>|all`
+fires casts on a loop inside the `MELD_BATTLE` mockup — which otherwise resolves nothing, so
+a battle effect is unreachable in a screenshot. It re-fires just UNDER the burst's own TTL,
+because a capture is one frame at an arbitrary moment and a cadence longer than the effect
+means most screenshots catch the gap and report the shader as broken.
+
+**THE PARTY HUD BUILDS OUT FROM THE CENTRE.** A cell is a quarter of the row at every party
+size and the row centres them. It used to spawn four slots and fill the empty ones with
+flex-grow spacers, so two heroes bunched against the LEFT edge with a hole on the right —
+which reads as a missing panel rather than as a smaller party. The arena had this right
+already (`x = (i - (n-1)/2) * 2.7`); it was the HUD alone.
+
 **A number belongs to the combatant it landed on — anchor to the ACTOR, never to a role.**
 `render_hit_fx` used to place a floating number by identity: `monster_combatant` (which is
 only ever `enemies.first()`) drew top-centre and everything else fell through a

@@ -193,11 +193,43 @@ pub(crate) struct Cast {
     pub(crate) power: f32,
 }
 
+/// **A PARTY-WIDE BOON WASHES THE SCREEN AND THROWS NO BURSTS.**
+///
+/// `queue_cast` is for blows; this is its opposite number, and it is deliberately only
+/// half the effect. A burst is an IMPACT shape — a slash, a plume, a shockwave — so
+/// putting one over an ally the healer just mended reads as the healer attacking them,
+/// which is the exact confusion `a_cast_that_damaged_nobody_draws_nothing` exists to
+/// prevent. What a party-wide mend or ward earns is the SCREEN: a calm gold-green lift
+/// with nothing over anybody's head.
+///
+/// Same three-body bar as a blow, for the same reason — a single heal is a number over
+/// one hero, and washing the screen for it would make every Resonant turn a strobe.
+pub(crate) fn queue_boon(fx: &mut BattleFx, mended: usize) {
+    if mended < 3 {
+        return;
+    }
+    fx.queue.push(Cast {
+        // No targets: the wash is the whole effect.
+        targets: Vec::new(),
+        element: Element { kind: 9.0, rgb: Vec3::new(1.6, 2.4, 1.3) },
+        wide: true,
+        // Well under a blow's, so the loudest thing on screen is still whatever is
+        // trying to kill you.
+        power: 0.15,
+    });
+}
+
 /// The queue plus a scratch seed counter. Drained every frame by [`spawn_ability_fx`].
 #[derive(Resource, Default)]
 pub(crate) struct BattleFx {
     pub(crate) queue: Vec<Cast>,
     seed: u32,
+    /// ONE unit quad, shared by every burst ever spawned, sized through the transform.
+    ///
+    /// A `Rectangle::new(scale, scale)` per burst allocates a mesh asset per target per
+    /// cast — an all-enemy sweep on five bodies every turn, for the length of a fight.
+    /// The size is a transform, so there is no reason for it to be geometry.
+    quad: Option<Handle<Mesh>>,
 }
 
 impl BattleFx {
@@ -254,9 +286,16 @@ pub(crate) fn spawn_ability_fx(
     if fx.queue.is_empty() {
         return;
     }
+    let quad = fx
+        .quad
+        .get_or_insert_with(|| meshes.add(Rectangle::new(1.0, 1.0)))
+        .clone();
     let casts: Vec<Cast> = std::mem::take(&mut fx.queue);
     for cast in casts {
         let seed = fx.next_seed();
+        // ⚠️ A CAST WITH NO TARGETS IS STILL A CAST. `queue_boon` uses exactly that shape
+        // — wash, no bursts — so the target loop below must be allowed to do nothing and
+        // fall through to the wash rather than being guarded on a non-empty list.
         // A hit's size drives how big the burst draws — a scratch should not look like a
         // capstone. Floored well above zero so a 1-damage poke still reads.
         let scale = feel.fx_size * (0.7 + cast.power * 0.9);
@@ -276,9 +315,10 @@ pub(crate) fn spawn_ability_fx(
                     follow: target.clone(),
                     lift: feel.fx_height,
                 },
-                Mesh3d(meshes.add(Rectangle::new(scale, scale))),
+                Mesh3d(quad.clone()),
                 MeshMaterial3d(mat),
-                Transform::from_translation(tf.translation + Vec3::Y * feel.fx_height),
+                Transform::from_translation(tf.translation + Vec3::Y * feel.fx_height)
+                    .with_scale(Vec3::splat(scale)),
                 // The same billboarding every sprite in the arena uses, so an impact
                 // faces the player under any camera orbit.
                 crate::hd2d::Billboard,
@@ -401,6 +441,10 @@ pub(crate) fn react_to_conditions(
     let dt = time.delta_secs();
     for (s, mut tf) in &mut q {
         let want = match battle.view(&s.id) {
+            // A DOWNED body does not swell. Its boons are still on the wire — a Barrier
+            // does not clear because its holder fell — so without this a corpse keeps
+            // breathing at full size beside the fight it lost.
+            Some(c) if c.hp <= 0 => 1.0,
             Some(c) => {
                 // A BOON SWELLS. Barrier, Regen, Haste, Evasion and a fight-long attack
                 // buff all make the body read as larger — the DQ tell for "something was
@@ -448,6 +492,8 @@ pub(crate) fn react_to_conditions(
 pub(crate) fn reset_battle_fx(mut fx: ResMut<BattleFx>) {
     fx.queue.clear();
     fx.seed = 0;
+    // The shared quad is deliberately KEPT. It is one unit mesh with no per-fight state,
+    // and dropping it means re-uploading it at the first blow of the next battle.
 }
 
 #[cfg(test)]
@@ -579,6 +625,29 @@ mod tests {
         let a = fx.next_seed();
         let b = fx.next_seed();
         assert_ne!(a, b);
+    }
+
+    /// A party-wide mend lifts the SCREEN and throws no bursts — an impact shape over an
+    /// ally the healer just tended reads as the healer attacking them.
+    #[test]
+    fn a_party_wide_mend_washes_the_screen_and_hits_nobody() {
+        let mut fx = BattleFx::default();
+        queue_boon(&mut fx, 2);
+        assert!(fx.queue.is_empty(), "mending two heroes washed the screen");
+        queue_boon(&mut fx, 4);
+        let cast = fx.queue.first().expect("a party-wide mend did nothing at all");
+        assert!(cast.wide, "a party-wide mend did not reach the screen");
+        assert!(cast.targets.is_empty(), "a mend threw an impact at somebody");
+        // And it must stay quieter than a blow, or the loudest thing on screen is the
+        // healer rather than whatever is trying to kill you.
+        let mut hit = BattleFx::default();
+        queue_cast(&mut hit, Some(DamageType::Fire), &[("a".into(), 40, 100)]);
+        assert!(
+            cast.power < hit.queue[0].power,
+            "a mend ({}) is louder than a blow that took 40% of a hero ({})",
+            cast.power,
+            hit.queue[0].power
+        );
     }
 
     /// The queue must not survive the fight it belongs to: a cast queued on the frame the

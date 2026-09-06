@@ -196,6 +196,10 @@ pub(crate) fn mock_battle_setup(
     add(&mut battle, "h1", &["barrier:8", "regen:3"]);
 
     add(&mut battle, "h3", &["evasion:20"]);
+    // A FRENZIED creature, so the rage tint + swell have a subject in the fixture. It is
+    // the condition a player most needs to spot across the arena and the one that had no
+    // visual at all: `wight` reads red and stands larger than the boar beside it.
+    add(&mut battle, "wight", &["frenzied"]);
     // Grendel carries the Explorer's work too, so the new badges are screenshottable:
     // blazed by Trailblaze and distracted by Misdirection (the icon cycles through them).
     add(&mut battle, "grendel", &["poison", "burn", "marked", "distracted"]);
