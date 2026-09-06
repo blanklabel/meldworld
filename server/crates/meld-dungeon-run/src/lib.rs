@@ -82,6 +82,15 @@ fn cell_of(p: Position) -> Option<(usize, usize)> {
     Some((p.x as usize, p.y as usize))
 }
 
+/// How many presses of the activation log to keep (see `DungeonInstance::activate`).
+///
+/// A bound on memory, not a game rule, so it is a const rather than a `[TUNABLE]`: the log
+/// exists to answer `seq[…]`, authored sequences are a handful of emitters long, and
+/// consecutive presses of one emitter are deduped — so this is orders of magnitude more
+/// history than any authored lock can ask about. Oldest presses fall off, which can only
+/// ever cost a retry, never the dungeon.
+const ACTIVATION_LOG_CAP: usize = 64;
+
 /// A live dungeon subinstance.
 ///
 /// Holds the shared, mutable **puzzle state** (`active` emitters, `open` barriers),
@@ -100,6 +109,11 @@ pub struct DungeonInstance<'a> {
     /// Emitter ids that are active (lever flipped / plate held / key held / boss
     /// dead). Monotone — grows as the group progresses.
     active: HashSet<Id>,
+    /// The ORDER those emitters were triggered in, oldest first — what makes `seq[…]`
+    /// mean "step them in order" instead of "step them". A `HashSet` cannot answer that,
+    /// so before this a combination lock was just an `all[…]` wearing a promise.
+    /// Monotone alongside `active`: an id is pushed exactly once, when it first fires.
+    activation_order: Vec<Id>,
     /// Barrier ids (doors/gates) currently open. Monotone.
     open: HashSet<Id>,
     occupants: HashMap<String, Occupant>,
@@ -123,6 +137,7 @@ impl<'a> DungeonInstance<'a> {
             level,
             depth_step,
             active: HashSet::new(),
+            activation_order: Vec::new(),
             open: HashSet::new(),
             occupants: HashMap::new(),
             stair_links: build_stair_links(def),
@@ -144,7 +159,9 @@ impl<'a> DungeonInstance<'a> {
             return false;
         }
         match self.def.objects.get(id) {
-            Some(ObjectKind::Chest { when, .. }) => when.as_ref().is_none_or(|c| c.eval(&self.active)),
+            Some(ObjectKind::Chest { when, .. }) => {
+                when.as_ref().is_none_or(|c| c.eval_ordered(&self.active, Some(&self.activation_order)))
+            }
             _ => false,
         }
     }
@@ -361,8 +378,27 @@ impl<'a> DungeonInstance<'a> {
     /// or an already-active id.
     pub fn activate(&mut self, id: &str) -> Vec<Id> {
         let is_emitter = self.def.objects.get(id).is_some_and(|k| k.activates_on_reach());
-        if !is_emitter || self.active.contains(id) {
+        if !is_emitter {
             return Vec::new();
+        }
+        // ⚠️ AN ALREADY-ACTIVE EMITTER STILL COUNTS AS A PRESS, and it has to.
+        //
+        // This used to return early on `active.contains(id)`, which was invisible while
+        // `seq` meant `all` and became a SOFT-LOCK the moment ordering was enforced: a
+        // party that walked P3-P2-P1 could never produce P1-P2-P3 in the log, re-walking
+        // the plates did nothing, and a dungeon takes no Town Portal — so the only way
+        // out of a guessed-wrong combination would have been to die. A combination lock
+        // must be retryable.
+        //
+        // Repeating the SAME press is still a no-op, so standing on a plate and jiggling
+        // neither floods the log nor evicts an earlier press. That dedupe is what makes
+        // the cap below a safety net rather than something a player can walk into.
+        if self.activation_order.last().map(String::as_str) == Some(id) {
+            return Vec::new();
+        }
+        self.activation_order.push(id.to_string());
+        if self.activation_order.len() > ACTIVATION_LOG_CAP {
+            self.activation_order.remove(0);
         }
         self.active.insert(id.to_string());
         self.reeval()
@@ -406,7 +442,7 @@ impl<'a> DungeonInstance<'a> {
         for (id, kind) in &def.objects {
             if kind.is_barrier() && !self.open.contains(id) {
                 if let Some(c) = kind.condition() {
-                    if c.eval(&self.active) {
+                    if c.eval_ordered(&self.active, Some(&self.activation_order)) {
                         self.open.insert(id.clone());
                         opened.push(id.clone());
                     }
@@ -765,6 +801,97 @@ mod tests {
             "a field entrance must name a FOREST dungeon, got {:?}",
             roll.dungeon
         );
+    }
+
+    /// `seq[P1,P2,P3]` MEANS IN ORDER, and until now it meant nothing.
+    ///
+    /// `sunken_vault`'s G1 has advertised "step them in order" since DG-2 while
+    /// `Condition::eval`'s `Seq` arm was `all(active.contains)` and the runtime evaluated
+    /// through it against a `HashSet` — so every wrong order opened the gate.
+    #[test]
+    fn a_combination_lock_refuses_the_wrong_order() {
+        let def = desert();
+        let mut d = DungeonInstance::new(1, def, 100, 20);
+        d.activate("P3");
+        d.activate("P2");
+        d.activate("P1");
+        assert!(!d.is_open("G1"), "P3-P2-P1 is not the combination");
+        assert!(d.is_active("P1") && d.is_active("P2") && d.is_active("P3"), "all three ARE pressed");
+    }
+
+    #[test]
+    fn a_combination_lock_opens_on_the_right_order() {
+        let def = desert();
+        let mut d = DungeonInstance::new(1, def, 100, 20);
+        d.activate("P1");
+        assert!(!d.is_open("G1"), "one of three is not the combination");
+        d.activate("P2");
+        d.activate("P3");
+        assert!(d.is_open("G1"), "P1-P2-P3 is");
+    }
+
+    /// A WRONG GUESS MUST NOT SEAL THE PARTY IN. A dungeon takes no Town Portal, so a
+    /// lock you can fail permanently is a lock that kills a run — and that is exactly what
+    /// enforcing order would have shipped, because `activate` used to return early on an
+    /// already-active emitter: re-walking the plates changed nothing.
+    #[test]
+    fn a_combination_lock_is_retryable_after_a_wrong_guess() {
+        let def = desert();
+        let mut d = DungeonInstance::new(1, def, 100, 20);
+        for id in ["P2", "P1", "P3"] {
+            d.activate(id);
+        }
+        assert!(!d.is_open("G1"), "wrong order, still shut");
+        for id in ["P1", "P2", "P3"] {
+            d.activate(id);
+        }
+        assert!(d.is_open("G1"), "walking them again in order opens it");
+    }
+
+    /// Unrelated presses in between are fine — the log is matched as a SUBSEQUENCE, so a
+    /// party that detours to a lever mid-combination has not ruined it. (A stricter
+    /// suffix match would be more lock-like and far more opaque to a player who cannot
+    /// see the log.)
+    #[test]
+    fn a_detour_mid_combination_does_not_break_it() {
+        let def = desert();
+        let mut d = DungeonInstance::new(1, def, 100, 20);
+        d.activate("P1");
+        d.activate("L1"); // the floor's other lever, nothing to do with the gate
+        d.activate("P2");
+        d.activate("P3");
+        assert!(d.is_open("G1"));
+    }
+
+    /// Jiggling on one plate is ONE press: it must not flood the log or evict earlier
+    /// presses, or a player could walk themselves out of a combination by standing still.
+    #[test]
+    fn standing_on_a_plate_is_one_press_however_long_you_stand_there() {
+        let def = desert();
+        let mut d = DungeonInstance::new(1, def, 100, 20);
+        d.activate("P1");
+        for _ in 0..(ACTIVATION_LOG_CAP * 3) {
+            d.activate("P1");
+        }
+        d.activate("P2");
+        d.activate("P3");
+        assert!(d.is_open("G1"), "the P1 press survived the jiggling");
+    }
+
+    /// The gate keeps evaluating `seq` order-agnostically, and that is EXACT rather than a
+    /// concession: reachability there is monotone, so when the last element of a `seq`
+    /// becomes active every element is simultaneously reachable and a party could have
+    /// walked them in the authored order. Ordering can never make a dungeon unsolvable —
+    /// which is why every shipped dungeon still passes the build gate unchanged.
+    #[test]
+    fn ordering_never_decides_solvability() {
+        for d in meld_dungeon_content::all() {
+            assert!(
+                meld_dungeon_content::validate(d).is_empty(),
+                "{} stayed solvable when seq started meaning order",
+                d.name
+            );
+        }
     }
 
     // --- entrance placement ---

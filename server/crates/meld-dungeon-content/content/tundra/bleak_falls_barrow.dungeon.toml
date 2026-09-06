@@ -130,18 +130,13 @@ disarmable = true
 # the lever without the pillars is what fills the room with darts in the original; here the
 # gate simply does not move.
 #
-# ⚠️ THE ORDER IS AUTHORED INTENT AND IS NOT ENFORCED YET — by anything, anywhere.
-# `Condition::eval`'s `Seq` arm is `ids.iter().all(|id| active.contains(id))`, and the
-# RUNTIME evaluates barriers through that same `eval` against a `HashSet<Id>`
-# (`DungeonInstance::reeval`), so there is no activation order to compare against: today
-# `seq[P1,P2,P3]` means exactly `all[P1,P2,P3]`. DG-1's note ("ordering is a runtime
-# concern") reads as deferred, but the runtime shipped without it, so `sunken_vault` has
-# advertised "step them in order" since DG-2 and never once checked.
-#
-# Authored as `seq` anyway, on the same reasoning as `verdant_barrow`'s three-plate gate:
-# the authored requirement is the design, and it binds the moment ordering lands (record
-# the activation order beside `active` and give `Seq` a subsequence check that the
-# SOLVABILITY search keeps treating as "all present", since it does not model orderings).
+# The order is ENFORCED (`DungeonInstance::activation_order` + `Condition::eval_ordered`).
+# It was not when this dungeon was written: `Seq`'s arm was `all(active.contains)` and the
+# runtime evaluated barriers through it against a `HashSet`, so `seq[P1,P2,P3]` meant
+# exactly `all[P1,P2,P3]` and `sunken_vault` had advertised "step them in order" since
+# DG-2 without ever checking. Getting the combination wrong is RETRYABLE — walk the pillars
+# again in the right order — because a lock you can fail permanently would seal a party
+# into a space that takes no Town Portal.
 [gate.G1]
 when = "all[seq[P1,P2,P3], L1]"
 

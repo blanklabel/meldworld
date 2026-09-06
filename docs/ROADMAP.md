@@ -1624,6 +1624,81 @@ design for this epic: [`proposals/worldgen-wg.md`](proposals/worldgen-wg.md).
     spine, a river with a channel — and it must carry a guaranteed pass."* This also
     answers what should become of `dungeon_every`'s whole-section procedural dungeon: not
     "local" in some vague sense — it should become **the pass**.
+  - [x] **DG-9 — THE PROMISED VOCABULARY, MADE REACHABLE.** ✅ Two mechanics DG-1 and
+    DG-4 specced, whose engines shipped, and which no player could ever touch. Both were
+    found by surveying the genre's famous dungeons against what this engine can express.
+    - **`seq[…]` now means IN ORDER.** Its arm was `all(active.contains)` and the runtime
+      evaluated barriers through that same `eval` against a `HashSet<Id>` — a set has no
+      order — so "step the plates in order", which DG-1 calls first-class, was enforced
+      nowhere and `sunken_vault` had advertised it since DG-2 without checking.
+      `DungeonInstance::activation_order` + `Condition::eval_ordered` (subsequence match,
+      so a detour mid-combination is forgiven). **A wrong guess is retryable**: `activate`
+      used to return early on an already-active emitter, which was invisible while `seq`
+      meant `all` and would have been a SOFT-LOCK the moment order was enforced — a party
+      that guessed wrong could never re-press the plates, in a space that takes no Town
+      Portal. Consecutive presses of one emitter dedupe (so jiggling on a plate cannot
+      evict an earlier press) and the log is capped. The **solvability search keeps reading
+      `seq` order-agnostically, which is exact rather than a concession**: reachability
+      there is monotone, so when the last element goes active all of them are
+      simultaneously reachable and a party could have walked them in the authored order.
+      The one exception — `seq[P1,P1]`, unsatisfiable under press-dedupe and invisible to
+      an order-agnostic search — is now refused at build time.
+    - **A trap can be DISARMED.** `attempt_disarm` shipped with DG-4a and had **no call
+      site anywhere outside its own crate**, so every `disarmable = true` in every
+      authored dungeon was inert and a trap was a pure hazard, always. The Shifter's
+      trap-SENSE was then built, tuned and shipped on top of that gap — its own balance
+      comment frames it as serving "the Shifter's whole disarm advantage", an advantage
+      that had never once existed in play. Now `run.disarm_trap` → `disarm_dungeon_trap`,
+      on `[E]` beside every other thing you do by standing near it (a trap has no
+      competing action, so it needs no key of its own), reached from BESIDE the cell
+      because stepping on it is what springs it. The party's nimblest LIVING hero rolls,
+      with the Shifter bonus if a living Runner is along — class presence gating a
+      capability is the rule `perks_for` already uses — and Dex comes from `party_views`,
+      so it is the same derivation the party panel shows. **Failure springs the trap**
+      through the same `apply_trap_hit` a stepped-on one uses, so the durability tax and
+      the wipe path cannot drift. Autoplay is excluded: it must not gamble the party away.
+      `[worldgen] dungeon_disarm_dex_divisor` / `_shifter_bonus`.
+  - [ ] **DG-10 — THE MECHANICS THE FAMOUS DUNGEONS STILL WANT.** The rest of the survey.
+    Each of these blocks a specific, well-known dungeon, which is the argument for it:
+    - **`room_clear` + `spawn`** — *the whole MMO/raid family* (Deadmines' side rooms,
+      Scarlet Monastery, Karazhan). `room_clear` is in the DG-1 grammar with **no runtime
+      implementation at all** (zero references), and `spawn` is DG-4b. Together they are
+      also the only way to author a non-boss encounter: a dungeon can place a `Boss` and
+      nothing else, which is why `world_of_ruin` needs NINE bosses to make its playtime.
+      Highest value of anything left here.
+    - **Pushable blocks** — *the single most common puzzle in the genre*: Zelda top to
+      bottom, Pokémon's Victory Road, Sokoban rooms. Wants a `Block` object, a push rule
+      in movement, and a block HOLDING a momentary plate — which would also make the
+      existing co-op plate gates soloable the way Zelda does it. ⚠️ The cost is the
+      **solvability gate**: with blocks the search must explore block positions
+      (Sokoban is PSPACE-complete), so it needs a bounded push-aware BFS with a node cap,
+      and an over-approximation is NOT acceptable here — a gate that says "solvable" when
+      it isn't seals a party in.
+    - **`mover`** — *Sen's Fortress' rotating staircase, LttP's raising bridges.* ⚠️ **Its
+      substrate was DELETED**: DG-4b specs it as "reuses verticality's
+      `Terrain`/`Connector`/`level`", and `WG-11` stage 5 retired all of that (the grid,
+      the connectors, their wire fields). So this needs a new design, not an
+      implementation — the roadmap entry currently points at nothing.
+    - **`timer`** — *FF7's Temple of the Ancients clock room.* DG-4b, never built.
+    - **Non-monotone barriers** — *the real Water Temple*, where the water level rises
+      AND falls. Everything here assumes a barrier only ever opens; `water_temple` models
+      the three levels as three floors precisely because a monotone barrier can express a
+      level that only ever falls. ⚠️ Toggles would put the committed-space guarantee at
+      risk (the search would have to prove you can always still get OUT), so this is a
+      design decision before it is a feature.
+    - **`pedestal` as a real item sink** — *Resident Evil's crests and emblems.* It is in
+      the grammar as an "item sink" and is a walk-over emitter identical to a lever.
+    - **Teleporter tiles / one-way doors** — *Wizardry, Etrian Odyssey, Grimrock, Silph
+      Co.* Cheap: a `Stair` already links two cells, and validation is the only thing
+      insisting the endpoints sit on different floors.
+    - **Darkness needing a light source** — *Blackreach, Grimrock.* The Explorer's lantern
+      already exists on the overworld; nothing makes a dungeon floor dark.
+    - **A trap you already SPRUNG should stay visible to the party that found it.** Only
+      `shifter_trap_radius` ever puts a trap in the snapshot, so a party with no Runner
+      cannot see one — which means `DG-9`'s disarm is, in practice, gated on having a
+      Shifter along, and a party without one can step on the same armed trap twice with
+      nothing on screen to say it is there. Small, and it is the difference between "the
+      Shifter is better at traps" and "traps only exist for a Shifter".
 - [x] **WG-2 — Random starting biome (except the first run).** Every dive now starts
   in a random biome, *except* an account's very first dive — the gentle Forest-first
   onboarding (fixed biome order + centred area-0), gated on the persistent

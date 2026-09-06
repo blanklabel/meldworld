@@ -4583,6 +4583,18 @@ impl GameState {
                 self.apply_world_effects(eff);
                 out
             }
+            wr::DisarmTrap::TYPE => {
+                let req: Result<wr::DisarmTrap, _> = serde_json::from_value(raw.payload);
+                match (self.world.as_mut(), req) {
+                    (Some(w), Ok(r)) => w.disarm_dungeon_trap(player_id, &r.entity_id, raw.seq),
+                    (None, _) => {
+                        vec![error(player_id, ErrorCode::InvalidState, "Not in a run.", Some(raw.seq))]
+                    }
+                    (_, Err(_)) => {
+                        vec![error(player_id, ErrorCode::ValidationError, "bad disarm_trap", Some(raw.seq))]
+                    }
+                }
+            }
             wr::WatchBattle::TYPE => {
                 let (out, eff) = match self.world.as_mut() {
                     Some(w) => w.handle_watch_battle(player_id, raw),
@@ -9424,6 +9436,98 @@ impl WorldActor {
     /// DG-3b(3/n) C: loot a dungeon chest (`dchest-<id>`). Requires the player in the
     /// dungeon, standing by the chest, and its `when` satisfied (e.g. the boss dead).
     /// Rolled loot rides the dungeon's stamped distance (design §6); authored contents
+    /// DG-4: attempt to disarm the dungeon trap the avatar is standing on.
+    ///
+    /// ⚠️ **`attempt_disarm` shipped with DG-4a and had NO CALL SITE until this one.** So
+    /// every `disarmable = true` across every authored dungeon was inert — a trap was a
+    /// pure hazard you routed around, always — and the Shifter's trap-SENSE
+    /// (`shifter_trap_radius`, built and tuned) revealed rigged cells the party could do
+    /// nothing about. Its own balance comment framed it as serving "the Shifter's whole
+    /// disarm advantage", an advantage that had never existed in play.
+    ///
+    /// **Whose hands?** The party's nimblest LIVING hero, with the Shifter bonus if a
+    /// living Runner is along — class *presence* gating a capability is the same rule
+    /// `perks_for` already uses, and Dex comes from `party_views` so it is the identical
+    /// derivation the party panel shows rather than a second copy of it. A fallen hero
+    /// picks no locks.
+    ///
+    /// **Failure springs it** (design §5), through the same `apply_trap_hit` a stepped-on
+    /// trap uses — so the durability tax and the wipe path are shared and cannot drift.
+    fn disarm_dungeon_trap(&mut self, pid: &str, entity_id: &str, seq: u32) -> Vec<Outgoing> {
+        let trap_id = entity_id.strip_prefix("dtrap-").unwrap_or(entity_id).to_string();
+        let tick = self.tick_count;
+        let radius = self.balance.world.interaction_radius_tiles;
+        let (divisor, bonus) = (
+            self.balance.worldgen.dungeon_disarm_dex_divisor,
+            self.balance.worldgen.dungeon_disarm_shifter_bonus,
+        );
+        let Some((key, _)) = self.dungeon_of(pid) else {
+            return vec![error(pid, ErrorCode::InvalidState, "Not in a dungeon.", Some(seq))];
+        };
+        if self.battle_of_player(pid).is_some() {
+            return vec![error(pid, ErrorCode::InvalidState, "Resolve the battle first.", Some(seq))];
+        }
+        // The nimblest hero still standing, and whether one of those is a Runner.
+        let hp = self.hero_hp.get(pid).cloned().unwrap_or_default();
+        let alive = |slot: usize| hp.get(slot).is_none_or(|h| *h > 0);
+        let views = self.party_views(pid);
+        let dex = views
+            .iter()
+            .enumerate()
+            .filter(|(slot, _)| alive(*slot))
+            .map(|(_, v)| v.dex)
+            .max()
+            .unwrap_or(0);
+        // The ENUM, not the `class_key` string: a key rename would silently turn the
+        // Shifter's whole advantage back off, which is the failure mode this entire
+        // handler exists to undo.
+        let is_shifter = self.party_classes.get(pid).is_some_and(|cs| {
+            cs.iter().enumerate().any(|(slot, c)| alive(slot) && *c == CharacterClass::Shifter)
+        });
+        let outcome = {
+            let Some(d) = self.dungeons.get_mut(&key) else {
+                return vec![error(pid, ErrorCode::InvalidState, "Not in a dungeon.", Some(seq))];
+            };
+            let Some(occ) = d.occupant(pid) else {
+                return vec![error(pid, ErrorCode::InvalidState, "Not in a dungeon.", Some(seq))];
+            };
+            let Some(p) = d.def().placements.iter().find(|p| p.id == trap_id).cloned() else {
+                return vec![error(pid, ErrorCode::NotFound, "No such trap.", Some(seq))];
+            };
+            let cell = meld_dungeon_run::cell_center(p.x, p.y);
+            if occ.floor != p.floor || occ.pos.distance_to(&cell) > radius {
+                return vec![error(pid, ErrorCode::OutOfRange, "No trap in reach.", Some(seq))];
+            }
+            // ⚠️ THE TICK IS IN THE SEED, AND IT HAS TO BE. Seeding off only
+            // `(dungeon, trap, player)` reads like the right call — "the same party gets
+            // the same answer, so a trap is not a slot machine you re-pull" — and is
+            // actually a guaranteed-loss button: a failed roll SPRINGS the trap and leaves
+            // it armed, so pressing again reproduces the identical failure, forever, and
+            // `apply_trap_hit` can end the run. The tick makes each attempt a real
+            // re-roll, and the HP a failure costs is what stops it being spam. Still no
+            // wall-clock: `tick_count` is the world's own monotone clock, the same one
+            // `WG-11`'s Shift schedule replays from.
+            let s = d.key ^ hash_str(&trap_id) ^ hash_str(pid) ^ tick;
+            d.attempt_disarm(p.floor, cell, dex, is_shifter, divisor, bonus, s)
+        };
+        use meld_dungeon_run::DisarmOutcome;
+        match outcome {
+            // The snapshot only ever reveals an ARMED trap, so the marker clearing on the
+            // next tick IS the feedback — no new message needed to say it worked.
+            DisarmOutcome::Disarmed => Vec::new(),
+            DisarmOutcome::Sprung(hit) => self.apply_trap_hit(pid, &hit),
+            DisarmOutcome::NotDisarmable => {
+                vec![error(pid, ErrorCode::InvalidState, "This one cannot be disarmed — go around it.", Some(seq))]
+            }
+            DisarmOutcome::AlreadyDisarmed => {
+                vec![error(pid, ErrorCode::InvalidState, "Already disarmed.", Some(seq))]
+            }
+            DisarmOutcome::NotATrap => {
+                vec![error(pid, ErrorCode::NotFound, "No trap in reach.", Some(seq))]
+            }
+        }
+    }
+
     /// are granted verbatim. Reuses the run-backpack banking of `handle_open_chest`.
     fn open_dungeon_chest(&mut self, pid: &str, entity_id: &str, seq: u32) -> (Vec<Outgoing>, Vec<WorldEffect>) {
         // Dungeons out-reward open-world chests at equal distance (the risk premium).
