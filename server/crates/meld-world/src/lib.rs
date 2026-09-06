@@ -3202,6 +3202,48 @@ impl Arena {
     ///
     /// `force_biome` (the `MELD_BIOME` harness flag) still wins, so a single biome's maze
     /// can be loaded whole for inspection.
+    /// The biome a CELL carries, for anything that has to compare one cell against its
+    /// neighbour rather than ask about a point.
+    pub fn biome_of_cell(&self, c: meld_proto::regions::Cell) -> &'static str {
+        if let Some(b) = self.force_biome {
+            return b;
+        }
+        BIOMES[self.regions.biome_of(c, &self.biome_gate, &self.repaints)]
+    }
+
+    /// **A DENSITY BLENDS ACROSS A CELL EDGE; A DECISION DOES NOT** (`WG-11` stage 9).
+    ///
+    /// The ground already cross-fades at a boundary (`rg_edge` in the ground shader), so the
+    /// COLOUR wanders across it — while what GROWS there changed at a line: the prop thinning
+    /// read one cell's multiplier and its own comment said so, *"no transition width, no
+    /// neighbour lookup, no direction"*. A wood that stops dead against a desert is the square
+    /// surviving in the thing you walk through rather than in the thing you look at.
+    ///
+    /// ⚠️ **APPEARANCE BLENDS; DECISIONS STAY DISCRETE.** This blends only HOW MANY, never
+    /// WHICH: the kind of prop, the creature roster, a node's yield and the maze's own material
+    /// each still resolve to exactly one answer, because blending those gives half-desert
+    /// half-forest wildlife and a wall made of two materials at once.
+    ///
+    /// It is also what finally CONSUMES `regions::edge_distance`, whose own doc has said "this
+    /// is what a cross-fade needs" while nothing on this side of the wire called it — the
+    /// fourth feature this stage found built and unreachable.
+    fn blended_density(&self, world: Position, of: impl Fn(&str) -> f64, width: f64) -> f64 {
+        let here = of(self.biome_at(world));
+        if width <= 0.0 {
+            return here;
+        }
+        let (d, across) = self.regions.edge_distance(world.x as f32, world.y as f32);
+        let Some(nb) = across else { return here };
+        let there = of(BIOMES[self.regions.biome_of(nb, &self.biome_gate, &self.repaints)]);
+        // Weight peaks at HALF on the boundary itself, so both cells reach the same density
+        // there and the change is a gradient from either side rather than a step — the same
+        // shape, and the same reason, as the ground shader's own cross-fade.
+        let t = (d as f64 / width).clamp(0.0, 1.0);
+        let smooth = t * t * (3.0 - 2.0 * t);
+        let w = 0.5 * (1.0 - smooth);
+        here * (1.0 - w) + there * w
+    }
+
     pub fn biome_at(&self, p: Position) -> &'static str {
         if let Some(b) = self.force_biome {
             return b;
@@ -5293,8 +5335,16 @@ impl Arena {
                 if !standable_c(&Position::new(ox, oy)) {
                     continue;
                 }
+                // ⚠️ The KIND stays this cell's own — appearance blends, decisions do not.
                 let here = self.biome_in_corridor(Position::new(ox, oy));
-                if frng.unit() * maze_mult > biome_obstacle_mult(wg, here) {
+                let ow = if self.radial_half > 0.0 {
+                    radial_tf(Position::new(ox, oy), self.radial_half, self.corridor_lateral.max(1.0))
+                } else {
+                    Position::new(ox, oy)
+                };
+                let dens =
+                    self.blended_density(ow, |b| biome_obstacle_mult(wg, b), wg.biome_transition_width);
+                if frng.unit() * maze_mult > dens {
                     continue;
                 }
                 // ⚠️ **THE SIGNATURE FILL IS A BIOME'S FACE, AND IT HAD BECOME ITS WHOLE
