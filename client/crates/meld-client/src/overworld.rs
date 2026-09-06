@@ -1553,6 +1553,7 @@ pub(crate) fn sync_overworld_sprites(
     dungeon: Res<world_render::DungeonSceneRes>,
     mut q: Query<(Entity, &WorldEntity, &mut Transform)>,
 ) {
+    let _t = crate::world_render::Spike::new("sync_overworld_sprites");
     let Some(wa) = wa else { return };
     // Every water body in the snapshot, so a pool being spawned can tell whether its rim
     // is really a shore or just the middle of a larger mere (`blob_basin_mesh_merged`).
@@ -2238,6 +2239,7 @@ pub(crate) fn sync_chests(
     mut mats: ResMut<Assets<StandardMaterial>>,
     wa: Res<WorldAssets>,
 ) {
+    let _t = crate::world_render::Spike::new("sync_chests");
     use std::collections::HashSet;
     let mut present: HashSet<String> = HashSet::new();
     for (entity, ce) in &existing {

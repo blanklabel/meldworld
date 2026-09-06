@@ -2020,6 +2020,33 @@ pub(crate) struct Mote {
 }
 
 /// Deterministic hash of a world cell → 64 bits of stable per-cell randomness.
+/// **WHERE DOES A 3.7-SECOND FRAME GO?** Reported from play as "the overworld chugs", and this
+/// crate had no way to see a frame: every performance number in the repo is SERVER-side.
+/// Measured with `MELD_FPS=1`: forest median 33 ms, p90 425 ms, worst 3,732 ms — so the problem
+/// is HITCHES, not steady load, and an average hides them completely.
+///
+/// Prints only when a scope runs long, and only under the flag, so it costs an env read
+/// otherwise.
+pub(crate) struct Spike(&'static str, std::time::Instant, bool);
+
+impl Spike {
+    pub(crate) fn new(what: &'static str) -> Self {
+        Spike(what, std::time::Instant::now(), std::env::var("MELD_FPS").is_ok())
+    }
+}
+
+impl Drop for Spike {
+    fn drop(&mut self) {
+        if !self.2 {
+            return;
+        }
+        let ms = self.1.elapsed().as_secs_f64() * 1000.0;
+        if ms > 20.0 {
+            eprintln!("SPIKE {:<28} {ms:8.1} ms", self.0);
+        }
+    }
+}
+
 pub(crate) fn detail_hash(c: IVec2) -> u64 {
     let mut x = (c.x as u64)
         .wrapping_mul(0x9E37_79B9_7F4A_7C15)
@@ -2283,6 +2310,8 @@ pub(crate) fn tile_ground_detail(
         Without<Camera3d>,
     >,
 ) {
+    let _t = Spike::new("tile_ground_detail");
+
     let (Ok(cam), Some(kit)) = (cam_q.single(), kit) else { return };
     let focus = ground_focus(cam);
     // Height comes from `terrain_height`, which applies the `terrain_amp` flatten AND the

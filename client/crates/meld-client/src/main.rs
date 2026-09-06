@@ -89,6 +89,11 @@ fn default_window_mode() -> bevy::window::WindowMode {
     bevy::window::WindowMode::BorderlessFullscreen(bevy::window::MonitorSelection::Current)
 }
 
+/// Frame-time logging, on only when `MELD_FPS` is set — see the call site.
+fn fps_on() -> bool {
+    std::env::var("MELD_FPS").is_ok_and(|v| v != "0")
+}
+
 fn main() {
     raise_open_file_limit();
     // Self-contained build: boot the server in-process (in-memory DB, embedded
@@ -98,6 +103,22 @@ fn main() {
 
     let base = server_base();
     let mut app = App::new();
+    // ⚠️ **INSERTED ABOVE THE `#[cfg]`, NOT BELOW IT.** An attribute binds to the NEXT item, so
+    // a block dropped between `#[cfg(feature = "embedded-assets")]` and the statement it guards
+    // steals the gate and leaves the asset plugin unconditional — which only fails when the
+    // feature is OFF, i.e. in `make check` and not in the build you just ran.
+    if fps_on() {
+        // ⚠️ **`MELD_FPS=1` PRINTS FRAME TIME.** Reported from play as "the overworld chugs",
+        // and this crate had no way to see a frame at all: every performance number in the repo
+        // is SERVER-side (the tick, section generation), which says nothing about what the
+        // renderer is doing. Behind a flag because `LogDiagnosticsPlugin` prints every second.
+        app.add_plugins(bevy::diagnostic::FrameTimeDiagnosticsPlugin::default())
+            // Entity count too: unlike a timing, it does not care what else is running on the
+            // box — and "how many things are we drawing" is the first question about a frame.
+            .add_plugins(bevy::diagnostic::EntityCountDiagnosticsPlugin::default())
+            .add_plugins(bevy::diagnostic::LogDiagnosticsPlugin::default());
+    }
+
     // Serve every game asset from inside the binary (no `assets/` folder beside it,
     // and no file-descriptor storm from loading thousands of loose files). Gated on
     // `embedded-assets` — on for `make play`/`play-solo`/`dist`, OFF for `make
@@ -115,7 +136,18 @@ fn main() {
                         title: "MELDWORLD".to_string(),
                         // Open BIG: borderless-fullscreen so the world + sprites are
                         // readable; the resolution is the windowed fallback.
-                        resolution: (1280u32, 800u32).into(),
+                        // ⚠️ `MELD_WIN=640x400` shrinks the window — a fill-rate A/B. If a
+                        // frame is GPU-bound in the ground shader (which loops 16 ridges, 16
+                        // basins and 32 river nodes PER FRAGMENT), quartering the pixels
+                        // roughly halves the frame time; if it is CPU-bound, nothing moves.
+                        resolution: std::env::var("MELD_WIN")
+                            .ok()
+                            .and_then(|v| {
+                                let (w, h) = v.split_once('x')?;
+                                Some((w.parse::<u32>().ok()?, h.parse::<u32>().ok()?))
+                            })
+                            .unwrap_or((1280u32, 800u32))
+                            .into(),
                         mode: default_window_mode(),
                         ..default()
                     }),
@@ -124,6 +156,11 @@ fn main() {
         )
         .init_state::<Screen>()
         // The biome-blending ground material (see `GroundBiome`).
+        // ⚠️ **`MELD_FPS=1` PRINTS FRAME TIME.** Reported from play as "the overworld chugs",
+        // and this crate had no way to see a frame at all: every performance number in the repo
+        // is SERVER-side (the tick, section generation), which says nothing about what the
+        // renderer is doing. Behind a flag because `LogDiagnosticsPlugin` prints every second
+        // and nobody wants that in a normal session.
         .add_plugins(MaterialPlugin::<GroundMat>::default())
         // Standing water that is a mesh: the maze's pools and Last City's sea. The open
         // ocean is painted by the ground shader instead — out there the depth is analytic.
