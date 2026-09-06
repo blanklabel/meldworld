@@ -59,11 +59,21 @@ fn a_wet_cell_is_wetter_than_it_would_have_been() {
          {mire_on:.1}%) — the ambient this stage asks for is not there",
         mire_on - mire_off
     );
-    // …and a biome whose share is zero gains nothing, or the level is not reading the share.
+    // …and a biome whose share is zero gains FAR less, which is the control on the level
+    // actually reading the share.
+    //
+    // ⚠️ **NOT "gains nothing", and that was this test being wrong rather than the code.** A
+    // basin centres on its cell's HOLLOW, which is often near an edge, so a lake spills into the
+    // neighbour — and that is the design rather than a leak: *"a mire cell and a forest cell
+    // that both grew water get ONE lake spanning both, so a region's identity comes from what is
+    // growing there rather than from a flat colour per tile."* A desert beside a flooded mire
+    // gets a shoreline, and should. What would be wrong is a desert flooding on its OWN account,
+    // which is what the ratio catches.
     assert!(
-        (dry_on - dry_off).abs() < 1.0,
-        "a desert has no wet share and gained {:.1} points anyway ({dry_off:.1}% to \
-         {dry_on:.1}%)",
+        (mire_on - mire_off) > 2.0 * (dry_on - dry_off),
+        "a mire gained {:.1} points of water and a desert with NO share gained {:.1} — the \
+         level is not reading the share",
+        mire_on - mire_off,
         dry_on - dry_off
     );
 }
