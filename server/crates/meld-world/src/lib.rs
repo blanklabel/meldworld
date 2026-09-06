@@ -3949,6 +3949,7 @@ impl Arena {
         // placed — measured, **9 of 2768 creatures drowned** that way when only this section's
         // positions were checked.
         let mon0 = self.monsters.len();
+        let res0 = self.resources.len();
         // Where THIS section's ranges begin, so the unroutable fallback can truncate them.
         // ⚠️ It was `mut` while stage 7's repairs could delete a range from an EARLIER section
         // and shift everything above it down; the decided maze retired both of them, so
@@ -4128,6 +4129,10 @@ impl Arena {
         // differ from `wet` in ONE field — the water — and in nothing else.
         let (wet2_straits, wet2_lobes) = (sea.clone(), sea_lobes.clone());
         let (wet2_bridges, wet2_peaks) = (bridge_snap.clone(), wet_peaks.clone());
+        // A third copy, for the node re-validation after the walls go up. Same reasoning as
+        // `wet2_*`: it must differ from `wet` in the WATER and in nothing else.
+        let (wet3_straits, wet3_lobes) = (sea.clone(), sea_lobes.clone());
+        let (wet3_bridges, wet3_peaks) = (bridge_snap.clone(), wet_peaks.clone());
         // ⚠️ **A COMPANION SPOT MUST BE USABLE, NOT MERELY DRY.** `dry_companion` places every
         // retinue member, pack minion and end-fight peer by offset from its leader, avoiding
         // water — and water alone. A range raised earlier in the same section is just as
@@ -4283,6 +4288,59 @@ impl Arena {
         self.push_water_walls(balance, &water_walls, &creature_world);
         self.push_pass_parts(balance, &pass_mouths);
         self.push_minimaze(balance, start_x, end_x);
+
+        // ── `WG-11` stage 9: **PLACE FROM THE FINISHED GROUND, NOT FROM A SNAPSHOT OF IT.**
+        //
+        // Nodes are scattered near the top of this function — BEFORE the route, the boundary
+        // walls, the channels and the minimaze interiors — so all four can land where one is
+        // already standing. That is the shape of nearly every bug this arc has produced: a
+        // range in the sea, a creature drowned by a channel laid later, props culled by a range
+        // that rose after them. The portal is the one placement that never breaks, and the
+        // reason is that it is DERIVED from the route rather than checked against the ground.
+        //
+        // ⚠️ **RE-VALIDATED RATHER THAN MOVED, AND THE DIFFERENCE IS THE RNG STREAM.** Moving
+        // the scatter loop down here moves its DRAWS with it, and every draw after them shifts:
+        // the world re-rolls, and three unrelated tests went red on seeds whose props, roads and
+        // trail terrain had all moved. This crate documents that hazard as "retuning creature
+        // density moves every seeded world"; it is reached just as easily from the other end.
+        // So the roll keeps its place in the stream and only the VERDICT moves.
+        {
+            let (basins, rivers) = (self.basins.clone(), self.rivers.clone());
+            let (peaks, straits, lobes) = (wet3_peaks, wet3_straits, wet3_lobes);
+            let bridges = wet3_bridges;
+            let shore = move |w: &Position| -> bool {
+                meld_proto::coast::Shore {
+                    arc_half: bend_half as f32,
+                    terrain_off: toff_wet,
+                    peaks: &peaks,
+                    straits: &straits,
+                    lobes: &lobes,
+                    basins: &basins,
+                    rivers: &rivers,
+                    bridges: &bridges,
+                }
+                .is_ocean(w.x as f32, w.y as f32)
+            };
+            let obstacles: Vec<(Position, f64)> = self
+                .obstacles
+                .iter()
+                .map(|o| (self.to_world(o.position), o.radius))
+                .collect();
+            let stand = standable.clone();
+            let (bh, bl) = (bend_half, bend_lat);
+            self.resources.drain(res0..).collect::<Vec<_>>().into_iter().for_each(|n| {
+                let w = if bh > 0.0 { radial_tf(n.position, bh, bl) } else { n.position };
+                if shore(&w) || !stand(&w) {
+                    return;
+                }
+                // …and clear of everything now standing, which a node had never once asked
+                // about: a vein inside a tree is unharvestable, and one inside a wall is worse.
+                if obstacles.iter().any(|(p, r)| p.distance_to(&w) < r + 2.0) {
+                    return;
+                }
+                self.resources.push(n);
+            });
+        }
         let portal = if is_chain_end {
             *self.corridor_path.last().unwrap()
         } else {
