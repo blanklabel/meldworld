@@ -379,7 +379,30 @@ pub fn shared_boundary(grid: &Grid, a: Cell, b: Cell) -> Option<((f64, f64), (f6
 /// walled on one side grows a spur and a cell walled on three grows a lobed mass — and the
 /// union of neighbouring masses wanders, because it is a union of blobs rather than a line.
 /// Jittered from `(seed, cell)` so it is deterministic and does not sit on the centroid.
-pub fn cell_mass(grid: &Grid, m: &Maze, c: Cell, seed: u64) -> Option<(f64, f64, f64)> {
+/// ⚠️ **A MASS HAS NO RADIUS, AND THAT WAS THE DESIGN ERROR.** This returned `(x, y, reach)` —
+/// a disc — and a disc cannot express what stage 9 asks for. `reach` had to be the MINIMUM over
+/// the cell's walled neighbours or it would over-reach an OPEN boundary and seal a pass; being
+/// the minimum, it under-reached every neighbour but the nearest. Measured: **220 of 1312**
+/// walled pairs met. Sizing it to the neighbour's centroid instead of its mass was no better,
+/// and hid the shape problem behind a plausible-looking 75%.
+///
+/// The roadmap said the shape all along — *"a cell walled on three grows a LOBED mass"* — and a
+/// lobe is a union of capsules from the centre toward each walled neighbour, not a circle. So a
+/// mass is a POINT ([`mass_centre`]) and relief is the capsules BETWEEN masses across walled
+/// boundaries. Two cells' relief then meets by SHARING AN ENDPOINT rather than by a radius
+/// reaching far enough — one fewer number to get wrong, and the reason a disc could never
+/// satisfy both constraints at once.
+/// **WHERE A CELL'S RELIEF STANDS** — `WG-11` stage 9's primitive: a point in the cell's BODY.
+///
+/// `None` for a cell the maze walls on no side — nothing to express, so it stays open ground.
+///
+/// ⚠️ **IT SITS IN THE CELL, NEVER ON A BOUNDARY.** Stage 8 laid a wall as a capsule down the
+/// shared edge, which is why the survey map reads as straight mountain lines: a boundary is a
+/// statement about connectivity, not a place to put things. The centre is the cell's centroid
+/// pulled toward the boundaries it walls, so a cell walled on one side leans one way and one
+/// walled on three leans into all three — and relief drawn between neighbouring masses wanders,
+/// because it is a chain that bends at every cell instead of tracing the grid.
+pub fn mass_centre(grid: &Grid, m: &Maze, c: Cell, seed: u64) -> Option<(f64, f64)> {
     let walled: Vec<Cell> = grid
         .neighbours(c)
         .into_iter()
@@ -435,15 +458,6 @@ pub fn cell_mass(grid: &Grid, m: &Maze, c: Cell, seed: u64) -> Option<(f64, f64,
     }
     let (mx, my) = (mx, my);
 
-    // Reach: far enough to MEET the nearest walled neighbour's mass, which is half the way to
-    // its centre. Two masses across a walled boundary therefore touch by construction rather
-    // than by a radius anyone tuned.
-    let reach = walled
-        .iter()
-        .map(|n| {
-            let (nx, ny) = grid.centroid(*n);
-            0.5 * (mx - nx as f64).hypot(my - ny as f64)
-        })
-        .fold(f64::MAX, f64::min);
-    Some((mx, my, reach))
+    Some((mx, my))
 }
+
