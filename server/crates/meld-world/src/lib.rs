@@ -2882,6 +2882,24 @@ pub struct Arena {
     /// [`meld_proto::coast::RiverNode`]. A node marked `chain_start` begins a new chain, and
     /// the gap before it is a FORD.
     pub rivers: Vec<meld_proto::coast::RiverNode>,
+    /// ⚠️ **WHICH OF `rivers` IS A BOUNDARY CHANNEL RATHER THAN A RIVER.**
+    ///
+    /// `WallMaterial::Water` walls a cell boundary with a chain of `RiverNode`s, because that
+    /// is the primitive the shore field, the collision and both ground shaders already
+    /// understand — so a channel costs no new rendering, no new collision and no new wire
+    /// field. What it does cost is the WORD: a river is gradient descent from high ground to
+    /// the sea, and a channel is a wall that happens to be made of water. They cannot satisfy
+    /// each other's invariants, and they should not have to.
+    ///
+    /// Measured when the two were indistinguishable, all on seed 1: "an unbroken river chain of
+    /// 25 nodes — a stretch that long is a wall" (it IS a wall), and "a river climbs — 10.03 to
+    /// 10.58 … it cannot happen unless something other than gradient descent placed these
+    /// nodes" (something did). Both tests were right about rivers; neither was looking at one.
+    ///
+    /// Indices rather than a flag on the node itself: the node is a wire type mirrored into two
+    /// shaders, and a sentinel smuggled into one of its floats is exactly the sort of thing that
+    /// goes stale on the far side of a mirror.
+    pub channel_nodes: std::collections::BTreeSet<usize>,
     /// **THE REGION DECOMPOSITION** ([`meld_proto::regions`]) — this world's cells. A
     /// biome is a property of a CELL, not of a section, so the world is a patchwork rather
     /// than a set of concentric rings. Derived from the seed and `[region]`, so it costs
@@ -3388,6 +3406,7 @@ impl Arena {
             bent: false,
             basins: Vec::new(),
             rivers: Vec::new(),
+            channel_nodes: Default::default(),
             ridges: Vec::new(),
             bridges: Vec::new(),
             regions: meld_proto::regions::Grid {
@@ -6521,12 +6540,47 @@ impl Arena {
                 // `dist_to_path`. Props have a backstop; `self.rivers` has none.
                 let cp = self.corridorize(&at);
                 let route_pad = half + self.player_radius;
-                if occupied || !self.clear_of_routes(&cp, route_pad) || !self.on_land(at.x, at.y) {
+                // ⚠️ **THE SPAN, NOT THE NODE — for the THIRD time in this function.** The
+                // creature check learned it, the route check had not: `clear_of_routes` was
+                // asked about each node while `river_depth` draws a capsule between consecutive
+                // PAIRS, and nodes sit `water_wall_node_step` apart. So the trail could pass
+                // clean between two nodes and still be in the water — measured on seed 42, the
+                // route came within **1.18** of water while keeping its own 2.40 clearance,
+                // which `the_clear_path_crosses_at_an_isthmus_and_never_swims` reported as a
+                // wade the pathfinder never agreed to.
+                let spans_the_trail = match self.rivers.last() {
+                    Some(prev) if laid > 0 => {
+                        let a0 = Position::new(prev[0] as f64, prev[1] as f64);
+                        let steps = (a0.distance_to(&at).max(1.0)).ceil() as i32;
+                        (0..=steps).any(|k| {
+                            let f = k as f64 / steps as f64;
+                            let q = Position::new(
+                                a0.x + (at.x - a0.x) * f,
+                                a0.y + (at.y - a0.y) * f,
+                            );
+                            !self.clear_of_routes(&self.corridorize(&q), route_pad + half)
+                        })
+                    }
+                    _ => false,
+                };
+                if occupied
+                    || spans_the_trail
+                    // ⚠️ **CLEAR OF THE WATER'S EDGE, NOT OF ITS CENTRE LINE.** `route_pad`
+                    // is what the trail keeps from water; the channel spreads `half` either
+                    // side of these nodes, so asking for `route_pad` from the CENTRE leaves the
+                    // trail `route_pad - half` from the edge — which at 2.40 against a 3.2 half
+                    // width is inside the water. Measured on seed 42: the trail came within
+                    // 1.18 of water it was supposed to keep 2.40 from.
+                    || !self.clear_of_routes(&cp, route_pad + half)
+                    || !self.on_land(at.x, at.y)
+                {
                     // A break in the chain is a FORD, so an interruption here is not a hole in
                     // the wall — it is a crossing, which is exactly what the trail wants.
                     laid = 0;
                     continue;
                 }
+                // A channel is not a river — see `Arena::channel_nodes`.
+                self.channel_nodes.insert(self.rivers.len());
                 self.rivers.push([
                     at.x as f32,
                     at.y as f32,

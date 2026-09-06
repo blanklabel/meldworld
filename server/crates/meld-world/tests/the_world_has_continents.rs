@@ -289,13 +289,27 @@ fn a_river_runs_downhill_and_ends_at_the_sea_or_in_a_lake() {
         let (ox, oz) = a.terrain_offset();
         let h = |n: &[f32; 4]| meld_proto::terrain::height(n[0], n[1], ox, oz);
         // Split the flat node list back into chains.
+        // ⚠️ **A BOUNDARY CHANNEL IS NOT A RIVER.** `WallMaterial::Water` walls a cell
+        // boundary with the same `RiverNode` primitive — deliberately, because the shore field,
+        // the collision and both ground shaders already understand it — but it is a WALL made
+        // of water, not gradient descent from high ground to the sea. It cannot satisfy a
+        // river's invariants and should not have to: measured when the two were
+        // indistinguishable, this test reported "a river climbs — 10.03 to 10.58" and its
+        // neighbour "an unbroken chain of 25 nodes — a stretch that long is a wall". Both were
+        // right about rivers; neither was looking at one. `Arena::channel_nodes` is which.
         let mut chains: Vec<Vec<[f32; 4]>> = Vec::new();
-        for n in &a.rivers {
+        for (i, n) in a.rivers.iter().enumerate() {
+            if a.channel_nodes.contains(&i) {
+                // End whatever chain was running: a channel is not part of a river.
+                chains.push(Vec::new());
+                continue;
+            }
             if n[3] >= 0.5 || chains.is_empty() {
                 chains.push(Vec::new());
             }
             chains.last_mut().unwrap().push(*n);
         }
+        chains.retain(|c| !c.is_empty());
         for chain in &chains {
             rivers_seen += 1;
             // Downhill, node to node, within a tolerance for the finite-difference step.
@@ -343,11 +357,22 @@ fn a_river_long_enough_to_block_you_has_a_ford() {
         if a.rivers.is_empty() {
             continue;
         }
-        let chains = a.rivers.iter().filter(|n| n[3] >= 0.5).count();
+        // ⚠️ Channels excluded — a wall made of water is SUPPOSED to be an unbroken stretch;
+        // see the note in `a_river_runs_downhill_and_ends_at_the_sea_or_in_a_lake`.
+        let chains = a
+            .rivers
+            .iter()
+            .enumerate()
+            .filter(|(i, n)| n[3] >= 0.5 && !a.channel_nodes.contains(i))
+            .count();
         let longest = {
             let mut best = 0usize;
             let mut cur = 0usize;
-            for n in &a.rivers {
+            for (i, n) in a.rivers.iter().enumerate() {
+                if a.channel_nodes.contains(&i) {
+                    cur = 0;
+                    continue;
+                }
                 if n[3] >= 0.5 {
                     cur = 0;
                 }
