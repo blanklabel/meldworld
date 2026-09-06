@@ -1624,7 +1624,7 @@ maze_obstacle_mult = 2.0         # fallback for any unlisted biome
 # the SAME budget along the route network buys the density at no extra count at all. See
 # `WG-6` in docs/ROADMAP.md and docs/proposals/world-shape-and-exploration.md. [TUNABLE]
 maze_radial_scale_cap = 24.0     # max × `maze_fill_scale` can multiply an area's obstacle count
-biome_transition_width = 30.0    # world units over which density blends at a section edge
+biome_transition_width = 30.0    # world units over which prop density blends across a CELL boundary (`WG-11` stage 9). Was written for the retired section-edge blending and had NO consumer in code at all; a section is a radius ring, and the thing a player crosses is a cell edge. Appearance blends and decisions do not: this moves how MANY props stand there, never which KIND. [TUNABLE]
 obstacle_min_radius = 1.1        # smallest feature (a lone tree/rock) — chunky so fill reads as walls
 obstacle_max_radius = 2.8        # largest feature (a cliff/boulder)
 # WATER GETS ITS OWN RANGE, because a body of water has to be a BODY. Sharing the prop
