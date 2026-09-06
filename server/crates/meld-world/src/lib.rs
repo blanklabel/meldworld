@@ -2638,7 +2638,7 @@ fn wall_material(biome: &str, roll: f64) -> WallMaterial {
             // the maze rather than validating against a snapshot of terrain — so the fix
             // belongs there rather than as a fourth patch on the ordering.
             // `MELD_WATER_WALLS=1` reproduces all of it.
-            if std::env::var("MELD_WATER_WALLS").is_ok() && roll < 0.75 {
+            if roll < 0.75 {
                 WallMaterial::Water
             } else {
                 WallMaterial::Props
@@ -2882,6 +2882,24 @@ pub struct Arena {
     /// [`meld_proto::coast::RiverNode`]. A node marked `chain_start` begins a new chain, and
     /// the gap before it is a FORD.
     pub rivers: Vec<meld_proto::coast::RiverNode>,
+    /// ⚠️ **WHICH OF `rivers` IS A BOUNDARY CHANNEL RATHER THAN A RIVER.**
+    ///
+    /// `WallMaterial::Water` walls a cell boundary with a chain of `RiverNode`s, because that
+    /// is the primitive the shore field, the collision and both ground shaders already
+    /// understand — so a channel costs no new rendering, no new collision and no new wire
+    /// field. What it does cost is the WORD: a river is gradient descent from high ground to
+    /// the sea, and a channel is a wall that happens to be made of water. They cannot satisfy
+    /// each other's invariants, and they should not have to.
+    ///
+    /// Measured when the two were indistinguishable, all on seed 1: "an unbroken river chain of
+    /// 25 nodes — a stretch that long is a wall" (it IS a wall), and "a river climbs — 10.03 to
+    /// 10.58 … it cannot happen unless something other than gradient descent placed these
+    /// nodes" (something did). Both tests were right about rivers; neither was looking at one.
+    ///
+    /// Indices rather than a flag on the node itself: the node is a wire type mirrored into two
+    /// shaders, and a sentinel smuggled into one of its floats is exactly the sort of thing that
+    /// goes stale on the far side of a mirror.
+    pub channel_nodes: std::collections::BTreeSet<usize>,
     /// **THE REGION DECOMPOSITION** ([`meld_proto::regions`]) — this world's cells. A
     /// biome is a property of a CELL, not of a section, so the world is a patchwork rather
     /// than a set of concentric rings. Derived from the seed and `[region]`, so it costs
@@ -3226,6 +3244,13 @@ impl Arena {
     }
 
     /// The avatar's collision radius.
+    /// Is this world point blocked for a body of `pad` radius — terrain, props and structures
+    /// together, which is the ONE list `blocking_field` builds. A test asking anything else is
+    /// asking a different question than the mover does.
+    pub fn blocked_for_tests(&self, x: f64, z: f64, pad: f64) -> bool {
+        self.blockers().blocks(&Position::new(x, z), pad)
+    }
+
     pub fn player_radius_for_tests(&self) -> f64 {
         self.player_radius
     }
@@ -3381,6 +3406,7 @@ impl Arena {
             bent: false,
             basins: Vec::new(),
             rivers: Vec::new(),
+            channel_nodes: Default::default(),
             ridges: Vec::new(),
             bridges: Vec::new(),
             regions: meld_proto::regions::Grid {
@@ -4163,12 +4189,6 @@ impl Arena {
             }
         };
 
-        let usable = {
-            let wet = wet.clone();
-            let standable = standable.clone();
-            move |w: &Position| -> bool { wet(w) || !standable(w) }
-        };
-
         // Scatter harvestable resource nodes through the section (2D). What a node YIELDS
         // is the biome of the ground it stands on, so an ore vein and a reagent bed can sit
         // in the same band — which is what makes a crafter's node-sense worth having.
@@ -4262,6 +4282,7 @@ impl Arena {
         creature_world.extend(placed_world.iter().copied());
         self.push_water_walls(balance, &water_walls, &creature_world);
         self.push_pass_parts(balance, &pass_mouths);
+        self.push_minimaze(balance, start_x, end_x);
         let portal = if is_chain_end {
             *self.corridor_path.last().unwrap()
         } else {
@@ -4516,6 +4537,20 @@ impl Arena {
             }
         };
 
+        // ⚠️ **A COMPANION IS PLACED AGAINST THE SAME WATER ITS LEADER IS.** `dry_companion`
+        // — every pack minion, every rite's retinue, every end-fight peer — was handed
+        // `usable`, which is built on the SNAPSHOT. So a leader was tested against the water
+        // that exists and its minions against the water that existed earlier, and a minion
+        // could be dropped into a channel the leader had just been kept out of.
+        //
+        // That is the last of the drowned creatures (1 of 2757 on seed 424242, 1.3 units
+        // inside one) and it is the same bug as the other two, one layer down: a fact captured
+        // at one moment and consumed at another.
+        let usable_now = {
+            let standable = standable.clone();
+            let wet_now = wet_now.clone();
+            move |w: &Position| -> bool { wet_now(w) || !standable(w) }
+        };
         let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
         // ⚠️ **CREATURES DRAW FROM THEIR OWN STREAM.** Sharing the section's main `rng` with the
         // obstacles, terraces and chests below couples them: any world-generation edit changes
@@ -4667,7 +4702,7 @@ impl Arena {
                                 &mut erng,
                                 self.radial_half,
                                 self.corridor_lateral.max(1.0),
-                                &usable,
+                                &usable_now,
                             );
                             let j = self.monsters.len();
                             let bseed = erng.next_u64();
@@ -4729,7 +4764,7 @@ impl Arena {
                             &mut erng,
                             self.radial_half,
                             self.corridor_lateral.max(1.0),
-                            &usable,
+                            &usable_now,
                         );
                         let midx = self.monsters.len();
                         let mseed = erng.next_u64();
@@ -4817,7 +4852,7 @@ impl Arena {
                                 &mut erng,
                                 self.radial_half,
                                 self.corridor_lateral.max(1.0),
-                                &usable,
+                                &usable_now,
                             );
                             let midx = self.monsters.len();
                             let mseed = erng.next_u64();
@@ -6505,12 +6540,47 @@ impl Arena {
                 // `dist_to_path`. Props have a backstop; `self.rivers` has none.
                 let cp = self.corridorize(&at);
                 let route_pad = half + self.player_radius;
-                if occupied || !self.clear_of_routes(&cp, route_pad) || !self.on_land(at.x, at.y) {
+                // ⚠️ **THE SPAN, NOT THE NODE — for the THIRD time in this function.** The
+                // creature check learned it, the route check had not: `clear_of_routes` was
+                // asked about each node while `river_depth` draws a capsule between consecutive
+                // PAIRS, and nodes sit `water_wall_node_step` apart. So the trail could pass
+                // clean between two nodes and still be in the water — measured on seed 42, the
+                // route came within **1.18** of water while keeping its own 2.40 clearance,
+                // which `the_clear_path_crosses_at_an_isthmus_and_never_swims` reported as a
+                // wade the pathfinder never agreed to.
+                let spans_the_trail = match self.rivers.last() {
+                    Some(prev) if laid > 0 => {
+                        let a0 = Position::new(prev[0] as f64, prev[1] as f64);
+                        let steps = (a0.distance_to(&at).max(1.0)).ceil() as i32;
+                        (0..=steps).any(|k| {
+                            let f = k as f64 / steps as f64;
+                            let q = Position::new(
+                                a0.x + (at.x - a0.x) * f,
+                                a0.y + (at.y - a0.y) * f,
+                            );
+                            !self.clear_of_routes(&self.corridorize(&q), route_pad + half)
+                        })
+                    }
+                    _ => false,
+                };
+                if occupied
+                    || spans_the_trail
+                    // ⚠️ **CLEAR OF THE WATER'S EDGE, NOT OF ITS CENTRE LINE.** `route_pad`
+                    // is what the trail keeps from water; the channel spreads `half` either
+                    // side of these nodes, so asking for `route_pad` from the CENTRE leaves the
+                    // trail `route_pad - half` from the edge — which at 2.40 against a 3.2 half
+                    // width is inside the water. Measured on seed 42: the trail came within
+                    // 1.18 of water it was supposed to keep 2.40 from.
+                    || !self.clear_of_routes(&cp, route_pad + half)
+                    || !self.on_land(at.x, at.y)
+                {
                     // A break in the chain is a FORD, so an interruption here is not a hole in
                     // the wall — it is a crossing, which is exactly what the trail wants.
                     laid = 0;
                     continue;
                 }
+                // A channel is not a river — see `Arena::channel_nodes`.
+                self.channel_nodes.insert(self.rivers.len());
                 self.rivers.push([
                     at.x as f32,
                     at.y as f32,
@@ -6612,6 +6682,164 @@ impl Arena {
     /// it leaves is still wider than a party (`pass_part_min_gap`), measured across the mouth
     /// — a pass nobody fits through is a wall with a rumour of a door, which is the failure
     /// `ridge_pass_width` already exists to prevent one scale up.
+    /// **SOME CELLS ARE A MAZE INSIDE THE MAZE — and that is what a DUNGEON is** (`WG-11`
+    /// stage 9, owner's direction).
+    ///
+    /// A cell's interior is not always open ground. Giving some cells their own maze buys
+    /// **selective depth** — structure where it is interesting — instead of halving `ring_step`
+    /// again and paying for finer cells everywhere.
+    ///
+    /// ⚠️ **IT IS ALSO THE ANSWER TO THE DUNGEON QUESTION STAGE 8 BACKED OUT OF.**
+    /// `dungeon_every` made every Nth SECTION a dungeon, and a section IS a radius band — so a
+    /// dungeon was a RING of the world, the exact artifact `WG-11` exists to retire. A cell
+    /// whose interior is a maze is cell-scoped by construction. `balance.toml` has carried the
+    /// note *"KEEP AT 0 UNTIL A DUNGEON IS CELL-SCOPED… the roadmap already specs them as the
+    /// reward at the end of a DEAD-END CELL"* since then; this is that.
+    ///
+    /// ⚠️ **THE INTERIOR MUST CONNECT EVERY ONE OF THAT CELL'S OPEN BOUNDARIES.** The macro
+    /// maze guarantees the world is whole on the assumption that entering a cell means you can
+    /// cross it. An interior joining two of three passes and not the third voids that guarantee
+    /// and puts the world back to islands — the failure this whole arc exists to remove. It is
+    /// satisfied the way the macro maze satisfies it: a SPANNING TREE over the sub-cells. Every
+    /// sub-cell is in the tree, so every mouth's sub-cell is reachable from every other, by
+    /// construction rather than by a check afterwards.
+    fn push_minimaze(&mut self, balance: &Balance, start_x: f64, end_x: f64) {
+        let wg = &balance.worldgen;
+        if wg.minimaze_chance <= 0.0 || self.radial_half <= 0.0 || self.tutorial {
+            return;
+        }
+        let g = self.regions;
+        let arc_half = self.radial_half as f32;
+        let k = wg.minimaze_grid.max(2);
+        let ring_lo = g.ring_at(start_x as f32, 0.0);
+        let ring_hi = g.ring_at(end_x as f32, 0.0);
+        for ring in ring_lo..=ring_hi {
+            for sector in 0..g.sectors(ring) {
+                let c = meld_proto::regions::Cell::new(ring, sector);
+                if !crate::maze::cell_holds_land(&g, arc_half, c) {
+                    continue;
+                }
+                let (cx, cy) = g.centroid(c);
+                let cr = (cx as f64).hypot(cy as f64);
+                // Owned by its own centroid radius, so a cell two sections touch is furnished
+                // once. Same rule the pass mouths and the relief masses use.
+                if cr < start_x || cr >= end_x {
+                    continue;
+                }
+                // Seeded off the CELL, never off the section: a cell is one place whichever
+                // section reaches it first.
+                let mut rng = Rng(splitmix64(
+                    self.seed_base ^ (c.key() as u64).wrapping_mul(0x_D06E_00D0_6E00_D06E),
+                ));
+                if rng.unit() >= wg.minimaze_chance {
+                    continue;
+                }
+                // ── The interior: a k x k sub-grid in (radius, bearing), and a SPANNING TREE
+                // over it. Randomized DFS, which is the same uniform-ish carve the macro maze
+                // uses one scale up; every sub-cell ends up in the tree, which is what makes
+                // "every open boundary of this cell stays connected" true by construction.
+                let sp = g.span(c);
+                let (r0, r1) = (sp.inner as f64, sp.outer as f64);
+                let (b0, b1) = (sp.bear_lo as f64, sp.bear_hi as f64);
+                // Inset, so an interior wall never lands ON the cell's own boundary — that is
+                // the macro maze's business, and a piece there would narrow a pass this cell
+                // does not own.
+                let inset = wg.minimaze_inset.max(0.0);
+                let (ir0, ir1) = (r0 + inset, r1 - inset);
+                if ir1 - ir0 < 4.0 {
+                    continue;
+                }
+                let n = k * k;
+                let mut seen = vec![false; n];
+                let mut open_edges: std::collections::HashSet<(usize, usize)> =
+                    std::collections::HashSet::new();
+                let mut stack = vec![rng.below(n)];
+                seen[stack[0]] = true;
+                while let Some(&cur) = stack.last() {
+                    let (gr, gb) = (cur / k, cur % k);
+                    let mut nbrs: Vec<usize> = Vec::new();
+                    if gr > 0 { nbrs.push(cur - k) }
+                    if gr + 1 < k { nbrs.push(cur + k) }
+                    if gb > 0 { nbrs.push(cur - 1) }
+                    if gb + 1 < k { nbrs.push(cur + 1) }
+                    nbrs.retain(|x| !seen[*x]);
+                    if nbrs.is_empty() {
+                        stack.pop();
+                        continue;
+                    }
+                    let pick = nbrs[rng.below(nbrs.len())];
+                    seen[pick] = true;
+                    open_edges.insert((cur.min(pick), cur.max(pick)));
+                    stack.push(pick);
+                }
+                // Every sub-boundary the tree did NOT open is walled with the cell's own
+                // material — a dungeon in a wood is walled with trees, one in ashfall with
+                // rock, exactly as the macro walls are.
+                let kinds = obstacles_for_biome(self.biome_at(Position::new(cx as f64, cy as f64)));
+                let kind = kinds[rng.below(kinds.len())].to_string();
+                let radius = wg.obstacle_max_radius.max(1.0);
+                let dr = (ir1 - ir0) / k as f64;
+                let db = (b1 - b0) / k as f64;
+                for a in 0..n {
+                    let (gr, gb) = (a / k, a % k);
+                    for (bcell, along_radius) in
+                        [(a + k, true), (a + 1, false)]
+                    {
+                        if along_radius && gr + 1 >= k {
+                            continue;
+                        }
+                        if !along_radius && gb + 1 >= k {
+                            continue;
+                        }
+                        if open_edges.contains(&(a.min(bcell), a.max(bcell))) {
+                            continue;
+                        }
+                        // The shared edge between two sub-cells, walked at the piece spacing.
+                        let steps = (if along_radius { (ir0 + dr * (gr + 1) as f64) * db } else { dr }
+                            / (radius * 1.7))
+                            .ceil()
+                            .max(1.0) as i32;
+                        for t in 0..=steps {
+                            let f = t as f64 / steps as f64;
+                            let (rr, bb) = if along_radius {
+                                (ir0 + dr * (gr + 1) as f64, b0 + db * (gb as f64 + f))
+                            } else {
+                                (ir0 + dr * (gr as f64 + f), b0 + db * (gb + 1) as f64)
+                            };
+                            let at = Position::new(rr * bb.cos(), rr * bb.sin());
+                            // ⚠️ Never on the guaranteed route. The macro maze keeps the trail
+                            // feasible by construction; an interior piece is placed AFTER the
+                            // route is drawn and has to be refused from it the way every other
+                            // late scatter is.
+                            if !self.clear_of_routes(&self.corridorize(&at), radius) {
+                                continue;
+                            }
+                            if !self.on_land(at.x, at.y) {
+                                continue;
+                            }
+                            if self.monsters.iter().any(|x| self.to_world(x.position).distance_to(&at) < radius + 1.5)
+                                || self.chests.iter().any(|x| self.to_world(x.position).distance_to(&at) < radius + 1.5)
+                                || self.resources.iter().any(|x| self.to_world(x.position).distance_to(&at) < radius + 1.5)
+                            {
+                                continue;
+                            }
+                            // Stored CORRIDOR-side: `push_section` appends in the corridor
+                            // frame and the section bend runs afterwards, so a world position
+                            // stored here would be bent a second time — its x taken as a radius
+                            // and its y as an angle.
+                            self.obstacles.push(Obstacle {
+                                entity_id: format!("obs-mini-{}", self.obstacles.len()),
+                                kind: kind.clone(),
+                                position: self.corridorize(&at),
+                                radius,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     fn push_pass_parts(&mut self, balance: &Balance, mouths: &[PassMouth]) {
         let wg = &balance.worldgen;
         if mouths.is_empty() || wg.pass_part_chance <= 0.0 {
@@ -10109,9 +10337,16 @@ mod tests {
         /// `blocking_field`, so terrain closes a pocket exactly as a wall does.
         fn stand_somewhere_open(b: &Balance, a: &mut Arena, radius: f64, clearance: f64) -> bool {
             let lat = a.corridor_lateral();
-            for k in 0..400 {
-                let frac = -0.9 + 1.8 * (k as f64 / 400.0);
-                let p = bend_for_test(a, Position::new(radius, lat * frac));
+            // ⚠️ Sweep OUTWARD as well as sideways. This scanned ONE radius, so a band that
+            // happened to hold a minimaze interior — or any other deliberate wall — left the
+            // fixture nowhere to stand, and the walling tests failed as "no open ground at
+            // d200". That reads like a caging regression and is not one: a fixture that cannot
+            // find a spot is a fixture that did not look, and the world does not owe it one
+            // particular ring.
+            for k in 0..2400 {
+                let ring = (k / 400) as f64;
+                let frac = -0.9 + 1.8 * ((k % 400) as f64 / 400.0);
+                let p = bend_for_test(a, Position::new(radius + ring * 30.0, lat * frac));
                 if a.obstacles.iter().any(|o| o.position.distance_to(&p) < clearance + o.radius) {
                     continue;
                 }
@@ -13256,6 +13491,11 @@ mod tests {
                         // fill — and the instrument looking at the wrong population.
                         !o.entity_id.starts_with("obs-wall-")
                             && !o.entity_id.starts_with("obs-pass-")
+                            // …and a MINIMAZE interior, for the same reason and by the same
+                            // rule: it is placed to block, not strewn. Counting it took the
+                            // vacuity check's uncompensated deep ring to 23.5-tile spacing,
+                            // which is this comment's own failure mode with a third source.
+                            && !o.entity_id.starts_with("obs-mini-")
                     })
                     .filter(|o| {
                         let r = o.position.x.hypot(o.position.y);
@@ -14439,6 +14679,11 @@ mod tests {
                         // fill — and the instrument looking at the wrong population.
                         !o.entity_id.starts_with("obs-wall-")
                             && !o.entity_id.starts_with("obs-pass-")
+                            // …and a MINIMAZE interior, for the same reason and by the same
+                            // rule: it is placed to block, not strewn. Counting it took the
+                            // vacuity check's uncompensated deep ring to 23.5-tile spacing,
+                            // which is this comment's own failure mode with a third source.
+                            && !o.entity_id.starts_with("obs-mini-")
                     })
                     .filter(|o| {
                         let r = o.position.x.hypot(o.position.y);

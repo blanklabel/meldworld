@@ -2637,6 +2637,13 @@ Make time in the field a living, dangerous place worth screenshotting.
       low ground (a noise threshold puts ponds on hillsides) and a mire beside a forest gets a
       shore that wanders instead of a cell-edge ring. It is the AMBIENT the coalesced channels
       structure, not a replacement for them.
+    - ✅ **DONE — water walls are LIVE**, and mass-to-mass for free (a channel shares the same
+      spine a range does, so stage 9's shape change covered both). What had kept them gated was
+      a drowned creature, and the last of THREE causes was `dry_companion`: every pack minion,
+      rite retinue and end-fight peer was placed against the SNAPSHOT while its leader was
+      placed against the current water — so a minion could be dropped into a channel the leader
+      had just been kept out of. All three were the same bug one layer apart: a fact captured
+      at one moment and consumed at another.
     - ⚠️ **AND `the_mire_is_the_wettest_biome` BEING ~8-14% IS THE CHOSEN OUTCOME, NOT A GAP.**
       Stage 8 carried it as unfinished work for a while on the strength of the struck
       "water as ground" idea. Walls-only was picked deliberately; the swamp reads as a maze you

@@ -1169,6 +1169,9 @@ pub struct WorldGen {
     pub area_count: usize,
     /// Dungeons (WG-1): every Nth procedural section is a dungeon (0 = disabled).
     pub dungeon_every: usize,
+    pub minimaze_chance: f64,
+    pub minimaze_grid: usize,
+    pub minimaze_inset: f64,
     pub dungeon_rooms: usize,
     pub dungeon_creature_mult: f64,
     pub dungeon_wall_radius: f64,

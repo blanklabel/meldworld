@@ -1455,6 +1455,9 @@ area_count = 8                   # how many areas to pre-generate for the instan
 # Until then the world simply has no ring-dungeons, and that is strictly better than a quarter
 # of it being a branchless band with a broken wall across it.
 dungeon_every = 0                # 0 disables dungeons; else every Nth SECTION (i>0) is one. ⚠️ **KEEP AT 0 UNTIL A DUNGEON IS CELL-SCOPED.** A section IS a radius band, so any non-zero value makes whole RINGS of the world a dungeon — the exact ring-world artifact `WG-11` exists to retire, and `no_ring_of_the_world_is_a_dungeon_and_none_is_branchless` fails on it (it did: set to 6, seed 1 went red). Re-enabling dungeons is real work, not this dial: the roadmap already specs them as the reward at the end of a DEAD-END CELL. [TUNABLE]
+minimaze_chance = 0.18           # chance a land cell's INTERIOR is its own maze — `WG-11` stage 9's dungeon, and what `dungeon_every` could never be: a section IS a radius band, so that made a whole RING of the world a dungeon. Keep it low; a minimaze is SELECTIVE depth, and a world where every cell is one is just a finer grid paid for everywhere. [TUNABLE]
+minimaze_grid = 3                # sub-cells per axis inside a minimaze cell (k x k, radius x bearing). At `cell_width` 125 a 3x3 gives roughly 40-unit rooms. [TUNABLE]
+minimaze_inset = 8.0             # world units held clear inside the cell's own boundary, so an interior wall never lands ON a boundary the MACRO maze owns — a piece there would narrow a pass this cell does not decide. [TUNABLE]
 dungeon_rooms = 3                # rooms per dungeon (this many − 1 internal divider walls)
 dungeon_creature_mult = 1.9      # creature density multiplier inside a dungeon
 dungeon_wall_radius = 1.1        # radius of each obstacle in a divider wall

@@ -354,3 +354,48 @@ fn a_range_never_blocks_a_pass() {
          either being wrong alone"
     );
 }
+
+/// **A MINIMAZE IS ACTUALLY BUILT** (`WG-11` stage 9).
+///
+/// A cell's interior is not always open ground: some hold their own maze, which is what a
+/// DUNGEON is now that `dungeon_every` is retired (a section IS a radius band, so that made a
+/// whole ring of the world a dungeon — the artifact this arc exists to remove).
+///
+/// ⚠️ This asserts EXISTENCE, and that is deliberate. Whether an interior seals anything is a
+/// question about walkable ground, and it cannot be answered per-cell any more: since stage 9
+/// grows walls MASS TO MASS they cross cell interiors, so a cell is divided into slices by the
+/// macro maze whatever its interior does. `routable_is_not_explorable` asks the question that
+/// actually matters — can the hub reach the world's ground — and counts these pieces among the
+/// deliberate walls, so an interior that sealed its cell shows up there.
+///
+/// It is here because a feature with no instances passes every test it has: this stage has
+/// already shipped bridges that were never built and inland water the client never drew.
+#[test]
+fn a_minimaze_is_actually_built() {
+    let b = Balance::load_default().unwrap();
+    for seed in [1u64, 42, 424242] {
+        let mut a = Arena::generate(&b, seed, false);
+        let mut reach = 0.0f64;
+        while reach < 700.0 {
+            reach += 60.0;
+            a.ensure_frontier(&b, reach);
+        }
+        let g = a.regions();
+        let mut cells: Vec<u32> = Vec::new();
+        let mut pieces = 0usize;
+        for o in a.obstacles.iter().filter(|o| o.entity_id.starts_with("obs-mini-")) {
+            pieces += 1;
+            let k = g.cell_at(o.position.x as f32, o.position.y as f32).key();
+            if !cells.contains(&k) {
+                cells.push(k);
+            }
+        }
+        println!("seed {seed}: {pieces} minimaze pieces across {} cells", cells.len());
+        assert!(
+            cells.len() >= 5,
+            "seed {seed}: only {} cells hold a minimaze — a dungeon nobody can find is a \
+             feature with no instances",
+            cells.len()
+        );
+    }
+}
