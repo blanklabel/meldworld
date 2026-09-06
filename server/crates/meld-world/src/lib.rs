@@ -2676,6 +2676,14 @@ pub struct PropWall {
 /// Deferred, a channel asks `clear_of_routes` like everything else in that group, so the
 /// causeway through a flooded cell IS the guaranteed route — dry by construction rather than
 /// by luck.
+/// A relief mass rounded to a tenth of a unit, so two channels of the same cell — which end at
+/// the same mass but arrive through f64 arithmetic — hash to one key.
+pub type MassKey = (i64, i64);
+
+/// One end of a water wall: where the mass is, how many channels meet there, and the distance
+/// to the nearest of their far ends (which is what sizes a lake that coalesces there).
+pub type WaterWallEnd = (Position, usize, f64);
+
 pub struct WaterWall {
     pub a: Position,
     pub b: Position,
@@ -2878,6 +2886,23 @@ pub struct Arena {
     /// [`meld_proto::coast::Basin`]. The NAME is emergent (size, slope, biome, adjacency),
     /// which is why the primitive has no `kind`.
     pub basins: Vec<meld_proto::coast::Basin>,
+    /// **WATER-WALL ENDPOINTS SEEN SO FAR** — `(mass, how many channels meet there, the
+    /// distance to the nearest of their far ends)`, keyed to a tenth of a unit.
+    ///
+    /// ⚠️ **A CELL'S BOUNDARIES ARE EMITTED BY DIFFERENT SECTIONS, so coalescence cannot be a
+    /// per-section sweep.** A section walls only the piece inside its own radius band while a
+    /// cell spans several, so one section's wall list rarely holds two of a cell's channels and
+    /// never three — measured, a per-section version produced **zero** lakes on five seeds while
+    /// every one of its guards passed, because the cluster it looks for cannot exist inside one
+    /// call. Same ownership error the pass mouths made one stage ago, where a boundary recorded
+    /// by the section holding its capsule counted 3-5 mouths in a world holding dozens.
+    ///
+    /// Accumulated on the ARENA instead, so a cell coalesces the moment its third channel is
+    /// laid, whichever section lays it.
+    pub water_wall_ends: std::collections::HashMap<MassKey, WaterWallEnd>,
+    /// Which of those have already become a lake, so a fourth channel does not stack a second
+    /// basin on the first.
+    pub coalesced: std::collections::HashSet<MassKey>,
     /// **Flowing inland water** — rivers and creeks, as chains of
     /// [`meld_proto::coast::RiverNode`]. A node marked `chain_start` begins a new chain, and
     /// the gap before it is a FORD.
@@ -3405,6 +3430,8 @@ impl Arena {
             lobes: Vec::new(),
             bent: false,
             basins: Vec::new(),
+            water_wall_ends: Default::default(),
+            coalesced: Default::default(),
             rivers: Vec::new(),
             channel_nodes: Default::default(),
             ridges: Vec::new(),
@@ -4285,6 +4312,7 @@ impl Arena {
         let mut creature_world: Vec<Position> =
             self.monsters[..mon0].iter().map(|m| m.position).collect();
         creature_world.extend(placed_world.iter().copied());
+        self.coalesce_lakes(balance, &water_walls);
         self.push_water_walls(balance, &water_walls, &creature_world);
         self.push_pass_parts(balance, &pass_mouths);
         self.push_minimaze(balance, start_x, end_x);
@@ -6520,6 +6548,96 @@ impl Arena {
     /// props the hazard is that A* ignores them and walks through; for water it is the mirror
     /// — A* avoids water, so a channel laid first pushes the trail around, and dense enough
     /// channels make a section unroutable outright.
+    /// **A CLUSTER OF WATER BOUNDARIES COALESCES INTO A LAKE** (`WG-11` stage 9).
+    ///
+    /// The landform is DISCOVERED rather than drawn. The maze says which boundaries are walls
+    /// and `wall_material` says a mire walls with water; what shape that makes is then a
+    /// property of how they fall together — a LINE of water boundaries is a river, and a
+    /// CLUSTER of them is a lake. Nothing places a lake.
+    ///
+    /// ⚠️ **AND THE CLUSTER NEEDS NO NEW BOOKKEEPING, BECAUSE A WALL ALREADY RUNS MASS TO
+    /// MASS.** Every channel of a cell ends at that cell's own mass, so "this cell is walled
+    /// with water on three sides" is just "this point is an endpoint of three water walls".
+    /// That is the second thing the mass primitive paid for after the wandering ranges, and it
+    /// is why coalescence is a sweep over what exists instead of a system beside it.
+    ///
+    /// ⚠️ **THE ISLAND COMES FREE AND IS THE REASON THIS SHAPE IS RIGHT.** The maze guarantees
+    /// no cell has degree 0, so a wholly sealed island cannot happen — but a DEGREE-1 cell can,
+    /// and that is a dead end. A dead end in a flooded region is an island reached by one ford,
+    /// with whatever the dead end was already going to hold sitting on it. Nobody places that
+    /// either.
+    fn coalesce_lakes(&mut self, balance: &Balance, walls: &[WaterWall]) {
+        let wg = &balance.worldgen;
+        if walls.is_empty() || wg.lake_boundary_min == 0 {
+            return;
+        }
+        // Endpoints, to ~0.1 of a unit — two channels of the same cell share its mass exactly,
+        // but they arrive here as f64 arithmetic and a key has to tolerate that.
+        let key = |p: &Position| -> MassKey {
+            ((p.x * 10.0).round() as i64, (p.y * 10.0).round() as i64)
+        };
+        for w in walls {
+            for (here, there) in [(w.a, w.b), (w.b, w.a)] {
+                let e = self
+                    .water_wall_ends
+                    .entry(key(&here))
+                    .or_insert((here, 0, f64::MAX));
+                e.1 += 1;
+                e.2 = e.2.min(here.distance_to(&there));
+            }
+        }
+        let ends: Vec<(MassKey, WaterWallEnd)> = self
+            .water_wall_ends
+            .iter()
+            .filter(|(k, (_, n, _))| *n >= wg.lake_boundary_min && !self.coalesced.contains(*k))
+            .map(|(k, v)| (*k, *v))
+            .collect();
+        let route_pad = self.path_clear_radius + self.player_radius;
+        for (k, (at, _count, nearest)) in ends {
+            self.coalesced.insert(k);
+            // The lake fills the cell and stops short of its neighbours' masses, so two
+            // adjacent lakes read as two lakes rather than one sheet.
+            // ⚠️ **SHRINK TO FIT; DO NOT REFUSE.** A cell's mass sits near the middle of a
+            // 125-unit cell and the guaranteed trail runs through the world, so a lake sized to
+            // fill its cell is very often within its own radius of the trail — and refusing on
+            // that basis rejected EVERY candidate on five seeds while every guard read as
+            // working. `push_water` already had the answer for its own basins: walk the radius
+            // down until the body fits, and give up only when what is left is too small to be a
+            // lake at all.
+            let mut radius = (nearest * 0.45).min(wg.basin_radius_max);
+            // ⚠️ **A POND IS A SMALL LAKE, NOT A FAILED ONE.** This floored at
+            // `basin_radius_min * 0.5` (22.5) and every candidate on every seed shrank past it
+            // — measured at radius 11-18 once the trail and the peaks had taken their clearance
+            // — so coalescence produced nothing at all while each of its guards read as
+            // working. `coast`'s own header settles it: pond, lake, bog, marsh, lagoon and oasis
+            // are ONE mechanism and "size separates a pond from a lake". 12 units of standing
+            // water in a mire is a pond, which is a landform; refusing to place it is not.
+            let floor = 12.0f64;
+            while radius >= floor
+                && (!self.clear_of_peaks(at, radius)
+                    || !self.clear_of_routes(&self.corridorize(&at), radius + route_pad))
+            {
+                radius -= 6.0;
+            }
+            // A "lake" overlapping the ocean is just the ocean, and the fold would hide it.
+            if radius < floor || self.shore().sea(at.x as f32, at.y as f32) >= 0.0 {
+                continue;
+            }
+            let cur = meld_proto::terrain::height(
+                at.x as f32,
+                at.y as f32,
+                self.terrain_off.0,
+                self.terrain_off.1,
+            ) as f64;
+            self.basins.push([
+                at.x as f32,
+                at.y as f32,
+                radius as f32,
+                (cur + wg.basin_fill) as f32,
+            ]);
+        }
+    }
+
     fn push_water_walls(
         &mut self,
         balance: &Balance,
