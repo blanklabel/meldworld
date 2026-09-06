@@ -7519,6 +7519,7 @@ impl Arena {
     }
 
     fn astar_route(&self, entry: Position, exit_target: Position) -> Vec<Position> {
+
         use std::cmp::Reverse;
         use std::collections::{BinaryHeap, HashMap};
         // Fine grid: the cliff RING (steep transition) is only ~2u thick, so a coarse
@@ -7652,7 +7653,68 @@ impl Arena {
         // samples its edges at ~1 world unit, so a graze narrower than that slips between
         // samples and the party swims a stride. Padding closes it by construction rather than
         // by sampling finer, which would only move the threshold.
-        let dry = |x: f32, z: f32| shore.water(x, z) < -(route_pad as f32);
+        // ⚠️ **THE RIVER LIST IS INDEXED, BECAUSE `dry` WALKS IT ON EVERY SAMPLE.**
+        // `Shore::water` maxes `river_depth` over every node it is given, and stage 9's water
+        // walls added hundreds: measured at d1200, **344-433** nodes in the band, re-walked for
+        // each of A*'s samples. A* was **1,531 ms of an 1,881 ms section** — 81% — against a
+        // 100 ms authoritative tick.
+        //
+        // A segment only matters within `half + route_pad` of the point (its depth is
+        // `half - d`), so bucketing segments by position and asking only the neighbouring cells
+        // returns the SAME answer — and it returns it through the same `Shore`, so there is no
+        // second copy of the rule to go stale. That is the difference between an index and a
+        // reimplementation.
+        let segs: Vec<[meld_proto::coast::RiverNode; 2]> = near_rivers
+            .windows(2)
+            .filter(|w| w[1][3] < 0.5 && (w[0][2] + w[1][2]) > 0.0)
+            .map(|w| [w[0], w[1]])
+            .collect();
+        let seg_reach = segs
+            .iter()
+            .map(|s| (s[0][2] + s[1][2]) * 0.5)
+            .fold(0.0f32, f32::max)
+            + route_pad as f32
+            + 2.0;
+        let seg_cell = (seg_reach * 2.0).max(8.0);
+        let mut seg_grid: std::collections::HashMap<(i32, i32), Vec<u32>> =
+            std::collections::HashMap::new();
+        for (i, sg) in segs.iter().enumerate() {
+            let (x0, x1) = (sg[0][0].min(sg[1][0]) - seg_reach, sg[0][0].max(sg[1][0]) + seg_reach);
+            let (z0, z1) = (sg[0][1].min(sg[1][1]) - seg_reach, sg[0][1].max(sg[1][1]) + seg_reach);
+            let (cx0, cx1) = ((x0 / seg_cell).floor() as i32, (x1 / seg_cell).floor() as i32);
+            let (cz0, cz1) = ((z0 / seg_cell).floor() as i32, (z1 / seg_cell).floor() as i32);
+            for cx in cx0..=cx1 {
+                for cz in cz0..=cz1 {
+                    seg_grid.entry((cx, cz)).or_default().push(i as u32);
+                }
+            }
+        }
+        let scratch: std::cell::RefCell<Vec<meld_proto::coast::RiverNode>> =
+            std::cell::RefCell::new(Vec::new());
+        let dry = |x: f32, z: f32| -> bool {
+            let mut sc = scratch.borrow_mut();
+            sc.clear();
+            let (cx, cz) = ((x / seg_cell).floor() as i32, (z / seg_cell).floor() as i32);
+            for dx in -1..=1 {
+                for dz in -1..=1 {
+                    let Some(v) = seg_grid.get(&(cx + dx, cz + dz)) else { continue };
+                    for &i in v {
+                        // Each segment is handed over as its own CHAIN: the first node carries
+                        // the break flag, so `river_depth`'s `windows(2)` skips the join to the
+                        // previous segment and takes this pair. Overlaps between neighbouring
+                        // cells are harmless — the depth is a max.
+                        let sg = segs[i as usize];
+                        let mut a = sg[0];
+                        a[3] = 1.0;
+                        sc.push(a);
+                        sc.push(sg[1]);
+                    }
+                }
+            }
+            let mut sh = shore;
+            sh.rivers = &sc;
+            sh.water(x, z) < -(route_pad as f32)
+        };
         let walk = |c: (i64, i64)| -> bool {
             let w = radial_tf(Position::new(c.0 as f64 * CELL, c.1 as f64 * CELL), half, lat);
             routable(w.x as f32, w.y as f32) && dry(w.x as f32, w.y as f32)
