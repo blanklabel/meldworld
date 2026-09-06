@@ -1170,6 +1170,12 @@ pub struct WorldGen {
     /// Dungeons (WG-1): every Nth procedural section is a dungeon (0 = disabled).
     pub dungeon_every: usize,
     pub lake_boundary_min: usize,
+    pub wet_share_mire: f64,
+    pub wet_share_forest: f64,
+    pub wet_share_field: f64,
+    pub wet_share_tundra: f64,
+    pub wet_share_ashfall: f64,
+    pub wet_share_desert: f64,
     pub minimaze_chance: f64,
     pub minimaze_grid: usize,
     pub minimaze_inset: f64,
