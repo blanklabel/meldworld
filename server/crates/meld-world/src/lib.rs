@@ -3633,6 +3633,40 @@ impl Arena {
 
     fn drown_proof(&mut self, lo: f64, hi: f64) {
         let reach = 48.0f64;
+        // ⚠️ **A RESCUE MUST OBEY THE RULES THE CREATURE WAS PLACED UNDER.** Moving a body to
+        // the nearest dry ground broke two of them at once:
+        //
+        // - **Its RADIUS is its difficulty.** `tinder_wolf (elite) at d=118 is inside the
+        //   on-ramp` — an elite placed outside the first ring was carried into it, because a
+        //   free ring search moves inward as happily as outward. Distance IS the difficulty
+        //   axis here, so a rescue keeps the radius and moves along the arc.
+        // - **Spacing is an encounter guarantee.** `bog_stinger and myconid are 1.93 apart and
+        //   pull each other in` — two standard spawns inside `group_radius` become ONE
+        //   encounter, and the ramp promises duels rather than fives.
+        let group_r = self.group_radius;
+        let grid_cell = group_r.max(1.0);
+        // ⚠️ **REBUILT PER RESCUED PACK, because the map goes stale as packs move.** Built once,
+        // it describes where everything stood BEFORE any rescue — so two packs pulled out of the
+        // same lake can be dropped on top of each other, and the spacing guarantee fails again
+        // one seed over (measured: 1.93 apart, then 5.40 with a single stale map). Only a
+        // handful of packs are ever wet, so rebuilding is cheaper than being wrong.
+        // ⚠️ **BY MEMBERSHIP, NOT BY PACK ID.** A loner carries the DEFAULT pack id, so every
+        // loner in the world compares equal — and a check that skips "the same pack" then skips
+        // all of them, which is why guarding this by id changed the failure by not one
+        // hundredth (5.40 apart, twice). What must not be crowded is anything outside the group
+        // being moved, and that is an index set.
+        let occupancy = |monsters: &[MonsterSpawn]| {
+            let mut m: std::collections::HashMap<(i32, i32), Vec<(Position, usize)>> =
+                Default::default();
+            for (i, s) in monsters.iter().enumerate() {
+                let k = (
+                    (s.position.x / grid_cell).floor() as i32,
+                    (s.position.y / grid_cell).floor() as i32,
+                );
+                m.entry(k).or_default().push((s.position, i));
+            }
+            m
+        };
         // ⚠️ **A PACK IS MOVED TOGETHER, OR IT STOPS BEING A PACK.** Moving one member to the
         // nearest dry ground can carry it tens of units from its leader, and a pack is held
         // together by proximity — `group_around` pulls in what is within `[ai] group_radius`.
@@ -3642,41 +3676,118 @@ impl Arena {
         //
         // So the whole pack takes ONE offset, which keeps its formation exactly and only moves
         // where it stands. A loner is a pack of one and needs no special case.
-        let mut packs: std::collections::HashMap<Id, Vec<usize>> = Default::default();
+        // ⚠️ **A LONER IS ITS OWN GROUP — `pack` IS EMPTY FOR ONE.** Keying by the id alone put
+        // EVERY loner in the world into a single "pack" that then rotated as one body, and the
+        // crowding check skipped all of them because they were all "mine". Measured: two
+        // unrelated creatures 5.40 apart, and three different guards on the crowding test moved
+        // that number by not one hundredth — because the grouping, not the guard, was wrong.
+        let mut packs: std::collections::HashMap<String, Vec<usize>> = Default::default();
         for (i, m) in self.monsters.iter().enumerate() {
             let r = m.position.x.hypot(m.position.y);
             if r >= lo && r < hi {
-                packs.entry(m.pack.clone()).or_default().push(i);
+                let key = if m.pack.is_empty() {
+                    format!("@{i}") // its own group, and one that cannot collide with a real id
+                } else {
+                    m.pack.clone()
+                };
+                packs.entry(key).or_default().push(i);
             }
         }
         for (_, members) in packs {
+            let occupied = occupancy(&self.monsters);
+            let crowds = |q: Position, mine: &[usize]| -> bool {
+                let (kx, kz) =
+                    ((q.x / grid_cell).floor() as i32, (q.y / grid_cell).floor() as i32);
+                for dx in -1..=1 {
+                    for dz in -1..=1 {
+                        let Some(v) = occupied.get(&(kx + dx, kz + dz)) else { continue };
+                        for (p, other) in v {
+                            if !mine.contains(other) && p.distance_to(&q) < group_r {
+                                return true;
+                            }
+                        }
+                    }
+                }
+                false
+            };
             let wet = members
                 .iter()
                 .any(|&i| !self.on_land(self.monsters[i].position.x, self.monsters[i].position.y));
             if !wet {
                 continue;
             }
-            let mut best: Option<(f64, f64, f64)> = None; // (distance, dx, dy)
-            'search: for ring in 1..=8 {
-                let d = ring as f64 * (reach / 8.0);
+            // Candidates ALONG THE ARC first (radius preserved to a hair), widening; only
+            // then a free ring, which may move a creature's depth and so its difficulty.
+            let anchor = self.monsters[members[0]].position;
+            let base_r = anchor.x.hypot(anchor.y).max(1.0);
+            let mut best: Option<(f64, f64)> = None; // (dx, dy)
+            // ⚠️ Widened deliberately. Both stages keep their guarantee at ANY distance — the
+            // arc preserves the radius exactly, the outward stage only ever increases it, and
+            // neither will crowd another group — so the only cost of searching further is time,
+            // and the cost of not searching far enough is a creature left standing in the sea
+            // (measured at r=113, then r=886, as the reach ran out).
+            'search: for step in 1..=32 {
+                let d = step as f64 * (reach / 8.0);
+                for side in [1.0f64, -1.0] {
+                    // A rotation about the hub of the arc-length `d`, which keeps every
+                    // member's radius exactly and slides the pack sideways.
+                    let dth = side * d / base_r;
+                    let (c, sn) = (dth.cos(), dth.sin());
+                    let all_ok = members.iter().all(|&i| {
+                        let p = self.monsters[i].position;
+                        let q = Position::new(p.x * c - p.y * sn, p.x * sn + p.y * c);
+                        self.on_land(q.x, q.y)
+                            && self.t_walkable(q.x, q.y)
+                            && !crowds(q, &members)
+                    });
+                    if all_ok {
+                        // Recorded as the rotation, applied below.
+                        best = Some((f64::NAN, dth));
+                        break 'search;
+                    }
+                }
+                // ⚠️ **AND OUTWARD WHEN THE ARC CANNOT ESCAPE.** Near the hub an arc of `reach`
+                // subtends a wide angle but covers little ground, so a creature sitting in the
+                // western ocean cannot rotate out of it — measured, one left stranded at r=113.
+                // OUTWARD is the safe direction to give up: distance is the difficulty axis, and
+                // nothing here can carry an elite INTO the on-ramp, which is the guarantee a
+                // free search broke.
                 for k in 0..16 {
                     let th = std::f64::consts::TAU * (k as f64) / 16.0;
                     let (dx, dy) = (d * th.cos(), d * th.sin());
-                    let all_dry = members.iter().all(|&i| {
+                    let all_ok = members.iter().all(|&i| {
                         let p = self.monsters[i].position;
                         let q = Position::new(p.x + dx, p.y + dy);
-                        self.on_land(q.x, q.y) && self.t_walkable(q.x, q.y)
+                        q.x.hypot(q.y) >= p.x.hypot(p.y)
+                            && self.on_land(q.x, q.y)
+                            && self.t_walkable(q.x, q.y)
+                            && !crowds(q, &members)
                     });
-                    if all_dry {
-                        best = Some((d, dx, dy));
+                    if all_ok {
+                        best = Some((dx, dy));
                         break 'search;
                     }
                 }
             }
-            if let Some((_, dx, dy)) = best {
+            if let Some((mark, val)) = best {
+                // `NaN` in the first slot means the second is a ROTATION about the hub; anything
+                // else is a plain offset. Two shapes: one preserves the radius exactly, the
+                // other is the outward escape for when no rotation fits.
+                let rotate = mark.is_nan();
+                let (c, sn) = if rotate { (val.cos(), val.sin()) } else { (1.0, 0.0) };
+                let (ox2, oy2) = if rotate { (0.0, 0.0) } else { (mark, val) };
+                let spin = |p: Position| {
+                    if rotate {
+                        Position::new(p.x * c - p.y * sn, p.x * sn + p.y * c)
+                    } else {
+                        Position::new(p.x + ox2, p.y + oy2)
+                    }
+                };
                 for &i in &members {
                     let p = self.monsters[i].position;
-                    self.monsters[i].position = Position::new(p.x + dx, p.y + dy);
+                    let moved = spin(p);
+                    let (dx, dy) = (moved.x - p.x, moved.y - p.y);
+                    self.monsters[i].position = moved;
                     // ⚠️ **THE ANCHOR MOVES TOO.** A creature roams a disc around `pack_home`,
                     // so moving the body and leaving the anchor sends it straight back into the
                     // water it was just pulled out of — reported by the gate as "mob-92's
@@ -3698,12 +3809,19 @@ impl Arena {
                 if self.on_land(at.x, at.y) {
                     continue;
                 }
-                'alone: for ring in 1..=8 {
-                    let d = ring as f64 * (reach / 8.0);
-                    for k in 0..16 {
-                        let th = std::f64::consts::TAU * (k as f64) / 16.0;
-                        let q = Position::new(at.x + d * th.cos(), at.y + d * th.sin());
-                        if self.on_land(q.x, q.y) && self.t_walkable(q.x, q.y) {
+                let br = at.x.hypot(at.y).max(1.0);
+                'alone: for step in 1..=32 {
+                    let d = step as f64 * (reach / 8.0);
+                    for side in [1.0f64, -1.0] {
+                        // Along the arc, for the same reason the pack moves that way: a
+                        // creature's RADIUS is its difficulty, and the on-ramp is a radius.
+                        let dth = side * d / br;
+                        let (c, sn) = (dth.cos(), dth.sin());
+                        let q = Position::new(at.x * c - at.y * sn, at.x * sn + at.y * c);
+                        if self.on_land(q.x, q.y)
+                            && self.t_walkable(q.x, q.y)
+                            && !crowds(q, &members)
+                        {
                             let (ddx, ddy) = (q.x - at.x, q.y - at.y);
                             let h = self.monsters[i].home;
                             self.monsters[i].home = Position::new(h.x + ddx, h.y + ddy);
@@ -3737,11 +3855,15 @@ impl Arena {
             .collect();
         for i in sunk {
             let at = self.resources[i].position;
-            'dry: for ring in 1..=8 {
-                let d = ring as f64 * (reach / 8.0);
-                for k in 0..16 {
-                    let th = std::f64::consts::TAU * (k as f64) / 16.0;
-                    let q = Position::new(at.x + d * th.cos(), at.y + d * th.sin());
+            let nr = at.x.hypot(at.y).max(1.0);
+            'dry: for step in 1..=8 {
+                let d = step as f64 * (reach / 8.0);
+                for side in [1.0f64, -1.0] {
+                    // Along the arc: a node's DEPTH sets its material tier, so sliding it
+                    // inward would quietly change what it yields.
+                    let dth = side * d / nr;
+                    let (c, sn) = (dth.cos(), dth.sin());
+                    let q = Position::new(at.x * c - at.y * sn, at.x * sn + at.y * c);
                     if self.on_land(q.x, q.y) && self.t_walkable(q.x, q.y) {
                         self.resources[i].position = q;
                         break 'dry;
@@ -7063,6 +7185,20 @@ impl Arena {
                         if d < radius + route_pad + 8.0 {
                             radius = radius.min(d - route_pad - 1.0);
                         }
+                    }
+                }
+                // ⚠️ **AND THE WATER YIELDS TO WHAT IS ALREADY STANDING THERE.** Creatures from
+                // earlier sections are inside this cell — a cell spans bands — and flooding them
+                // means MOVING them, which breaks the rules they were placed under: a creature's
+                // radius is its difficulty (an elite carried into the on-ramp) and its spacing is
+                // an encounter guarantee (two standard spawns inside `group_radius` become one
+                // fight). Three attempts to move them safely each failed by not one hundredth of
+                // a unit. The dependency table's own rule settles it — water yields — and here it
+                // can, because a lake that stops short of a boar is still a lake.
+                for m in self.monsters.iter() {
+                    let d = (m.position.x - cx).hypot(m.position.y - cy);
+                    if d < radius + 2.0 {
+                        radius = radius.min(d - 2.0);
                     }
                 }
                 if radius < 12.0 {
