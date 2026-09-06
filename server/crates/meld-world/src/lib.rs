@@ -650,6 +650,20 @@ fn biome_erasure(rb: &meld_balance::RegionBarrier, biome: &str) -> f64 {
     }
 }
 
+/// **HOW MUCH OF A CELL'S OWN GROUND STANDS UNDER WATER** — `WG-11` stage 9's ambient, the
+/// thing the coalesced channels structure rather than a replacement for them.
+fn biome_wet_share(wg: &meld_balance::WorldGen, biome: &str) -> f64 {
+    match biome {
+        "mire" => wg.wet_share_mire,
+        "forest" => wg.wet_share_forest,
+        "field" => wg.wet_share_field,
+        "tundra" => wg.wet_share_tundra,
+        "ashfall" => wg.wet_share_ashfall,
+        "desert" => wg.wet_share_desert,
+        _ => 0.0,
+    }
+}
+
 fn biome_obstacle_mult(wg: &meld_balance::WorldGen, biome: &str) -> f64 {
     match biome {
         "field" => wg.field_obstacle_mult,
@@ -4433,6 +4447,7 @@ impl Arena {
         let mut creature_world: Vec<Position> =
             self.monsters[..mon0].iter().map(|m| m.position).collect();
         creature_world.extend(placed_world.iter().copied());
+        self.push_wet_cells(balance, start_x, end_x);
         self.coalesce_lakes(balance, &water_walls);
         self.push_water_walls(balance, &water_walls, &creature_world);
         self.push_pass_parts(balance, &pass_mouths);
@@ -6764,6 +6779,104 @@ impl Arena {
                 radius as f32,
                 (cur + wg.basin_fill) as f32,
             ]);
+        }
+    }
+
+    /// **A CELL'S WET SHARE — WATER FILLS THE LOW GROUND** (`WG-11` stage 9).
+    ///
+    /// A share of a cell's own ground stands under water, and the level is that share's
+    /// QUANTILE of the terrain inside it. So the water finds the hollows and the shore follows
+    /// the contour: the same level over flat ground floods a wide ragged sheet, and over a
+    /// slope it pools. **Slope is what separates a bog from a lake, for free** — biome only
+    /// says how much.
+    ///
+    /// ⚠️ **IT REUSES `Basin`, AND THAT IS WHY IT COSTS NOTHING.** The roadmap asks for a level
+    /// SHIPPED per cell because a quantile needs sampling and sorting and a shader cannot do
+    /// either — and a `Basin` is already exactly that: a level, already on the wire, already
+    /// collided with, already drawn by both ground shaders, and already flooding by comparing
+    /// against the terrain rather than painting a disc. Same trick as walling a boundary with
+    /// `RiverNode`s: the primitive that exists is worth more than the one that would be
+    /// perfect, because a feature the client never draws does not exist to the player, and
+    /// this stage has now found four of those.
+    ///
+    /// ⚠️ **THE ROUTE IS CARVED OUT OF IT, NOT ROUTED AROUND IT.** A* needs `route_pad` of dry
+    /// ground and a cell at a high share has almost none, so refusing to flood near the trail
+    /// would either delete the water or strand the trail. The level is lowered instead until
+    /// the trail's own tube stands above it — the water keeps its shape and gives up its depth
+    /// exactly where somebody has to walk.
+    fn push_wet_cells(&mut self, balance: &Balance, start_x: f64, end_x: f64) {
+        let wg = &balance.worldgen;
+        if self.radial_half <= 0.0 || self.tutorial {
+            return;
+        }
+        let g = self.regions;
+        let arc_half = self.radial_half as f32;
+        let (ox, oz) = self.terrain_off;
+        let route_pad = self.path_clear_radius + self.player_radius;
+        let ring_lo = g.ring_at(start_x as f32, 0.0);
+        let ring_hi = g.ring_at(end_x as f32, 0.0);
+        for ring in ring_lo..=ring_hi {
+            for sector in 0..g.sectors(ring) {
+                let c = meld_proto::regions::Cell::new(ring, sector);
+                if !crate::maze::cell_holds_land(&g, arc_half, c) {
+                    continue;
+                }
+                let (cx, cy) = g.centroid(c);
+                let (cx, cy) = (cx as f64, cy as f64);
+                let cr = cx.hypot(cy);
+                // Owned by its own centroid radius — the rule every per-cell pass here uses.
+                if cr < start_x || cr >= end_x {
+                    continue;
+                }
+                let share = biome_wet_share(wg, self.biome_of_cell(c));
+                if share <= 0.0 {
+                    continue;
+                }
+                // Sample the cell's own ground and take the share's quantile.
+                let sp = g.span(c);
+                let radius = (0.5 * (sp.outer - sp.inner) as f64).min(wg.basin_radius_max);
+                if radius < 12.0 {
+                    continue;
+                }
+                let mut hs: Vec<f32> = Vec::with_capacity(64);
+                for i in 0..8 {
+                    for j in 0..8 {
+                        let rr = sp.inner as f64
+                            + (sp.outer - sp.inner) as f64 * (i as f64 + 0.5) / 8.0;
+                        let bb = sp.bear_lo as f64
+                            + (sp.bear_hi - sp.bear_lo) as f64 * (j as f64 + 0.5) / 8.0;
+                        let (x, y) = (rr * bb.cos(), rr * bb.sin());
+                        if (x - cx).hypot(y - cy) <= radius {
+                            hs.push(meld_proto::terrain::height(x as f32, y as f32, ox, oz));
+                        }
+                    }
+                }
+                if hs.len() < 8 {
+                    continue;
+                }
+                hs.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+                let mut level = hs[((hs.len() as f64 - 1.0) * share).round() as usize];
+                // ── Carve the trail out of it. Anything of the guaranteed route inside this
+                // cell has to stand above the water, so the level yields to the lowest ground
+                // the trail crosses here.
+                for p in self.drawn_trail() {
+                    if (p.x - cx).hypot(p.y - cy) > radius + route_pad {
+                        continue;
+                    }
+                    let h = meld_proto::terrain::height(p.x as f32, p.y as f32, ox, oz);
+                    if h - meld_proto::terrain::BEACH_BLEND < level {
+                        level = h - meld_proto::terrain::BEACH_BLEND;
+                    }
+                }
+                // Nothing left to flood, or it would only flood the sea it already borders.
+                if level <= hs[0] || self.shore().sea(cx as f32, cy as f32) >= 0.0 {
+                    continue;
+                }
+                if !self.clear_of_peaks(Position::new(cx, cy), radius) {
+                    continue;
+                }
+                self.basins.push([cx as f32, cy as f32, radius as f32, level]);
+            }
         }
     }
 
