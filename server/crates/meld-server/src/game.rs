@@ -13181,6 +13181,32 @@ mod watching_tests {
         assert!(w.snapshot_msgs().is_empty(), "a fighting player was sent an overworld snapshot");
     }
 
+    /// Entity ids in the snapshot `pid` received this tick.
+    ///
+    /// Extracted rather than inlined at each call site, and written as a LOOP rather than
+    /// an iterator chain: three copies of a ten-combinator `filter_map`/`flat_map` over
+    /// `serde_json::Value` is the classic rustc inference blowup, and this crate is one
+    /// 13k-line module that re-typechecks whole. Clippy on it went from minutes to
+    /// three quarters of an hour when these went in as chains.
+    fn snapshot_ids(out: &[Outgoing], pid: &str) -> Vec<String> {
+        let mut ids = Vec::new();
+        for o in out {
+            if o.player_id != pid || o.msg_type != wm::Snapshot::TYPE {
+                continue;
+            }
+            let Ok(v) = serde_json::from_str::<serde_json::Value>(o.payload.get()) else {
+                continue;
+            };
+            let Some(list) = v["entities"].as_array() else { continue };
+            for e in list {
+                if let Some(id) = e["entity_id"].as_str() {
+                    ids.push(id.to_string());
+                }
+            }
+        }
+        ids
+    }
+
     /// **THE PRE-CULL MUST NEVER DROP WHAT A PERK EARNED.**
     ///
     /// `SC-5` builds the snapshot for the audience rather than for the world, so an entity
@@ -13243,21 +13269,7 @@ mod watching_tests {
         put(&mut w, "vein-far", ore_reach * 3.0);
 
         let out = w.snapshot_msgs();
-        let seen: Vec<String> = out
-            .iter()
-            .filter(|o| o.player_id == "p1" && o.msg_type == wm::Snapshot::TYPE)
-            .filter_map(|o| serde_json::from_str::<serde_json::Value>(o.payload.get()).ok())
-            .flat_map(|v| {
-                v["entities"]
-                    .as_array()
-                    .map(|a| {
-                        a.iter()
-                            .filter_map(|e| e["entity_id"].as_str().map(String::from))
-                            .collect::<Vec<_>>()
-                    })
-                    .unwrap_or_default()
-            })
-            .collect();
+        let seen = snapshot_ids(&out, "p1");
         assert!(
             seen.iter().any(|id| id == "vein-sensed"),
             "a vein inside the Smithwright's own sense radius was culled before it was \
@@ -13383,22 +13395,7 @@ mod watching_tests {
             w.arena.monsters.push(m);
         }
 
-        let seen: Vec<String> = w
-            .snapshot_msgs()
-            .iter()
-            .filter(|o| o.player_id == "p1" && o.msg_type == wm::Snapshot::TYPE)
-            .filter_map(|o| serde_json::from_str::<serde_json::Value>(o.payload.get()).ok())
-            .flat_map(|v| {
-                v["entities"]
-                    .as_array()
-                    .map(|a| {
-                        a.iter()
-                            .filter_map(|e| e["entity_id"].as_str().map(String::from))
-                            .collect::<Vec<_>>()
-                    })
-                    .unwrap_or_default()
-            })
-            .collect();
+        let seen = snapshot_ids(&w.snapshot_msgs(), "p1");
         assert!(
             seen.iter().any(|id| id == "mark-mine"),
             "a player's own bounty mark was culled for standing too far away — the one \
