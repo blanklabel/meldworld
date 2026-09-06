@@ -3570,6 +3570,7 @@ impl Arena {
         // Water laid during generation can flood ground a creature was already standing on —
         // a cell's wet share floods a whole cell, and a cell spans sections. Asked here, after
         // the bend, because this is a WORLD-space question.
+        arena.drop_flooded_basins();
         arena.drown_proof(0.0, f64::INFINITY);
         arena
     }
@@ -3604,6 +3605,32 @@ impl Arena {
     /// scoping this to the creatures a section just placed misses exactly the ones it drowns.
     /// Scoping it to the whole world instead would ask `on_land` of every creature alive on
     /// every section, and that call is not free.
+    /// **A LAKE THE SEA HAS SINCE REACHED IS NOT A LAKE.** Every pass that places a basin
+    /// refuses one standing in the sea — and the sea ARRIVES LATER: straits and lobes are cut
+    /// per section and reach back across bands, so a basin placed in section N can be inside
+    /// section N+2's strait. `Shore::sea` drives ground DISPLACEMENT toward a globally-zero sea
+    /// level while `water` is what you collide with, so a basin left in the sea field gets its
+    /// bed dug a second time beneath itself (`a_generated_lake_is_not_in_the_sea_field`).
+    ///
+    /// ⚠️ It was a latent hazard for as long as basins have existed and simply never fired: a
+    /// world held a dozen of them. A cell's wet share makes 231, and the unlikely became
+    /// routine — the same way stage 9's extra ranges made the `MAX_RIDGES` window worth
+    /// measuring rather than assuming.
+    fn drop_flooded_basins(&mut self) {
+        let doomed: Vec<usize> = {
+            let sh = self.shore();
+            self.basins
+                .iter()
+                .enumerate()
+                .filter(|(_, b)| sh.sea(b[0], b[1]) >= 0.0)
+                .map(|(i, _)| i)
+                .collect()
+        };
+        for i in doomed.into_iter().rev() {
+            self.basins.remove(i);
+        }
+    }
+
     fn drown_proof(&mut self, lo: f64, hi: f64) {
         let reach = 48.0f64;
         // ⚠️ **A PACK IS MOVED TOGETHER, OR IT STOPS BEING A PACK.** Moving one member to the
@@ -3650,6 +3677,14 @@ impl Arena {
                 for &i in &members {
                     let p = self.monsters[i].position;
                     self.monsters[i].position = Position::new(p.x + dx, p.y + dy);
+                    // ⚠️ **THE ANCHOR MOVES TOO.** A creature roams a disc around `pack_home`,
+                    // so moving the body and leaving the anchor sends it straight back into the
+                    // water it was just pulled out of — reported by the gate as "mob-92's
+                    // wander anchor is at sea, so it spends the run walking at the water".
+                    let h = self.monsters[i].home;
+                    self.monsters[i].home = Position::new(h.x + dx, h.y + dy);
+                    let ph = self.monsters[i].pack_home;
+                    self.monsters[i].pack_home = Position::new(ph.x + dx, ph.y + dy);
                 }
                 continue;
             }
@@ -3669,11 +3704,71 @@ impl Arena {
                         let th = std::f64::consts::TAU * (k as f64) / 16.0;
                         let q = Position::new(at.x + d * th.cos(), at.y + d * th.sin());
                         if self.on_land(q.x, q.y) && self.t_walkable(q.x, q.y) {
+                            let (ddx, ddy) = (q.x - at.x, q.y - at.y);
+                            let h = self.monsters[i].home;
+                            self.monsters[i].home = Position::new(h.x + ddx, h.y + ddy);
+                            let ph = self.monsters[i].pack_home;
+                            self.monsters[i].pack_home = Position::new(ph.x + ddx, ph.y + ddy);
                             self.monsters[i].position = q;
                             break 'alone;
                         }
                     }
                 }
+            }
+        }
+        // ⚠️ **AN ANCHOR CAN BE WET WHERE THE BODY IS DRY.** A creature roams a disc around
+        // `pack_home`, and the flooding that spared where it stands can still have taken where
+        // it wanders back to — so a creature nothing moved spends the whole run walking into
+        // the water ("mob-36's wander anchor is at sea"). Where that happens the anchor becomes
+        // where the creature actually stands, which is ground the world has just vouched for.
+        // ⚠️ **A NODE DRINKS TOO.** A harvest node is validated against the water that exists
+        // when it is committed, and a later section's wet cell floods a cell that spans bands —
+        // so "res-21 is at sea", and a node underwater is simply unharvestable. It is a point
+        // with no pack, so it moves alone.
+        let sunk: Vec<usize> = self
+            .resources
+            .iter()
+            .enumerate()
+            .filter(|(_, n)| {
+                let r = n.position.x.hypot(n.position.y);
+                r >= lo && r < hi && !self.on_land(n.position.x, n.position.y)
+            })
+            .map(|(i, _)| i)
+            .collect();
+        for i in sunk {
+            let at = self.resources[i].position;
+            'dry: for ring in 1..=8 {
+                let d = ring as f64 * (reach / 8.0);
+                for k in 0..16 {
+                    let th = std::f64::consts::TAU * (k as f64) / 16.0;
+                    let q = Position::new(at.x + d * th.cos(), at.y + d * th.sin());
+                    if self.on_land(q.x, q.y) && self.t_walkable(q.x, q.y) {
+                        self.resources[i].position = q;
+                        break 'dry;
+                    }
+                }
+            }
+        }
+        let stranded: Vec<usize> = self
+            .monsters
+            .iter()
+            .enumerate()
+            .filter(|(_, m)| {
+                let r = m.position.x.hypot(m.position.y);
+                r >= lo
+                    && r < hi
+                    && (!self.on_land(m.home.x, m.home.y)
+                        || !self.on_land(m.pack_home.x, m.pack_home.y))
+            })
+            .map(|(i, _)| i)
+            .collect();
+        for i in stranded {
+            let at = self.monsters[i].position;
+            if !self.on_land(self.monsters[i].home.x, self.monsters[i].home.y) {
+                self.monsters[i].home = at;
+            }
+            if !self.on_land(self.monsters[i].pack_home.x, self.monsters[i].pack_home.y) {
+                self.monsters[i].pack_home = at;
             }
         }
     }
@@ -4096,6 +4191,7 @@ impl Arena {
         // section's water reaches BACKWARDS — a river walks ~364 units downhill and a wet cell
         // floods a cell that spans sections — so the creatures it drowns are mostly ones an
         // earlier section placed, which an index-scoped sweep would never look at.
+        self.drop_flooded_basins();
         self.drown_proof((band_lo - 420.0).max(0.0), self.cursor + 60.0);
         i
     }
@@ -6953,10 +7049,32 @@ impl Arena {
                 }
                 // Sample the cell's own ground and take the share's quantile.
                 let sp = g.span(c);
-                let radius = (0.5 * (sp.outer - sp.inner) as f64).min(wg.basin_radius_max);
+                let mut radius = (0.5 * (sp.outer - sp.inner) as f64).min(wg.basin_radius_max);
+                // ⚠️ **THE EDGE IS THE RADIUS, AND ONLY THE RADIUS MOVES IT.** Near the rim a
+                // basin's depth is bounded by how far INSIDE the disc you are, not by the level
+                // — so carving the level cannot pull the waterline back from a trail running
+                // past the edge. Measured on seed 99: a level carved three ways over still left
+                // water exactly 2.01 from a trail that keeps 2.40, because the disc's own
+                // boundary was the thing standing there. The disc yields too.
+                {
+                    let trail = self.drawn_trail();
+                    for p in &trail {
+                        let d = (p.x - cx).hypot(p.y - cy);
+                        if d < radius + route_pad + 8.0 {
+                            radius = radius.min(d - route_pad - 1.0);
+                        }
+                    }
+                }
                 if radius < 12.0 {
                     continue;
                 }
+                // ⚠️ **CENTRED ON THE HOLLOW, NOT ON THE MIDDLE.** A basin's centre is its
+                // deepest point everywhere else in this crate, and the invariant that says so
+                // (`a_generated_lake_is_not_in_the_sea_field`) is right: water pools where the
+                // ground is lowest. Placing this at the cell's CENTROID put the disc's middle
+                // above its own level whenever the low ground sat off-centre — "a basin's
+                // centre is dry", which is a lake with a hill in the middle of it.
+                let mut low = (f32::MAX, cx, cy);
                 let mut hs: Vec<f32> = Vec::with_capacity(64);
                 for i in 0..8 {
                     for j in 0..8 {
@@ -6966,7 +7084,11 @@ impl Arena {
                             + (sp.bear_hi - sp.bear_lo) as f64 * (j as f64 + 0.5) / 8.0;
                         let (x, y) = (rr * bb.cos(), rr * bb.sin());
                         if (x - cx).hypot(y - cy) <= radius {
-                            hs.push(meld_proto::terrain::height(x as f32, y as f32, ox, oz));
+                            let h = meld_proto::terrain::height(x as f32, y as f32, ox, oz);
+                            hs.push(h);
+                            if h < low.0 {
+                                low = (h, x, y);
+                            }
                         }
                     }
                 }
@@ -6974,6 +7096,7 @@ impl Arena {
                     continue;
                 }
                 hs.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+                let (cx, cy) = (low.1, low.2);
                 let mut level = hs[((hs.len() as f64 - 1.0) * share).round() as usize];
                 // ── Carve the trail out of it. Anything of the guaranteed route inside this
                 // cell has to stand above the water, so the level yields to the lowest ground
@@ -6982,13 +7105,39 @@ impl Arena {
                     if (p.x - cx).hypot(p.y - cy) > radius + route_pad {
                         continue;
                     }
+                    // ⚠️ **THE TRAIL'S OWN WIDTH, NOT THE LINE.** The rule is `route_pad` of
+                    // clearance from the WATER'S EDGE, so carving to the height under the
+                    // waypoint leaves water lapping right beside it — measured on seed 99, the
+                    // trail came within 2.01 of water it keeps 2.40 from. The lowest ground the
+                    // party's own width covers is what has to stand above the level.
+                    // A DISC with margin, not a ring of eight. Water is wherever the terrain
+                    // dips below the level, and the dip can sit BETWEEN two samples: measured
+                    // on seed 99, a ring at exactly `route_pad` still left water 2.03 from a
+                    // trail that keeps 2.40. Sampled out to 1.5x the pad so the carve clears the
+                    // requirement rather than landing on it.
+                    for step in 1..=3 {
+                        let rad = route_pad * (step as f64) * 0.5;
+                        for k in 0..16 {
+                            let th = std::f64::consts::TAU * (k as f64) / 16.0;
+                            let (qx, qy) = (p.x + rad * th.cos(), p.y + rad * th.sin());
+                            let h = meld_proto::terrain::height(qx as f32, qy as f32, ox, oz);
+                            if h - meld_proto::terrain::BEACH_BLEND < level {
+                                level = h - meld_proto::terrain::BEACH_BLEND;
+                            }
+                        }
+                    }
                     let h = meld_proto::terrain::height(p.x as f32, p.y as f32, ox, oz);
                     if h - meld_proto::terrain::BEACH_BLEND < level {
                         level = h - meld_proto::terrain::BEACH_BLEND;
                     }
                 }
                 // Nothing left to flood, or it would only flood the sea it already borders.
-                if level <= hs[0] || self.shore().sea(cx as f32, cy as f32) >= 0.0 {
+                // ⚠️ **THE WHOLE DISC, NOT ITS CENTRE.** `sea` is a SIGNED distance, so a
+                // basin is wholly inland only when the centre is at least `radius` from the
+                // water — checking the centre alone let a lake overlap the ocean, and the
+                // ground shader then digs it a second time below its own bed
+                // (`a_generated_lake_is_not_in_the_sea_field`).
+                if level <= hs[0] || self.shore().sea(cx as f32, cy as f32) >= -(radius as f32) {
                     continue;
                 }
                 if !self.clear_of_peaks(Position::new(cx, cy), radius) {
