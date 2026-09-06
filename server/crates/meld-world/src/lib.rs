@@ -2965,9 +2965,14 @@ pub struct Arena {
     /// dead code under this stage.
     pub maze: crate::maze::Maze,
     /// The water as a spatial index — see [`WaterIndex`]. `RefCell` for the same reason
-    /// `blockers` is: it is a pure cache over state this struct already owns, so a `&self`
-    /// query may build it.
-    water_ix: std::cell::RefCell<Option<std::rc::Rc<WaterIndex>>>,
+    /// `blockers` is: a pure cache over state this struct already owns, so a `&self` query may
+    /// build it.
+    ///
+    /// ⚠️ **`Arc`, NOT `Rc`** — and only `make check` says so. An `Rc` here makes `Arena`
+    /// non-`Send`, which makes the whole game-loop future non-`Send`, which `tokio::spawn`
+    /// refuses; `cargo test -p meld-world` never builds the server and reports none of it.
+    /// `CachedBlockers` beside this one already learned it.
+    water_ix: std::cell::RefCell<Option<std::sync::Arc<WaterIndex>>>,
     repaints: meld_proto::regions::Repaints,
     /// `[biome_gate]` flattened into `BIOMES` order, so a cell's biome can be resolved
     /// without reaching for `Balance` — the lookup runs per placed prop.
@@ -17750,7 +17755,7 @@ impl Arena {
     /// `the_clear_path_crosses_at_an_isthmus_and_never_swims`: the world was being collided
     /// against in the corridor frame after it had been bent into the world one.
     /// The water index, built once and reused until the water changes under it.
-    fn water_index(&self) -> std::rc::Rc<WaterIndex> {
+    fn water_index(&self) -> std::sync::Arc<WaterIndex> {
         let key = (
             self.basins.len(),
             self.rivers.len(),
@@ -17801,7 +17806,7 @@ impl Arena {
                 }
             }
         }
-        let ix = std::rc::Rc::new(WaterIndex { key, cell, basins, segs, seg_cells });
+        let ix = std::sync::Arc::new(WaterIndex { key, cell, basins, segs, seg_cells });
         *self.water_ix.borrow_mut() = Some(ix.clone());
         ix
     }
