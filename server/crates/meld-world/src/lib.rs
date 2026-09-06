@@ -5984,6 +5984,31 @@ impl Arena {
         // region almost always does.
         let ring_lo = g.ring_at(start_x as f32, 0.0);
         let ring_hi = g.ring_at(end_x as f32, 0.0);
+        // ── `WG-11` stage 9: **WHERE EACH CELL'S RELIEF STANDS**, computed once.
+        //
+        // A wall grows MASS TO MASS, so both endpoints are properties of the two cells rather
+        // than of the line between them — which is the whole of the fix for *"straight mountain
+        // lines"*. Precomputed into a map for two reasons: a boundary is visited by one of its
+        // cells but needs both, and a closure borrowing `self.maze` cannot live across the
+        // `self.ridges` writes further down.
+        let arc_half_m = self.radial_half as f32;
+        let masses: std::collections::HashMap<u32, Position> = {
+            let mut m = std::collections::HashMap::new();
+            for ring in ring_lo.saturating_sub(1)..=ring_hi + 1 {
+                for sector in 0..g.sectors(ring) {
+                    let c = meld_proto::regions::Cell::new(ring, sector);
+                    if !crate::maze::cell_holds_land(&g, arc_half_m, c) {
+                        continue;
+                    }
+                    if let Some((x, y)) =
+                        crate::maze::mass_centre(&g, &self.maze, c, self.seed_base)
+                    {
+                        m.insert(c.key(), Position::new(x, y));
+                    }
+                }
+            }
+            m
+        };
         let mut out: Vec<[f32; 6]> = Vec::new();
         // ⚠️ **THERE IS NO PER-SECTION WALL BUDGET ANY MORE, AND THAT IS THE POINT.**
         // `ridge_max_per_section` (6) and `prop_wall_max_per_section` (24) truncated the maze
@@ -6030,28 +6055,67 @@ impl Arena {
                     else {
                         continue;
                     };
-                    let (a, b) = (polar(r0, b0), polar(r1, b1));
+                    let (e0, e1) = (polar(r0, b0), polar(r1, b1));
                     let is_arc = (r0 - r1).abs() < 1e-6;
-                    let length = if is_arc { r0 * (b1 - b0) } else { (r1 - r0).abs() };
-                    // ⚠️ **A SECTION MAY ONLY WALL ITS OWN GROUND.** A boundary is longer than
-                    // a section (20 + 7i), so a wall emitted here can land in ground whose
-                    // clear path has not been routed yet — and the route's own escape hatch
-                    // can only take back ridges THIS section added. A wall left standing in
-                    // section N+2 by section N is unremovable when N+2 fails to route, and
-                    // A*'s best-effort fallback then runs the guaranteed trail through water.
-                    if is_arc && (r0 < start_x || r0 >= end_x) {
+                    let edge_len = if is_arc { r0 * (b1 - b0) } else { (r1 - r0).abs() };
+                    // ⚠️ **A PASS IS THE GAP BETWEEN TWO MASSES, AND IT IS WHERE THE MOUTH IS.**
+                    // Stage 6 furnished a mouth with the gap left BETWEEN two wall segments on
+                    // one boundary. Under stage 9 a wall is continuous mass-to-mass, so those
+                    // gaps are gone and the only openings left are the boundaries the maze
+                    // declared open — which is what a mountain pass actually is. Re-targeting
+                    // the mouth here rather than deleting it is what keeps the micro maze
+                    // alive: a feature whose only instances came from a mechanism this stage
+                    // removes is a feature that silently ceases to exist.
+                    //
+                    // ⚠️ Seed-only and permanent — a Shift never moves it (see `Arena::maze`).
+                    if self.maze.is_open(cell, other) {
+                        let at = Position::new(0.5 * (e0.x + e1.x), 0.5 * (e0.y + e1.y));
+                        let mr = at.x.hypot(at.y);
+                        let (dx, dy) = (e1.x - e0.x, e1.y - e0.y);
+                        let n = dx.hypot(dy).max(1e-9);
+                        // Owned by the mouth's OWN radius, so a boundary spanning two sections
+                        // furnishes its opening exactly once. Same rule the segment gaps used.
+                        if mr >= start_x && mr < end_x && edge_len >= wg.ridge_pass_width * 0.5 {
+                            mouths.push(PassMouth {
+                                at,
+                                along: (dx / n, dy / n),
+                                width: edge_len,
+                            });
+                        }
+                        continue;
+                    }
+                    // ── `WG-11` stage 9: **THE SPINE RUNS MASS TO MASS, NOT ALONG THE EDGE.**
+                    //
+                    // The whole of *"straight mountain lines and weird circular water
+                    // features"*: a capsule laid down a cell boundary is straight because the
+                    // boundary is, and has nothing to do with the ground it stands on. Grown
+                    // between the two cells' masses instead, a wall CROSSES its boundary — and
+                    // because both cells' other walls share those same endpoints, consecutive
+                    // walls meet at a mass and the barrier wanders instead of tracing a grid.
+                    // Measured before it was wired up: mean |cos| between spine and boundary
+                    // ~1.0 → 0.518.
+                    //
+                    // The edge endpoints stay the fallback for a cell with no mass — a cell the
+                    // maze walls on no side grows nothing, and a boundary is still a boundary.
+                    let (a, b) = match (masses.get(&cell.key()), masses.get(&other.key())) {
+                        (Some(p), Some(q)) => (*p, *q),
+                        _ => (e0, e1),
+                    };
+                    let length = a.distance_to(&b);
+                    let spine_mid = Position::new(0.5 * (a.x + b.x), 0.5 * (a.y + b.y));
+                    // ⚠️ **A SECTION MAY ONLY WALL ITS OWN GROUND**, and a mass-to-mass spine is
+                    // owned by its own MIDPOINT radius rather than by an arc's radius. A wall
+                    // emitted into ground whose clear path has not been routed yet is
+                    // unremovable when that section fails to route, and A*'s best-effort
+                    // fallback then runs the guaranteed trail through water.
+                    let mid_r = spine_mid.x.hypot(spine_mid.y);
+                    if mid_r < start_x || mid_r >= end_x {
                         continue;
                     }
                     if length < wg.ridge_pass_width * 2.0 {
                         continue;
                     }
-                    let spine_mid = Position::new(0.5 * (a.x + b.x), 0.5 * (a.y + b.y));
                     let biome = self.biome_at(spine_mid);
-                    // A PASS: the DECIDED maze says you may walk between these two cells.
-                    // ⚠️ Seed-only and permanent — a Shift never moves it (see `Arena::maze`).
-                    if self.maze.is_open(cell, other) {
-                        continue;
-                    }
                     // ⚠️ **ERASURE: A WALL THE MAZE WANTS, EXPRESSED AS SCENERY.** This is what
                     // makes field and desert the open crossings BETWEEN mazes rather than mazes
                     // of their own, and it is the old `porosity` table's intent — but it can
@@ -6061,11 +6125,6 @@ impl Arena {
                     if rng.unit() < biome_erasure(rb, biome) {
                         continue;
                     }
-                    // ⚠️ **A CLOSED BOUNDARY IS WALLED WITH THE BIOME'S OWN MATERIAL.**
-                    // This used to be a bare `ridge_chance x biome_terrace_mult` roll, so a
-                    // closed boundary in a wood got a MOUNTAIN 36% of the time and nothing the
-                    // rest — the graph said barrier and the ground said stroll through. See
-                    // [`WallMaterial`] for what that cost.
                     let material = wall_material(biome, rng.unit());
                     if material == WallMaterial::Open {
                         continue;
@@ -6093,7 +6152,19 @@ impl Arena {
                     // A share of the spine, so the gap scales with the wall — floored at a
                     // width a party fits through, because a gap nobody can pass is a wall with
                     // a rumour of a door.
-                    let pass = (length * wg.ridge_pass_share).max(wg.ridge_pass_width);
+                    // ⚠️ **A MAZE WALL IS CONTINUOUS — `ridge_pass_width` CHANGED MEANING.**
+                    // It used to be a length subtracted from a drawn spine, punching 1-3 holes
+                    // in every wall. Under the mass model that is incoherent: the maze already
+                    // says which boundaries you may cross, and a hole in a boundary it CLOSED
+                    // is the ground contradicting the topology. The way through is the gap
+                    // between two masses at an OPEN boundary, so a pass is now a minimum
+                    // SEPARATION to verify (above, and in the pass-protection retain) rather
+                    // than a gap to author.
+                    //
+                    // The subdivision stays, at zero gap: segments remain the unit the
+                    // trail-crossing drop works on, and dropping one IS a door — which is what
+                    // keeps feasibility structural rather than checked.
+                    let pass = 0.0;
                     let segs = passes + 1;
                     let spine = length - pass * passes as f64;
                     // Too short to hold its own passes is not an error: it is a boundary with
