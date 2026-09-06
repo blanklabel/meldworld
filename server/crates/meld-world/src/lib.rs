@@ -10283,9 +10283,16 @@ mod tests {
         /// `blocking_field`, so terrain closes a pocket exactly as a wall does.
         fn stand_somewhere_open(b: &Balance, a: &mut Arena, radius: f64, clearance: f64) -> bool {
             let lat = a.corridor_lateral();
-            for k in 0..400 {
-                let frac = -0.9 + 1.8 * (k as f64 / 400.0);
-                let p = bend_for_test(a, Position::new(radius, lat * frac));
+            // ⚠️ Sweep OUTWARD as well as sideways. This scanned ONE radius, so a band that
+            // happened to hold a minimaze interior — or any other deliberate wall — left the
+            // fixture nowhere to stand, and the walling tests failed as "no open ground at
+            // d200". That reads like a caging regression and is not one: a fixture that cannot
+            // find a spot is a fixture that did not look, and the world does not owe it one
+            // particular ring.
+            for k in 0..2400 {
+                let ring = (k / 400) as f64;
+                let frac = -0.9 + 1.8 * ((k % 400) as f64 / 400.0);
+                let p = bend_for_test(a, Position::new(radius + ring * 30.0, lat * frac));
                 if a.obstacles.iter().any(|o| o.position.distance_to(&p) < clearance + o.radius) {
                     continue;
                 }
@@ -13430,6 +13437,11 @@ mod tests {
                         // fill — and the instrument looking at the wrong population.
                         !o.entity_id.starts_with("obs-wall-")
                             && !o.entity_id.starts_with("obs-pass-")
+                            // …and a MINIMAZE interior, for the same reason and by the same
+                            // rule: it is placed to block, not strewn. Counting it took the
+                            // vacuity check's uncompensated deep ring to 23.5-tile spacing,
+                            // which is this comment's own failure mode with a third source.
+                            && !o.entity_id.starts_with("obs-mini-")
                     })
                     .filter(|o| {
                         let r = o.position.x.hypot(o.position.y);
@@ -14613,6 +14625,11 @@ mod tests {
                         // fill — and the instrument looking at the wrong population.
                         !o.entity_id.starts_with("obs-wall-")
                             && !o.entity_id.starts_with("obs-pass-")
+                            // …and a MINIMAZE interior, for the same reason and by the same
+                            // rule: it is placed to block, not strewn. Counting it took the
+                            // vacuity check's uncompensated deep ring to 23.5-tile spacing,
+                            // which is this comment's own failure mode with a third source.
+                            && !o.entity_id.starts_with("obs-mini-")
                     })
                     .filter(|o| {
                         let r = o.position.x.hypot(o.position.y);
