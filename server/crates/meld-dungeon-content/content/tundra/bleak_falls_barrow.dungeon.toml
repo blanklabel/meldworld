@@ -1,0 +1,167 @@
+# Bleak Falls Barrow — a hand-authored TUNDRA dungeon recreating Skyrim's most-walked
+# barrow (structure, not a pixel-copy). Two floors, and the beats are the ones everyone
+# remembers:
+#   Floor 0  the barrow — the spider den where Arvel hangs webbed with the GOLDEN CLAW,
+#            then the PILLAR CHAMBER: three pillars turned in the right order plus the
+#            lever, or the gate to the stairs stays shut.
+#   Floor 1  the catacombs — the Hall of Stories gauntlet (darts, a pit, a rune, acid),
+#            the claw door, and the word wall where the Draugr Overlord stands over the vault.
+#
+# It is the FIRST dungeon this biome has ever had: `[biome_gate] tundra = 550` is well past
+# `[worldgen] dungeon_min_distance` (250), so every tundra section rolled for an entrance,
+# found an empty pool, and hosted nothing.
+#
+# Soloable on purpose (`bodies_required() == 1`): the pillars are LATCHING plates, because
+# Skyrim's are turned and stay turned. Momentary plates would make this a co-op gate and
+# every `all[...]` of them costs a body — see `Condition::bodies_required`.
+
+name  = "bleak_falls_barrow"
+biome = "tundra"
+
+[legend]
+n = "trap web_n"
+m = "trap web_m"
+v = "trap web_v"
+j = "trap web_j"
+p = "trap pitfall"
+d = "trap dart_d"
+e = "trap dart_e"
+f = "trap dart_f"
+q = "trap blade_pit"
+r = "trap ward_rune"
+x = "trap embalm_acid"
+k = "key K1"
+"1" = "plate P1 latching"
+"2" = "plate P2 latching"
+"3" = "plate P3 latching"
+a = "lever L1"
+Y = "gate G1"
+D = "door D1"
+s = "stair S1 down"
+w = "stair S1 up"
+B = "boss B1"
+C = "chest arvel"
+E = "chest crypt"
+G = "chest hall"
+F = "chest vault"
+
+# Floor 0 — the barrow. North band: entrance · spider den (claw) · antechamber · pillars.
+# South band is a dead end holding a crypt: the ONLY way down is the gate `Y`.
+[[floor]]
+grid = """
+#################################
+#.......#.......#.......#.......#
+#.>.....#.n.k.m.#.......#.1.2.3.#
+#.........v...j.....C...........#
+#.......#.......#.......#...a...#
+#.......#.......#.......#.......#
+####.###############.#######Y####
+#.......#.......#.......#.......#
+#..p....#.......#.......#.......#
+#...................E...#.......#
+#.......#.......#.......#...s...#
+#.......#.......#.......#.......#
+#################################
+"""
+
+# Floor 1 — the catacombs. Arrive top-right, drop into the Hall of Stories, walk WEST
+# through the gauntlet to the claw door; the word wall chamber is behind it.
+[[floor]]
+grid = """
+#################################
+#............#..................#
+#............#................w.#
+#............#..................#
+#.....F......####.########.####.#
+#............#..................#
+#............##################.#
+#.....B......D.d..q..e..r..x..f.#
+#............#######.############
+#............#..................#
+#............#..................#
+#.....<......#........G.........#
+#............#..................#
+#################################
+"""
+
+# The spider den: four sheets of web. Cuttable (a Dex/Shifter check), like every web in
+# the game it is named after.
+[trap.web_n]
+kind = "snare"
+disarmable = true
+[trap.web_m]
+kind = "snare"
+disarmable = true
+[trap.web_v]
+kind = "snare"
+disarmable = true
+[trap.web_j]
+kind = "snare"
+disarmable = true
+
+# A collapsed floor in the west crypt.
+[trap.pitfall]
+kind = "pit"
+disarmable = false
+
+# The Hall of Stories. Skyrim's is a straight run of swinging blades and dart holes you
+# time rather than defuse, so the blade pit and the darts are `disarmable = false` — the
+# corridor is the puzzle. The ward and the embalming jars can be dealt with.
+[trap.dart_d]
+kind = "dart"
+disarmable = false
+[trap.dart_e]
+kind = "dart"
+disarmable = false
+[trap.dart_f]
+kind = "dart"
+disarmable = false
+[trap.blade_pit]
+kind = "pit"
+disarmable = false
+[trap.ward_rune]
+kind = "rune"
+disarmable = true
+[trap.embalm_acid]
+kind = "acid"
+disarmable = true
+
+# The pillar chamber: the three pillars in the carved ORDER, and then the lever. Getting
+# the lever without the pillars is what fills the room with darts in the original; here the
+# gate simply does not move.
+#
+# ⚠️ THE ORDER IS AUTHORED INTENT AND IS NOT ENFORCED YET — by anything, anywhere.
+# `Condition::eval`'s `Seq` arm is `ids.iter().all(|id| active.contains(id))`, and the
+# RUNTIME evaluates barriers through that same `eval` against a `HashSet<Id>`
+# (`DungeonInstance::reeval`), so there is no activation order to compare against: today
+# `seq[P1,P2,P3]` means exactly `all[P1,P2,P3]`. DG-1's note ("ordering is a runtime
+# concern") reads as deferred, but the runtime shipped without it, so `sunken_vault` has
+# advertised "step them in order" since DG-2 and never once checked.
+#
+# Authored as `seq` anyway, on the same reasoning as `verdant_barrow`'s three-plate gate:
+# the authored requirement is the design, and it binds the moment ordering lands (record
+# the activation order beside `active` and give `Seq` a subsequence check that the
+# SOLVABILITY search keeps treating as "all present", since it does not model orderings).
+[gate.G1]
+when = "all[seq[P1,P2,P3], L1]"
+
+# The claw door — three concentric rings, and the claw is the only thing that turns them.
+[door.D1]
+when = "has_key(K1)"
+
+[boss.B1]
+sprite = "sepulcher"
+on_enter_spawn = true
+
+# Arvel the Swift's purse, webbed up beside the claw.
+[chest.arvel]
+loot = "rolled"
+[chest.crypt]
+loot = "rolled"
+[chest.hall]
+loot = "rolled"
+
+# The word wall's offering, sealed until the overlord falls.
+[chest.vault]
+when = "boss_dead(B1)"
+loot = "rolled"

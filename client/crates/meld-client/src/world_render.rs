@@ -507,18 +507,12 @@ pub(crate) fn boss_keys() -> impl Iterator<Item = &'static str> {
         .chain(DUNGEON_SPRITES.iter().copied())
 }
 
-/// Bespoke dungeon sprites that get an animated set but are NOT named bosses.
-///
-/// A dungeon can name any `sprite` for its `[boss.B1]`, and that is not the same thing
-/// as being one of the FS-4 named bosses: `meld_proto::bosses::display_name` returns
-/// `None` for these, so they draw no name plate — deliberately, since a plate reading
-/// `Unknown Horror` over a set piece is worse than no plate.
-///
-/// They still need loading, though, and the two lists are separate for exactly that
-/// reason. `twingolem` guarded the Ocean Palace for a long time with no art anywhere,
-/// which meant `creature_sprite` HASHED its kind into the fallback pool and it drew as
-/// a random 32px billboard — a boss rendering as a bat, and nothing anywhere saying so.
-pub(crate) const DUNGEON_SPRITES: &[&str] = &["twingolem"];
+// Bespoke dungeon sprites that get an animated set but are NOT named bosses. ONE
+// registry, in `meld_proto::bosses` — the client decides what art to LOAD and the authored
+// content decides what art to ASK FOR, so a private copy here was a copy the content could
+// not be checked against (`meld-dungeon-content`'s `every_authored_boss_sprite_has_art`
+// now holds every dungeon to it).
+use meld_proto::bosses::DUNGEON_SPRITES;
 
 /// Creature species whose animated sprite set is INSTALLED under `assets/creatures/`.
 /// A species listed here stops being a single frozen 32px billboard and starts turning,
@@ -3783,7 +3777,8 @@ pub(crate) fn manage_dungeon_scene(
 /// One dungeon-enclosure prop, tagged [`DungeonDecor`]. `t` is the normalised
 /// distance from the clearing rim (0) to the far edge (1); prop height ramps with it
 /// — a low shrub rim you can see the hero over, rising to towering forest far out.
-/// Forest (biome 0) uses the world's tree sprites; other biomes use tinted boulders.
+/// The WOODED biomes (forest 0, amber_wood 5) use the world's tree sprites; the rest use
+/// tinted boulders.
 fn spawn_enclosure_prop(
     commands: &mut Commands,
     wa: &WorldAssets,
@@ -3799,7 +3794,12 @@ fn spawn_enclosure_prop(
     // jitter so the treeline is layered, not a smooth wall.
     let vf = 0.85 + (hash_pick(&id, 100) as f32 / 100.0) * 0.3;
     let height = ((1.6 + t * 7.4) * vf).clamp(1.4, 9.5);
-    if bi == 0 {
+    // A WOOD IS RINGED BY TREES, and `amber_wood` is a wood. The tree belt used to be
+    // `bi == 0` alone, so every other biome fell through to the boulder ridge — which was
+    // fine while no amber-wood section could host a dungeon (its pool was empty), and
+    // wrong the moment one did: `forest_temple` would stand in a grey rock ring in the
+    // middle of a golden wood.
+    if bi == 0 || bi == 5 {
         // Near the rim, prefer the bushier sprites (reads as undergrowth); farther out,
         // the full tree pool (a tall canopy).
         const TREES: [&str; 5] = [
@@ -3816,7 +3816,10 @@ fn spawn_enclosure_prop(
             .collect();
         if !pool.is_empty() {
             let tex = pool[hash_pick(&id, pool.len())].clone();
-            let mat = mats.add(hd2d::sprite_material(Color::WHITE, tex));
+            // The same trees, turned. Amber wood shares the forest's sprite set and is
+            // separated from it by colour, exactly as the overworld separates them.
+            let tint = if bi == 5 { Color::srgb(1.0, 0.78, 0.46) } else { Color::WHITE };
+            let mat = mats.add(hd2d::sprite_material(tint, tex));
             commands
                 .spawn((
                     DungeonDecor,
@@ -3843,6 +3846,7 @@ fn spawn_enclosure_prop(
         2 => Color::srgb(0.30, 0.26, 0.28), // ashfall basalt
         3 => Color::srgb(0.80, 0.85, 0.92), // tundra ice-rock
         4 => Color::srgb(0.28, 0.34, 0.28), // mire mossy stone
+        5 => Color::srgb(0.55, 0.40, 0.24), // amber wood (only if its tree sprites are absent)
         _ => Color::srgb(0.48, 0.48, 0.54),
     };
     let mat = mats.add(StandardMaterial { base_color: col, perceptual_roughness: 1.0, ..default() });

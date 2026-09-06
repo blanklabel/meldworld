@@ -1073,6 +1073,7 @@ name = "meld-dungeon-content"
 version = "0.1.0"
 dependencies = [
  "meld-dungeon",
+ "meld-proto",
  "serde_json",
 ]
 

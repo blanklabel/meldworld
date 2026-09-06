@@ -1,0 +1,200 @@
+# The Water Temple — a hand-authored MIRE dungeon recreating the most-argued-about dungeon
+# in games (structure, not a pixel-copy). Three floors, because the temple's whole idea is
+# the water going DOWN and the same shaft reading differently each time:
+#   Floor 0  high water — the ring corridor around the central tower. The triforce-marked
+#            WATER SWITCH is out on the east wall; it opens the tower, and the tower is
+#            the only way below.
+#   Floor 1  mid water — the misty chamber where DARK LINK is standing on the water. He is
+#            a mandatory fight: the LONGSHOT and the second switch are both behind him.
+#   Floor 2  low water — the boss-key hall, an optional two-body vault, and MORPHA.
+#
+# The three water levels are three FLOORS rather than a rising surface, because
+# `meld-dungeon`'s barriers are MONOTONE — an open door never shuts. A water level that
+# only ever falls is exactly what a monotone barrier can express; a level you raise and
+# lower again is not, and faking it would be a mechanic wearing the name.
+#
+# `bodies_required() == 2`, and it is the OPTIONAL vault that wants them
+# (`count(2,[P1,P2,P3])` over momentary plates). Nothing on the critical path needs a
+# second body: a dungeon takes no Town Portal, so a co-op gate between a solo player and
+# the boss key would seal them in with no way out but dying.
+
+name  = "water_temple"
+biome = "mire"
+
+[legend]
+a = "lever L1"
+b = "lever L2"
+Y = "gate G1"
+Z = "gate G2"
+W = "gate G3"
+X = "door D1"
+V = "door D2"
+"1" = "boss B1"
+"2" = "boss B2"
+k = "key K1"
+"7" = "plate P1"
+"8" = "plate P2"
+"9" = "plate P3"
+n = "trap reed_snare"
+d = "trap spike_dart"
+x = "trap bile"
+p = "trap sinkhole"
+m = "trap mud_snare"
+e = "trap barb_dart"
+s = "stair S1 down"
+w = "stair S1 up"
+t = "stair S2 down"
+u = "stair S2 up"
+A = "chest tower"
+C = "chest longshot"
+G = "chest vault"
+N = "chest heart"
+
+# Floor 0 — high water. A ring you walk the whole way round to find the switch.
+[[floor]]
+grid = """
+###################################
+###################################
+##...............................##
+##........n......................##
+##...............................##
+##...############Y############...##
+##...############.############...##
+##...############.############...##
+##...############.############...##
+##...#########.......#########...##
+##...#########.......#########...##
+##...#########.A.s...#########.a.##
+##...#########.......#########...##
+##...#########.......#########...##
+##...#########################...##
+##...#########################...##
+##...#########################...##
+##...#########################...##
+##...............................##
+##...............>.......p.......##
+##...............................##
+###################################
+###################################
+"""
+
+# Floor 1 — mid water. The misty room, and everything past it.
+[[floor]]
+grid = """
+###################################
+###################################
+##.........########################
+##.........########################
+##..w..........d...################
+##.........#######.################
+##.........#######.################
+##.........#.............##########
+##.........#.............##########
+############.............##########
+############.............##########
+############......1......##########
+############.............##########
+############.............##########
+############.............##########
+############.............##########
+##################X################
+##########.................#.....##
+##########..xC.........b...Z..t..##
+##########.................#.....##
+###################################
+"""
+
+# Floor 2 — low water. The boss-key hall and Morpha's chamber.
+[[floor]]
+grid = """
+#################################
+#################################
+##.......########################
+##.......########################
+##..u......m...##################
+##.......########################
+##.........................######
+######.....................######
+######....k............e...######
+######.....................######
+######.....................#....#
+######.....................#....#
+######......7...8...9......W..G.#
+######.....................#....#
+######.....................#....#
+################V################
+################.################
+######.....................######
+######.....................######
+######.....N....2....<.....######
+######.....................######
+######.....................######
+#################################
+"""
+
+# The first water switch opens the central tower.
+[gate.G1]
+when = "L1"
+
+# The second opens the stair below the misty room.
+[gate.G2]
+when = "L2"
+
+# The optional vault: two of the three plates at once. This is the ONLY thing in the
+# temple that wants a second body, and it is treasure — never the way out.
+[gate.G3]
+when = "count(2,[P1,P2,P3])"
+
+# Dark Link does not let you past.
+[door.D1]
+when = "boss_dead(B1)"
+
+# The boss door, and the key is the thing the low water is for.
+[door.D2]
+when = "has_key(K1)"
+
+# A shade of the party's own lead, standing on water in an empty room.
+[boss.B1]
+sprite = "gloamhound"
+on_enter_spawn = true
+
+# Morpha — the mire's own drowned thing, which is what this biome names its boss.
+[boss.B2]
+sprite = "miredrowned"
+on_enter_spawn = true
+
+[trap.reed_snare]
+kind = "snare"
+disarmable = true
+[trap.spike_dart]
+kind = "dart"
+disarmable = false
+[trap.bile]
+kind = "acid"
+disarmable = true
+[trap.sinkhole]
+kind = "pit"
+disarmable = false
+[trap.mud_snare]
+kind = "snare"
+disarmable = true
+[trap.barb_dart]
+kind = "dart"
+disarmable = false
+
+[chest.tower]
+loot = "rolled"
+[chest.vault]
+loot = "rolled"
+
+# The hookshot upgrade, in the room it comes from. Authored contents ride as a NAMED
+# BACKPACK ITEM rather than equippable gear (a DG-5 refinement — see `resolve_chest`'s
+# authored arm in `game.rs`), so it is hybrid: the signature item PLUS a real roll, and
+# the chest is worth opening either way.
+[chest.longshot]
+loot = "rolled"
+contents = [{ item = "longshot_hook", quantity = 1 }]
+
+[chest.heart]
+when = "boss_dead(B2)"
+loot = "rolled"

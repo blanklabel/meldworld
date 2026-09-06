@@ -40,6 +40,32 @@ pub const BOSSES: [(&str, &str); 11] = [
 /// in its `[boss.B1] sprite`.
 pub const DUNGEON_ONLY: &[&str] = &["briarlord"];
 
+/// Bespoke DUNGEON sprites: an authored dungeon's `[boss.B1] sprite` that gets a real
+/// animated sprite set but is NOT one of the named bosses.
+///
+/// A dungeon may name any `sprite`, and naming one is not the same as being an FS-4 boss:
+/// [`display_name`] returns `None` for these, so they draw no name plate — deliberately,
+/// since a plate reading `Unknown Horror` over a set piece is worse than no plate.
+///
+/// ⚠️ **IT LIVES HERE, BESIDE THE NAMED BOSSES, BECAUSE BOTH SIDES HAVE TO AGREE.** The
+/// client decides what art to LOAD and the content decides what art to ASK FOR, and until
+/// this list was shared the client owned it privately — so a typo in a `sprite` was not a
+/// compile error, not a test failure, and not visible: `creature_sprite` hashes an unknown
+/// kind into the fallback pool, and the boss draws as a random 32px billboard. That is not
+/// hypothetical, it is what `twingolem` did in the Ocean Palace for a long time, with
+/// nothing anywhere saying so. [`sprite_is_loadable`] is the check, and
+/// `meld-dungeon-content` holds every authored dungeon to it.
+pub const DUNGEON_SPRITES: &[&str] = &["twingolem"];
+
+/// Will the client load an animated sprite set for this `[boss.B1] sprite`?
+///
+/// True for a named boss (including the world bosses and lieutenants, whose art ships) and
+/// for a declared bespoke [`DUNGEON_SPRITES`] entry. Anything else has no art and would
+/// render as a hashed fallback billboard, so authored content is held to this.
+pub fn sprite_is_loadable(key: &str) -> bool {
+    is_boss(key) || DUNGEON_SPRITES.contains(&key)
+}
+
 /// The **world bosses** (`EW`): Termina, Nestiph, Slake, Ometus, and the hidden apex the
 /// non-combat personas get. Art only, for now.
 ///
@@ -121,6 +147,30 @@ mod tests {
         }
         assert_eq!(display_name("twingolem"), None, "a bespoke dungeon sprite is not a named boss");
         assert_eq!(display_name(""), None);
+    }
+
+    /// A BESPOKE DUNGEON SPRITE IS NOT A NAMED BOSS, and the two lists must stay disjoint.
+    ///
+    /// The split is what [`sprite_is_loadable`] is made of: a named boss draws a name plate
+    /// and a bespoke sprite deliberately does not. A key in both would be loaded twice by
+    /// the client's `boss_keys()` and would mean the two halves disagree about whether it
+    /// has a title. If one of these ever earns a name, it moves to [`BOSSES`] rather than
+    /// being listed in both.
+    #[test]
+    fn a_bespoke_dungeon_sprite_is_not_one_of_the_named_bosses() {
+        for key in DUNGEON_SPRITES {
+            assert!(!key.is_empty());
+            assert_eq!(
+                display_name(key), None,
+                "{key} is in DUNGEON_SPRITES but is also a NAMED boss — pick one"
+            );
+            assert!(sprite_is_loadable(key), "{key} is declared, so its art is loaded");
+        }
+        // A named boss is loadable too, and an invented key is not — which is the whole
+        // point: an authored `sprite` typo has to be answerable with a `false`.
+        assert!(sprite_is_loadable("sepulcher"));
+        assert!(!sprite_is_loadable("sepulchre"), "a typo must not pass as art");
+        assert!(!sprite_is_loadable(""));
     }
 
     /// A dungeon-only boss has to BE a boss — the flag narrows where it is placed, it

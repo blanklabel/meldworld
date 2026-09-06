@@ -697,6 +697,76 @@ mod tests {
         (p.floor, cell_center(p.x, p.y))
     }
 
+    /// EVERY BIOME A DUNGEON CAN BE ROLLED IN MUST HAVE ONE TO ROLL.
+    ///
+    /// `roll_entrance` returns `None` when the biome's pool is empty, and a streamed
+    /// section takes that as "no dungeon here" — indistinguishable from a failed spawn
+    /// roll. So a biome with no authored content does not fail, it just quietly never has
+    /// a dungeon in it, for the life of the game. **Three of the seven were in that state:**
+    /// `ashfall` (the SHALLOWEST biome a dungeon can appear in — its
+    /// `[biome_gate]` of 250 is exactly `dungeon_min_distance`), `tundra`, and
+    /// `amber_wood` (gated at 0, so reachable on the first step of a dive). Every section
+    /// of those three rolled for an entrance and hosted nothing, and the whole suite was
+    /// green, because a feature with no instances passes every test it has.
+    ///
+    /// The exempt set is the deep WORLD-BOSS ARENAS, which are set-piece ground for `EW-1`
+    /// and carry no ordinary content of any kind. It is written out rather than derived so
+    /// that adding a biome forces the choice — author a dungeon, or say here why not — and
+    /// it is held against `regions::BIOMES` below so it cannot rot into a stale list.
+    #[test]
+    fn every_biome_a_dungeon_can_appear_in_has_a_dungeon_to_place() {
+        const NO_AUTHORED_DUNGEON: &[&str] = &[
+            "seized_engine",       // Termina's arena
+            "nestiphian_cradle",   // Nestiph's
+            "hearth_plains",       // Slake's
+            "seraphic_oubliette",  // Ometus', and the world's capstone band
+        ];
+        let b = balance();
+        for name in NO_AUTHORED_DUNGEON {
+            assert!(
+                meld_proto::regions::biome_index(name).is_some(),
+                "{name:?} is exempted from having a dungeon but is not a biome at all"
+            );
+        }
+        // The exempt ones must be the DEEP ones: exempting a shallow biome would be
+        // exempting ordinary ground a player walks through on every dive.
+        let gate = |n: &str| *b.biome_gate.get(n).unwrap_or_else(|| panic!("{n} has no gate"));
+        let shallowest_exempt =
+            NO_AUTHORED_DUNGEON.iter().map(|n| gate(n)).min().expect("non-empty");
+        for name in meld_proto::regions::BIOMES {
+            if NO_AUTHORED_DUNGEON.contains(&name) {
+                continue;
+            }
+            assert!(
+                gate(name) < shallowest_exempt,
+                "{name:?} is expected to carry a dungeon but is gated as deep as an \
+                 exempt world-boss arena — reclassify it deliberately"
+            );
+            // `spawn_chance = 1.0` isolates the pool: the only remaining reason for
+            // `None` is that the biome has nothing authored.
+            assert!(
+                roll_entrance(0xD00D, name, 1.0).is_some(),
+                "biome {name:?} has NO authored dungeon, so every section of it rolls for \
+                 an entrance and silently hosts none. Add a \
+                 `meld-dungeon-content/content/{name}/*.dungeon.toml`, or exempt it here \
+                 with the reason."
+            );
+        }
+    }
+
+    /// A `field` section draws from the FOREST pool through the alias, so the alias has to
+    /// keep working — without it a whole biome (gated at 0, i.e. the on-ramp everyone
+    /// walks) hosts no dungeon, which is the same silent hole as an empty pool.
+    #[test]
+    fn a_field_section_draws_the_forests_barrows() {
+        let roll = roll_entrance(7, "field", 1.0).expect("field aliases to forest");
+        assert!(
+            meld_dungeon_content::for_biome("forest").any(|d| d.name == roll.dungeon),
+            "a field entrance must name a FOREST dungeon, got {:?}",
+            roll.dungeon
+        );
+    }
+
     // --- entrance placement ---
 
     #[test]

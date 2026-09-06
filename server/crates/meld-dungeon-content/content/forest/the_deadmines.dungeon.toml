@@ -1,0 +1,185 @@
+# The Deadmines — a hand-authored FOREST dungeon recreating the most-run low-level dungeon
+# in MMO history (structure, not a pixel-copy). Three floors, and the shape of the original
+# is a straight descent, which is what `meld-dungeon`'s stairs are:
+#   Floor 0  the mine tunnels — winding shafts, mine carts, and RHAHK'ZOR the foreman
+#            standing in the only way through.
+#   Floor 1  the GOBLIN FOUNDRY — two furnace levers open the far doors, and Sneed's
+#            shredder is sitting on the key.
+#   Floor 2  the IRONCLAD COVE — the ship in the cavern, and Edwin VanCleef on the deck.
+#
+# It leans on the primitive nothing else does: SEVEN traps across four of the six kinds
+# with art (`pit`, `dart`, `snare`, `acid`, `rune`). Before this pool got its recreations
+# the content used two kinds — `thorns` and `dart` — so sixteen trap sprites had been
+# drawn, shipped and never once shown to a player.
+#
+# Soloable (`bodies_required() == 1`).
+
+name  = "the_deadmines"
+biome = "forest"
+
+[legend]
+"1" = "boss B1"
+"2" = "boss B2"
+"3" = "boss B3"
+a = "lever L1"
+b = "lever L2"
+Y = "gate G1"
+X = "door D1"
+Z = "door D2"
+V = "door D3"
+k = "key K1"
+c = "trap mine_cart"
+q = "trap collapse"
+d = "trap crossbow_d"
+e = "trap crossbow_e"
+n = "trap rigging_net"
+x = "trap sludge"
+r = "trap powder_charge"
+s = "stair S1 down"
+w = "stair S1 up"
+t = "stair S2 down"
+u = "stair S2 up"
+A = "chest tunnel"
+B = "chest foundry"
+C = "chest hold"
+G = "chest niche"
+N = "chest vault"
+
+# Floor 0 — the tunnels. One way through, and the foreman is standing in it.
+[[floor]]
+grid = """
+########################################
+########################################
+##########...A...#######################
+##########.......#######################
+##########.......#######################
+#############c##########################
+#############.##########...........#####
+##########.......#######...........#####
+##########.......#######...........#...#
+##########.......#######...........#...#
+##>.................d........1.....X.s.#
+##########.......#######...........#...#
+##########.......#######...........#...#
+##########.......#######...........#####
+########################...........#####
+########################################
+########################################
+"""
+
+# Floor 1 — the foundry. Both furnaces lit, and the shredder holds the key.
+[[floor]]
+grid = """
+###################################
+###################################
+##.......########.........##....###
+##.......########....2.....Z.kG.###
+##..w......q..............##....###
+##.......############.#############
+##.......###...................####
+############...................####
+############...a...........b...####
+############...................####
+############...................####
+############...................####
+############......r............####
+############...................####
+############............B......####
+############...................####
+############...................####
+#####################Y#############
+##################...t...##########
+##################.......##########
+###################################
+"""
+
+# Floor 2 — the cove. The gangplank needs the key; the deck is the fight.
+[[floor]]
+grid = """
+####################################
+####################################
+##.......###########################
+##.......###########################
+##..u......................#########
+##.........................##......#
+##....................e....##......#
+########...................##..N...#
+########......C............##......#
+########....................V..3...#
+########...................##......#
+########...................##..<...#
+########....x.......n......##......#
+########...................##......#
+########...................#########
+####################################
+####################################
+"""
+
+# The foreman does not step aside.
+[door.D1]
+when = "boss_dead(B1)"
+
+# The shredder is parked on the key niche.
+[door.D2]
+when = "boss_dead(B2)"
+
+# Both furnaces lit opens the foundry's far doors and the stair to the cove.
+[gate.G1]
+when = "all[L1,L2]"
+
+# The gangplank. Sneed's key is the only thing that drops it.
+[door.D3]
+when = "has_key(K1)"
+
+[boss.B1]
+sprite = "ironmaw"
+on_enter_spawn = true
+
+# A machine rather than an animal — the one bespoke sprite this pool already had art for.
+[boss.B2]
+sprite = "twingolem"
+on_enter_spawn = true
+
+[boss.B3]
+sprite = "rustfang"
+on_enter_spawn = true
+
+# Runaway carts and a shaft that has already gone once: timing, not defusing.
+[trap.mine_cart]
+kind = "pit"
+disarmable = false
+[trap.collapse]
+kind = "pit"
+disarmable = false
+
+# Defias crossbows, wired to the floor.
+[trap.crossbow_d]
+kind = "dart"
+disarmable = true
+[trap.crossbow_e]
+kind = "dart"
+disarmable = true
+
+[trap.rigging_net]
+kind = "snare"
+disarmable = true
+[trap.sludge]
+kind = "acid"
+disarmable = true
+[trap.powder_charge]
+kind = "rune"
+disarmable = true
+
+[chest.tunnel]
+loot = "rolled"
+[chest.foundry]
+loot = "rolled"
+[chest.hold]
+loot = "rolled"
+[chest.niche]
+loot = "rolled"
+
+# VanCleef's strongbox.
+[chest.vault]
+when = "boss_dead(B3)"
+loot = "rolled"

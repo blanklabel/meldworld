@@ -1,0 +1,143 @@
+# The Forest Temple — a hand-authored AMBER WOOD dungeon recreating Ocarina of Time's
+# first adult dungeon (structure, not a pixel-copy). Two floors:
+#   Floor 0  the courtyard and its four wings, one POE SISTER at the end of each. Killing
+#            all four is what lowers the central elevator — nothing else opens it.
+#   Floor 1  the basement: the boss key, and PHANTOM GANON in the painted hall.
+#
+# The four-sister gate is the thing worth having: `all[boss_dead(...) x4]` over four
+# MANDATORY fights spread to the four corners, so the dungeon is a hub you leave and come
+# back to four times. No existing content uses `boss_dead` inside an `all[...]` — the
+# vocabulary was there and nothing had ever asked for it.
+#
+# Amber wood's first authored dungeon, and the gap here was the widest of the three:
+# `[biome_gate] amber_wood = 0`, so it is reachable from the very first step of a dive,
+# and `for_biome("amber_wood")` returned NOTHING — every amber-wood section rolled for an
+# entrance and hosted none.
+#
+# Soloable (`bodies_required() == 1`): every barrier here is a fight or a key, and
+# `boss_dead` costs no bodies at all.
+
+name  = "forest_temple"
+biome = "amber_wood"
+
+[legend]
+"1" = "boss B1"
+"2" = "boss B2"
+"3" = "boss B3"
+"4" = "boss B4"
+"5" = "boss B5"
+Y = "gate G1"
+V = "door D1"
+k = "key K1"
+r = "trap twist_rune"
+u = "trap sister_rune"
+n = "trap bramble"
+p = "trap rotted_floor"
+s = "stair S1 down"
+w = "stair S1 up"
+A = "chest courtyard"
+C = "chest gallery"
+N = "chest vault"
+
+# Floor 0 — enter from the north, down the spine to the courtyard. The four sisters are
+# at the ends of the four wings; the elevator `Y` is the courtyard's own well.
+[[floor]]
+grid = """
+#####################################
+#####################################
+###.......#########>#########.......#
+###...1...#########.#########...2...#
+###.......#########.#########.......#
+###.......#########.#########.......#
+######....................p......####
+###################.#################
+###################n#################
+###################.#################
+###.........#######.#######.........#
+###.........####.......####.........#
+###.........####.......####.........#
+###....3......r....A....u......4....#
+###.........####.......####.........#
+###.........####.......####.........#
+###.........#######Y#######.........#
+###################.#################
+################.......##############
+################...s...##############
+################.......##############
+################.......##############
+#####################################
+"""
+
+# Floor 1 — the basement. The key room, the gallery, and the painted hall.
+[[floor]]
+grid = """
+###############################
+###############################
+##.......######......#.......##
+##.......######......#.......##
+##..w....######......#.......##
+##...............k.......C...##
+##.......######......#.......##
+##.......######......#.......##
+##.......######......#.......##
+#################.#############
+#################.#############
+#################.#############
+#################V#############
+######.....................####
+######.....................####
+######....N.....5.....<....####
+######.....................####
+######.....................####
+###############################
+"""
+
+# THE FOUR SISTERS. The elevator drops when every flame is out.
+[gate.G1]
+when = "all[boss_dead(B1),boss_dead(B2),boss_dead(B3),boss_dead(B4)]"
+
+[door.D1]
+when = "has_key(K1)"
+
+# Joelle, Beth, Amy and Meg — four of ONE thing on purpose. They are sisters; that is the
+# whole fiction, and it is the opposite case to `d5f9b3e0`, where an elite shared a
+# footsoldier's wire and there was no fiction saying it should.
+[boss.B1]
+sprite = "choirmother"
+on_enter_spawn = true
+[boss.B2]
+sprite = "choirmother"
+on_enter_spawn = true
+[boss.B3]
+sprite = "choirmother"
+on_enter_spawn = true
+[boss.B4]
+sprite = "choirmother"
+on_enter_spawn = true
+
+# Phantom Ganon, in the hall of paintings.
+[boss.B5]
+sprite = "weepingcolossus"
+on_enter_spawn = true
+
+[trap.twist_rune]
+kind = "rune"
+disarmable = true
+[trap.sister_rune]
+kind = "rune"
+disarmable = true
+[trap.bramble]
+kind = "snare"
+disarmable = true
+[trap.rotted_floor]
+kind = "pit"
+disarmable = false
+
+[chest.courtyard]
+loot = "rolled"
+[chest.gallery]
+loot = "rolled"
+
+[chest.vault]
+when = "boss_dead(B5)"
+loot = "rolled"
