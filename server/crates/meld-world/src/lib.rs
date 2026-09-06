@@ -4098,6 +4098,10 @@ impl Arena {
         let bridge_snap: Vec<meld_proto::coast::Bridge> = self.bridges.clone();
         let wet_peaks = self.peaks.clone();
         let toff_wet = self.terrain_off;
+        // A second copy of exactly these inputs, for the creature pass further down. It must
+        // differ from `wet` in ONE field — the water — and in nothing else.
+        let (wet2_straits, wet2_lobes) = (sea.clone(), sea_lobes.clone());
+        let (wet2_bridges, wet2_peaks) = (bridge_snap.clone(), wet_peaks.clone());
         // ⚠️ **A COMPANION SPOT MUST BE USABLE, NOT MERELY DRY.** `dry_companion` places every
         // retinue member, pack minion and end-fight peer by offset from its leader, avoiding
         // water — and water alone. A range raised earlier in the same section is just as
@@ -4477,26 +4481,30 @@ impl Arena {
         // excludes most of a wood — measured, a uniform 4.3-unit exclusion halved the deep
         // population again. A creature standing against a tree is ordinary; a creature inside
         // one is the bug.
-// ⚠️ **THE CREATURE PASS NEEDS THE WATER THAT EXISTS NOW, NOT AT THE SNAPSHOT.**
-        // `wet` above closes over `self.rivers` as it stood at its own line — which is BEFORE
-        // `push_water_walls` adds the mire's boundary channels. Creatures are placed after
-        // those, so they were being tested against a world that had less water in it than the
-        // one they were about to stand in: measured, **9 of 2768 creatures on seed 424242**
-        // stood in a channel, and `nothing_the_world_places_ever_lands_in_the_sea` said so.
+        // ⚠️ **THE CREATURE PASS NEEDS THE WATER THAT EXISTS NOW, NOT AT THE SNAPSHOT.**
+        // `wet` above closes over `self.rivers` as it stood at its own line, which is BEFORE
+        // `push_water_walls` lays the mire's boundary channels — and creatures are placed after
+        // those, so they were tested against a world with less water in it than the one they
+        // were about to stand in (measured, 9 of 2768 on seed 424242 stood in a channel).
         //
-        // This is the same shape as the other water bugs in this stage — a fact captured at
-        // one moment and consumed at another — so it is rebuilt here rather than the snapshot
-        // being moved, because `standable_c` above legitimately wants the earlier view: nodes
-        // are placed before the channels and cannot be asked about water that does not exist.
+        // Rebuilt here rather than moving the snapshot, because `standable_c` above legitimately
+        // wants the earlier view: nodes are placed BEFORE the channels and cannot be asked about
+        // water that does not exist yet.
+        //
+        // ⚠️ **IT DIFFERS FROM `wet` IN THE WATER AND IN NOTHING ELSE.** The first cut read every
+        // field off `self` instead, which quietly picked up PEAKS raised after the snapshot — so
+        // it answered LAND where `wet` answered sea, and a creature was accepted into the water
+        // on seed 1. "Current" was only ever meant to mean the rivers and basins; every other
+        // input has to be the one `wet` was given, or this is not the same question asked later,
+        // it is a different question.
         let wet_now = {
             let (basins, rivers) = (self.basins.clone(), self.rivers.clone());
-            let (peaks, straits, lobes) = (self.peaks.clone(), self.straits.clone(), self.lobes.clone());
-            let bridges = self.bridges.clone();
-            let (arc_half, toff) = (self.radial_half as f32, self.terrain_off);
+            let (peaks, straits, lobes, bridges) =
+                (wet2_peaks, wet2_straits, wet2_lobes, wet2_bridges);
             move |w: &Position| -> bool {
                 meld_proto::coast::Shore {
-                    arc_half,
-                    terrain_off: toff,
+                    arc_half: bend_half as f32,
+                    terrain_off: toff_wet,
                     peaks: &peaks,
                     straits: &straits,
                     lobes: &lobes,
@@ -4507,6 +4515,7 @@ impl Arena {
                 .is_ocean(w.x as f32, w.y as f32)
             }
         };
+
         let mut taken = std::mem::replace(&mut self.creature_spots, SpotGrid::new(1.0));
         // ⚠️ **CREATURES DRAW FROM THEIR OWN STREAM.** Sharing the section's main `rng` with the
         // obstacles, terraces and chests below couples them: any world-generation edit changes
