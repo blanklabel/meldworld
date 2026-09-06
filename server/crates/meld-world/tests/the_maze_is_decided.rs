@@ -126,14 +126,21 @@ fn braiding_buys_loops_and_spends_dead_ends() {
 /// boundary, which is what made stage 8's walls straight lines), and two masses across a
 /// boundary the maze WALLS reach each other (so the wall exists as terrain rather than as a
 /// line drawn on the edge).
-/// ⚠️ **`#[ignore]`d: STAGE 9 WORK IN FLIGHT.** The primitive exists; the emission is not
-/// wired to it. Two constraints do not hold together yet — correcting for the grid warp so a
-/// mass lands in its OWN cell (`cell_at` derives the ring from `r + warp_at(bearing)` while
-/// `centroid` is nominal, and the warp is comparable to HALF A RING) moves the masses far
-/// enough that walled neighbours stop meeting. Run with `--ignored` to see both numbers.
+/// **A RELIEF MASS SITS IN ITS OWN CELL, AND NEIGHBOURING MASSES SPAN THEIR BOUNDARY**
+/// (`WG-11` stage 9).
+///
+/// The two properties that make `maze::mass_centre` the right primitive: a mass lands INSIDE
+/// the cell that grew it — nothing positioned relative to a boundary, which is what made stage
+/// 8's walls straight lines — and the segment joining two masses across a walled boundary
+/// actually CROSSES it, which is what makes relief between them a wall.
+///
+/// ⚠️ An earlier version asked whether two masses' RADII met and could not be satisfied: a
+/// disc's single radius must be the minimum over the cell's walled neighbours or it seals an
+/// open boundary, and being the minimum it under-reaches the rest (measured, 220 of 1312 met).
+/// A mass is a POINT now and relief is the capsule BETWEEN two of them, so meeting is a shared
+/// endpoint rather than a number — the question worth asking changed with the shape.
 #[test]
-#[ignore = "WG-11 stage 9 in flight: warp correction and meeting are not both satisfied yet"]
-fn a_relief_mass_stays_home_and_meets_its_walled_neighbours() {
+fn a_relief_mass_stays_home_and_spans_its_walled_boundaries() {
     let b = Balance::load_default().unwrap();
     for seed in [1u64, 42, 424242] {
         let a = Arena::generate(&b, seed, false);
@@ -141,18 +148,15 @@ fn a_relief_mass_stays_home_and_meets_its_walled_neighbours() {
         let arc_half = a.radial_half() as f32;
         let land = land_of(&g, arc_half);
         let m = maze::build(&g, seed, 3200.0, 0.10, &land);
-        let mut checked = 0usize;
-        let mut met = 0usize;
-        let mut pairs = 0usize;
+        let (mut checked, mut spans, mut pairs) = (0usize, 0usize, 0usize);
         for ring in 1..12u32 {
             for sector in 0..g.sectors(ring) {
                 let c = Cell::new(ring, sector);
                 if !land(c) {
                     continue;
                 }
-                let Some((mx, my, reach)) = maze::cell_mass(&g, &m, c, seed) else { continue };
+                let Some((mx, my)) = maze::mass_centre(&g, &m, c, seed) else { continue };
                 checked += 1;
-                // ⚠️ **INSIDE ITS OWN CELL.** Not on the boundary, not in the neighbour.
                 let here = g.cell_at(mx as f32, my as f32);
                 assert_eq!(
                     here.key(),
@@ -163,30 +167,29 @@ fn a_relief_mass_stays_home_and_meets_its_walled_neighbours() {
                     here.ring,
                     here.sector
                 );
-                assert!(reach > 0.0, "a mass with no reach walls nothing");
-                // …and it reaches its walled neighbours' masses.
                 for n in g.neighbours(c) {
-                    if !land(n) || m.is_open(c, n) {
+                    if !land(n) || m.is_open(c, n) || n.key() <= c.key() {
                         continue;
                     }
-                    let Some((nx, ny, nreach)) = maze::cell_mass(&g, &m, n, seed) else { continue };
+                    let Some((nx, ny)) = maze::mass_centre(&g, &m, n, seed) else { continue };
                     pairs += 1;
-                    if (mx - nx).hypot(my - ny) <= reach + nreach + 1e-6 {
-                        met += 1;
+                    let mid = ((mx + nx) * 0.5, (my + ny) * 0.5);
+                    let at = g.cell_at(mid.0 as f32, mid.1 as f32);
+                    if at.key() == c.key() || at.key() == n.key() {
+                        spans += 1;
                     }
                 }
             }
         }
         assert!(checked > 20, "seed {seed}: only {checked} cells grew a mass");
         assert!(pairs > 20, "seed {seed}: only {pairs} walled pairs to check");
-        // ⚠️ The RATIO, not every pair: `reach` is half the way to the NEAREST walled
-        // neighbour, so a cell walled on several sides under-reaches the further ones. That is
-        // the spur work this primitive is the foundation for, and it is honest to say the
-        // shortfall is bounded rather than to claim it does not exist.
+        // ⚠️ The RATIO, not every pair: the grid warp makes `cell_at` disagree with a nominal
+        // midpoint near a boundary, so a few land in a third cell. The claim is that relief
+        // between two masses spans the boundary they share, not that a midpoint is exact.
         assert!(
-            met * 4 >= pairs * 3,
-            "seed {seed}: only {met} of {pairs} walled pairs have masses that meet — a wall \
-             the ground does not express is a gate with nothing in it"
+            spans * 10 >= pairs * 9,
+            "seed {seed}: only {spans} of {pairs} walled pairs have masses whose midpoint lies \
+             in one of the two cells — relief between them would not cross their boundary"
         );
     }
 }
