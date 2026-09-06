@@ -2576,7 +2576,40 @@ Make time in the field a living, dangerous place worth screenshotting.
     read as entirely ocean against a 0.05-rad corridor. **A cell is land if its wedge
     INTERSECTS the corridor.**
 
-  - ⬜ *Stage 9 — **PER-CELL GROUND, THEN COALESCE IT.*** Owner's direction, and it is the
+  - ✅ *Stage 9 — **PER-CELL GROUND, THEN COALESCE IT.*** **LANDED.** Every item below is in
+    `main`. What shipped, and what it measured:
+    - **A relief mass is a POINT, not a disc** — a disc's one radius must be the minimum over a
+      cell's walled neighbours (or it seals a pass) and so under-reaches the rest; 220 of 1312
+      pairs met. The roadmap had said "lobed" all along.
+    - **The ground grows MASS TO MASS**: ranges 35 → 143, mean |cos| spine/boundary 0.720 →
+      0.609, near-parallel walls 63% → 20%, passes blocked 0.
+    - **`ridge_pass_width` is a minimum SEPARATION**, and a maze wall is continuous; the stage-6
+      pass mouth moved to the OPEN boundaries, which is what a mountain pass is.
+    - **Cell-scoped dungeons** (the minimaze) — 433-831 pieces across 25-45 cells, interior a
+      spanning tree so every open boundary stays connected by construction. This is what
+      `dungeon_every` could never be.
+    - **Coalescence**: a cluster of water boundaries becomes a lake; the ISLAND comes free (a
+      degree-1 cell in a flooded region is a dead end reached by one ford). Rare by
+      construction — a spanning tree leaves ~2 walled boundaries a cell, so 3-of-4 is the tail.
+    - **A cell's WET SHARE** fills its low ground, level = the share's quantile of the cell's own
+      terrain. Mire 8.4% → 21.8%; a zero-share desert moved 0.1 as the control.
+    - **Place from the FINISHED ground** (nodes), re-validated rather than moved so the RNG
+      stream is untouched.
+    - **Density blends across a cell edge** — closing `regions::edge_distance` and
+      `biome_transition_width`, both of which had no consumer at all.
+    - **Explorability guard restored** (stage 7 deleted it with `open_sealed_ground`): 98.0 /
+      98.7 / 99.3%.
+    - **Performance**: worst section 1881 → 971 ms (A* river index), then OFF the authoritative
+      tick entirely; creature step 4.8-5.3 → 3.1-3.5 ms with the water indexed, so the wet share
+      costs nothing. `MAX_RIDGES` measured fine (worst 5 of 16 within one interest radius).
+    - ⚠️ **Deferred deliberately:** the `sector_bounds` bearing warp. This item's own text says
+      the masses defuse it ("an exact radial edge stops mattering… the warp may never be
+      needed"), and warping it re-rolls every seeded world.
+    - ⚠️ **The lesson worth carrying:** the wet share reuses `Basin`, so it INHERITS every rule a
+      basin already had — the sea field, peaks, ranges, the trail, creatures, nodes — and it
+      shipped inheriting none of them. Each came back as a gate failure. When a new feature
+      borrows an existing primitive, read that primitive's guards first.
+ Owner's direction, and it is the
     answer to what stage 8 shipped looking like: *"straight mountain lines and weird circular
     water features."* Both are the same mistake — a landform DRAWN as a global shape. A range
     is a capsule laid along a cell boundary, so it is straight; a strait is
