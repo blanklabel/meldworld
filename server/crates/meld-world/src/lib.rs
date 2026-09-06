@@ -2633,7 +2633,7 @@ fn wall_material(biome: &str, roll: f64) -> WallMaterial {
             //    walker at waypoint 218 of 384). Fixed by corridorizing — and prop walls and
             //    pass parts made the same mistake, surviving only because `radialize`'s retain
             //    culls obstacles in world space afterwards. That fix is the lasting value here.
-            // 3. ⚠️ **STILL OPEN, but much narrower: 9 drowned creatures became 1.** Two more
+            // 3. ✅ **CLOSED — 9 drowned creatures became 1 became 0.** Two more
             //    causes found and fixed (both kept, both correct with or without these walls):
             //    the creature pass read a wetness snapshot taken BEFORE the channels were laid,
             //    and the wall's own occupancy check tested each NODE when `river_depth` draws a
@@ -2964,6 +2964,10 @@ pub struct Arena {
     /// what makes connectivity invariant under the weather, and why stage 7's repairs are
     /// dead code under this stage.
     pub maze: crate::maze::Maze,
+    /// The water as a spatial index — see [`WaterIndex`]. `RefCell` for the same reason
+    /// `blockers` is: it is a pure cache over state this struct already owns, so a `&self`
+    /// query may build it.
+    water_ix: std::cell::RefCell<Option<std::rc::Rc<WaterIndex>>>,
     repaints: meld_proto::regions::Repaints,
     /// `[biome_gate]` flattened into `BIOMES` order, so a cell's biome can be resolved
     /// without reaching for `Balance` — the lookup runs per placed prop.
@@ -3174,14 +3178,18 @@ impl Arena {
     }
 
     /// Is this world position dry ground? The sea is an ANALYTIC boundary
-    /// ([`meld_proto::coast`]) rather than colliders, so asking is O(1) and it never
+    /// ([`meld_proto::coast`]) rather than colliders, and it is asked through the WATER INDEX
+    /// (see `on_land_indexed`) rather than by walking every basin and river node — it never
     /// touches `BlockField` — whose cell is sized from the largest radius in the world, so
     /// an ocean made of geometry would have coarsened the collision grid for every prop in
     /// the game (measured: one r=150 disc, parked where it blocked nothing, cost +63% on
     /// the creature tick). Routed through the same `coast` module the client renders from,
     /// so the shoreline the player sees is the shoreline they collide with.
     pub fn on_land(&self, x: f64, z: f64) -> bool {
-        self.shore().is_land(x as f32, z as f32)
+        // Through the INDEX — see `on_land_indexed`. Identical answer, and every caller of this
+        // (the creature step asks it once per creature per tick) stops re-walking the world's
+        // whole water list.
+        self.on_land_indexed(x, z)
     }
 
     /// **This world's whole shoreline, in one bundle** — the fan's arc, the straits that
@@ -3500,6 +3508,7 @@ impl Arena {
                 seed: seed as u32,
             },
             maze: crate::maze::Maze::default(),
+            water_ix: std::cell::RefCell::new(None),
             repaints: meld_proto::regions::Repaints::default(),
             biome_gate: biome_gate_array(balance),
             path_clear_radius: wg.path_clear_radius,
@@ -3553,6 +3562,10 @@ impl Arena {
         // WG-4: bend the whole (flat) corridor into a radial arc around the hub, so
         // the world fans out in every direction but the western city sliver.
         arena.radialize(wg.radial_arc_degrees);
+        // Water laid during generation can flood ground a creature was already standing on —
+        // a cell's wet share floods a whole cell, and a cell spans sections. Asked here, after
+        // the bend, because this is a WORLD-space question.
+        arena.drown_proof(0.0, f64::INFINITY);
         arena
     }
 
@@ -3565,6 +3578,64 @@ impl Arena {
     /// the world is flat (terraces are off), so it renders on the client's base
     /// ground plane with no per-section relief mesh. Bounds widen to a square box
     /// that contains the fan; the western return-to-city border is unchanged.
+    /// **NOTHING THE WORLD PLACED IS LEFT STANDING IN WATER** — the `drown_proof` three
+    /// comments in this file have referred to for a long time and which **did not exist**.
+    ///
+    /// Water is not placed once and finished with. A river walks up to ~364 units downhill, a
+    /// basin fills a contour, and `WG-11` stage 9 floods a whole cell to its wet share — and a
+    /// cell spans sections, so water generated for section N lands on ground where section
+    /// N-1's creatures are already standing. The dependency table settles which side yields:
+    /// *water yields to a drawn path, and everything that can MOVE is moved instead.*
+    ///
+    /// A creature is moved to the nearest dry, walkable ground; one with nowhere to go within
+    /// `reach` is left where it is rather than deleted, because a missing creature is a missing
+    /// encounter and a wet one is only untidy.
+    ///
+    /// ⚠️ It runs AFTER the bend, in world space, for both paths. Asking this question in the
+    /// corridor frame is the trap this crate has paid for eight times: corridor `y` is an
+    /// ANGLE, so a "distance" there is not a distance here.
+    /// `lo`/`hi` bound which creatures are asked about, by RADIUS. Water reaches BACKWARDS —
+    /// a river walks ~364 units downhill and a wet cell floods a cell that spans sections — so
+    /// scoping this to the creatures a section just placed misses exactly the ones it drowns.
+    /// Scoping it to the whole world instead would ask `on_land` of every creature alive on
+    /// every section, and that call is not free.
+    fn drown_proof(&mut self, lo: f64, hi: f64) {
+        let reach = 48.0f64;
+        let taken: Vec<(usize, Position)> = self
+            .monsters
+            .iter()
+            .enumerate()
+            .filter(|(_, m)| {
+                let r = m.position.x.hypot(m.position.y);
+                r >= lo && r < hi
+            })
+            .filter(|(_, m)| !self.on_land(m.position.x, m.position.y))
+            .map(|(i, m)| (i, m.position))
+            .collect();
+        for (i, at) in taken {
+            let mut best: Option<(f64, Position)> = None;
+            for ring in 1..=8 {
+                let r = ring as f64 * (reach / 8.0);
+                for k in 0..16 {
+                    let th = std::f64::consts::TAU * (k as f64) / 16.0;
+                    let p = Position::new(at.x + r * th.cos(), at.y + r * th.sin());
+                    if self.on_land(p.x, p.y) && self.t_walkable(p.x, p.y) {
+                        let d = at.distance_to(&p);
+                        if best.as_ref().is_none_or(|(bd, _)| d < *bd) {
+                            best = Some((d, p));
+                        }
+                    }
+                }
+                if best.is_some() {
+                    break;
+                }
+            }
+            if let Some((_, p)) = best {
+                self.monsters[i].position = p;
+            }
+        }
+    }
+
     fn radialize(&mut self, arc_degrees: f64) {
         if arc_degrees <= 0.0 {
             return; // corridor mode — no bend.
@@ -3890,6 +3961,7 @@ impl Arena {
         let w0 = self.corridor_web.len();
         let pk0 = self.peaks.len();
 
+        let band_lo = self.cursor;
         self.push_section(balance, i); // corridor-space append; advances `cursor`.
 
         // Bend this section's freshly-added tail into the arc (same map as radialize).
@@ -3978,6 +4050,11 @@ impl Arena {
         self.x_min = -rmax;
         self.x_max = rmax;
         self.lateral = rmax;
+        // Same reason as the initial chain, and scoped by RADIUS rather than by index: this
+        // section's water reaches BACKWARDS — a river walks ~364 units downhill and a wet cell
+        // floods a cell that spans sections — so the creatures it drowns are mostly ones an
+        // earlier section placed, which an index-scoped sweep would never look at.
+        self.drown_proof((band_lo - 420.0).max(0.0), self.cursor + 60.0);
         i
     }
 
@@ -4731,8 +4808,8 @@ impl Arena {
         // were about to stand in (measured, 9 of 2768 on seed 424242 stood in a channel).
         //
         // Rebuilt here rather than moving the snapshot, because `standable_c` above legitimately
-        // wants the earlier view: nodes are placed BEFORE the channels and cannot be asked about
-        // water that does not exist yet.
+        // wants the earlier view — it gates the ROLL, which has to keep its place in the RNG
+        // stream. A node's VERDICT is taken later, against this view.
         //
         // ⚠️ **IT DIFFERS FROM `wet` IN THE WATER AND IN NOTHING ELSE.** The first cut read every
         // field off `self` instead, which quietly picked up PEAKS raised after the snapshot — so
@@ -8355,7 +8432,42 @@ impl Arena {
         let bridge_snap: Vec<meld_proto::coast::Bridge> = self.bridges.clone();
         let dry_peaks = self.peaks.clone();
         let toff_dry = self.terrain_off;
+        // ⚠️ **THE INDEX IS TAKEN ONCE, NOT PER CREATURE.** This closure runs once per creature
+        // per tick, and `water_index()` costs a `RefCell` borrow, an `Rc` clone and a key build
+        // — measured, paying that per call cancelled the whole saving and an "indexed" query
+        // came out no faster than walking the world's water. Hoisting it out of the loop is the
+        // difference between an index and a ritual.
+        let wix = self.water_index();
         let dry = |p: &Position| -> bool {
+            let (fx, fz) = (p.x as f32, p.y as f32);
+            let (cx, cz) = wix.bucket(p.x, p.y);
+            let mut inland = -1000.0f32;
+            if let Some(v) = wix.basins.get(&(cx, cz)) {
+                for &i in v {
+                    let d = meld_proto::coast::basin_depth(
+                        fx,
+                        fz,
+                        &basins[i as usize],
+                        toff_dry.0,
+                        toff_dry.1,
+                        &dry_peaks,
+                    );
+                    if d > inland {
+                        inland = d;
+                    }
+                }
+            }
+            if let Some(v) = wix.seg_cells.get(&(cx, cz)) {
+                for &i in v {
+                    let sg = wix.segs[i as usize];
+                    let mut a = sg[0];
+                    a[3] = 1.0;
+                    let d = meld_proto::coast::river_depth(fx, fz, &[a, sg[1]]);
+                    if d > inland {
+                        inland = d;
+                    }
+                }
+            }
             meld_proto::coast::Shore {
                 arc_half: radial_half as f32,
                 terrain_off: toff_dry,
@@ -8366,7 +8478,7 @@ impl Arena {
                 rivers: &rivers,
                 bridges: &bridge_snap,
             }
-            .is_land(p.x as f32, p.y as f32)
+            .is_land_given_inland(fx, fz, inland)
         };
         let corridorize = |p: &Position| -> Position {
             if radial_half <= 0.0 {
@@ -17349,6 +17461,43 @@ impl Arena {
 ///
 /// `Clone` because `Arena` is, and cloning shares the built field rather than rebuilding it —
 /// a clone of a world that has already answered "what blocks" should not have to ask again.
+/// **THE WATER, INDEXED** — `WG-11` stage 9.
+///
+/// `Shore::is_land` maxes `basin_depth` over EVERY basin (each of which consults every peak)
+/// and `river_depth` over EVERY river node, and the creature step asks it once per creature
+/// per tick. Measured at d900 with 3,320 creatures: 70 basins x 3 peaks plus 423 river nodes
+/// is ~633 distance tests per creature, ~2.1 MILLION per 100 ms tick, and the step went from
+/// **6.6 ms to 10.0 ms** the moment a cell's wet share started placing basins.
+///
+/// A basin only matters within its own radius and a river segment within `half`, so bucketing
+/// both by position and asking the neighbouring cells gives the SAME answer from a handful of
+/// candidates. It is an INDEX, not a second copy of the rule: the narrowed lists are handed
+/// back to the same `Shore`, so `basin_depth` and `river_depth` still decide.
+///
+/// ⚠️ **This is entirely server-side, and deliberately so.** The cheap way to make a
+/// world-collision question fast is to let the client answer it, and that is the one thing this
+/// engine will not do (CANON §S) — a client that decides what is land decides where it may
+/// walk. Indexing costs nothing in authority: the server still answers, it just stops re-asking
+/// the whole world.
+struct WaterIndex {
+    /// `(basins, rivers, peaks, straits, lobes, bridges)` lengths — the same "key on the
+    /// counts, never on a call site remembering" rule `CachedBlockers` uses, for the same
+    /// reason: water is pushed from nine places during generation.
+    key: (usize, usize, usize, usize, usize, usize),
+    cell: f64,
+    /// cell -> basin indices whose disc reaches it
+    basins: std::collections::HashMap<(i32, i32), Vec<u32>>,
+    /// river SEGMENTS (consecutive pairs, chain breaks skipped) and their buckets
+    segs: Vec<[meld_proto::coast::RiverNode; 2]>,
+    seg_cells: std::collections::HashMap<(i32, i32), Vec<u32>>,
+}
+
+impl WaterIndex {
+    fn bucket(&self, x: f64, z: f64) -> (i32, i32) {
+        ((x / self.cell).floor() as i32, (z / self.cell).floor() as i32)
+    }
+}
+
 #[derive(Clone)]
 struct CachedBlockers {
     /// `(obstacles, structures, ridges)` lengths. A change in any means rebuild.
@@ -17600,6 +17749,121 @@ impl Arena {
     /// served pre-bend positions. The gate caught it as `nothing_stands_in_the_water` and
     /// `the_clear_path_crosses_at_an_isthmus_and_never_swims`: the world was being collided
     /// against in the corridor frame after it had been bent into the world one.
+    /// The water index, built once and reused until the water changes under it.
+    fn water_index(&self) -> std::rc::Rc<WaterIndex> {
+        let key = (
+            self.basins.len(),
+            self.rivers.len(),
+            self.peaks.len(),
+            self.straits.len(),
+            self.lobes.len(),
+            self.bridges.len(),
+        );
+        if let Some(ix) = self.water_ix.borrow().as_ref() {
+            if ix.key == key {
+                return ix.clone();
+            }
+        }
+        // One cell should hold a handful of candidates: wide enough that a query's 3x3
+        // neighbourhood covers the biggest basin, narrow enough that it is not the whole world.
+        let cell = 64.0f64;
+        let mut basins: std::collections::HashMap<(i32, i32), Vec<u32>> = Default::default();
+        for (i, b) in self.basins.iter().enumerate() {
+            let (bx, bz, r) = (b[0] as f64, b[1] as f64, b[2] as f64);
+            let (x0, x1) = (((bx - r) / cell).floor() as i32, ((bx + r) / cell).floor() as i32);
+            let (z0, z1) = (((bz - r) / cell).floor() as i32, ((bz + r) / cell).floor() as i32);
+            for cx in x0..=x1 {
+                for cz in z0..=z1 {
+                    basins.entry((cx, cz)).or_default().push(i as u32);
+                }
+            }
+        }
+        let segs: Vec<[meld_proto::coast::RiverNode; 2]> = self
+            .rivers
+            .windows(2)
+            .filter(|w| w[1][3] < 0.5 && (w[0][2] + w[1][2]) > 0.0)
+            .map(|w| [w[0], w[1]])
+            .collect();
+        let mut seg_cells: std::collections::HashMap<(i32, i32), Vec<u32>> = Default::default();
+        for (i, sg) in segs.iter().enumerate() {
+            let reach = (sg[0][2].max(sg[1][2])) as f64 + 2.0;
+            let (x0, x1) = (
+                ((sg[0][0].min(sg[1][0]) as f64 - reach) / cell).floor() as i32,
+                ((sg[0][0].max(sg[1][0]) as f64 + reach) / cell).floor() as i32,
+            );
+            let (z0, z1) = (
+                ((sg[0][1].min(sg[1][1]) as f64 - reach) / cell).floor() as i32,
+                ((sg[0][1].max(sg[1][1]) as f64 + reach) / cell).floor() as i32,
+            );
+            for cx in x0..=x1 {
+                for cz in z0..=z1 {
+                    seg_cells.entry((cx, cz)).or_default().push(i as u32);
+                }
+            }
+        }
+        let ix = std::rc::Rc::new(WaterIndex { key, cell, basins, segs, seg_cells });
+        *self.water_ix.borrow_mut() = Some(ix.clone());
+        ix
+    }
+
+    /// **IS THIS DRY GROUND — asked through the index.** The same answer as
+    /// `self.shore().is_land`, from a handful of candidates instead of the whole world's water;
+    /// the narrowed lists go back to the same `Shore`, so `basin_depth` and `river_depth` still
+    /// decide.
+    ///
+    /// ⚠️ Each nearby river segment is handed over as its OWN chain — first node flagged as a
+    /// break — so `river_depth`'s `windows(2)` takes the pair and skips the join to whatever
+    /// preceded it. Overlap between buckets is harmless: depth is a max.
+    pub fn on_land_indexed(&self, x: f64, z: f64) -> bool {
+        let ix = self.water_index();
+        let (cx, cz) = ix.bucket(x, z);
+        // ⚠️ **NO ALLOCATION.** The first cut of this collected the nearby basins and segments
+        // into two `Vec`s and handed them to a `Shore` — and measured SLOWER than walking the
+        // whole world (8.8 ms against 7.6), because the creature step asks this once per
+        // creature per tick and two heap allocations cost more than the 210 distance tests they
+        // saved. The candidates are folded in place instead, and the composition around them
+        // stays in `coast` (see `water_given_inland`) rather than being copied here.
+        let (fx, fz) = (x as f32, z as f32);
+        let mut inland = f32::MIN;
+        // ⚠️ **ONE BUCKET, NOT NINE.** Each basin and segment is inserted into every cell its
+        // own reach covers, so a point's OWN cell already lists everything that can touch it —
+        // a 3x3 neighbourhood on top of that is eight redundant hash lookups, and measured that
+        // way the "optimised" query was SLOWER than walking the whole world's water (9.0 ms
+        // against 7.6). Hashing was the cost, not the arithmetic.
+        if let Some(v) = ix.basins.get(&(cx, cz)) {
+            for &i in v {
+                let d = meld_proto::coast::basin_depth(
+                    fx,
+                    fz,
+                    &self.basins[i as usize],
+                    self.terrain_off.0,
+                    self.terrain_off.1,
+                    &self.peaks,
+                );
+                if d > inland {
+                    inland = d;
+                }
+            }
+        }
+        if let Some(v) = ix.seg_cells.get(&(cx, cz)) {
+            for &i in v {
+                let sg = ix.segs[i as usize];
+                // Its own chain: the first node carries the break flag, so `river_depth`'s
+                // `windows(2)` takes this pair and nothing else.
+                let mut a = sg[0];
+                a[3] = 1.0;
+                let d = meld_proto::coast::river_depth(fx, fz, &[a, sg[1]]);
+                if d > inland {
+                    inland = d;
+                }
+            }
+        }
+        if inland == f32::MIN {
+            inland = -1000.0; // what `inland` answers where there is no water at all
+        }
+        self.shore().is_land_given_inland(fx, fz, inland)
+    }
+
     fn dirty_blockers(&self) {
         *self.blockers.borrow_mut() = None;
     }

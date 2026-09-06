@@ -952,6 +952,34 @@ impl<'a> Shore<'a> {
 
     /// **All water, salt and fresh** — the union of [`Self::sea`] and [`Self::inland`], and
     /// the field every "can I stand here" question is a sign test of.
+    /// **The same question with the INLAND term already computed** — for a caller that has
+    /// narrowed the basins and river segments to the few that can matter at this point.
+    ///
+    /// ⚠️ It exists so that narrowing does not mean REIMPLEMENTING. `inland` is a max over
+    /// every basin (each consulting every peak) and every river node, and a caller with a
+    /// spatial index can compute that max from a handful of candidates — but the composition
+    /// around it (the sea, and a bridge beating every water term) is subtle enough that a
+    /// second copy would drift, which is exactly what `city_sea_depth` did for 31 merges. So
+    /// the composition stays here, in one place, and only the expensive term is passed in.
+    pub fn water_given_inland(&self, x: f32, z: f32, inland: f32) -> f32 {
+        let d = self.sea(x, z).max(inland);
+        let span = bridge_clearance(x, z, self.bridges);
+        if span < 0.0 {
+            return d.min(span);
+        }
+        d
+    }
+
+    /// [`Self::is_land`] with the inland term already computed — see [`Self::water_given_inland`].
+    pub fn is_land_given_inland(&self, x: f32, z: f32, inland: f32) -> bool {
+        // Exactly `!is_ocean`, which is `!(water > 0.0)` — NOT `water < 0.0`. The two differ on
+        // the waterline itself, and a shoreline that disagrees with itself by one boundary case
+        // is the sort of thing that puts one creature in the sea on one seed.
+        // NaN is not a position this can be asked about, so `<=` and `!(> )` agree here — but
+        // written as `<=` so clippy is not left guessing about incomparables either.
+        self.water_given_inland(x, z, inland) <= 0.0
+    }
+
     pub fn water(&self, x: f32, z: f32) -> f32 {
         let d = self.sea(x, z).max(self.inland(x, z));
         // ⚠️ **A BRIDGE BEATS EVERY WATER TERM — AND `sea` IS NOT EVERY TERM.**
