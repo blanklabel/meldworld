@@ -542,6 +542,16 @@ pub mod battle {
         /// shouted via `battle.telegraph_started`). `None` for plain actions.
         #[serde(default)]
         pub callout_text: Option<String>,
+        /// **What the action was made of**, so the client can draw it: the type of the
+        /// last blow it landed. `None` when it dealt no damage (a heal, a Defend, a spent
+        /// turn) — the client reads those off the effects instead.
+        ///
+        /// Without this the client cannot tell a fireball from a sword: `action` is the
+        /// `BattleActionKind` (Attack / Skill / Item), never the ability, and a creature's
+        /// kit lives in `meld-world`, which the client does not have. So the element has to
+        /// ride the wire or a fire blast and a hammer look identical.
+        #[serde(default)]
+        pub damage_type: Option<DamageType>,
         pub effects: Vec<Effect>,
     }
     #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -755,6 +755,8 @@ burns on death/leave; some is single-use. See
     pays `encounter_party_scale` BEFORE the split, so a full party's per-hero share is
     ~1.1x a lone hero's. The cost of fielding four is TIME, and that is measured now:
     **4.83 / 1.85 / 1.63 / 1.30 XP per second** at one to four heroes, a monotone decline.
+    ⚠️ **Void from CR-14 on**: with scaling retired the rate is flat across party size, not
+    declining, and those figures were all taken against scaled encounters.
   - *Also shipped:* **one stack ceiling, and Regen finally decays.** `regen +=`
     accumulated without limit and never faded — the only lasting effect in the game with
     neither decay nor expiry — so turns spent on it bought permanent, ever-growing party
@@ -894,6 +896,13 @@ burns on death/leave; some is single-use. See
   fights (which is the tutorial), and by the time four slots are unlocked the runs are
   long. Indexed to the same progression the player feels, since slots open at 1 hero
   L10 / 2 at L20 / 3 at L30.
+  - ⚠️ **HALF OF THIS IS SUPERSEDED BY CR-14.** `encounter_party_scale` is retired: a
+    creature is fixed by its level and nothing reads the party size. The XP split
+    stays and is what makes the flat encounter honest — a fixed pool over a
+    proportionally shorter fight is the same XP per second at every party size. The
+    arc now runs the other way: **a full party's fights are the SHORT ones**, and what
+    mustering buys is survival rather than speed. Every measured figure below (per-fight
+    seconds, XP per second) was taken against scaled encounters and is void.
   - *Measured, not assumed:* a Gravity Well **cannot** be triple-stacked — the cap is
     2, per the class doc. At realistic level/distance pairs a single stack kills an
     ordinary creature in 5 turns at level 1, 2 by level 10, and 1 by level 25; a
@@ -3037,6 +3046,10 @@ Make time in the field a living, dangerous place worth screenshotting.
       wall one party can finish, a Worldbreaker is 20x. 2.5 was tried first and
       `outgrowing_a_fight_lets_you_stomp_it` caught it — that test holds a boss at parity to
       20+ rounds and 2.5 folded one in twelve.
+      - ⚠️ **CR-14 raised it to 22.0.** Every number in this bullet was measured by a party
+        of FOUR meeting `encounter_party_scale`'s further 4.4x; with that retired the
+        constant has to carry the multiple, or the boss is a quarter of the fight it was
+        tuned to be. The fight a party meets is unchanged.
     - ⚠️ **Why a static multiple works at all:** `encounter_party_scale` is a four-entry table
       indexed by hero count and **clamped to its length**, so creature HP stops growing past
       four heroes. A sixteen-hero merge faces the same pool a lone party of four does while
@@ -3044,6 +3057,9 @@ Make time in the field a living, dangerous place worth screenshotting.
       people would make the fight *harder* and raid content would be structurally
       inexpressible as HP. It is also why multiplying by the party count does not double-count
       the merge.
+      - ⚠️ **CR-14 removed the table entirely, which makes this simpler rather than wrong.**
+        Nothing anywhere scales a creature to the crowd in front of it now, so "sized for N
+        parties" is expressible as HP by construction rather than by a clamp holding.
     - **It announces itself before the touch.** `parties:<n>` rides the mob tag as a
       `key:value` in the same SET as `boss:` / `held` / `clash` / `quarry`, and the client
       floats the title and "N parties" at the TOP of the plate in the loudest colour — the one
@@ -3453,8 +3469,10 @@ budgeted so the creature sim never threatens the single-owner loop or the server
     so softening something up and coming back for it was impossible and fleeing a
     nearly-won fight reset it. It now carries its battle HP back as a **fraction**
     (`Battle::combatant_health` + `BattleSlot::monster_combatants`), never the raw
-    number: the fight scaled its pool by `encounter_party_scale`, so a four-hero party
-    chewed through several times the health the spawn actually has. (2) `build_battle`
+    number — which was load-bearing while `encounter_party_scale` multiplied the pool by
+    the party size (a four-hero party chewed through several times the health the spawn
+    actually has), and is the rule the write-back still holds now that CR-14 has retired
+    it. (2) `build_battle`
     built the enemy's *max* HP from its *current* hp, and `Fighter::new` sets
     `hp = max_hp` — so a creature at half entered the fight at "full" with half the pool.
     The damage was real (it died to less) and completely invisible: the bar read 100% and
@@ -3475,6 +3493,41 @@ budgeted so the creature sim never threatens the single-owner loop or the server
     creature at full carries no debt forward, so a healthy stretch cannot bank a burst.
   - The harness reads it too (`look` shows `(clashing, -43%)`), because a decision about
     where to walk that the harness cannot see is a decision nobody can measure.
+- [x] **CR-14 — A creature does not scale to the party facing it.** Reported from play:
+  *"we shouldn't be scaling the encounters with the party size… each creature should have a
+  fixed EXP and a fixed health and fixed attributes for the level it is. So yes you will have
+  an easy time if you stay early in the game… but it'll balance later."* Retires
+  `encounter_party_scale` ([1.0, 1.9, 3.0, 4.4] on creature HP, indexed by hero count) — the
+  balance key, the loader field, the `party_scale` argument threaded through
+  `enemy_fighters`, and `BattleSlot::party_scale`. A creature's HP, attack, defence, speed
+  and XP are now fixed by its level, which is fixed by its distance.
+  - **The old argument was right and did not matter.** Four heroes bring four times the
+    damage, so a flat encounter makes a full party's fights the shortest in the game — and
+    a shorter fight is exactly what mustering should buy. Scaling the world to the party is
+    what made DEPTH mean less every time a hero was added, and depth is the only difficulty
+    axis this game has.
+  - **The XP split is what keeps it honest.** A fixed creature pays a fixed pool divided
+    among the heroes still STANDING, so a lone hero banks the whole thing over four times
+    the turns and each of four banks a quarter over one: **XP per hero per unit of real time
+    is identical at every party size**, and only fight length moves. ⚠️ `fights_per_level`
+    therefore reads as a hero's own effort — a full party needs four times the fights, each
+    about a quarter as long.
+  - ⚠️ **It moved every authored boss number, and forgetting that would have been the
+    regression.** Gatekeepers and the end fight were tuned by PLAYING them with a party of
+    four, which met the 4.4x on top, so leaving those constants alone would have made the
+    apex a quarter of the fight it was measured to be. The old full-party multiple is folded
+    into the authored numbers (`gatekeeper_hp_mult` 5.0 → **22.0**, `end_fight_boss_hp`
+    1000 → **4400**), where it says what it means: this is how big the boss IS, and depth
+    escalates it from there. Same declaration `warbands` already makes one tier up — a boss
+    says how many parties it is for, and **a lone hero loses to a Gatekeeper because they
+    brought one hero, not because the world resized itself down to meet them.**
+  - Three tests asserted the retired rule and are replaced by two asserting the new one:
+    `a_creature_is_the_same_creature_however_many_heroes_face_it` (every stat, at every
+    party size) and `nothing_about_the_party_reaches_the_creature_it_is_fighting` (roster
+    size and who is down both leave it untouched). `qa/tests/pacing_arc.rs` had the arc
+    **inverted** — it held that a full party's fights are LONGER — and now holds the two
+    claims the design actually makes: a full party's fights are shorter, and XP per second
+    is flat across party size.
 - [ ] **CR-3 — Living ecology: diets, needs, and breeding.** Creatures have a
   **diet class — carnivore / omnivore / herbivore** — that drives behavior: they
   eat (hunt prey / graze nodes), sleep (tied to FS-5 day/night), and **breed**,
@@ -4714,6 +4767,28 @@ Directly underpins CR-4 (sim budget), MON-2 (persistent camps/instances), and LC
   (FS) + dungeon traps (DG-3/DG-4) reuse. **Remaining:** a per-chunk serialize cache
   (second-order — dedup identical chunk bytes across viewers) and a QA bot-ramp load
   test to quantify the win.
+- [x] **SC-5 — Build the snapshot for the audience, not for the world.** SC-1 fixed the
+  per-player *query* and left the per-tick *build* alone: `snapshot_msgs` materialised a
+  `SnapshotEntity` — with its `format!` tag — for every creature, obstacle, node, chest,
+  station and structure in the arena, and only then culled. The world streams outward
+  without bound, so that is not a constant: **measured in release at d1269 (4,940
+  creatures, 37,076 obstacles), 8.9 ms of a 15.0 ms tick, ten times a second.**
+  - ⚠️ **And it cost the same 8.5 ms while the only player was in a battle and received
+    none of it** — reported from play as "the world is still streaming while I'm
+    fighting". A player in a fight is on the battle screen driven by battle messages; a
+    player in a dungeon gets that space's own snapshot. Neither is an audience.
+  - `WorldActor::snapshot_audience` computes the recipients and each one's WIDEST reach
+    (interest radius, the Psyker/Iron Hull mob reveal, a hunt's quarry sense, a crafter's
+    node sense) up front, and nothing outside the union of those discs is built at all.
+    Every per-player filter downstream is narrower than its own entry in that union, so
+    the cull is a superset of all of them **by construction** and no player loses an
+    entity a perk had earned.
+  - **Measured after:** roaming 8.9 → **1.26 ms**, in a fight 8.5 → **0.035 ms**; the
+    whole tick 15.0 → **6.3 ms**. Guarded by
+    `a_snapshot_is_built_only_for_players_who_can_receive_one` (structural: the audience
+    is empty in a fight, and its reach really bounds) and
+    `a_fight_does_not_pay_to_build_a_world_nobody_is_looking_at` (a ratio, not a duration
+    — same reason `the_creature_step_stays_linear_in_the_creature_count` is one).
 - [ ] **SC-2 — Sim/IO split (in-process).** The instance task publishes an
   immutable `Arc<WorldSnapshot>` per tick; a worker pool does cull + serialize +
   send in parallel across cores. Decouples sim cadence from snapshot cadence

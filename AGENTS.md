@@ -361,6 +361,35 @@ can never find loot.
 by `effective_gear_bonus`. A property added to one and not the other is a bow that reaches in
 the Vault and not in the fight.
 
+⚠️ **A CREATURE DOES NOT SCALE TO THE PARTY FACING IT, AND THIS FILE USED TO SAY IT DID.**
+`encounter_party_scale` ([1.0, 1.9, 3.0, 4.4] on creature HP, indexed by hero count) is
+**retired**. A creature's HP, attack, defence, speed and XP are fixed by its LEVEL, which is
+fixed by its DISTANCE — and nothing anywhere reads how many heroes are standing in front of
+it (`a_creature_is_the_same_creature_however_many_heroes_face_it`,
+`nothing_about_the_party_reaches_the_creature_it_is_fighting`).
+
+The old argument was that four heroes bring four times the damage, so a flat encounter makes a
+full party's fights the shortest in the game. That is true, and **it is fine — a shorter fight
+is what mustering buys.** Scaling the world to the party is what made depth mean less every
+time a hero was added, and depth is the only difficulty axis this game has. So the early game
+IS easy, and it balances later because you have to walk further to find anything.
+
+**The XP split is what keeps it honest.** A fixed creature pays a fixed pool, divided among the
+heroes still STANDING: a lone hero kills it in four times the turns for four times the share,
+so **XP per hero per unit of real time is identical at every party size**. Only fight LENGTH
+moves. ⚠️ `fights_per_level` therefore reads as a hero's own effort — a full party needs four
+times the fights, each about a quarter as long.
+
+⚠️ **RETIRING IT MOVED EVERY AUTHORED BOSS NUMBER, and forgetting that would have been the
+regression.** Gatekeepers and the end fight were tuned by PLAYING them with a party of four,
+which met the 4.4x on top — so leaving those constants alone would have made the apex a
+quarter of the fight it was measured to be. The old full-party multiple is folded into the
+authored numbers instead (`gatekeeper_hp_mult` 5.0 → 22.0, `end_fight_boss_hp` 1000 → 4400),
+where it now says what it means: **this is how big the boss IS**. Depth escalates it from
+there. It is the same declaration `warbands` already makes one tier up — a boss says how many
+parties it is for, and a lone hero loses to a Gatekeeper because they brought one hero, not
+because the world resized itself down to meet them.
+
 **AN ENCOUNTER IS PACKS OF GROUPS, AND A RANK IS RELATIVE.** A **pack** is how the fight got
 assembled (what `group_around` pulled in) and is only provenance; a **group** — enemies of
 the same type and their minions — is the addressable unit, and it is derived at BATTLE
@@ -557,13 +586,15 @@ boss and none of them said so — measured, a level-40 party ground a 66,792 HP 
 because `merge_cap_gatekeeper_instances` is 4. ONE number is the source of both the size and
 the name, so they cannot disagree about how big the fight is. HP and XP ride the count and
 **attack does not** — a raid boss is a longer fight for more people, not one that one-shots
-whoever arrives first. `gatekeeper_hp_mult` is **per party** (5.0), because a boss must stay a
-real fight for ONE party (`outgrowing_a_fight_lets_you_stomp_it` holds parity to 20+ rounds;
-2.5 folded one in twelve). ⚠️ **The reason a static multiple works: `encounter_party_scale` is
-a four-entry table CLAMPED to its length**, so creature HP stops growing past four heroes — a
-sixteen-hero merge faces the same pool a party of four does while bringing 4x the damage.
-Without that clamp the table is superlinear, more people would make a fight *harder*, and raid
-content could not be expressed as HP at all. It rides the snapshot as a `parties:<n>` marker in
+whoever arrives first. `gatekeeper_hp_mult` is **per party** (22.0), because a boss must stay a
+real fight for ONE party (`outgrowing_a_fight_lets_you_stomp_it` holds parity to 20+ rounds).
+⚠️ **The reason a static multiple works: NOTHING ELSE scales a creature to the crowd in front
+of it** — a sixteen-hero merge faces the pool this constant and `warbands` declare, while
+bringing 4x the damage, which is what makes "sized for N parties" expressible as HP at all.
+⚠️ **22.0, not the 5.0 it read while `encounter_party_scale` was live**: every measurement
+behind that number was taken by a party of FOUR meeting a further 4.4x, so retiring the party
+ramp without folding it in here would have made every boss in the game a quarter of the fight
+it was tuned to be. It rides the snapshot as a `parties:<n>` marker in
 the same SET as `boss:`/`held`/`clash`/`quarry`, and the plate shows it TOPMOST — the only line
 up there a player has to act on before engaging.
 
@@ -1639,13 +1670,14 @@ client menu branch (`menu_entries` keyed off the active hero's `class:` status).
   three-quarters of the pool evaporated. Each hero also carries its **own** banked XP and
   its own next-level bar on `run.party` — those were one shared run-level pair, which is
   why the split was invisible from inside the game.
-- **Encounter XP is split across the party, once.** A four-hero party meets
-  creatures with `encounter_party_scale` more HP, so the encounter pays that same
-  multiple before the split — otherwise the scale is charged twice and a full party
-  earns at a fraction of the solo rate for the same effort. The split itself is the
-  intended cost of fielding more heroes. A co-op **joiner** does not re-scale the
-  creatures and so does not inflate the payout: more heroes splitting the same XP is
-  what pushes a full co-op group toward much harder fights.
+- **Encounter XP is a FIXED pool, split across the heroes still standing.** A creature
+  pays its own `xp_reward` and nothing multiplies it — not the party, not a co-op joiner.
+  Paired with `encounter_party_scale`'s retirement (below), that makes the rate honest:
+  a lone hero banks the whole pool over four times the turns, each of four banks a
+  quarter over one, so **XP per hero per unit of real time is the same at every party
+  size** and only the fight LENGTH moves. What mustering buys is survival, not speed.
+  ⚠️ Read `fights_per_level` as a hero's own effort: a full party needs four times the
+  fights a solo hero does, each roughly a quarter as long.
 - **Four attributes** (`[player.<key>]`: base + `*_per_level`): **Str**→physical atk,
   **Mnd**→manifestation/spell power, **Dex**→ATB speed + dodge, **Wll**→HP + defence. A hero's
   attribute = base + per-level gain × (level−1). Each derived stat = *class base stat* +
@@ -2504,9 +2536,10 @@ places used to leak the damage and every one of them was silent:
 
 - A creature that survived a player's battle resumed roaming at FULL. The wound now rides
   back as a **fraction** (`Battle::combatant_health` keyed through
-  `BattleSlot::monster_combatants`), never the raw battle number — the fight scaled its pool
-  by `encounter_party_scale`, so writing 3000-of-13200 onto a 3000 HP creature leaves it
-  untouched and writing the raw remainder kills it.
+  `BattleSlot::monster_combatants`) rather than the raw battle number. The two are the same
+  number today, but the fraction is what the rule IS — and it is what kept this honest while
+  `encounter_party_scale` multiplied the pool, where writing 3000-of-13200 onto a 3000 HP
+  creature left it untouched and writing the raw remainder killed it.
 - `build_battle` built the enemy's **max** HP from its **current** hp, and `Fighter::new`
   sets `hp = max_hp` — so a creature at half entered the fight at "full" with half the pool.
   The damage was real (it died to less) and completely invisible: the bar read 100%, and an

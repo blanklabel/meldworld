@@ -47,7 +47,7 @@ pub(crate) fn enter_battle(
 /// A 3D combatant in the HD-2D battle arena, keyed by its combatant id.
 #[derive(Component)]
 pub(crate) struct BattleActor {
-    id: String,
+    pub(crate) id: String,
 }
 
 /// The floating diamond marker over an enemy, carrying the enemy id it belongs to
@@ -66,7 +66,7 @@ pub(crate) struct TargetDiamond {
 /// or the grounded shadow.
 #[derive(Component)]
 pub(crate) struct SpriteQuad {
-    id: String,
+    pub(crate) id: String,
     mat: Handle<StandardMaterial>,
     base: Color,
     forward: Vec3,

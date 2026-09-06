@@ -35,6 +35,31 @@ pub(crate) struct BattleFeel {
     /// all-enemy sweep reads as a stack instead of one illegible overstrike. Wants to
     /// exceed `number_size`, or consecutive lines touch.
     pub stack_step: f32,
+
+    // --- Elemental VFX (`battle_fx`) ------------------------------------------------
+    /// How long an impact burst lives. Short on purpose: the Dragon Quest reference is
+    /// punchy, and an effect that outlasts the turn stacks with the next one.
+    pub fx_ttl: f32,
+    /// World-space edge of the impact quad at an average hit, scaled by how hard the blow
+    /// landed. Wants to be a bit wider than a sprite so the burst frames the body.
+    pub fx_size: f32,
+    /// World units above the target's feet the burst is centred — its middle, so roughly
+    /// mid-torso rather than over the head like the damage numbers.
+    pub fx_height: f32,
+    /// How long the full-screen wash behind a party-wide blow runs.
+    pub wash_ttl: f32,
+    /// Extra scale per boon a body carries, capped at three. Deliberately small: a sprite
+    /// that grows 30% overlaps its neighbours in a five-body rank.
+    pub buff_swell: f32,
+    /// Breaths per second of the slow pulse a buffed body rides, so it reads as alive
+    /// rather than simply bigger.
+    pub buff_breath_hz: f32,
+    /// Extra scale a `frenzied` body takes. Larger than one boon's swell — fury should be
+    /// the loudest thing about a sprite that has it.
+    pub rage_swell: f32,
+    /// How fast a sprite eases toward its wanted scale (per second). A snap reads as a
+    /// glitch; too slow and a boon landing has no beat at all.
+    pub buff_ease: f32,
 }
 
 impl Default for BattleFeel {
@@ -56,6 +81,14 @@ impl Default for BattleFeel {
             number_shake: 4.0,
             number_height: 3.1,
             stack_step: 30.0,
+            fx_ttl: 0.55,
+            fx_size: 2.1,
+            fx_height: 0.9,
+            wash_ttl: 0.5,
+            buff_swell: 0.05,
+            buff_breath_hz: 2.4,
+            rage_swell: 0.09,
+            buff_ease: 9.0,
         }
     }
 }
@@ -92,6 +125,14 @@ impl BattleFeel {
                 "number_shake" => self.number_shake = v,
                 "number_height" => self.number_height = v,
                 "stack_step" => self.stack_step = v,
+                "fx_ttl" => self.fx_ttl = v,
+                "fx_size" => self.fx_size = v,
+                "fx_height" => self.fx_height = v,
+                "wash_ttl" => self.wash_ttl = v,
+                "buff_swell" => self.buff_swell = v,
+                "buff_breath_hz" => self.buff_breath_hz = v,
+                "rage_swell" => self.rage_swell = v,
+                "buff_ease" => self.buff_ease = v,
                 _ => warn!("MELD_FEEL: no such knob `{key}`"),
             }
         }
@@ -122,6 +163,8 @@ mod tests {
             ("white_ttl", f.white_ttl),
             ("lunge_ttl", f.lunge_ttl),
             ("atb_flash_ttl", f.atb_flash_ttl),
+            ("fx_ttl", f.fx_ttl),
+            ("wash_ttl", f.wash_ttl),
         ] {
             assert!(ttl > 0.0, "{name} must be positive, got {ttl}");
         }

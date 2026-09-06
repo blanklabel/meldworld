@@ -1,44 +1,38 @@
 //! The pacing arc, played rather than calculated (`PT-4`).
 //!
-//! The design says a new player's first hours are quick and easy — one hero, short
-//! fights, fast levels — and that by the time all four party slots are unlocked a run
-//! is a long haul. Both halves of that come from balance numbers that were tuned
-//! against arithmetic: encounter XP is split across the party, and creature health
-//! scales superlinearly with party size.
+//! ⚠️ **THE ARC THIS FILE ASSERTS WAS INVERTED.** It used to hold that a full party's
+//! fights take LONGER than a lone hero's, because creature health scaled superlinearly
+//! with party size (`encounter_party_scale`, [1.0, 1.9, 3.0, 4.4] on HP). That is
+//! retired: a creature's HP, attack, defence, speed and XP are fixed by its LEVEL, and
+//! nothing looks at how many heroes are standing in front of it.
 //!
-//! Arithmetic cannot tell you whether the resulting game is playable. This drives a
-//! real bot through a real dive at one, two, three and four heroes and reports what
-//! actually happened, then asserts the shape the design claims:
+//! So the design's claim is now the other one, and it is a better claim because it is
+//! about a thing the player feels:
 //!
 //! - a party of any size can win fights (the floor — a wipe at any size is a bug),
-//! - a lone hero banks MORE XP per fight than a full party (the XP split),
-//! - a full party's fights take LONGER than a lone hero's (the encounter ramp).
+//! - a full party's fights are SHORTER, because four heroes bring four times the damage
+//!   to the same creature; that shorter fight is what mustering buys,
+//! - and XP per SECOND is roughly FLAT across party size, because a fixed pool divided
+//!   among the survivors of a fight that took a quarter as long is the same rate.
 //!
-//! Each size gets a budget scaled to its own party, because "a full party's fights
-//! are long" is the claim — timing every size against the same stopwatch would fail
-//! the full party for being exactly as slow as it is meant to be.
+//! That last one is the whole reason the two halves fit together. A lone hero banks the
+//! entire pool over four times the turns; each of four banks a quarter of it over one.
+//! What changes with party size is not how fast you level, it is how much of the world
+//! you can survive — which is the axis the game actually has.
 //!
-//! **What it measures today (seed 1):** 12.5 / 35.1 / 37.5 / 51.6 seconds per fight at
-//! one, two, three and four heroes, and **4.83 / 1.85 / 1.63 / 1.30 XP per second**. The
-//! encounter ramp is real, and the solo era banks roughly 3.7x faster in wall-clock — a
-//! monotone decline across party size, which is the arc the design claims.
+//! Each size still gets a budget scaled to its party, unchanged: it is now generous
+//! rather than necessary, and a generous budget is what keeps a shared, loaded box from
+//! failing the run for being slow.
 //!
-//! Those were 11.7 / 25.8 / 37.5 / 54.0 while creature HP rode the integer `tier(d)`.
-//! Making it continuous in distance (`Scaling::hp_mult`) removed a 6.4x cliff at d=100
-//! and, in exchange, put real health on the d=50..99 ring the cliff had left flat — so
-//! the shallow fights these bots actually reach got longer, and the deep ones got much
-//! shorter. Treat all of these as a SHAPE, not a target: the box is shared and a loaded
-//! run moves them several seconds either way (the 4-hero figure landing below the
-//! 3-hero one is that noise, not an inversion).
+//! ⚠️ **Every measured figure that used to be quoted here is void** — 12.5 / 35.1 / 37.5
+//! / 51.6 seconds per fight and 4.83 / 1.85 / 1.63 / 1.30 XP per second were all taken
+//! against scaled encounters. Read the printout, not this comment, and re-record it here
+//! once it has been run on a quiet box.
 //!
-//! **The XP split is real now, and visible.** An encounter is a POOL divided among the
-//! heroes still STANDING when it ends, and each hero carries its OWN banked XP into
-//! `run.party`. Both halves were missing: the divisor was the whole party rather than
-//! the survivors (so a fallen hero's share simply evaporated), and every hero view
-//! reported one shared run-level number, so four heroes sharing a pool reported the
-//! same figure a lone hero did and the split could not be seen from inside the game.
-//! The assertion below is still `>=` — a lone hero must never bank LESS per fight than
-//! a full party — but it is now measuring something rather than passing on equality.
+//! The bounds below are deliberately LOOSE. This test drives real bots through real-time
+//! loops on a box shared with up to twenty other agents, so a tight rate band is a test
+//! that goes red on its own schedule — and a gate that does that trains everyone to
+//! ignore it. It asserts the SHAPE (ordering, and a wide band on the rate), never a value.
 //!
 //! Requires Postgres: set `MELD_DATABASE_URL` (see qa/scripts/local_pg.sh).
 
@@ -243,12 +237,11 @@ async fn dive(heroes: usize, budget: Duration) -> Dive {
 
 #[tokio::test]
 async fn the_pacing_arc_holds_from_one_hero_to_four() {
-    // The budget SCALES with party size, because the thing under test is that a full
-    // party's fights are long. Measured on seed 1: 14s a fight solo, 23.5s at two,
-    // 37.5s at three — so a four-hero fight lands past 50s, and a flat 50s budget
-    // failed the full party for taking exactly as long as it is designed to take.
-    // Giving every size the same wall-clock is giving the full party a quarter of a
-    // dive and calling the game unwinnable.
+    // The budget still SCALES with party size. It no longer has to — a full party's
+    // fights are the short ones now — but a bigger party spends real time on more
+    // client handshakes and more per-hero turns, and this runs on a box shared with up
+    // to twenty other agents. A budget that is merely generous costs nothing; one that
+    // is exactly enough is a test that fails on someone else's build.
     let budget = |heroes: usize| Duration::from_secs(45 + 35 * (heroes as u64 - 1));
     let mut runs = Vec::new();
     for heroes in [1usize, 2, 3, 4] {
@@ -261,9 +254,10 @@ async fn the_pacing_arc_holds_from_one_hero_to_four() {
         );
     }
 
-    // The floor: every party size can actually play the game. A size that cannot win
-    // a fight in fifty seconds is a balance bug, and this is exactly the check that
-    // caught creature attack being multiplied by party size.
+    // The floor: every party size can actually play the game. A size that cannot win a
+    // fight inside its budget is a balance bug — this is the check that caught creature
+    // attack being multiplied by party size, and it is the one that would catch a solo
+    // hero being left unable to kill anything once the world stopped shrinking for them.
     for d in &runs {
         assert!(
             d.fights_won > 0,
@@ -275,32 +269,33 @@ async fn the_pacing_arc_holds_from_one_hero_to_four() {
         assert!(!d.wiped, "a party of {} was wiped out", d.heroes);
     }
 
-    // The XP split, measured as a RATE rather than per fight — because per fight is not
-    // the claim the balance actually makes. An encounter pays `encounter_party_scale`
-    // (4.4x at four heroes) BEFORE it is divided among the survivors, so a full party's
-    // per-hero share of a single fight is roughly 1.1x a lone hero's, not a quarter of
-    // it. That is deliberate: charging the party scale on both sides would bill it twice.
-    //
-    // The cost of fielding four is TIME. Their fights take about three times as long, so
-    // the lone hero banks far more XP per SECOND — which is the thing "the solo era
-    // levels fast" actually means, and the thing worth defending in a test.
     let solo = &runs[0];
     let full = &runs[3];
-    let per_sec = |d: &Dive| d.xp as f64 / (d.secs_per_fight * d.fights_won.max(1) as f64).max(0.1);
-    let (solo_rate, full_rate) = (per_sec(solo), per_sec(full));
-    assert!(
-        solo_rate >= full_rate,
-        "a lone hero banked XP more slowly than a full party: {solo_rate:.2}/s vs \
-         {full_rate:.2}/s — the party ramp is not paying for itself"
-    );
 
-    // The encounter ramp: creature health scales superlinearly with party size, so a
-    // full party's fights are longer than a lone hero's rather than four times faster.
+    // WHAT MUSTERING BUYS: a shorter fight. The creature is the same creature, so four
+    // heroes bring four times the damage to the same pool of health. If a full party's
+    // fights are not shorter, something is still sizing the world to the party.
     assert!(
-        full.secs_per_fight >= solo.secs_per_fight,
-        "a full party's fights were SHORTER than a lone hero's ({:.1}s vs {:.1}s) — the \
-         party ramp is not doing its job",
+        full.secs_per_fight <= solo.secs_per_fight,
+        "a full party's fights were no shorter than a lone hero's ({:.1}s vs {:.1}s) — \
+         something is still scaling the encounter to the party",
         full.secs_per_fight,
         solo.secs_per_fight
+    );
+
+    // AND WHAT IT DOES NOT BUY: a faster ladder. A fixed pool split among the survivors
+    // of a proportionally shorter fight is the SAME XP per second at every party size,
+    // which is what makes the split fair rather than a tax on bringing friends.
+    //
+    // A wide band on purpose (see the header). These are real-time bot dives on a shared
+    // box; anything tighter than 3x either way is measuring the machine's load.
+    let per_sec = |d: &Dive| d.xp as f64 / (d.secs_per_fight * d.fights_won.max(1) as f64).max(0.1);
+    let (solo_rate, full_rate) = (per_sec(solo), per_sec(full));
+    let ratio = solo_rate / full_rate.max(1e-6);
+    assert!(
+        (0.33..=3.0).contains(&ratio),
+        "XP per second is not flat across party size: {solo_rate:.2}/s solo vs \
+         {full_rate:.2}/s at four ({ratio:.2}x). A fixed creature split among the \
+         survivors of a shorter fight should pay every size about the same rate"
     );
 }

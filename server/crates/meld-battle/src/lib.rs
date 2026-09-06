@@ -676,6 +676,20 @@ pub struct Resolution {
     /// Shout text for an *instant* monster ability (telegraphed ones already
     /// shouted via [`Event::TelegraphStarted`]). `None` for plain actions.
     pub callout_text: Option<String>,
+    /// **What this action was made of**, for the client's battle VFX: the type of the
+    /// last blow it landed. `None` for an action that dealt no damage at all (a heal, a
+    /// Defend, a spent turn) — those are told apart by their effects.
+    ///
+    /// Stamped centrally by [`Battle::stamped`] off the one place typed damage is
+    /// applied, rather than threaded through twelve resolvers. A resolver that lands a
+    /// new kind of blow therefore gets its VFX the day it is written, which is the same
+    /// argument as the audience funnel: a property every path already passes through
+    /// should be read there, not re-declared at each exit.
+    ///
+    /// ⚠️ It is the LAST blow, not a set. Every ability in this game is one element, and
+    /// the client wants one effect to play; a mixed-element ability would need this to
+    /// become a list before it could be drawn honestly.
+    pub damage_type: Option<DamageType>,
     pub effects: Vec<ResolvedEffect>,
 }
 
@@ -733,6 +747,14 @@ pub enum Reject {
 }
 
 pub struct Battle {
+    /// The damage type of the last blow landed, for the client's battle VFX. Written by
+    /// [`Battle::apply_typed_damage`] and the basic-attack path — the two places a blow's
+    /// element is actually decided — and TAKEN by [`Battle::stamped`] as each resolution
+    /// leaves, so it never leaks into the next one.
+    ///
+    /// Purely presentational: nothing in the engine reads it, and it is deliberately not
+    /// on `Fighter`, because it is a property of an ACTION rather than of a combatant.
+    last_damage_type: Option<DamageType>,
     /// Events a resolver raised that are not the resolution itself — a Shifter's
     /// theft, say, which only the server can settle. `submit` drains this, so a
     /// resolver deep in the call tree can report a fact without threading a return
@@ -1094,6 +1116,7 @@ impl Battle {
             }
         }
         Battle {
+            last_damage_type: None,
             battle_id,
             encounter_class,
             pending_events: Vec::new(),
@@ -1523,7 +1546,7 @@ impl Battle {
                 if self.fighters[i].alive {
                     let mut res = self.resolve_ability(i, ability_idx, &mut events);
                     prepend_effects(&mut res, upkeep);
-                    events.push(Event::Resolved(res));
+                    events.push(Event::Resolved(self.stamped(res)));
                 } else if !upkeep.is_empty() {
                     // The channeler died to its own DoT at cast time — report
                     // the upkeep as an auto action so the client sees the KO.
@@ -1565,7 +1588,7 @@ impl Battle {
                     let mut res = self.skipped_turn(i, "broke_free");
                     res.effects.extend(broke);
                     self.fighters[i].awaiting = false;
-                    events.push(Event::Resolved(res));
+                    events.push(Event::Resolved(self.stamped(res)));
                     self.check_terminal(&mut events);
                     continue;
                 }
@@ -1579,7 +1602,7 @@ impl Battle {
                 prepend_effects(&mut res, upkeep);
                 self.fighters[i].awaiting = false;
                 self.reset_gauge(i);
-                events.push(Event::Resolved(res));
+                events.push(Event::Resolved(self.stamped(res)));
                 self.check_terminal(&mut events);
                 continue;
             }
@@ -1603,7 +1626,7 @@ impl Battle {
                 };
                 prepend_effects(&mut res, upkeep);
                 self.fighters[i].awaiting = false;
-                events.push(Event::Resolved(res));
+                events.push(Event::Resolved(self.stamped(res)));
                 self.check_terminal(&mut events);
                 continue;
             }
@@ -1633,7 +1656,7 @@ impl Battle {
                         self.resolve_defend(i, None, true)
                     };
                     prepend_effects(&mut res, upkeep);
-                    events.push(Event::Resolved(res));
+                    events.push(Event::Resolved(self.stamped(res)));
                     self.check_terminal(&mut events);
                 }
             } else {
@@ -1663,7 +1686,7 @@ impl Battle {
                 self.active_actor = None;
                 if let Some(mut res) = taken {
                     prepend_effects(&mut res, upkeep);
-                    events.push(Event::Resolved(res));
+                    events.push(Event::Resolved(self.stamped(res)));
                 }
                 // A CREATURE'S turn can report something only the server can settle too —
                 // `CR-11`'s call is the first one that does. `submit` drained this and
@@ -1823,7 +1846,7 @@ impl Battle {
         // Prepend the upkeep effects so the client sees Regen/Barrier before the action.
         prepend_effects(&mut res, upkeep);
         let fled = res.flee_success == Some(true);
-        events.push(Event::Resolved(res));
+        events.push(Event::Resolved(self.stamped(res)));
         // A resolver may have reported something only the server can settle (a
         // Shifter picking a pocket); hand it up alongside the resolution.
         events.extend(std::mem::take(&mut self.pending_events));
@@ -1989,7 +2012,7 @@ impl Battle {
         effects.extend(self.gain_adrenaline(actor_i));
         self.fighters[actor_i].defending = false;
         self.reset_gauge(actor_i);
-        Ok(Resolution { callout_text: None,
+        Ok(Resolution { damage_type: None, callout_text: None,
             action_id,
             actor_id: self.fighters[actor_i].combatant_id.clone(),
             action: BattleActionKind::Attack,
@@ -3506,7 +3529,7 @@ impl Battle {
         } else {
             self.reset_gauge(actor_i);
         }
-        Resolution { callout_text: None,
+        Resolution { damage_type: None, callout_text: None,
             action_id,
             actor_id: self.fighters[actor_i].combatant_id.clone(),
             action: BattleActionKind::Skill,
@@ -4519,7 +4542,7 @@ impl Battle {
         action_id: Option<Id>,
         effects: Vec<ResolvedEffect>,
     ) -> Resolution {
-        Resolution { callout_text: None,
+        Resolution { damage_type: None, callout_text: None,
             action_id,
             actor_id: self.fighters[actor_i].combatant_id.clone(),
             action,
@@ -4532,7 +4555,7 @@ impl Battle {
     fn resolve_defend(&mut self, actor_i: usize, action_id: Option<Id>, auto: bool) -> Resolution {
         self.fighters[actor_i].defending = true;
         self.reset_gauge(actor_i);
-        Resolution { callout_text: None,
+        Resolution { damage_type: None, callout_text: None,
             action_id,
             actor_id: self.fighters[actor_i].combatant_id.clone(),
             action: BattleActionKind::Defend,
@@ -4566,7 +4589,7 @@ impl Battle {
                 }
             }
         }
-        Resolution { callout_text: None,
+        Resolution { damage_type: None, callout_text: None,
             action_id,
             actor_id: self.fighters[actor_i].combatant_id.clone(),
             action: BattleActionKind::Flee,
@@ -4615,7 +4638,7 @@ impl Battle {
             if low && f.max_hp > 0 {
                 self.fighters[actor_i].alive = false; // leaves the field
                 self.reset_gauge(actor_i);
-                return Some(Resolution { callout_text: None,
+                return Some(Resolution { damage_type: None, callout_text: None,
                     action_id: None,
                     actor_id: self.fighters[actor_i].combatant_id.clone(),
                     action: BattleActionKind::Flee,
@@ -4648,7 +4671,7 @@ impl Battle {
             // Reported, not resolved: the engine has no overworld. Whoever is close
             // enough arrives through `join`, the raid-merge door.
             self.pending_events.push(Event::Howled { combatant_id: id.clone() });
-            return Some(Resolution {
+            return Some(Resolution { damage_type: None,
                 // Shouted for the same reason a gang-up mark is: creatures appearing
                 // mid-fight with no explanation reads as the game cheating.
                 callout_text: Some("A CALL GOES UP FOR THE PACK!".to_string()),
@@ -4688,7 +4711,7 @@ impl Battle {
             }
         };
         self.reset_gauge(actor_i);
-        Some(Resolution {
+        Some(Resolution { damage_type: None,
             // A pack converging on your healer with no explanation reads as the game
             // cheating, so the mark is shouted on the turn it is set or moved — the same
             // bubble a telegraphed ability uses.
@@ -4970,7 +4993,7 @@ impl Battle {
             }
         }
         self.reset_gauge(actor_i);
-        Resolution {
+        Resolution { damage_type: None,
             action_id: None,
             actor_id: self.fighters[actor_i].combatant_id.clone(),
             action: BattleActionKind::Skill,
@@ -5186,8 +5209,16 @@ impl Battle {
     }
 
     /// A pure-upkeep resolution (DoT killed the actor before it could act).
+    /// Hand a finished resolution the element of the blow it landed, and clear the slate
+    /// for the next one. `take` rather than a read: a Defend following a fireball must not
+    /// inherit the fire.
+    fn stamped(&mut self, mut res: Resolution) -> Resolution {
+        res.damage_type = self.last_damage_type.take();
+        res
+    }
+
     fn upkeep_only(&self, actor_i: usize, effects: Vec<ResolvedEffect>) -> Resolution {
-        Resolution {
+        Resolution { damage_type: None,
             action_id: None,
             actor_id: self.fighters[actor_i].combatant_id.clone(),
             action: BattleActionKind::Defend,
@@ -5277,7 +5308,7 @@ impl Battle {
             hp_after: self.fighters[i].hp,
         };
         self.reset_gauge(i);
-        Resolution {
+        Resolution { damage_type: None,
             action_id: None,
             actor_id: self.fighters[i].combatant_id.clone(),
             action: BattleActionKind::Defend,
@@ -5532,6 +5563,12 @@ impl Battle {
         raw: i32,
         ty: DamageType,
     ) -> Vec<ResolvedEffect> {
+        // What the client will DRAW. Recorded here rather than at each ability, because
+        // this is the one point every typed blow passes through — the same reason the
+        // blaze bonus and the stagger multiplier live in `apply_damage_reaching`. An
+        // immune hit still records its type: "your fire did nothing" is a fire effect
+        // and a fizzle, which is more legible than no effect at all.
+        self.last_damage_type = Some(ty);
         let (mult, flag) = self.modifier_for(target_i, ty);
         match flag {
             Some(ModifierFlag::Immune) => vec![ResolvedEffect {

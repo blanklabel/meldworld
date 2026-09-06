@@ -927,19 +927,6 @@ pub fn party_fighters(
 /// One creature joining a battle: its spawn + the combatant id to give it.
 pub type EnemyMember<'a> = (&'a MonsterSpawn, Id);
 
-#[allow(clippy::too_many_arguments)]
-/// How much tougher a creature is for the size of the party facing it. Indexed off
-/// `[runs] encounter_party_scale`; a party larger than the table is clamped to its
-/// last entry, and an empty party (impossible in practice) scales by 1.
-pub fn encounter_party_scale(party_size: usize, balance: &Balance) -> f64 {
-    let table = &balance.runs.encounter_party_scale;
-    if table.is_empty() || party_size == 0 {
-        return 1.0;
-    }
-    let idx = (party_size - 1).min(table.len() - 1);
-    table[idx].max(0.1)
-}
-
 /// **At most one creature per encounter hunts the party's ROLES.**
 ///
 /// Profiles are rolled per creature, independently, so nothing stopped a pack of five all
@@ -995,10 +982,6 @@ fn hash_id(id: &str) -> u64 {
 /// already had fixed above it). A reinforcement that arrived through a second copy of this
 /// would be a creature missing whichever line the copy forgot.
 ///
-/// `party_scale` MUST be the scale the battle was built with, not one recomputed from who is
-/// standing in it now: `Battle::join` never rescales enemies, so a creature called into a
-/// fight has to be sized against the party that started it.
-///
 /// `group_base` offsets the group ids so a reinforcement wave cannot collide with the groups
 /// already in the fight. Latecomers therefore form their own group rather than merging into
 /// the knot of their own species already on the field — a group is a property of the
@@ -1006,7 +989,6 @@ fn hash_id(id: &str) -> u64 {
 pub fn enemy_fighters(
     enemies: &[EnemyMember],
     balance: &Balance,
-    party_scale: f64,
     group_base: u32,
 ) -> Vec<Fighter> {
     // Stable group ids for this encounter, one per creature TYPE present. A boss fighting
@@ -1051,19 +1033,14 @@ pub fn enemy_fighters(
                 None,
                 Some(name),
                 m.level,
-                // Its FULL health, scaled. `Fighter::new` sets `hp = max_hp`, so passing
-                // the creature's CURRENT hp here made a wounded creature enter the fight
-                // at "full" with a smaller pool: the damage a skirmish had already done
-                // was real (it died to less) but completely invisible — the HP bar read
-                // 100%, and an execute that scales with missing HP found none missing.
-                // A wound the player cannot see is not an opportunity.
-                ((m.max_hp.max(1) as f64) * party_scale).round() as i32,
-                // NOT scaled by party size. A party of four brings four times the
-                // damage, so the creature needs more HEALTH to last — but it does not
-                // swing four times harder at each individual hero, and scaling attack
-                // made a bigger party strictly more lethal per head. (Measured: at
-                // distance 0 a creature hit for 31 against a level-1 hero's 34 HP,
-                // and a four-bot party wiped instead of winning.)
+                // Its FULL health, exactly as the world holds it. `Fighter::new` sets
+                // `hp = max_hp`, so passing the creature's CURRENT hp here made a wounded
+                // creature enter the fight at "full" with a smaller pool: the damage a
+                // skirmish had already done was real (it died to less) but completely
+                // invisible — the HP bar read 100%, and an execute that scales with
+                // missing HP found none missing. A wound the player cannot see is not an
+                // opportunity.
+                m.max_hp.max(1),
                 m.atk,
                 m.def,
                 m.speed_stat,
@@ -1073,10 +1050,8 @@ pub fn enemy_fighters(
             // And the wound it walked in with (`CR-2`). Creature HP persists in the
             // overworld — a skirmish it survived, a fight a party fled from — so a
             // creature you find already bleeding fights at the health it actually has.
-            // Scaled by the same `party_scale` as its max, so the FRACTION is preserved:
-            // a creature at half stays at half whether one hero or four are facing it.
             if m.hp < m.max_hp {
-                f.hp = ((m.hp.max(1) as f64) * party_scale).round().clamp(1.0, f.max_hp as f64) as i32;
+                f.hp = m.hp.clamp(1, f.max_hp);
             }
             // The rank it stood in out in the world is the rank it fights in. The engine
             // already halves physical damage both ways for a back row (`back_row_damage_mult`
@@ -1191,18 +1166,17 @@ pub fn build_battle(
     surprise: bool,
 ) -> Battle {
     let mut allies = party_fighters(party, runs, balance, row_overrides);
-    // Creatures scale with how many heroes are facing them, on top of the distance
-    // curve. Four heroes bring ~4x the damage, so a flat encounter would make a full
-    // party's fights the SHORTEST in the game; the ramp is superlinear so the arc runs
-    // the intended way — quick solo fights early, long ones once the party is full.
-    let party_scale = encounter_party_scale(allies.len(), balance);
+    // ⚠️ NOTHING HERE LOOKS AT HOW MANY HEROES ARE STANDING. A creature is what its level
+    // and its depth made it, and a party of four buys a shorter fight rather than a bigger
+    // creature — which is the honest reading of bringing four times the damage, and what
+    // keeps DEPTH the difficulty axis instead of head-count.
     for (f, hp) in allies.iter_mut().zip(hp_overrides.iter()) {
         if let Some(h) = hp {
             f.hp = (*h).clamp(0, f.max_hp);
         }
     }
 
-    let enemy_fighters = enemy_fighters(enemies, balance, party_scale, 0);
+    let enemy_fighters = enemy_fighters(enemies, balance, 0);
 
     // The encounter class is the strongest present (gatekeeper > elite > standard).
     let encounter_class = enemies
@@ -1593,9 +1567,11 @@ mod tests {
         // win-condition dial: cutting HP alone leaves a party dying at the same turn count.
         let turns_survived =
             TURNS_SURVIVED_AT_REFERENCE_ATK * (REFERENCE_ATK / e.end_fight_boss_atk as f64);
-        let total_boss_hp = e.end_fight_boss_hp as f64
-            * e.end_fight_bosses as f64
-            * encounter_party_scale(4, &b);
+        // No party multiple any more (`encounter_party_scale` is retired): the authored
+        // number IS what a party meets, which is why it now carries the old full-party 4.4x
+        // folded into it. The margin this asserts is therefore unchanged from the runs it
+        // was calibrated against — 4400 x 3 is exactly the 1000 x 3 x 4.4 they measured.
+        let total_boss_hp = e.end_fight_boss_hp as f64 * e.end_fight_bosses as f64;
         let turns_to_kill = total_boss_hp / OUTPUT_PER_HERO_TURN;
         let margin = turns_to_kill / turns_survived;
 
@@ -2223,8 +2199,8 @@ mod tests {
         let (_, foes) = battle.wire_combatants();
         assert_eq!(foes[0].max_hp, whole, "the wound shrank the creature instead of hurting it");
         assert!(foes[0].hp < foes[0].max_hp, "the wound is invisible in the fight");
-        // The FRACTION is what carried, not a raw number — that is what keeps it honest
-        // once `encounter_party_scale` has multiplied the pool for a bigger party.
+        // The wound carries at the fraction it stood at. Nothing rescales the pool any
+        // more, so the fight's number and the world's number are the same number.
         let left = foes[0].hp as f64 / foes[0].max_hp as f64;
         assert!((left - 0.5).abs() < 0.02, "half a creature came in at {left:.3}");
         // Alive, whatever the rounding: a creature written in dead is a corpse nobody killed.
@@ -2662,37 +2638,50 @@ mod tests {
     /// heroes' shares, and a survivor in a LATE slot was the worst case: the divisor and
     /// the vector sizing were one argument (`party_size.max(slot + 1)`), so the last hero
     /// standing in slot 3 still divided by four.
-    /// **The encounter scales off the ROSTER, not the survivors** — and that pairing is
-    /// what makes the XP rule above a risk rather than free money. A party of four that
-    /// loses three still meets a four-hero encounter with one hero standing, so the extra
-    /// XP is bought with a fight scoped for people who are no longer in it. Scale this to
-    /// the living count instead and the risk half quietly disappears.
+    ///
+    /// ⚠️ **This test used to assert the OPPOSITE of what it now does.** It read "the
+    /// encounter scales off the ROSTER, not the survivors", and paired that with the XP
+    /// rule to argue the survivor's extra share was bought with a fight scoped for people
+    /// no longer in it. `encounter_party_scale` is retired, so there is no scoping at all:
+    /// the creature is the same creature for one hero or four, standing or fallen.
+    ///
+    /// What is left is a stronger property, and the one worth pinning — **nothing about
+    /// the party reaches the enemy assembly**. Not the roster size, not who is down. If a
+    /// number in here ever moves with the party again, this fails.
     #[test]
-    fn a_fight_is_scoped_to_the_roster_even_when_only_one_hero_is_left() {
+    fn nothing_about_the_party_reaches_the_creature_it_is_fighting() {
         let b = Balance::load_default().unwrap();
         let mut runs = InstanceRun::new("i".into(), 0, &b, 0);
         runs.add_party(vec![("p1".into(), "u1".into(), CharacterClass::Explorer, "r1".into())]);
         let arena = meld_world::Arena::generate(&b, 5, true);
 
-        let hp_of = |party: &[PartyMember], hp: &[Option<i32>]| -> i32 {
+        let foe_of = |party: &[PartyMember], hp: &[Option<i32>]| -> (i32, i32, i32) {
             let enemies = vec![(&arena.monsters[0], "mc".to_string())];
             let battle = build_battle("b".into(), party, &enemies, &runs, &b, 1, hp, &[], false);
             let (_, foes) = battle.wire_combatants();
-            foes[0].max_hp
+            let f = &foes[0];
+            (f.max_hp, f.hp, f.level)
         };
         let member = |n: usize| -> PartyMember {
             ("p1".to_string(), format!("c{n}"), CharacterClass::Explorer, GearBonus::default())
         };
 
-        let solo = hp_of(&[member(0)], &[None]);
+        let solo = foe_of(&[member(0)], &[None]);
         let four: Vec<PartyMember> = (0..4).map(member).collect();
-        let full = hp_of(&four, &[None, None, None, None]);
-        assert!(full > solo, "a four-hero encounter should be the bigger one");
-
-        // Three of the four are down. The creature is exactly as big as it was.
-        let three_down = hp_of(&four, &[None, Some(0), Some(0), Some(0)]);
-        assert_eq!(three_down, full, "the encounter shrank when the party died");
-        assert!(three_down > solo, "the survivor got a solo-sized fight for free");
+        assert_eq!(
+            foe_of(&four, &[None, None, None, None]),
+            solo,
+            "the creature changed size when the party did"
+        );
+        // Three of the four are down: still the same creature. It was never scoped to
+        // them, so there is nothing for their falling to shrink.
+        assert_eq!(
+            foe_of(&four, &[None, Some(0), Some(0), Some(0)]),
+            solo,
+            "the creature changed when the party died around it"
+        );
+        // And it is the world's own number, not one derived at assembly.
+        assert_eq!(solo.0, arena.monsters[0].max_hp, "the creature entered the fight resized");
     }
 
     #[test]
@@ -2818,33 +2807,25 @@ mod tests {
         assert_eq!(four, 100);
     }
 
+    /// **A CREATURE IS THE SAME CREATURE WHATEVER THE PARTY SIZE.**
+    ///
+    /// Two tests used to live here asserting the opposite — that a full party met a
+    /// tougher creature (`encounter_party_scale`, [1.0, 1.9, 3.0, 4.4] on HP). The
+    /// argument was that four heroes bring four times the damage, so a flat encounter
+    /// makes a full party's fights the shortest in the game. That is true and it is
+    /// FINE: a shorter fight is what bringing four heroes buys. Scaling the world to
+    /// the party is what made depth mean less every time a hero was added, and depth
+    /// is the only difficulty axis this game has.
+    ///
+    /// Every stat, not just health: HP, attack, defence and speed all come off the
+    /// spawn untouched, so a party cannot change what is standing in front of it by
+    /// mustering. What a lone hero meets at a Gatekeeper is the wall a full party
+    /// meets — and losing to it means coming back with a party, not being handed a
+    /// smaller boss.
     #[test]
-    fn creatures_get_tougher_as_the_party_grows_so_the_arc_runs_the_right_way() {
+    fn a_creature_is_the_same_creature_however_many_heroes_face_it() {
         let b = Balance::load_default().unwrap();
-        // Four heroes bring roughly four times the damage. If encounters did not
-        // scale, a full party's fights would be the SHORTEST in the game — the exact
-        // opposite of the intended arc (quick solo fights early, long ones late).
-        let solo = encounter_party_scale(1, &b);
-        let full = encounter_party_scale(4, &b);
-        assert_eq!(solo, 1.0, "a lone hero faces the creature as written");
-        assert!(full > solo * 3.0, "a full party's encounters barely grew: {full}");
-        // Monotonic, so every unlocked slot makes the world push back harder.
-        for n in 1..4 {
-            assert!(
-                encounter_party_scale(n + 1, &b) > encounter_party_scale(n, &b),
-                "party of {} is not harder than {n}",
-                n + 1
-            );
-        }
-        // Out-of-range party sizes clamp instead of panicking.
-        assert_eq!(encounter_party_scale(9, &b), full);
-        assert_eq!(encounter_party_scale(0, &b), 1.0);
-    }
-
-    #[test]
-    fn the_same_creature_hits_harder_when_more_heroes_are_present() {
-        let b = Balance::load_default().unwrap();
-        let hp_of = |size: usize| {
+        let fought_by = |size: usize| {
             let party: Vec<PartyMember> = (0..size)
                 .map(|i| {
                     (
@@ -2873,15 +2854,23 @@ mod tests {
                 &[],
                 false,
             );
-            battle.combatant_hp("e0").unwrap_or(0)
+            let (_, foes) = battle.wire_combatants();
+            let f = foes.into_iter().find(|f| f.combatant_id == "e0").expect("no enemy built");
+            (f.max_hp, m.atk, m.def, m.speed_stat)
         };
-        assert!(
-            hp_of(4) > hp_of(1),
-            "the same creature was no tougher against four heroes"
-        );
+        let solo = fought_by(1);
+        for size in 2..=4 {
+            assert_eq!(
+                fought_by(size),
+                solo,
+                "a party of {size} met a different creature than a lone hero did"
+            );
+        }
+        // And the fight really is built from what the world holds, not from a number
+        // derived at assembly: the pool is the spawn's own max HP.
+        let m = meld_world::MonsterSpawn::dungeon_boss(&b, "m".into(), "forest", "", 200, 7);
+        assert_eq!(solo.0, m.max_hp, "the creature entered the fight resized");
     }
-
-
 
     fn run_with_pouches(heroes: usize) -> PlayerRun {
         PlayerRun {
@@ -3120,66 +3109,6 @@ mod tests {
     }
 
 
-
-    #[test]
-    fn a_bigger_party_faces_a_tougher_creature_but_not_a_harder_hitting_one() {
-        let b = Balance::load_default().unwrap();
-        let build = |size: usize| {
-            let party: Vec<PartyMember> = (0..size)
-                .map(|i| {
-                    (
-                        format!("p{i}"),
-                        format!("c{i}"),
-                        CharacterClass::Hunter,
-                        GearBonus::default(),
-                    )
-                })
-                .collect();
-            let mut runs = InstanceRun::new("i".into(), 0, &b, 0);
-            runs.add_party(
-                (0..size)
-                    .map(|i| (format!("p{i}"), "u".into(), CharacterClass::Hunter, "r".into()))
-                    .collect(),
-            );
-            let arena = meld_world::Arena::generate(&b, 7, false);
-            let m = arena
-                .monsters
-                .iter()
-                .find(|m| m.encounter_class == "standard")
-                .expect("a standard creature")
-                .clone();
-            let atk = m.atk;
-            let battle = build_battle(
-                "b".into(),
-                &party,
-                &[(&m, "e0".to_string())],
-                &runs,
-                &b,
-                1,
-                &[],
-                &[],
-                false,
-            );
-            (battle.combatant_hp("e0").unwrap_or(0), atk)
-        };
-        let (hp1, base_atk) = build(1);
-        let (hp4, _) = build(4);
-        // Health scales: four heroes bring four times the damage, so the creature has
-        // to LAST longer or a full party's fights are the shortest in the game.
-        assert!(hp4 > hp1, "a creature facing four heroes was no tougher");
-
-        // Attack deliberately does NOT scale. A pack does not swing four times harder
-        // at each individual hero; scaling it made a larger party strictly more lethal
-        // per head, and a level-1 four-bot party wiped at distance 0 instead of
-        // winning. The guard for that is the `four_players_kill_monster` conformance
-        // test — it drives real bots over the wire and is what caught it, which
-        // arithmetic here did not.
-        assert!(
-            hp4 < hp1 * 5,
-            "the party ramp is scaling something it should not: {hp1} -> {hp4}"
-        );
-        let _ = base_atk;
-    }
 
     /// FS-4: a raid boss answers a CROWD with its wide half — played out, not asserted.
     ///

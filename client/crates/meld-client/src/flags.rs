@@ -115,6 +115,23 @@ pub(crate) fn battle_mockup_flag() -> bool {
     std::env::var("MELD_BATTLE").is_ok()
 }
 
+/// Fire an ability's VFX on a loop in the battle mockup, so the elemental bursts and the
+/// screen wash can be looked at. `MELD_FX=fire|ice|lightning|water|wind|earth|mind|poison|
+/// celestial|shadow|slash|blunt|pierce|all`.
+///
+/// The mockup is deliberately STATIC — no server, no engine, nothing resolves — so without
+/// this there is no way to see a battle effect at all except by walking a real party into a
+/// real fight and hoping the creature happens to cast. `make check` never boots the app, so
+/// a WGSL error in `ability_fx.wgsl` would otherwise reach `main` with every test green;
+/// this is the fixture that makes the shader observable. Same argument as `MELD_TALLY`
+/// holding a haul on screen.
+///
+/// `MELD_FX=all` cycles every element in turn, which is the one frame that proves each
+/// branch of the shader compiles and draws something distinct.
+pub(crate) fn battle_fx_flag() -> Option<String> {
+    std::env::var("MELD_FX").ok().filter(|s| !s.is_empty())
+}
+
 /// Offline mockups for the overworld overlays (`?inventory` / `?levelup`, or
 /// `MELD_INVENTORY` / `MELD_LEVELUP`).
 pub(crate) fn inventory_mockup_flag() -> bool {

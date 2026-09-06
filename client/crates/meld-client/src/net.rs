@@ -786,6 +786,9 @@ pub enum ServerMsg {
         /// A monster's *instant*-ability shout ("Venom Fang!") riding the
         /// resolution (telegraphed ones already shouted via `Telegraph`).
         callout: Option<String>,
+        /// What the blow was made of, so the arena can draw the right thing at the
+        /// right target (`battle_fx`). `None` when the action dealt no damage.
+        damage_type: Option<meld_proto::enums::DamageType>,
         effects: Vec<HitEffect>,
     },
     /// A monster shouted a telegraphed ability and is channeling it — show a
@@ -3160,6 +3163,7 @@ impl Inner {
                         actor: r.actor_id,
                         action,
                         callout: r.callout_text,
+                        damage_type: r.damage_type,
                         effects,
                     });
                 }

@@ -108,6 +108,7 @@ pub(crate) fn pump_net(
             ResMut<HuntBoardData>,
             ResMut<BountyData>,
             ResMut<crate::ShiftTell>,
+            ResMut<crate::battle_fx::BattleFx>,
         ),
     ),
     mut roster: ResMut<PartyRoster>,
@@ -115,7 +116,7 @@ pub(crate) fn pump_net(
     state: Res<State<Screen>>,
     mut next: ResMut<NextState<Screen>>,
 ) {
-    let (world_path, world_frame, terrain, report, perks, hero_names, loadouts, run_gear, world_web, dungeon_scene, vanguard, shop, notice, clock, craft, (explored, station, heat, pops, hunts, bounties, tell)) = &mut world_res;
+    let (world_path, world_frame, terrain, report, perks, hero_names, loadouts, run_gear, world_web, dungeon_scene, vanguard, shop, notice, clock, craft, (explored, station, heat, pops, hunts, bounties, tell, battle_fx)) = &mut world_res;
     net.0.poll();
     while let Some(msg) = net.0.try_recv() {
         match msg {
@@ -442,6 +443,7 @@ pub(crate) fn pump_net(
                 actor,
                 action,
                 callout,
+                damage_type,
                 effects,
             } => {
                 // An instant monster ability's shout pops briefly over the
@@ -461,6 +463,12 @@ pub(crate) fn pump_net(
                 // is live, plain numbers otherwise.
                 let show_elements = perks.0.hunter_threat > 0;
                 let mut did_damage = false;
+                // Who the blow actually landed on, and how hard relative to their own
+                // pool — `battle_fx` sizes its burst off that, so a scratch and an
+                // apocalypse do not draw the same thing. Collected here because this is
+                // where the authoritative numbers are; the arena's transforms are a frame
+                // away, which is why the cast is QUEUED rather than spawned.
+                let mut struck: Vec<(String, i32, i32)> = Vec::new();
                 for e in effects {
                     // Reflect the authoritative HP immediately + spawn feedback.
                     if let Some(c) = battle.combatants.iter_mut().find(|c| c.id == e.target) {
@@ -468,6 +476,13 @@ pub(crate) fn pump_net(
                     }
                     if e.kind.eq_ignore_ascii_case("damage") && e.amount.unwrap_or(0) > 0 {
                         did_damage = true;
+                        let max = battle
+                            .combatants
+                            .iter()
+                            .find(|c| c.id == e.target)
+                            .map(|c| c.max_hp)
+                            .unwrap_or(0);
+                        struck.push((e.target.clone(), e.amount.unwrap_or(0), max));
                     }
                     push_hit_fx(&mut hitfx, &e, show_elements);
                 }
@@ -475,6 +490,10 @@ pub(crate) fn pump_net(
                 if did_damage {
                     hitfx.acts.insert(actor.clone(), 0.0);
                 }
+                // …and throws its element over everyone it hit. An IMMUNE hit is
+                // deliberately not in `struck` (it did 0), so "your fire did nothing"
+                // reads as the number it is rather than as a fireball that worked.
+                crate::battle_fx::queue_cast(battle_fx, damage_type, &struck);
                 // Pick the sprite clip: the basic `attack`, or the exact skill the
                 // client last fired (the wire `action` is only Attack/Skill/…). A
                 // non-damaging skill (heal/buff) still plays its clip, just no lunge.

@@ -244,6 +244,84 @@ pub(crate) fn mock_battle_setup(
 /// the icons resolve, plus a piece of gear. Runs every frame under the flag and re-arms
 /// itself, because the real tally rolls off on a timer — which is exactly long enough to
 /// be gone by the time a capture lands.
+/// `MELD_FX=<element>` — fire an ability's VFX on a loop in the battle mockup.
+///
+/// The mockup resolves nothing (no server, no engine), so the elemental bursts and the
+/// screen wash are unreachable in a screenshot without this. That matters more than a
+/// convenience: `make check` never boots the real Bevy app, so a WGSL error in
+/// `ability_fx.wgsl` compiles, tests green, and shows up as an invisible effect in front of
+/// a player. This is the fixture that makes the shader observable.
+///
+/// `MELD_FX=all` walks every element in turn on a cadence, which is the one run that proves
+/// each branch of the shader draws something — and something *different*.
+pub(crate) fn mock_battle_fx(
+    time: Res<Time>,
+    mut fx: ResMut<crate::battle_fx::BattleFx>,
+    mut next_at: Local<f32>,
+    mut step: Local<usize>,
+) {
+    let Some(spec) = crate::flags::battle_fx_flag() else {
+        return;
+    };
+    if !battle_mockup_flag() {
+        return;
+    }
+    let now = time.elapsed_secs();
+    if now < *next_at {
+        return;
+    }
+    // Just UNDER the burst's own TTL, so there is always something on screen: a capture
+    // is a single frame at an arbitrary moment, and a cadence longer than the effect means
+    // most screenshots catch the gap between two of them and report the shader as broken.
+    *next_at = now + 0.45;
+
+    use meld_proto::enums::DamageType as D;
+    // Every element the shader has a branch for, in the order the WGSL declares them, so
+    // `=all` reads as a tour of the file rather than an arbitrary shuffle.
+    const TOUR: [(&str, D); 13] = [
+        ("slash", D::Slash),
+        ("blunt", D::Blunt),
+        ("pierce", D::Pierce),
+        ("fire", D::Fire),
+        ("ice", D::Ice),
+        ("lightning", D::Lightning),
+        ("water", D::Water),
+        ("wind", D::Wind),
+        ("earth", D::Earth),
+        ("mind", D::Mind),
+        ("poison", D::Poison),
+        ("celestial", D::Celestial),
+        ("shadow", D::Shadow),
+    ];
+    let ty = if spec.eq_ignore_ascii_case("all") {
+        let (name, ty) = TOUR[*step % TOUR.len()];
+        *step += 1;
+        info!("MELD_FX: {name}");
+        ty
+    } else {
+        match TOUR.iter().find(|(n, _)| spec.eq_ignore_ascii_case(n)) {
+            Some((_, ty)) => *ty,
+            None => {
+                warn!("MELD_FX: no such element `{spec}` — try one of {:?} or `all`",
+                    TOUR.map(|(n, _)| n));
+                return;
+            }
+        }
+    };
+    // The mockup's two live foes and one hero, so a single frame shows the burst over a
+    // creature AND over a hero — and three targets is the bar for the screen wash, which
+    // is the half that cannot be seen any other way.
+    crate::battle_fx::queue_cast(
+        &mut fx,
+        Some(ty),
+        &[
+            ("grendel".to_string(), 34, 60),
+            ("wight".to_string(), 21, 48),
+            ("h3".to_string(), 14, 40),
+        ],
+    );
+}
+
 pub(crate) fn mock_tally_setup(mut report: ResMut<LootReport>) {
     if !crate::flags::tally_preview_flag() {
         return;
