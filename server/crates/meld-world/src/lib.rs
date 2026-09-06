@@ -7279,6 +7279,21 @@ impl Arena {
                 if !self.clear_of_peaks(Position::new(cx, cy), radius) {
                     continue;
                 }
+                // ⚠️ **AND CLEAR OF THE RANGES.** The dependency table is explicit that a range
+                // over standing water is nonsense either way round — "a mountain full of lake" —
+                // and here the WATER is the late arrival, so the water yields. `push_water`
+                // already refused a basin on a ridge; a cell's wet share is a basin too, and it
+                // was not asking (measured on seed 99: a basin 32.4 from a spine of half-width
+                // 37.8, i.e. inside the mountain).
+                let ridge_field = BlockField::with_ridges(Vec::new(), self.ridge_discs());
+                while radius >= 12.0
+                    && ridge_field.ridge_blocks(&Position::new(cx, cy), radius)
+                {
+                    radius -= 6.0;
+                }
+                if radius < 12.0 {
+                    continue;
+                }
                 self.basins.push([cx as f32, cy as f32, radius as f32, level]);
             }
         }
