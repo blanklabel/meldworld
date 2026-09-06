@@ -13015,10 +13015,18 @@ mod tests {
     #[test]
     fn an_anchored_route_is_a_road() {
         let b = Balance::load_default().unwrap();
-        let walk = |anchored: bool| -> f64 {
+        // ⚠️ **THE WALK NEEDS SOMEWHERE TO WALK, AND THE FIXTURE HAS TO FIND IT.** This
+        // marched +x from the spawn and took whatever was there; once `WG-11` stage 9 blended
+        // prop density across cell edges, that lane held enough trees that BOTH walks covered
+        // about six units and the ratio was noise (6.2 against 6.3). That reads as the road
+        // multiplier breaking and is nothing of the sort — a fixture that cannot move did not
+        // look for open ground. Both walks still start from the SAME spot, so the comparison
+        // is unchanged; only the spot is chosen rather than assumed.
+        let walk = |anchored: bool, from: Position| -> f64 {
             let mut a = Arena::generate(&b, 424242, false);
             a.add_avatar("p".into(), b.world.avatar_speed_tiles_per_sec);
-            let start = a.avatar("p").expect("the avatar").position;
+            a.avatar_mut("p").expect("the avatar").position = from;
+            let start = from;
             if anchored {
                 a.force_anchor_for_test(start);
             }
@@ -13031,7 +13039,31 @@ mod tests {
             }
             covered
         };
-        let (plain, road) = (walk(false), walk(true));
+        // Somewhere a plain walk actually gets going: the spawn's own lane, else a sweep.
+        let spawn = {
+            let mut a = Arena::generate(&b, 424242, false);
+            a.add_avatar("p".into(), b.world.avatar_speed_tiles_per_sec);
+            a.avatar("p").expect("the avatar").position
+        };
+        // Keep the BEST candidate, never the last one tried — a sweep that ends on a blocked
+        // spot is worse than not sweeping, and that is what "the avatar has to move at all"
+        // caught on the first cut of this.
+        let mut from = spawn;
+        let mut best = walk(false, spawn);
+        for k in 0..64 {
+            if best > 20.0 {
+                break;
+            }
+            let th = std::f64::consts::TAU * (k as f64) / 64.0;
+            let r = 40.0 + (k / 16) as f64 * 25.0;
+            let cand = Position::new(spawn.x + r * th.cos(), spawn.y + r * th.sin());
+            let got = walk(false, cand);
+            if got > best {
+                best = got;
+                from = cand;
+            }
+        }
+        let (plain, road) = (walk(false, from), walk(true, from));
         assert!(plain > 0.0, "the avatar has to move at all off-road");
         assert!(
             road > plain * 1.2,
