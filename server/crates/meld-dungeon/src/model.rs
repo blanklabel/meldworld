@@ -109,6 +109,20 @@ pub enum ObjectKind {
     Gate { when: Condition },
     /// The dungeon boss. `on_enter_spawn` reveals it when its room is entered.
     Boss { sprite: String, on_enter_spawn: bool },
+    /// An ORDINARY encounter guarding a room (DG-10): `count` creatures drawn from the
+    /// dungeon's own biome roster. Walking in starts the fight; winning satisfies
+    /// `room_clear(id)`.
+    ///
+    /// It deliberately names no creature KIND. The roster comes from the biome, exactly
+    /// as [`ObjectKind::Boss`]'s stat base does, which keeps this crate a pure leaf (it
+    /// has no way to check a creature key) and stops a typo becoming content that
+    /// compiles and then spawns nothing. A dungeon authored this way also works whatever
+    /// biome it is dropped in.
+    ///
+    /// ⚠️ **Before this, a dungeon could place a BOSS and nothing else.** That is why
+    /// `world_of_ruin` needs NINE bosses to fill twenty minutes: mandatory combat was the
+    /// only pacing tool, and the only mandatory combat was a boss.
+    Spawn { count: u32 },
     /// Treasure. Openable when `when` holds (or always, if `None`).
     Chest { when: Option<Condition>, loot: ChestLoot },
     /// A stair linking two floors. Its two endpoints (a `Down` on floor `n`, an
@@ -142,6 +156,10 @@ impl ObjectKind {
                 | ObjectKind::Key
                 | ObjectKind::Pedestal
                 | ObjectKind::Boss { .. }
+                // Like a boss: the SEARCH treats a spawn you can reach as one you can
+                // beat, so a door behind it is provably openable. The runtime does not
+                // activate it on contact — contact starts the fight, victory clears it.
+                | ObjectKind::Spawn { .. }
         )
     }
 }
@@ -253,7 +271,7 @@ impl Condition {
             Condition::Ref(id) => out.push((id.clone(), RefKind::Activatable)),
             Condition::HasKey(id) => out.push((id.clone(), RefKind::Key)),
             Condition::BossDead(id) => out.push((id.clone(), RefKind::Boss)),
-            Condition::RoomClear(id) => out.push((id.clone(), RefKind::Any)),
+            Condition::RoomClear(id) => out.push((id.clone(), RefKind::Clearable)),
             Condition::Not(c) => c.referenced(out),
             Condition::All(cs) | Condition::Any(cs) => cs.iter().for_each(|c| c.referenced(out)),
             Condition::Seq(ids) => out.extend(ids.iter().map(|i| (i.clone(), RefKind::Activatable))),
@@ -281,7 +299,14 @@ pub enum RefKind {
     Activatable,
     Key,
     Boss,
-    /// Any object (used by `room_clear`, which is intentionally permissive).
+    /// A `Spawn` or a `Boss` — something a party can FIGHT and thereby clear.
+    ///
+    /// `room_clear` used to accept `Any`, which was harmless only because nothing in the
+    /// grammar could be cleared: `room_clear(some_chest)` would parse, validate, and then
+    /// fail the solvability search with "these barriers can never open" — a true error
+    /// naming the wrong cause. Now it says which.
+    Clearable,
+    /// Any object.
     Any,
 }
 

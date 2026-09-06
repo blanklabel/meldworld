@@ -74,6 +74,9 @@ fn references(d: &DungeonDef, errs: &mut Vec<DungeonError>) {
                 RefKind::Activatable => matches!(target_kind, ObjectKind::Lever | ObjectKind::Plate { .. }),
                 RefKind::Key => matches!(target_kind, ObjectKind::Key),
                 RefKind::Boss => matches!(target_kind, ObjectKind::Boss { .. }),
+                RefKind::Clearable => {
+                    matches!(target_kind, ObjectKind::Boss { .. } | ObjectKind::Spawn { .. })
+                }
                 RefKind::Any => true,
             };
             if !ok {
@@ -84,6 +87,11 @@ fn references(d: &DungeonDef, errs: &mut Vec<DungeonError>) {
                         RefKind::Activatable => "a bare atom / seq element must name a lever or plate".into(),
                         RefKind::Key => "has_key(…) must name a key".into(),
                         RefKind::Boss => "boss_dead(…) must name a boss".into(),
+                        RefKind::Clearable => {
+                            "room_clear(…) must name a spawn or a boss — something a \
+                             party can actually fight"
+                                .into()
+                        }
                         RefKind::Any => unreachable!(),
                     },
                 });

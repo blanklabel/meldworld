@@ -408,14 +408,20 @@ impl<'a> DungeonInstance<'a> {
     /// newly-opened barriers. (The driver decides *when* — on reach or on interact.)
     pub fn activate_at(&mut self, floor: usize, pos: Position) -> Vec<Id> {
         match self.object_at(floor, pos).cloned() {
-            // A boss is the one `activates_on_reach` emitter that does NOT activate on
-            // reach. Its active flag means `boss_dead(...)`, set by the driver when the
-            // fight is won — so activating it on contact both suppressed the fight
-            // (the spawn check skips an already-active boss) and unlocked its gated
-            // vault for anyone who merely walked up to it. `activates_on_reach` stays
-            // as-is because the solvability validator needs it: a boss you can reach
-            // is a boss you can beat, so doors behind it are provably openable.
-            Some(id) if matches!(self.def.objects.get(&id), Some(ObjectKind::Boss { .. })) => {
+            // A boss and a SPAWN are the `activates_on_reach` emitters that do NOT
+            // activate on reach. Their active flag means `boss_dead(...)` /
+            // `room_clear(...)`, set by the driver when the fight is won — so activating
+            // on contact would both suppress the fight (the trigger skips an already-active
+            // one) and unlock what it gates for anyone who merely walked up.
+            // `activates_on_reach` stays as-is because the solvability validator needs it:
+            // one you can reach is one you can beat, so doors behind it are provably
+            // openable.
+            Some(id)
+                if matches!(
+                    self.def.objects.get(&id),
+                    Some(ObjectKind::Boss { .. } | ObjectKind::Spawn { .. })
+                ) =>
+            {
                 let _ = id;
                 Vec::new()
             }
