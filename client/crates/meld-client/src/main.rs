@@ -967,6 +967,11 @@ struct OwInterp {
 /// past the newest one. One 100 ms server tick plus a little slack.
 const OW_INTERP_DELAY: f32 = 0.11;
 
+/// How far the LOCAL player's chase target may be carried past the newest snapshot, in seconds.
+/// Two ticks and a little: enough to bridge an ordinary gap, short enough that a player who
+/// stopped does not keep gliding while the server catches up.
+pub(crate) const OW_EXTRAPOLATE_MAX: f32 = 0.22;
+
 /// The current run's backpack (Town Portals + gathered materials), mirrored from
 /// the server for the overworld HUD.
 #[derive(Resource, Default)]
