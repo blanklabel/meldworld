@@ -108,6 +108,7 @@ pub(crate) fn pump_net(
             ResMut<HuntBoardData>,
             ResMut<BountyData>,
             ResMut<crate::ShiftTell>,
+            ResMut<crate::battle_fx::BattleFx>,
         ),
     ),
     mut roster: ResMut<PartyRoster>,
@@ -115,7 +116,7 @@ pub(crate) fn pump_net(
     state: Res<State<Screen>>,
     mut next: ResMut<NextState<Screen>>,
 ) {
-    let (world_path, world_frame, terrain, report, perks, hero_names, loadouts, run_gear, world_web, dungeon_scene, vanguard, shop, notice, clock, craft, (explored, station, heat, pops, hunts, bounties, tell)) = &mut world_res;
+    let (world_path, world_frame, terrain, report, perks, hero_names, loadouts, run_gear, world_web, dungeon_scene, vanguard, shop, notice, clock, craft, (explored, station, heat, pops, hunts, bounties, tell, battle_fx)) = &mut world_res;
     net.0.poll();
     while let Some(msg) = net.0.try_recv() {
         match msg {
@@ -442,8 +443,16 @@ pub(crate) fn pump_net(
                 actor,
                 action,
                 callout,
+                damage_type,
                 effects,
             } => {
+                // ⚠️ THE WIND-UP ENDS WHEN THE CAST LANDS. A TELEGRAPHED ability resolves
+                // with `callout_text: None` — it already shouted via `Telegraph` — so the
+                // flashing callout that drives both the bubble and the charge swell is not
+                // replaced here and would sit out its full 3 s TTL. The creature would keep
+                // winding up for three seconds after the blow it was winding up FOR, which
+                // is worse than no tell at all: it says "brace" while nothing is coming.
+                hitfx.callouts.retain(|c| !(c.combatant_id == actor && c.flashing));
                 // An instant monster ability's shout pops briefly over the
                 // arena (telegraphed ones already arrived via `Telegraph`).
                 if let Some(text) = callout {
@@ -461,19 +470,63 @@ pub(crate) fn pump_net(
                 // is live, plain numbers otherwise.
                 let show_elements = perks.0.hunter_threat > 0;
                 let mut did_damage = false;
+                // Who the blow actually landed on, and how hard relative to their own
+                // pool — `battle_fx` sizes its burst off that, so a scratch and an
+                // apocalypse do not draw the same thing. Collected here because this is
+                // where the authoritative numbers are; the arena's transforms are a frame
+                // away, which is why the cast is QUEUED rather than spawned.
+                let mut struck: Vec<(String, i32, i32)> = Vec::new();
+                // …and who it MENDED, which is the other half. `queue_mend` draws care in
+                // its own shape — a column, not an impact — because a slash or a plume over
+                // an ally the healer just tended reads as the healer attacking them.
+                let mut mended: Vec<String> = Vec::new();
+                // A crit should LOOK like one — the number already says so, and text alone
+                // being the loudest feedback in a fight is the thing this closes.
+                let mut crit = false;
                 for e in effects {
                     // Reflect the authoritative HP immediately + spawn feedback.
                     if let Some(c) = battle.combatants.iter_mut().find(|c| c.id == e.target) {
                         c.hp = e.hp_after;
                     }
+                    if e.kind.eq_ignore_ascii_case("heal")
+                        && e.amount.unwrap_or(0) > 0
+                        && !mended.contains(&e.target)
+                    {
+                        mended.push(e.target.clone());
+                    }
                     if e.kind.eq_ignore_ascii_case("damage") && e.amount.unwrap_or(0) > 0 {
                         did_damage = true;
+                        crit |= e.crit;
+                        let max = battle
+                            .combatants
+                            .iter()
+                            .find(|c| c.id == e.target)
+                            .map(|c| c.max_hp)
+                            .unwrap_or(0);
+                        struck.push((e.target.clone(), e.amount.unwrap_or(0), max));
                     }
                     push_hit_fx(&mut hitfx, &e, show_elements);
                 }
-                // A damaging action makes its actor lunge in to strike.
+                // A damaging action makes its actor lunge in to strike — AT the body it
+                // hit. The first target rather than a centroid: an all-enemy blast has no
+                // single direction to step in, and stepping at the middle of the pack is a
+                // motion nobody reads as aimed at anything.
                 if did_damage {
                     hitfx.acts.insert(actor.clone(), 0.0);
+                    if let Some((first, _, _)) = struck.first() {
+                        hitfx.act_target.insert(actor.clone(), first.clone());
+                    }
+                }
+                // …and throws its element over everyone it hit. An IMMUNE hit is
+                // deliberately not in `struck` (it did 0), so "your fire did nothing"
+                // reads as the number it is rather than as a fireball that worked.
+                crate::battle_fx::queue_cast(battle_fx, damage_type, &struck, crit);
+                // A mend only lifts the screen when the action did NOTHING else: an
+                // ability that damages and heals (the Resonant's Transfuse pays out of its
+                // own HP, the Keeper drains as it strikes) is a blow, and it should read
+                // as one rather than as two effects arguing over the same frame.
+                if !did_damage {
+                    crate::battle_fx::queue_mend(battle_fx, &mended);
                 }
                 // Pick the sprite clip: the basic `attack`, or the exact skill the
                 // client last fired (the wire `action` is only Attack/Skill/…). A

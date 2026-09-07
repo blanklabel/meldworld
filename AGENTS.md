@@ -361,6 +361,63 @@ can never find loot.
 by `effective_gear_bonus`. A property added to one and not the other is a bow that reaches in
 the Vault and not in the fight.
 
+⚠️ **A CREATURE DOES NOT SCALE TO THE PARTY FACING IT, AND THIS FILE USED TO SAY IT DID.**
+`encounter_party_scale` ([1.0, 1.9, 3.0, 4.4] on creature HP, indexed by hero count) is
+**retired**. A creature's HP, attack, defence, speed and XP are fixed by its LEVEL, which is
+fixed by its DISTANCE — and nothing anywhere reads how many heroes are standing in front of
+it (`a_creature_is_the_same_creature_however_many_heroes_face_it`,
+`nothing_about_the_party_reaches_the_creature_it_is_fighting`).
+
+The old argument was that four heroes bring four times the damage, so a flat encounter makes a
+full party's fights the shortest in the game. That is true, and **it is fine — a shorter fight
+is what mustering buys.** Scaling the world to the party is what made depth mean less every
+time a hero was added, and depth is the only difficulty axis this game has. So the early game
+IS easy, and it balances later because you have to walk further to find anything.
+
+**SO WHEN DO YOU REALLY NEED FOUR HEROES? MEASURED: AROUND d300 / LEVEL 24.**
+`party_size_sweep` plays the real encounter the world generates nearest a ring, at the level
+that depth grants, over FIVE worlds per cell — ungeared, no potions, attack-only, so read
+every number as a FLOOR (gear is ~3.5x survivability and the starting kit ~42% more
+effective HP again):
+
+| depth | lvl | foes | 1 hero | 2 | 3 | 4 |
+|---|---|---|---|---|---|---|
+| 25-100 | 3-9 | 1 | won 5/5, 88-92% left | 5/5 | 5/5 | 5/5, ~100% |
+| 150 | 13 | 1 | 4/5, 60% | 4/5, 74% | 4/5, 87% | **5/5, 96%** |
+| 200 | 17 | 2 | 4/5, 42% | 5/5, 58% | 5/5, 82% | **5/5, 93%** |
+| **300** | **24** | **3** | **0/5** | 3/5 | 3/5 | **5/5, 92%** |
+| 400+ | 32+ | 4-5 | 0/5 | 0-1/5 | 0-2/5 | 1-4/5 |
+
+The shape: **the first 100 tiles are a solo game**, one hero clears everything at ~90% health.
+**d150-200 is where a lone hero starts losing fights** — still winnable, but on 42% health
+against a party of four's 93%. **d300 is the wall**: a lone hero wins nothing, and only a full
+party clears it comfortably. Past d400 the floor policy loses at every size, which is where
+gear, skills and potions stop being optional rather than where the game ends.
+
+⚠️ **The sweep levels the party WITH the depth (`base_run_level`), and real play does not.**
+A continuous expedition reaches ~d1150 at level ~43, so a real player at d1200 is roughly
+half the level this table assumes. The real wall arrives EARLIER than d300 for anyone who
+walked there. ⚠️ And five seeds is not optional: the first cut sampled one world per depth
+and read as non-monotonic (d400 lost at every size while d600 and d800 won), because which
+species and formation stand nearest a ring is a coin toss — the same lesson recorded twice
+below for world geometry.
+
+**The XP split is what keeps it honest.** A fixed creature pays a fixed pool, divided among the
+heroes still STANDING: a lone hero kills it in four times the turns for four times the share,
+so **XP per hero per unit of real time is identical at every party size**. Only fight LENGTH
+moves. ⚠️ `fights_per_level` therefore reads as a hero's own effort — a full party needs four
+times the fights, each about a quarter as long.
+
+⚠️ **RETIRING IT MOVED EVERY AUTHORED BOSS NUMBER, and forgetting that would have been the
+regression.** Gatekeepers and the end fight were tuned by PLAYING them with a party of four,
+which met the 4.4x on top — so leaving those constants alone would have made the apex a
+quarter of the fight it was measured to be. The old full-party multiple is folded into the
+authored numbers instead (`gatekeeper_hp_mult` 5.0 → 22.0, `end_fight_boss_hp` 1000 → 4400),
+where it now says what it means: **this is how big the boss IS**. Depth escalates it from
+there. It is the same declaration `warbands` already makes one tier up — a boss says how many
+parties it is for, and a lone hero loses to a Gatekeeper because they brought one hero, not
+because the world resized itself down to meet them.
+
 **AN ENCOUNTER IS PACKS OF GROUPS, AND A RANK IS RELATIVE.** A **pack** is how the fight got
 assembled (what `group_around` pulled in) and is only provenance; a **group** — enemies of
 the same type and their minions — is the addressable unit, and it is derived at BATTLE
@@ -557,13 +614,15 @@ boss and none of them said so — measured, a level-40 party ground a 66,792 HP 
 because `merge_cap_gatekeeper_instances` is 4. ONE number is the source of both the size and
 the name, so they cannot disagree about how big the fight is. HP and XP ride the count and
 **attack does not** — a raid boss is a longer fight for more people, not one that one-shots
-whoever arrives first. `gatekeeper_hp_mult` is **per party** (5.0), because a boss must stay a
-real fight for ONE party (`outgrowing_a_fight_lets_you_stomp_it` holds parity to 20+ rounds;
-2.5 folded one in twelve). ⚠️ **The reason a static multiple works: `encounter_party_scale` is
-a four-entry table CLAMPED to its length**, so creature HP stops growing past four heroes — a
-sixteen-hero merge faces the same pool a party of four does while bringing 4x the damage.
-Without that clamp the table is superlinear, more people would make a fight *harder*, and raid
-content could not be expressed as HP at all. It rides the snapshot as a `parties:<n>` marker in
+whoever arrives first. `gatekeeper_hp_mult` is **per party** (22.0), because a boss must stay a
+real fight for ONE party (`outgrowing_a_fight_lets_you_stomp_it` holds parity to 20+ rounds).
+⚠️ **The reason a static multiple works: NOTHING ELSE scales a creature to the crowd in front
+of it** — a sixteen-hero merge faces the pool this constant and `warbands` declare, while
+bringing 4x the damage, which is what makes "sized for N parties" expressible as HP at all.
+⚠️ **22.0, not the 5.0 it read while `encounter_party_scale` was live**: every measurement
+behind that number was taken by a party of FOUR meeting a further 4.4x, so retiring the party
+ramp without folding it in here would have made every boss in the game a quarter of the fight
+it was tuned to be. It rides the snapshot as a `parties:<n>` marker in
 the same SET as `boss:`/`held`/`clash`/`quarry`, and the plate shows it TOPMOST — the only line
 up there a player has to act on before engaging.
 
@@ -638,6 +697,97 @@ roll. `choose_target` is the ONE place a creature picks; it was two near-identic
 so an ambusher hunted the back rank with its claws and the weakest hero with its breath. A
 **gang-up mark is shouted** when set or moved, because a pack converging on your healer
 with no explanation reads as the game cheating.
+
+**AN ABILITY LOOKS LIKE WHAT IT IS, IN THREE TIERS — AND ONLY TWO OF THEM ARE SHADERS**
+([`battle_fx.rs`](client/crates/meld-client/src/battle_fx.rs)). Dragon Quest is the
+reference and the right one for HD-2D billboards: short, punchy, readable, a colour wash on
+the big spells and nothing that outlasts the turn.
+**(1) Sprite reactions** — a body carrying boons swells and breathes, a `frenzied` one
+swells harder, and rage reddens. Transform and material writes on the billboard that
+already exists; no shader, and it is where most of the readability comes from.
+**(2) Impact bursts** — ONE WGSL material with a `kind` uniform (`ability_fx.wgsl`) on a
+camera-facing quad over whoever was struck, covering all sixteen damage types. One shader
+rather than one per element, for the reason a registry beats a list everywhere else here.
+**(3) The screen wash** — the same idea full-frame (`screen_wash.wgsl`) on a quad parented
+to the battle camera, and ONLY for a blow that landed on three or more bodies, because a
+wash on every basic attack is a strobe. A camera-locked quad rather than a post-process
+`ViewNode` on purpose: cleanup is then the same `despawn::<BattleFxRoot>` every other
+battle entity uses instead of a render-graph edge somebody has to remember to remove.
+
+⚠️ **EVERYTHING IS ADDITIVE AND ALPHA-CAPPED, WHICH IS THE FOURTH TIME THIS TRAP HAS BEEN
+CLOSED.** `sprite_material`'s note records the first three: a full-quad effect painting over
+the art. An impact sits directly on top of a sprite, so its alpha is clamped (0.85) and the
+wash's whole budget is `WASH_PEAK` = 0.22 of the frame — the first cut of the wash multiplied
+the element's authored colour (up to 3.4, deliberately over 1.0 so a small additive burst
+blooms) across every pixel and **painted the entire arena flat orange with the sprites inside
+it**. The wash normalises the tint to a HUE and takes its intensity from the budget, so
+choosing a hotter element can never make it louder.
+
+⚠️ **AND THE CLIENT COULD NOT TELL A FIREBALL FROM A SWORD.** `battle.action_resolved`
+carries `action` — the `BattleActionKind` (Attack / Skill / Item), never the ability — and a
+creature's kit lives in `meld-world`, which the client does not have. So the element rides
+the wire as `damage_type`, stamped centrally by `Battle::stamped` off `apply_typed_damage`
+(the one point every typed blow passes through) rather than threaded through twelve
+resolvers: a resolver that lands a new kind of blow gets its VFX the day it is written.
+The `kind` numbers are a uniform shared with two WGSL files, so renumbering one side draws
+fire where ice should be, silently — `the_kind_numbers_match_the_shader` reads the shader's
+own constants, and `the_blow_tells_the_client_what_it_was_made_of` asserts the PAYLOAD a
+session receives rather than the engine's own struct (this repo ships features that are
+generated correctly and never consumed — see `bridges`, `pack:` and the whole inland-water
+system).
+
+⚠️ **THE STAMP IS TAKEN, NOT READ, AND UPKEEP HAS TO TAKE IT TOO.** A burn or poison tick
+runs inside `start_of_turn` through `apply_typed_damage` like everything else, so it SETS
+the element — and when the fighter dies to its own DoT that upkeep rides its OWN resolution.
+Left unconsumed there, the Fire would be taken by the next thing `stamped` saw and a hero's
+sword swing would be reported as fire. `upkeep_only` takes it as well, which is also the
+right look: a poison tick draws a small poison puff. And `apply_damage` — the untyped
+physical path, eleven call sites — stamps the ACTOR's own weapon type, or those abilities
+land with no effect at all.
+
+**THE LUNGE GOES AT THE DEFENDER.** It rode `SpriteQuad::forward`, fixed at spawn as the way
+that hero's whole row faces, so an attacker stepped generically "toward the enemies" whoever
+it was actually swinging at — in a five-body pack that reads as a twitch. `HitFx::act_target`
+records who was hit. The RECOIL still rides `forward`: being knocked back is about which way
+you face, and the attacker's aim is not a fact the victim's sprite has access to.
+
+**CARE GETS ITS OWN SHAPE, NOT AN IMPACT SHAPE.** A slash or a plume over an ally the healer
+just tended reads as the healer attacking them — but drawing NOTHING left the most common
+friendly action in the game with no visual on its target at all, just a green number. A mend
+draws the holy COLUMN (`queue_mend`), at ~half a blow's loudness, never shakes the camera, and
+washes the screen only when it reached three or more bodies. Only when the action did nothing
+else: an ability that damages *and* heals is a blow.
+
+**YOU CAN SEE THE BIG ONE COMING.** A telegraphed creature ability shouted a bubble and did
+nothing else to the creature, so the one mechanic in the game *built to be reacted to* was a
+line of text over a sprite that looked exactly as it had a moment earlier. A channeling body
+now swells and winds UP, and the pulse **quickens** as the cast approaches — the beat itself
+says "soon", so it needs no cast bar over the arena. The source is the `flashing` callout that
+already draws the shout (`HitFx::charging`), never a second piece of state beside it: a
+creature cannot then be shouting without winding up, or winding up with nothing on screen
+saying why. It outranks every other swell on the body, because whatever else is true of a
+creature, the thing about to land is what you have to answer.
+
+**THE CAMERA FEELS A HEAVY BLOW.** A per-sprite shake says "that body was hit"; only the
+camera says "that hit was BIG", and the arena had just the first. `BattleFx::shake` is an
+IMPULSE on the resource rather than a property of a cast, so the loudest blow of a frame wins
+instead of a five-target sweep shaking five times over. Applied to the camera's TRANSLATION
+after `looking_at` — rotating it swings the whole arena and reads as the world moving rather
+than as impact — and cleared by `reset_battle_fx`, or it follows the camera onto the
+overworld where nothing is hitting anybody. A **crit** lifts both the burst and the shake:
+the number already says CRIT!, and text being the loudest feedback in a fight is the gap.
+
+⚠️ **`make check` NEVER BOOTS THE APP, so a WGSL error ships green.** `MELD_FX=<element>|all`
+fires casts on a loop inside the `MELD_BATTLE` mockup — which otherwise resolves nothing, so
+a battle effect is unreachable in a screenshot. It re-fires just UNDER the burst's own TTL,
+because a capture is one frame at an arbitrary moment and a cadence longer than the effect
+means most screenshots catch the gap and report the shader as broken.
+
+**THE PARTY HUD BUILDS OUT FROM THE CENTRE.** A cell is a quarter of the row at every party
+size and the row centres them. It used to spawn four slots and fill the empty ones with
+flex-grow spacers, so two heroes bunched against the LEFT edge with a hole on the right —
+which reads as a missing panel rather than as a smaller party. The arena had this right
+already (`x = (i - (n-1)/2) * 2.7`); it was the HUD alone.
 
 **A number belongs to the combatant it landed on — anchor to the ACTOR, never to a role.**
 `render_hit_fx` used to place a floating number by identity: `monster_combatant` (which is
@@ -1639,13 +1789,14 @@ client menu branch (`menu_entries` keyed off the active hero's `class:` status).
   three-quarters of the pool evaporated. Each hero also carries its **own** banked XP and
   its own next-level bar on `run.party` — those were one shared run-level pair, which is
   why the split was invisible from inside the game.
-- **Encounter XP is split across the party, once.** A four-hero party meets
-  creatures with `encounter_party_scale` more HP, so the encounter pays that same
-  multiple before the split — otherwise the scale is charged twice and a full party
-  earns at a fraction of the solo rate for the same effort. The split itself is the
-  intended cost of fielding more heroes. A co-op **joiner** does not re-scale the
-  creatures and so does not inflate the payout: more heroes splitting the same XP is
-  what pushes a full co-op group toward much harder fights.
+- **Encounter XP is a FIXED pool, split across the heroes still standing.** A creature
+  pays its own `xp_reward` and nothing multiplies it — not the party, not a co-op joiner.
+  Paired with `encounter_party_scale`'s retirement (below), that makes the rate honest:
+  a lone hero banks the whole pool over four times the turns, each of four banks a
+  quarter over one, so **XP per hero per unit of real time is the same at every party
+  size** and only the fight LENGTH moves. What mustering buys is survival, not speed.
+  ⚠️ Read `fights_per_level` as a hero's own effort: a full party needs four times the
+  fights a solo hero does, each roughly a quarter as long.
 - **Four attributes** (`[player.<key>]`: base + `*_per_level`): **Str**→physical atk,
   **Mnd**→manifestation/spell power, **Dex**→ATB speed + dodge, **Wll**→HP + defence. A hero's
   attribute = base + per-level gain × (level−1). Each derived stat = *class base stat* +
@@ -2504,9 +2655,10 @@ places used to leak the damage and every one of them was silent:
 
 - A creature that survived a player's battle resumed roaming at FULL. The wound now rides
   back as a **fraction** (`Battle::combatant_health` keyed through
-  `BattleSlot::monster_combatants`), never the raw battle number — the fight scaled its pool
-  by `encounter_party_scale`, so writing 3000-of-13200 onto a 3000 HP creature leaves it
-  untouched and writing the raw remainder kills it.
+  `BattleSlot::monster_combatants`) rather than the raw battle number. The two are the same
+  number today, but the fraction is what the rule IS — and it is what kept this honest while
+  `encounter_party_scale` multiplied the pool, where writing 3000-of-13200 onto a 3000 HP
+  creature left it untouched and writing the raw remainder killed it.
 - `build_battle` built the enemy's **max** HP from its **current** hp, and `Fighter::new`
   sets `hp = max_hp` — so a creature at half entered the fight at "full" with half the pool.
   The damage was real (it died to less) and completely invisible: the bar read 100%, and an

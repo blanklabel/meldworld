@@ -755,6 +755,8 @@ burns on death/leave; some is single-use. See
     pays `encounter_party_scale` BEFORE the split, so a full party's per-hero share is
     ~1.1x a lone hero's. The cost of fielding four is TIME, and that is measured now:
     **4.83 / 1.85 / 1.63 / 1.30 XP per second** at one to four heroes, a monotone decline.
+    ⚠️ **Void from CR-14 on**: with scaling retired the rate is flat across party size, not
+    declining, and those figures were all taken against scaled encounters.
   - *Also shipped:* **one stack ceiling, and Regen finally decays.** `regen +=`
     accumulated without limit and never faded — the only lasting effect in the game with
     neither decay nor expiry — so turns spent on it bought permanent, ever-growing party
@@ -894,6 +896,13 @@ burns on death/leave; some is single-use. See
   fights (which is the tutorial), and by the time four slots are unlocked the runs are
   long. Indexed to the same progression the player feels, since slots open at 1 hero
   L10 / 2 at L20 / 3 at L30.
+  - ⚠️ **HALF OF THIS IS SUPERSEDED BY CR-14.** `encounter_party_scale` is retired: a
+    creature is fixed by its level and nothing reads the party size. The XP split
+    stays and is what makes the flat encounter honest — a fixed pool over a
+    proportionally shorter fight is the same XP per second at every party size. The
+    arc now runs the other way: **a full party's fights are the SHORT ones**, and what
+    mustering buys is survival rather than speed. Every measured figure below (per-fight
+    seconds, XP per second) was taken against scaled encounters and is void.
   - *Measured, not assumed:* a Gravity Well **cannot** be triple-stacked — the cap is
     2, per the class doc. At realistic level/distance pairs a single stack kills an
     ordinary creature in 5 turns at level 1, 2 by level 10, and 1 by level 25; a
@@ -3037,6 +3046,10 @@ Make time in the field a living, dangerous place worth screenshotting.
       wall one party can finish, a Worldbreaker is 20x. 2.5 was tried first and
       `outgrowing_a_fight_lets_you_stomp_it` caught it — that test holds a boss at parity to
       20+ rounds and 2.5 folded one in twelve.
+      - ⚠️ **CR-14 raised it to 22.0.** Every number in this bullet was measured by a party
+        of FOUR meeting `encounter_party_scale`'s further 4.4x; with that retired the
+        constant has to carry the multiple, or the boss is a quarter of the fight it was
+        tuned to be. The fight a party meets is unchanged.
     - ⚠️ **Why a static multiple works at all:** `encounter_party_scale` is a four-entry table
       indexed by hero count and **clamped to its length**, so creature HP stops growing past
       four heroes. A sixteen-hero merge faces the same pool a lone party of four does while
@@ -3044,6 +3057,9 @@ Make time in the field a living, dangerous place worth screenshotting.
       people would make the fight *harder* and raid content would be structurally
       inexpressible as HP. It is also why multiplying by the party count does not double-count
       the merge.
+      - ⚠️ **CR-14 removed the table entirely, which makes this simpler rather than wrong.**
+        Nothing anywhere scales a creature to the crowd in front of it now, so "sized for N
+        parties" is expressible as HP by construction rather than by a clamp holding.
     - **It announces itself before the touch.** `parties:<n>` rides the mob tag as a
       `key:value` in the same SET as `boss:` / `held` / `clash` / `quarry`, and the client
       floats the title and "N parties" at the TOP of the plate in the loudest colour — the one
@@ -3453,8 +3469,10 @@ budgeted so the creature sim never threatens the single-owner loop or the server
     so softening something up and coming back for it was impossible and fleeing a
     nearly-won fight reset it. It now carries its battle HP back as a **fraction**
     (`Battle::combatant_health` + `BattleSlot::monster_combatants`), never the raw
-    number: the fight scaled its pool by `encounter_party_scale`, so a four-hero party
-    chewed through several times the health the spawn actually has. (2) `build_battle`
+    number — which was load-bearing while `encounter_party_scale` multiplied the pool by
+    the party size (a four-hero party chewed through several times the health the spawn
+    actually has), and is the rule the write-back still holds now that CR-14 has retired
+    it. (2) `build_battle`
     built the enemy's *max* HP from its *current* hp, and `Fighter::new` sets
     `hp = max_hp` — so a creature at half entered the fight at "full" with half the pool.
     The damage was real (it died to less) and completely invisible: the bar read 100% and
@@ -3475,6 +3493,56 @@ budgeted so the creature sim never threatens the single-owner loop or the server
     creature at full carries no debt forward, so a healthy stretch cannot bank a burst.
   - The harness reads it too (`look` shows `(clashing, -43%)`), because a decision about
     where to walk that the harness cannot see is a decision nobody can measure.
+- [x] **CR-14 — A creature does not scale to the party facing it.** Reported from play:
+  *"we shouldn't be scaling the encounters with the party size… each creature should have a
+  fixed EXP and a fixed health and fixed attributes for the level it is. So yes you will have
+  an easy time if you stay early in the game… but it'll balance later."* Retires
+  `encounter_party_scale` ([1.0, 1.9, 3.0, 4.4] on creature HP, indexed by hero count) — the
+  balance key, the loader field, the `party_scale` argument threaded through
+  `enemy_fighters`, and `BattleSlot::party_scale`. A creature's HP, attack, defence, speed
+  and XP are now fixed by its level, which is fixed by its distance.
+  - **The old argument was right and did not matter.** Four heroes bring four times the
+    damage, so a flat encounter makes a full party's fights the shortest in the game — and
+    a shorter fight is exactly what mustering should buy. Scaling the world to the party is
+    what made DEPTH mean less every time a hero was added, and depth is the only difficulty
+    axis this game has.
+  - **The XP split is what keeps it honest.** A fixed creature pays a fixed pool divided
+    among the heroes still STANDING, so a lone hero banks the whole thing over four times
+    the turns and each of four banks a quarter over one: **XP per hero per unit of real time
+    is identical at every party size**, and only fight length moves. ⚠️ `fights_per_level`
+    therefore reads as a hero's own effort — a full party needs four times the fights, each
+    about a quarter as long.
+  - ⚠️ **It moved every authored boss number, and forgetting that would have been the
+    regression.** Gatekeepers and the end fight were tuned by PLAYING them with a party of
+    four, which met the 4.4x on top, so leaving those constants alone would have made the
+    apex a quarter of the fight it was measured to be. The old full-party multiple is folded
+    into the authored numbers (`gatekeeper_hp_mult` 5.0 → **22.0**, `end_fight_boss_hp`
+    1000 → **4400**), where it says what it means: this is how big the boss IS, and depth
+    escalates it from there. Same declaration `warbands` already makes one tier up — a boss
+    says how many parties it is for, and **a lone hero loses to a Gatekeeper because they
+    brought one hero, not because the world resized itself down to meet them.**
+  - **MEASURED — you really need four heroes around d300 / level 24.** `party_size_sweep`
+    plays the real encounter nearest a ring at the level that depth grants, over five worlds
+    per cell, ungeared and attack-only (a FLOOR — gear is ~3.5x survivability and the kit
+    ~42% more effective HP again). d25-d100 a lone hero clears everything at ~90% health;
+    d150-200 it starts dropping fights and finishes on 42% against a full party's 93%; at
+    **d300 a lone hero wins 0/5 and a full party 5/5 at 92%**. Past d400 the floor policy
+    loses at every size, which is where gear and potions stop being optional.
+    - ⚠️ The sweep levels the party WITH the depth; real play does not (~d1150 at level 43),
+      so the real wall arrives earlier for anyone who walked there.
+    - ⚠️ Five seeds per cell is not optional — one world per depth read as non-monotonic
+      (d400 lost at every size while d600 and d800 won) because which species and formation
+      stand nearest a ring is a coin toss.
+    - ⚠️ And its first cut scored WINS AS LOSSES: the outcome comes back from `submit`, not
+      from the next `tick`, since the killing blow ends the fight inside the call that lands
+      it. It reported a level-3 party of four losing to one creature at d25.
+  - Three tests asserted the retired rule and are replaced by two asserting the new one:
+    `a_creature_is_the_same_creature_however_many_heroes_face_it` (every stat, at every
+    party size) and `nothing_about_the_party_reaches_the_creature_it_is_fighting` (roster
+    size and who is down both leave it untouched). `qa/tests/pacing_arc.rs` had the arc
+    **inverted** — it held that a full party's fights are LONGER — and now holds the two
+    claims the design actually makes: a full party's fights are shorter, and XP per second
+    is flat across party size.
 - [ ] **CR-3 — Living ecology: diets, needs, and breeding.** Creatures have a
   **diet class — carnivore / omnivore / herbivore** — that drives behavior: they
   eat (hunt prey / graze nodes), sleep (tied to FS-5 day/night), and **breed**,
@@ -4633,6 +4701,67 @@ only the things that can't be class-gated.
   social, and shared — nothing to gate). Distinct from the maze minimap, which is
   the Shifter's overworld perk (CL-2). Client UX over the Last City scene
   ([`proposals/last-city.md`](proposals/last-city.md)).
+- [x] **UX-5 — An ability looks like what it is, and the HUD builds from the centre.**
+  Reported from play: *"when you're hit with a fireball, the screen shows you're getting hit
+  by a fireball… if a creature buffs, maybe make their sprite bigger; if they rage, turn the
+  sprite redder"*, and *"make sure the menu boxes line up properly with party's that are two
+  or 3 — basically build out from the center"*. Dragon Quest is the reference.
+  - **Three tiers, two shaders** ([`battle_fx.rs`](../client/crates/meld-client/src/battle_fx.rs)):
+    sprite swell/breath/rage on the billboard that already exists (no shader, and where most
+    of the readability comes from); ONE WGSL impact material with a `kind` uniform covering
+    all sixteen damage types (`ability_fx.wgsl`); and a camera-locked full-frame wash
+    (`screen_wash.wgsl`) for a blow that landed on three or more bodies. A camera-locked
+    quad rather than a post-process `ViewNode`, so teardown is the same
+    `despawn::<BattleFxRoot>` every other battle entity uses.
+  - ⚠️ **The client could not tell a fireball from a sword.** `battle.action_resolved` carries
+    the `BattleActionKind`, never the ability, and creature kits live in `meld-world`. So
+    `damage_type` rides the wire, stamped centrally by `Battle::stamped` off
+    `apply_typed_damage` — the one point every typed blow passes through — rather than
+    threaded through twelve resolvers.
+  - ⚠️ **Additive and alpha-capped, which is the fourth closing of this trap.** The first cut
+    of the wash multiplied the element's authored colour (up to 3.4, deliberately over 1.0 so
+    a small burst blooms) across every pixel and painted the whole arena flat orange with the
+    sprites inside it. It normalises to a HUE now and takes its intensity from a `WASH_PEAK`
+    budget of 0.22, so a hotter element can never make it louder.
+  - ⚠️ **`make check` never boots the app**, so a WGSL error would ship green.
+    `MELD_FX=<element>|all` fires casts on a loop inside the `MELD_BATTLE` mockup, which
+    otherwise resolves nothing at all — and re-fires just under the burst's TTL, because a
+    capture is one frame and a slower cadence means most screenshots catch the gap.
+  - **The lunge goes AT the defender** (`HitFx::act_target`); it rode `SpriteQuad::forward`,
+    fixed at spawn, so an attacker stepped generically toward the enemy row whoever it was
+    hitting. The recoil still rides `forward` — being knocked back is about which way you
+    face, and the attacker's aim is not a fact the victim's sprite has access to.
+  - **A mend draws care in its own shape** (`queue_mend`), and
+    **`frenzied` reddens** — the tint was Hunter-Adrenaline only, so the condition that takes
+    the choice away and swings on its own had no visual at all.
+  - ⚠️ **A burn tick would have leaked Fire onto the next sword swing.** A DoT runs through
+    `apply_typed_damage` like everything else and, when it kills its host, rides its own
+    resolution that `stamped` never saw. `upkeep_only` consumes it now; `apply_damage` (the
+    untyped physical path) stamps the actor's own weapon type.
+  - ⚠️ **`SC-5`'s pre-cull deleted bounty marks.** An FS-4 mark is force-included in its
+    owner's snapshot with NO distance test — that is what makes a contract findable — and it
+    is sighted at the depth the hunter's rank earned, usually well past the interest radius.
+    It is the one entity that needs an unconditional exemption from a positional cull, and
+    `a_bounty_mark_survives_the_cull_however_far_out_it_stands` holds it (with an ownerless
+    control at the same spot, or the exemption quietly becomes "build the whole world").
+    `a_perk_still_reaches_past_the_cull_that_was_added_under_it` covers the other half — the
+    SC-1 equivalence oracle cannot, because it compares culls over a list already built.
+  - **The camera feels a heavy blow, a crit looks like one, and a telegraph winds up.** A
+    per-sprite shake says "that body was hit"; only the camera says "that hit was BIG".
+    `BattleFx::shake` is an impulse on the resource rather than a property of a cast, so the
+    loudest blow of a frame wins instead of a five-target sweep shaking five times — applied
+    to the camera's TRANSLATION after `looking_at`, since rotating it swings the whole arena.
+    A **telegraph** now swells the channeling body with a *quickening* pulse, read off the
+    same `flashing` callout that draws its shout: the one mechanic built to be reacted to was
+    a line of text over an unchanged sprite.
+  - **Care got its own shape.** The first cut drew nothing on a healed ally, on the argument
+    that an impact shape over a friend reads as an attack. Right about the shape, wrong about
+    the conclusion — it left the most common friendly action in the game with no visual on its
+    target at all. A mend draws the holy COLUMN at ~half a blow's loudness and never shakes.
+  - **The party HUD** spawned four slots and filled the empty ones with flex-grow spacers, so
+    two heroes bunched against the left edge with a hole on the right. A cell is a quarter of
+    the row at every party size now and the row centres them. The arena already had this
+    right; it was the HUD alone.
 - [ ] **UX-2 — Accessibility & non-color legibility.** Danger and state must never
   depend on **color alone** — CR-1's deep-biome palette shift is a *bonus* cue, so
   pair it with universally-available redundant signals (creature level tags,
@@ -4714,6 +4843,28 @@ Directly underpins CR-4 (sim budget), MON-2 (persistent camps/instances), and LC
   (FS) + dungeon traps (DG-3/DG-4) reuse. **Remaining:** a per-chunk serialize cache
   (second-order — dedup identical chunk bytes across viewers) and a QA bot-ramp load
   test to quantify the win.
+- [x] **SC-5 — Build the snapshot for the audience, not for the world.** SC-1 fixed the
+  per-player *query* and left the per-tick *build* alone: `snapshot_msgs` materialised a
+  `SnapshotEntity` — with its `format!` tag — for every creature, obstacle, node, chest,
+  station and structure in the arena, and only then culled. The world streams outward
+  without bound, so that is not a constant: **measured in release at d1269 (4,940
+  creatures, 37,076 obstacles), 8.9 ms of a 15.0 ms tick, ten times a second.**
+  - ⚠️ **And it cost the same 8.5 ms while the only player was in a battle and received
+    none of it** — reported from play as "the world is still streaming while I'm
+    fighting". A player in a fight is on the battle screen driven by battle messages; a
+    player in a dungeon gets that space's own snapshot. Neither is an audience.
+  - `WorldActor::snapshot_audience` computes the recipients and each one's WIDEST reach
+    (interest radius, the Psyker/Iron Hull mob reveal, a hunt's quarry sense, a crafter's
+    node sense) up front, and nothing outside the union of those discs is built at all.
+    Every per-player filter downstream is narrower than its own entry in that union, so
+    the cull is a superset of all of them **by construction** and no player loses an
+    entity a perk had earned.
+  - **Measured after:** roaming 8.9 → **1.26 ms**, in a fight 8.5 → **0.035 ms**; the
+    whole tick 15.0 → **6.3 ms**. Guarded by
+    `a_snapshot_is_built_only_for_players_who_can_receive_one` (structural: the audience
+    is empty in a fight, and its reach really bounds) and
+    `a_fight_does_not_pay_to_build_a_world_nobody_is_looking_at` (a ratio, not a duration
+    — same reason `the_creature_step_stays_linear_in_the_creature_count` is one).
 - [ ] **SC-2 — Sim/IO split (in-process).** The instance task publishes an
   immutable `Arc<WorldSnapshot>` per tick; a worker pool does cull + serialize +
   send in parallel across cores. Decouples sim cadence from snapshot cadence

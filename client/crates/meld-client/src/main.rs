@@ -36,6 +36,7 @@ use net::{ClientCmd, CombatantView, EntityKind, GearLine, Net, SkillLine};
 mod ambient; // client-side decorative life: world-snapped grass scatter + biome motes
 mod builder;
 mod battle; // ATB command panel, party HUD, 3D arena + camera, per-class kits
+mod battle_fx; // elemental impact bursts, the screen wash, and buff/rage sprite reactions
 mod city; // The Last City hub: districts, plaza, HUD
 mod feel; // battle-feel timings/magnitudes, in one runtime-tunable place
 mod flags; // launch-time `MELD_*` / `?query` toggles
@@ -130,11 +131,16 @@ fn main() {
         // The sky: a camera-anchored gradient dome with a sun in it, replacing a single
         // flat `ClearColor` that nothing could meaningfully reflect.
         .add_plugins(MaterialPlugin::<world_render::SkyDome>::default())
+        // The battle's elemental VFX: one impact material for every element, and the
+        // full-frame wash behind a party-wide blow (`battle_fx`).
+        .add_plugins(MaterialPlugin::<battle_fx::AbilityFx>::default())
+        .add_plugins(MaterialPlugin::<battle_fx::ScreenWash>::default())
         // The corner map's ground. A map is a GRID, and it was being drawn as one
         // absolutely-positioned UI node per cell, respawned every frame.
         .add_plugins(bevy_ecs_tilemap::TilemapPlugin)
         // Daytime sky blue behind the diorama (the fog fades the ground into it).
         .insert_resource(ClearColor(Color::srgb(0.53, 0.72, 0.93)))
+        .init_resource::<battle_fx::BattleFx>()
         .init_resource::<builder::BuildMode>()
         .init_resource::<hd2d::Look>()
         .init_resource::<hd2d::LookWatch>()
@@ -572,6 +578,12 @@ fn main() {
                 // overworld and never clear. Tear them down on battle exit.
                 despawn::<StatusIconLayer>,
                 despawn::<BattleIntroRoot>,
+                // The elemental VFX (`battle_fx`): the bursts and the camera-locked wash
+                // quad go with the marker; `reset_battle_fx` clears the QUEUE, which the
+                // marker cannot reach — a cast queued on the frame the fight ended would
+                // otherwise be the first thing the next fight drew.
+                despawn::<battle_fx::BattleFxRoot>,
+                battle_fx::reset_battle_fx,
             ),
         )
         .add_systems(
@@ -616,6 +628,21 @@ fn main() {
                     watch_keyboard,
                     mocks::mock_tally_setup,
                 ),
+            )
+                .run_if(in_state(Screen::Battle)),
+        )
+        // The battle's elemental VFX (`battle_fx`). Its own call rather than folded into
+        // the tuple above, which is already nested once to stay under Bevy's arity cap —
+        // adding four more systems in there overflows the inner tuple and the error it
+        // produces names `IntoObserverSystem`, which says nothing about arity at all.
+        .add_systems(
+            Update,
+            (
+                battle_fx::spawn_ability_fx,
+                battle_fx::advance_ability_fx,
+                battle_fx::advance_screen_wash,
+                battle_fx::react_to_conditions,
+                mocks::mock_battle_fx,
             )
                 .run_if(in_state(Screen::Battle)),
         )
@@ -1774,6 +1801,16 @@ struct HitFx {
     /// Attacker id → seconds since it landed a damaging action (dropped past
     /// [`BattleFeel::lunge_ttl`]); [`animate_battle_actors`] lunges that sprite.
     acts: HashMap<String, f32>,
+    /// Attacker id → who it actually hit, so the lunge goes AT THE DEFENDER.
+    ///
+    /// The lunge used to ride `SpriteQuad::forward`, which is fixed at spawn — the
+    /// direction that hero's whole row faces. So an attacker stepped generically
+    /// "toward the enemies" whoever it was swinging at, and in a five-body pack that
+    /// reads as a twitch rather than as an attack on somebody.
+    ///
+    /// Kept beside `acts` and cleared with it, since it is only meaningful for the
+    /// length of one lunge.
+    act_target: HashMap<String, String>,
     /// Actor id → the animation clip to play once for a just-resolved action (its
     /// `attack` or a specific special). Consumed by `drive_battle_action_clips`,
     /// which hands it to the actor's `hd2d::CharSprite`.
@@ -1782,6 +1819,47 @@ struct HitFx {
     /// channel window; an instant ability's callout pops briefly.
     callouts: Vec<Callout>,
 }
+impl HitFx {
+    /// Everyone mid-telegraph right now, with how long they have been winding up.
+    ///
+    /// A telegraph is a `flashing` callout — the same record that draws the shout bubble —
+    /// rather than a second piece of state beside it. One source, so a creature cannot be
+    /// shouting and not charging, or charging with nothing on screen to say why.
+    fn charging(&self) -> impl Iterator<Item = (&str, f32)> {
+        self.callouts
+            .iter()
+            .filter(|c| c.flashing)
+            .map(|c| (c.combatant_id.as_str(), c.age))
+    }
+}
+
+#[cfg(test)]
+mod telegraph_tests {
+    use super::*;
+
+    /// A telegraph is a `flashing` callout and nothing else — one source, so a creature
+    /// cannot be shouting without winding up, or winding up with nothing on screen saying
+    /// why. An INSTANT ability's shout is not a telegraph and must not charge.
+    #[test]
+    fn only_a_telegraph_winds_up() {
+        let mut fx = HitFx::default();
+        let say = |fx: &mut HitFx, id: &str, flashing: bool, age: f32| {
+            fx.callouts.push(Callout {
+                combatant_id: id.into(),
+                text: "x".into(),
+                age,
+                ttl: 3.0,
+                flashing,
+            });
+        };
+        say(&mut fx, "boss", true, 0.5);
+        say(&mut fx, "runt", false, 0.5);
+        let charging: Vec<&str> = fx.charging().map(|(id, _)| id).collect();
+        assert_eq!(charging, vec!["boss"], "an instant shout was drawn as a wind-up");
+        assert_eq!(fx.charging().next().map(|(_, age)| age), Some(0.5));
+    }
+}
+
 struct Hit {
     target: String,
     text: String,

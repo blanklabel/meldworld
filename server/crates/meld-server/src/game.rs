@@ -862,6 +862,25 @@ fn broadcast<'a, M: Message>(
         .collect()
 }
 
+/// Who this tick's overworld snapshot is actually FOR, and how far each of them can
+/// see (see [`WorldActor::snapshot_audience`]). The union of these discs bounds what
+/// gets materialised at all — a world that streams outward without bound cannot afford
+/// to build an entity per creature and obstacle for players who are in a fight.
+struct SnapshotAudience {
+    /// (position, widest radius anything can reach this viewer by) per recipient.
+    viewers: Vec<(Position, f64)>,
+    /// A recipient exists that has no avatar to measure from, so the cull stands down
+    /// and everything is built. Defensive only.
+    unbounded: bool,
+}
+
+impl SnapshotAudience {
+    /// Could ANY recipient be sent something standing here?
+    fn sees(&self, p: &Position) -> bool {
+        self.unbounded || self.viewers.iter().any(|(v, r)| v.distance_to(p) <= *r)
+    }
+}
+
 /// Chunk coordinate of a world position for the interest grid (SC-1). Cell size is
 /// the balance `world.chunk_size` — the same bucketing `Arena::step_creatures` uses
 /// for its skirmish spatial hash.
@@ -1142,20 +1161,6 @@ struct BattleSlot {
     /// Drives the post-battle fixups (victory ⇒ `boss_dead`, defeat ⇒ dungeon
     /// cleanup) in `finish_dungeon_battle`. `None` for every overworld battle.
     dungeon: Option<DungeonBattle>,
-    /// The `encounter_party_scale` these creatures were actually built with, so the
-    /// XP can be paid against the health the party really had to chew through.
-    ///
-    /// Without it the two halves of the party rule disagreed: a four-hero party met
-    /// creatures with 4.4x the HP and then SPLIT the unscaled XP four ways, so each
-    /// hero earned at 0.057x the solo rate per point of health destroyed. The split
-    /// alone is the intended cost (a lone hero absorbs the whole lesson); the 4.4x
-    /// on top of it was not.
-    ///
-    /// Captured at BUILD time on purpose. A co-op joiner does not re-scale the
-    /// creatures — the mob stays crushable — so joining must not inflate the payout
-    /// either: more heroes splitting the same XP is exactly the pressure that sends
-    /// a full co-op group looking for a much harder fight.
-    party_scale: f64,
 }
 
 /// What a dungeon fight IS — the one description both shapes of it share.
@@ -2267,7 +2272,80 @@ pub(crate) fn compute_perks(
 }
 
 impl WorldActor {
+    /// Who can be sent an overworld entity this tick, and how far each of them can see.
+    ///
+    /// The union of these discs is what [`Self::snapshot_msgs`] materialises; anything
+    /// outside every one of them is not built at all. A viewer's reach is the WIDEST of
+    /// the ways it has of seeing something — the base interest radius, a Psyker's or an
+    /// Iron Hull's mob reveal, a hunt's quarry sense, a crafter's node sense — because
+    /// the per-player filters downstream each pick a subset of that, and a pre-cull
+    /// tighter than any of them would silently delete an entity a perk had earned.
+    ///
+    /// Players **in a battle** and players **inside a dungeon** are not viewers: the
+    /// first are on the battle screen driven by battle messages, the second get their
+    /// own space's snapshot. A tick where every player is one or the other therefore
+    /// builds nothing but avatars and the portal, which is the whole point.
+    fn snapshot_audience(&self) -> SnapshotAudience {
+        let cell = self.balance.world.chunk_size.max(1) as f64;
+        let radius = self.balance.world.interest_radius_chunks.max(0) as f64 * cell;
+        let in_battle = self.parties_in_battle();
+        let mut viewers: Vec<(Position, f64)> = Vec::new();
+        // A recipient with no avatar cannot be given a position, and the cull below is
+        // positional — so it falls back to building the world, the same way its own
+        // per-player filter falls back to sending it. Defensive: a roaming run always
+        // has an avatar.
+        let mut unbounded = false;
+        for r in self.run.runs.iter().filter(|r| !in_battle.contains(&r.party_id)) {
+            if self.dungeon_of(&r.player_id).is_some() {
+                continue;
+            }
+            let Some(a) = self.arena.avatar(&r.player_id) else {
+                unbounded = true;
+                continue;
+            };
+            let p = self.perks_for(&r.player_id);
+            let h = &self.balance.hunt;
+            let quarry = match self.quarry.get(&r.player_id) {
+                Some(q) if !q.is_empty() => {
+                    if p.hunter_intel > 0 {
+                        h.quarry_sense_hunter_radius
+                    } else {
+                        h.quarry_sense_radius
+                    }
+                }
+                _ => 0.0,
+            };
+            let reach = radius
+                .max(p.hunter_reveal_radius as f64)
+                .max(p.iron_hull_listen_radius as f64)
+                .max(p.smithwright_ore_radius as f64)
+                .max(p.keeper_reagent_radius as f64)
+                .max(quarry);
+            viewers.push((a.position, reach));
+        }
+        SnapshotAudience { viewers, unbounded }
+    }
+
     fn snapshot_msgs(&mut self) -> Vec<Outgoing> {
+        // ⚠️ **NOTHING IS MATERIALISED FOR NOBODY.** This used to build a
+        // `SnapshotEntity` — with its `format!` tag — for EVERY creature, obstacle,
+        // node, chest and structure in the arena, and only then cull per player. The
+        // world streams outward without bound, so that is not a constant cost: measured
+        // in release at d1269 (4,940 creatures, 37,076 obstacles) it was **8.9 ms of a
+        // 15.0 ms tick**, ten times a second — and it cost the same **8.5 ms while the
+        // only player was in a battle and received none of it**, which is exactly the
+        // "the world is still streaming while I'm fighting" the report described.
+        //
+        // So the cull comes FIRST. Everything below is pushed only if some viewer could
+        // actually be sent it, at the widest radius that viewer has any way of seeing:
+        // the base interest radius, the Psyker/Iron Hull mob reveal, a hunt's quarry
+        // sense, and a crafter's node sense. The per-player filters further down are
+        // unchanged and still narrower than this, so no player loses an entity — the
+        // union is a superset of every individual cull by construction.
+        //
+        // The remaining per-entity work is one distance test against a handful of
+        // viewers, which is nothing beside the string formatting it replaces.
+        let cull = self.snapshot_audience();
         let mut entities: Vec<wm::SnapshotEntity> = self
             .arena
             .avatars
@@ -2299,7 +2377,23 @@ impl WorldActor {
         // — you can see a brawl in front of you without a Hunter in the party.
         let clashing: std::collections::HashSet<String> =
             self.arena.clashing().into_iter().map(String::from).collect();
-        for m in self.arena.monsters.iter().filter(|m| !m.defeated) {
+        for m in self
+            .arena
+            .monsters
+            .iter()
+            // ⚠️ A BOUNTY MARK IS FORCE-INCLUDED AT ANY DISTANCE, so it must survive the
+            // pre-cull unconditionally. Its owner's per-player filter adds it to `marked`
+            // with NO distance test at all — a contract with your name on it is tracked
+            // wherever it is standing — so culling it here by reach would silently delete
+            // the one creature the whole walk out is pointed at, and only for contracts
+            // sighted past the interest radius, which is most of them.
+            //
+            // Materialised for everyone rather than only for its owner: marks are one or
+            // two per player, and the `hidden` set below already drops it from every other
+            // player's snapshot. Keeping the pre-cull ignorant of WHO is the point — it is
+            // a superset filter, and the per-viewer rules stay in one place.
+            .filter(|m| !m.defeated && (!m.owner.is_empty() || cull.sees(&m.position)))
+        {
             mob_index.push((
                 entities.len(),
                 m.position,
@@ -2370,7 +2464,7 @@ impl WorldActor {
         });
         // Treasure chests, tagged `chest:<tier>:<open>` (`open` = 0/1) so the client
         // draws unopened vs opened. Opened chests stay in the world (as opened).
-        for c in &self.arena.chests {
+        for c in self.arena.chests.iter().filter(|c| cull.sees(&c.position)) {
             entities.push(wm::SnapshotEntity {
                 entity_id: c.entity_id.clone(),
                 position: c.position,
@@ -2385,7 +2479,7 @@ impl WorldActor {
         // them into its own snapshot from further out than anyone else sees them.
         let mut node_index: Vec<(usize, Position, Option<meld_proto::materials::MaterialClass>)> =
             Vec::new();
-        for n in self.arena.resources.iter().filter(|n| !n.depleted()) {
+        for n in self.arena.resources.iter().filter(|n| !n.depleted() && cull.sees(&n.position)) {
             let class = self
                 .balance
                 .resource
@@ -2405,7 +2499,7 @@ impl WorldActor {
         // Player-raised field stations, tagged `station:<kind>:<uses>` so the client can
         // draw the bench and count its remaining jobs in the prompt. A spent station is
         // gone from the snapshot, which is how it reads as used up.
-        for st in self.arena.stations.iter().filter(|s| !s.spent()) {
+        for st in self.arena.stations.iter().filter(|s| !s.spent() && cull.sees(&s.position)) {
             entities.push(wm::SnapshotEntity {
                 entity_id: st.entity_id.clone(),
                 position: st.position,
@@ -2417,7 +2511,7 @@ impl WorldActor {
         }
         // Ground loot dropped by creature-vs-creature skirmishes, tagged
         // `loot:<kind>` — walk over it to auto-collect (see `collect_ground_loot`).
-        for l in &self.arena.ground_loot {
+        for l in self.arena.ground_loot.iter().filter(|l| cull.sees(&l.position)) {
             entities.push(wm::SnapshotEntity {
                 entity_id: l.entity_id.clone(),
                 position: l.position,
@@ -2430,7 +2524,7 @@ impl WorldActor {
         // Impassable biome terrain, tagged `obstacle:<kind>:<radius>` so the client
         // renders each feature at its true size (static, but sent with the snapshot
         // like the other world entities — pragmatic for the slice).
-        for o in &self.arena.obstacles {
+        for o in self.arena.obstacles.iter().filter(|o| cull.sees(&o.position)) {
             entities.push(wm::SnapshotEntity {
                 entity_id: o.entity_id.clone(),
                 position: o.position,
@@ -2443,7 +2537,7 @@ impl WorldActor {
         // Player-built structures (CANON D21/§W3), tagged
         // `structure:<function>:<hp_pct>:<building>` — ONE tag for every function, so a
         // new function needs no new render path and cannot be forgotten by one.
-        for st in &self.arena.structures {
+        for st in self.arena.structures.iter().filter(|st| cull.sees(&st.position)) {
             entities.push(wm::SnapshotEntity {
                 entity_id: st.entity_id.clone(),
                 position: st.position,
@@ -2461,7 +2555,7 @@ impl WorldActor {
         // DG-3: hand-designed dungeon entrances, tagged `entrance:<dungeon>` — walk
         // up to descend (the enter flow lands in the next increment). Pushed before
         // the interest grid so they cull by position like any other entity.
-        for e in &self.entrances {
+        for e in self.entrances.iter().filter(|e| cull.sees(&e.position)) {
             entities.push(wm::SnapshotEntity {
                 entity_id: e.entity_id.clone(),
                 position: e.position,
@@ -2494,6 +2588,8 @@ impl WorldActor {
         // SC-1: the cull runs off a per-tick chunk grid (built once here) so each
         // player's query touches only the cells in range instead of re-scanning the
         // whole entity list — O(sessions × visible) not O(sessions × entities).
+        // The same two numbers `snapshot_audience` sized the pre-cull from, so the union
+        // it built and the per-player filter below cannot drift apart.
         let cell = self.balance.world.chunk_size.max(1) as f64;
         let radius = self.balance.world.interest_radius_chunks.max(0) as f64 * cell;
         let radius2 = radius * radius;
@@ -3712,7 +3808,6 @@ impl WorldActor {
                 .map(|m| m.position)
                 .unwrap_or_else(|| Position::new(0.0, 0.0)),
             dungeon: None,
-            party_scale: meld_run::encounter_party_scale(party.len(), &balance),
         };
         let (mut allies, enemies) = slot.battle.wire_combatants();
         inject_hero_names(&slot.player_combatants, &inst.hero_names, &mut allies);
@@ -3914,7 +4009,6 @@ impl WorldActor {
                 bounty: mark.as_ref().map(|(id, _)| id.clone()).unwrap_or_default(),
                 mark_boss: mark.as_ref().map(|(_, s)| s.boss_kind.clone()).unwrap_or_default(),
             }),
-            party_scale: meld_run::encounter_party_scale(party.len(), &balance),
         };
         let (mut allies, enemies) = slot.battle.wire_combatants();
         inject_hero_names(&slot.player_combatants, &inst.hero_names, &mut allies);
@@ -10642,6 +10736,8 @@ impl WorldActor {
                         auto: res.auto,
                         flee_success: res.flee_success,
                         callout_text: res.callout_text.clone(),
+                        // What it was made of, for the client's battle VFX.
+                        damage_type: res.damage_type,
                         effects: res
                             .effects
                             .iter()
@@ -10789,21 +10885,20 @@ impl WorldActor {
     /// so a called creature is not a second, thinner kind of enemy — it arrives with its
     /// wound, its rank, its pack role, its kit and its resistances like anything else.
     ///
-    /// Sized with the battle's OWN `party_scale` rather than one recomputed now: a co-op
-    /// joiner does not rescale the creatures, so a call must not either, or arriving help
-    /// would quietly inflate the whole encounter.
+    /// Nothing here is sized to the party, because nothing anywhere is: a creature arrives
+    /// with the health the world holds for it, the same as the one that called it.
     fn answer_the_call(&mut self, battle_id: &str, caller_combatant: &str) -> Vec<Outgoing> {
         // Which overworld creature is that combatant? A dungeon boss has no
         // `monster_combatants` at all (it is assembled for the fight rather than standing
         // in the arena), so there is nothing out there to call and nothing to do.
-        let Some((caller_entity, party_scale, group_base)) =
+        let Some((caller_entity, group_base)) =
             self.battle_by_id(battle_id).and_then(|s| {
                 let eid = s
                     .monster_combatants
                     .iter()
                     .find(|(_, cid)| cid.as_str() == caller_combatant)
                     .map(|(eid, _)| eid.clone())?;
-                Some((eid, s.party_scale, s.battle.next_group_id()))
+                Some((eid, s.battle.next_group_id()))
             })
         else {
             return Vec::new();
@@ -10828,8 +10923,7 @@ impl WorldActor {
         }
         let members: Vec<meld_run::EnemyMember> =
             arrivals.iter().map(|(m, cid)| (m, cid.clone())).collect();
-        let fighters =
-            meld_run::enemy_fighters(&members, &self.balance, party_scale, group_base);
+        let fighters = meld_run::enemy_fighters(&members, &self.balance, group_base);
 
         let Some(slot) = self.battle_by_id_mut(battle_id) else {
             return Vec::new();
@@ -10994,17 +11088,16 @@ impl WorldActor {
         };
         let monster_ids = inst.battles[bidx].monster_ids.clone();
         let battle_pos = inst.battles[bidx].pos;
-        // Combined XP for the whole encounter (touched creature + its group), paid
-        // against the health it was actually built with: `BattleSlot::party_scale`
-        // is the same multiplier its HP wears, so a fight that took four times the
-        // chewing pays four times the lesson before the party splits it.
-        let base_xp: i64 = monster_ids
+        // Combined XP for the whole encounter (touched creature + its group): each
+        // creature's own fixed `xp_reward`, summed, and nothing else. It is not scaled by
+        // the party facing it, because neither is the creature — a fixed pool divided among
+        // the heroes still standing is what makes XP per hero per unit of real time the same
+        // at every party size, with only the fight LENGTH moving.
+        let xp_reward: i64 = monster_ids
             .iter()
             .filter_map(|id| inst.arena.monster_by_id(id))
             .map(|m| m.xp_reward)
             .sum();
-        let xp_reward: i64 =
-            ((base_xp as f64) * inst.battles[bidx].party_scale).round().max(0.0) as i64;
         // The toughest thing in the encounter is what a hero learns from, and what
         // `xp_after_level_gap` weighs its own level against.
         let encounter_level: i32 = monster_ids
@@ -11736,10 +11829,11 @@ impl WorldActor {
         // reset the creature to full and the whole encounter had to be paid for again —
         // and a party could never soften something up and come back.
         //
-        // Written back as a FRACTION, never as the raw battle number: the fight scaled the
-        // creature's pool by `party_scale`, so a four-hero party chewed through ~4.4x the
-        // health this spawn actually has. Writing 3000-of-13200 onto a 3000 HP creature
-        // would leave it untouched; writing the raw remainder onto it would kill it.
+        // Written back as a FRACTION rather than as the raw battle number. The two are the
+        // same number today — nothing rescales a creature for the party facing it any more —
+        // but the fraction is what the rule actually IS, and it is what kept this honest
+        // while `encounter_party_scale` was multiplying the pool: writing 3000-of-13200 onto
+        // a 3000 HP creature left it untouched, and writing the remainder killed it.
         let wounds: Vec<(String, f64)> = {
             let slot = inst.battles.get(bidx);
             monster_ids
@@ -13013,6 +13107,373 @@ mod watching_tests {
 
     /// A world with a fight already going: p1's party is locked in with the nearest
     /// creature, p2 is standing right beside them doing nothing at all.
+    /// A deep world with one player standing in it, streamed out far enough that the
+    /// arena holds thousands of things. Used by the two snapshot-cost guards below.
+    fn a_deep_world_with_one_player() -> (WorldActor, u32) {
+        let (mut w, rx) = super::shifting_lands_tests::world(1_000_000, 1);
+        std::mem::forget(rx);
+        let b = w.balance.clone();
+        for _ in 0..4096 {
+            if w.arena.ensure_frontier(&b, 1269.0).is_empty() {
+                break;
+            }
+        }
+        let party = w
+            .run
+            .add_party(vec![("p1".into(), "p1".into(), CharacterClass::Explorer, "r1".into())]);
+        w.arena.add_avatar("p1".into(), 5.0);
+        (w, party)
+    }
+
+    /// **A SNAPSHOT IS BUILT FOR THE PLAYERS WHO CAN RECEIVE ONE, AND FOR NOBODY ELSE.**
+    ///
+    /// `snapshot_msgs` used to materialise a `SnapshotEntity` — with its `format!` tag —
+    /// for every creature, obstacle, node, chest and structure in the arena, then cull
+    /// per player. The world streams outward without bound, so at d1269 that was ~42,000
+    /// entities built ten times a second, **and it cost the same while the only player
+    /// was in a battle and received none of it**.
+    ///
+    /// This pins the structural half: the audience is the thing that bounds the work, a
+    /// player in a fight is not in it, and its reach really is a bound rather than a
+    /// formality. The cost half is the ratio test below.
+    #[test]
+    fn a_snapshot_is_built_only_for_players_who_can_receive_one() {
+        let (mut w, party) = a_deep_world_with_one_player();
+        let audience = w.snapshot_audience();
+        assert_eq!(audience.viewers.len(), 1, "a roaming player is not an audience");
+        assert!(!audience.unbounded, "the cull stood down for a player that has an avatar");
+
+        // Its reach is a real bound: something on the far frontier is not built for it.
+        let far = w
+            .arena
+            .monsters
+            .iter()
+            .max_by(|a, b| {
+                let d = |m: &meld_world::MonsterSpawn| m.position.x.hypot(m.position.y);
+                d(a).total_cmp(&d(b))
+            })
+            .map(|m| m.position)
+            .expect("the deep world holds no creatures");
+        assert!(!audience.sees(&far), "the cull reaches the frontier, so it bounds nothing");
+        assert!(
+            audience.sees(&w.arena.avatar("p1").expect("no avatar").position),
+            "a viewer cannot see the ground it is standing on"
+        );
+
+        // And in a fight the audience is EMPTY: that player is on the battle screen being
+        // driven by battle messages, so there is nobody to build a world for.
+        let at = w
+            .arena
+            .monsters
+            .iter()
+            .find(|m| !m.defeated)
+            .map(|m| m.position)
+            .expect("nothing to fight");
+        if let Some(a) = w.arena.avatar_mut("p1") {
+            a.position = at;
+        }
+        w.start_battle("p1", party, 0);
+        assert_eq!(w.battles.len(), 1, "the fixture did not start a fight");
+        assert!(
+            w.snapshot_audience().viewers.is_empty(),
+            "a player in a battle is still being counted as a snapshot recipient"
+        );
+        assert!(w.snapshot_msgs().is_empty(), "a fighting player was sent an overworld snapshot");
+    }
+
+    /// Entity ids in the snapshot `pid` received this tick.
+    ///
+    /// Extracted rather than inlined at each call site, and written as a LOOP rather than
+    /// an iterator chain: three copies of a ten-combinator `filter_map`/`flat_map` over
+    /// `serde_json::Value` is the classic rustc inference blowup, and this crate is one
+    /// 13k-line module that re-typechecks whole. Clippy on it went from minutes to
+    /// three quarters of an hour when these went in as chains.
+    fn snapshot_ids(out: &[Outgoing], pid: &str) -> Vec<String> {
+        let mut ids = Vec::new();
+        for o in out {
+            if o.player_id != pid || o.msg_type != wm::Snapshot::TYPE {
+                continue;
+            }
+            let Ok(v) = serde_json::from_str::<serde_json::Value>(o.payload.get()) else {
+                continue;
+            };
+            let Some(list) = v["entities"].as_array() else { continue };
+            for e in list {
+                if let Some(id) = e["entity_id"].as_str() {
+                    ids.push(id.to_string());
+                }
+            }
+        }
+        ids
+    }
+
+    /// **THE PRE-CULL MUST NEVER DROP WHAT A PERK EARNED.**
+    ///
+    /// `SC-5` builds the snapshot for the audience rather than for the world, so an entity
+    /// outside every viewer's reach is never materialised at all. That is only safe while
+    /// "reach" is the WIDEST way a viewer has of seeing something — and the per-player
+    /// filters downstream are a pile of separate radii: the base interest cull, the
+    /// Psyker/Iron Hull mob reveal, a hunt's quarry sense, and a crafter's node sense.
+    ///
+    /// A pre-cull that used only the base radius would compile, pass every existing test,
+    /// and silently delete the one thing a Smithwright levelled its whole trade for. This
+    /// puts an ore vein in the band between the two radii and insists it arrives.
+    ///
+    /// The SC-1 equivalence oracle cannot catch this: it compares the grid cull against a
+    /// naive scan over an entity list that has ALREADY been built, which is exactly the
+    /// step this change moved.
+    #[test]
+    fn a_perk_still_reaches_past_the_cull_that_was_added_under_it() {
+        let (mut w, _) = a_deep_world_with_one_player();
+        // A Smithwright deep enough that its Prospector's Eye out-reaches the base
+        // interest radius — otherwise the band this test needs does not exist.
+        w.party_classes.insert("p1".to_string(), vec![CharacterClass::Smithwright]);
+        for r in w.run.runs.iter_mut() {
+            r.run_level = 100;
+        }
+        let cell = w.balance.world.chunk_size.max(1) as f64;
+        let radius = w.balance.world.interest_radius_chunks.max(0) as f64 * cell;
+        let ore_reach = w.perks_for("p1").smithwright_ore_radius as f64;
+        assert!(
+            ore_reach > radius,
+            "the fixture's Smithwright senses ore at {ore_reach} against a base cull of \
+             {radius}, so there is no band to test in"
+        );
+
+        // An ore kind, taken from the registry rather than named — a hand-written key is a
+        // key that gets renamed out from under the test.
+        let ore_kind = w
+            .balance
+            .resource
+            .iter()
+            .find(|(_, r)| {
+                meld_proto::materials::material(&r.material)
+                    .is_some_and(|m| m.class == meld_proto::materials::MaterialClass::Ore)
+            })
+            .map(|(k, _)| k.clone())
+            .expect("no ore resource in balance");
+
+        let me = w.arena.avatar("p1").expect("no avatar").position;
+        let put = |w: &mut WorldActor, id: &str, out: f64| {
+            w.arena.resources.push(meld_world::ResourceNode {
+                entity_id: id.to_string(),
+                kind: ore_kind.clone(),
+                position: Position::new(me.x + out, me.y),
+                elevation: 0,
+                remaining: 5,
+                spent_tick: 0,
+            });
+        };
+        // One in the band the perk opens, one past everything.
+        put(&mut w, "vein-sensed", (radius + ore_reach) / 2.0);
+        put(&mut w, "vein-far", ore_reach * 3.0);
+
+        let out = w.snapshot_msgs();
+        let seen = snapshot_ids(&out, "p1");
+        assert!(
+            seen.iter().any(|id| id == "vein-sensed"),
+            "a vein inside the Smithwright's own sense radius was culled before it was \
+             ever built — the pre-cull is narrower than the filters it is supposed to be a \
+             superset of"
+        );
+        // …and the cull still culls, or this test would pass on a world that builds
+        // everything and proves nothing.
+        assert!(
+            !seen.iter().any(|id| id == "vein-far"),
+            "a vein three times past every radius was sent anyway"
+        );
+    }
+
+    /// **THE ELEMENT REALLY REACHES THE CLIENT.** `battle.action_resolved` carries the
+    /// `BattleActionKind` and never the ability, and a creature's kit lives in
+    /// `meld-world`, which the client does not have — so without `damage_type` on the wire
+    /// a fireball and a sword are indistinguishable and `battle_fx` has nothing to draw.
+    ///
+    /// This repo's recurring failure is a feature that is *generated* correctly and never
+    /// consumed: a whole inland-water system rendered nothing, `pack:` drove combat for
+    /// releases without reaching the client, and `bridges` was plumbed proto-to-view-struct
+    /// with no consumer at all. Every one of those had a green suite. So this asserts the
+    /// PAYLOAD a session actually receives, not the engine's own struct.
+    #[test]
+    fn the_blow_tells_the_client_what_it_was_made_of() {
+        let mut w = a_fight_and_a_bystander();
+        let hero = w.battles[0]
+            .player_combatants
+            .get("p1")
+            .and_then(|h| h.first())
+            .cloned()
+            .expect("the fixture fielded nobody");
+        let foe = w.battles[0]
+            .monster_combatants
+            .values()
+            .next()
+            .cloned()
+            .expect("the fixture has nothing to hit");
+
+        // Swing until one lands. The gauge has to fill first, so most submits are refused
+        // — and a refusal is free, which is the whole point of `Battle::precheck`.
+        //
+        // The BATTLE is ticked, never the world: `a_fight_and_a_bystander` streams a world
+        // out to d900, and six hundred full world ticks is minutes of wall clock for a
+        // question that has nothing to do with the overworld.
+        let bid = w.battles[0].battle_id.clone();
+        let mut stamped = None;
+        // ⚠️ A NAMED HELPER, NOT A CLOSURE PASSED TO `Option::filter`.
+        //
+        // The first cut of this test wrote `sent(..).filter(&landed)` over a closure
+        // holding a nested `is_some_and(|e| e.iter().any(..))` chain on
+        // `serde_json::Value`. That single expression took clippy on this crate from
+        // **3 seconds to over 70 minutes**, and on a CI runner the job was killed 90
+        // seconds into `meld-server` — twice, identically, with no diagnostic. A plain
+        // `fn` with written-out types costs nothing and reads better.
+        fn landed(v: &serde_json::Value) -> bool {
+            let Some(effects) = v["effects"].as_array() else { return false };
+            for e in effects {
+                if e["amount"].as_i64().unwrap_or(0) > 0 {
+                    return true;
+                }
+            }
+            false
+        }
+        for n in 0..600 {
+            let evs = match w.battle_by_id_mut(&bid) {
+                Some(slot) => {
+                    let mut evs = slot.battle.tick();
+                    if let Ok(more) = slot.battle.submit(
+                        &hero,
+                        format!("a{n}"),
+                        BattleActionKind::Attack,
+                        Some(vec![foe.clone()]),
+                        None,
+                        None,
+                    ) {
+                        evs.extend(more);
+                    }
+                    evs
+                }
+                None => break,
+            };
+            let (out, _) = w.emit_battle_events(&bid, evs);
+            if let Some(v) = sent(&out, "p1", wb::ActionResolved::TYPE) {
+                if landed(&v) {
+                    stamped = Some(v);
+                    break;
+                }
+            }
+        }
+        let v = stamped.expect("nothing landed a damaging blow in 60s of fighting");
+        assert!(
+            !v["damage_type"].is_null(),
+            "a blow that did damage reached the client with no element on it, so the arena \
+             has nothing to draw: {v}"
+        );
+        // And it must be a type the client's own table knows, or it draws nothing anyway.
+        let ty: meld_proto::enums::DamageType =
+            serde_json::from_value(v["damage_type"].clone()).expect("damage_type is not a type");
+        assert_ne!(
+            ty,
+            meld_proto::enums::DamageType::None,
+            "a hero's basic attack rode the wire as TRUE damage — `UNARMED_ATTACK_TYPE` is \
+             Blunt precisely so this cannot happen"
+        );
+    }
+
+    /// **A CONTRACT WITH YOUR NAME ON IT IS TRACKED WHEREVER IT STANDS.**
+    ///
+    /// An FS-4 bounty mark is force-included in its owner's snapshot with NO distance test
+    /// — that is what makes a contract findable rather than something you stumble on — and
+    /// a mark is sighted at the depth the hunter's rank earned, which is usually well past
+    /// the interest radius.
+    ///
+    /// `SC-5`'s pre-cull is positional, so it deletes exactly that. This is the case the
+    /// audience cannot express as a radius, and the only entity in the world that needs an
+    /// unconditional exemption from it.
+    #[test]
+    fn a_bounty_mark_survives_the_cull_however_far_out_it_stands() {
+        let (mut w, _) = a_deep_world_with_one_player();
+        let cell = w.balance.world.chunk_size.max(1) as f64;
+        let radius = w.balance.world.interest_radius_chunks.max(0) as f64 * cell;
+        let me = w.arena.avatar("p1").expect("no avatar").position;
+
+        // Stand a mark for p1 far outside every radius anyone has, and an ownerless
+        // creature beside it as the control.
+        let out = radius * 8.0;
+        for (id, owner) in [("mark-mine", "p1"), ("wild-thing", "")] {
+            let mut m = w.arena.monsters[0].clone();
+            m.entity_id = id.to_string();
+            m.owner = owner.to_string();
+            m.bounty = if owner.is_empty() { String::new() } else { "c1".to_string() };
+            m.position = Position::new(me.x + out, me.y);
+            m.defeated = false;
+            m.in_battle = false;
+            w.arena.monsters.push(m);
+        }
+
+        let seen = snapshot_ids(&w.snapshot_msgs(), "p1");
+        assert!(
+            seen.iter().any(|id| id == "mark-mine"),
+            "a player's own bounty mark was culled for standing too far away — the one \
+             creature a contract exists to point at"
+        );
+        // The control: an ordinary creature at the same spot is still culled, or the
+        // exemption has quietly become "build the whole world".
+        assert!(
+            !seen.iter().any(|id| id == "wild-thing"),
+            "an ownerless creature {out} units out was sent anyway"
+        );
+    }
+
+    /// …and the cost follows the audience. A RATIO rather than a duration, for the same
+    /// reason `the_creature_step_stays_linear_in_the_creature_count` is one: a duration
+    /// bound on a box shared with twenty agents is either flaky or too loose to catch
+    /// anything.
+    ///
+    /// Measured in release at d1269 (4,940 creatures, 37,076 obstacles): the roaming
+    /// snapshot fell 8.9 ms -> 1.26 ms and the in-fight one 8.5 ms -> **0.035 ms**, a
+    /// 240x gap. The bound below is 5x, so it fails only if the whole-world build is
+    /// genuinely back rather than because the machine was busy.
+    #[test]
+    fn a_fight_does_not_pay_to_build_a_world_nobody_is_looking_at() {
+        let (mut w, party) = a_deep_world_with_one_player();
+        assert!(
+            w.arena.monsters.len() > 1000,
+            "the fixture's world is too small to measure ({} creatures)",
+            w.arena.monsters.len()
+        );
+        let best_of = |w: &mut WorldActor, n: usize| {
+            let mut best = f64::MAX;
+            for _ in 0..n {
+                let t = std::time::Instant::now();
+                let _ = w.snapshot_msgs();
+                best = best.min(t.elapsed().as_secs_f64());
+            }
+            best
+        };
+        let _ = best_of(&mut w, 5); // warm, so neither side pays a first-touch cost
+        let roaming = best_of(&mut w, 20).max(1e-9);
+
+        let at = w
+            .arena
+            .monsters
+            .iter()
+            .find(|m| !m.defeated)
+            .map(|m| m.position)
+            .expect("nothing to fight");
+        if let Some(a) = w.arena.avatar_mut("p1") {
+            a.position = at;
+        }
+        w.start_battle("p1", party, 0);
+        let fighting = best_of(&mut w, 20);
+
+        assert!(
+            fighting * 5.0 < roaming,
+            "the snapshot costs {:.3}ms with the only player in a fight against {:.3}ms \
+             roaming — the whole world is being materialised for an audience of nobody",
+            fighting * 1000.0,
+            roaming * 1000.0,
+        );
+    }
+
     fn a_fight_and_a_bystander() -> WorldActor {
         let (mut w, rx) = super::shifting_lands_tests::world(1_000_000, 1);
         // The DB sink must outlive the world or every enqueue is a send error.
@@ -13422,10 +13883,9 @@ mod watching_tests {
     /// the whole encounter had to be paid for again — and softening something up to come
     /// back for it later was impossible.
     ///
-    /// The wound rides back as a FRACTION, never as the raw battle number: the fight scaled
-    /// the creature's pool by `encounter_party_scale`, so a four-hero party chews through
-    /// several times the health the spawn actually has. Writing the raw remainder onto it
-    /// would kill it outright.
+    /// The wound rides back as a FRACTION rather than as the raw battle number — the rule
+    /// the write-back actually holds, and the one thing that kept it honest back when
+    /// `encounter_party_scale` multiplied the pool by the size of the party facing it.
     #[test]
     fn a_creature_that_survives_a_fight_stays_wounded() {
         let mut w = a_fight_and_a_bystander();
@@ -13481,7 +13941,7 @@ mod watching_tests {
         assert!(m.hp < full, "the wound was forgotten: {} of {full}", m.hp);
         assert!(m.hp >= 1, "a creature the engine says is alive was written back dead");
         assert_eq!(m.max_hp, full, "the wound shrank the creature instead of hurting it");
-        // The fraction, not the raw number — the battle pool is `party_scale` times this.
+        // The fraction, not the raw number.
         let carried = (m.hp as f64) / (full as f64);
         assert!(
             (carried - left).abs() < 0.02,

@@ -31,25 +31,28 @@ battle_reentry_grace_ms = 5000   # after winning/losing/fleeing a fight, how lon
 # base_run_level(hub) = round(1 + hub.distance * base_run_level_per_distance)
 base_run_level_per_distance = 0.078   # CANON §B -> Center=1, D500=40
 
-# How an encounter's creatures scale with the SIZE of the party facing them, on top
-# of the distance curve. Indexed by party size (1..4).
+# ⚠️ `encounter_party_scale` IS RETIRED. A creature's HP, attack, defence, speed and XP
+# are now fixed by its LEVEL and nothing else — the same boar is the same boar whether
+# one hero or four are standing in front of it. What a party of four buys is a shorter
+# fight, which is the honest reading of bringing four times the damage.
 #
-# Applied to creature HEALTH only — never to attack. A pack facing four heroes needs
-# to LAST longer, but it does not swing four times harder at each of them; scaling
-# attack made a larger party strictly more lethal per head and wiped level-1 parties
-# at distance 0.
+# It used to multiply creature HEALTH by party size ([1.0, 1.9, 3.0, 4.4]), on the
+# argument that a full party's fights would otherwise be the shortest in the game. That
+# is true, and it is fine: the early game IS easy and the difficulty comes from walking
+# further out, which is the one axis this game has. Scaling the world to the party made
+# depth mean less every time a hero was added.
 #
-# Why superlinear rather than flat: four heroes bring roughly four times the damage,
-# so creatures that only doubled would make a full party's fights SHORTER than a solo
-# hero's. The intended arc is the opposite — a new player soloing does quick, easy
-# fights (the tutorial era), and by the time they field four the fights are long
-# affairs. Party slots unlock at 1 hero L10 / 2 at L20 / 3 at L30, so this ramp is
-# indexed to the same progression the player actually feels. [TUNABLE]
-encounter_party_scale = [1.0, 1.9, 3.0, 4.4]
+# The XP split below is what keeps it honest. A fixed creature pays a fixed pool, so a
+# solo hero kills it in four times the turns for four times the share — XP per hero per
+# unit of real time is the same at every party size, and only the fight LENGTH moves.
 
-# Encounter XP is SPLIT across the party rather than paid to each hero in full: a
-# lone hero absorbs the whole lesson, four share it. This is what makes the early
-# solo era level fast and the late four-hero era long, using the same encounters.
+# Encounter XP is SPLIT across the heroes still STANDING when the fight ends rather than
+# paid to each in full: a lone hero absorbs the whole lesson, four share it, and the last
+# survivor of a bad fight banks all of it.
+#
+# ⚠️ With scaling retired this means a level costs `fights_per_level` fights PER HERO, so
+# a full party needs four times the fights a solo hero does — each of them roughly a
+# quarter as long. Read `fights_per_level` as a hero's own effort, not as wall-clock.
 xp_split_across_party = true
 # Two containers, and only one of them has a limit. The **Party Inventory** is
 # UNBOUNDED — a slot cap there punishes finding things, which is the opposite of what
@@ -727,12 +730,19 @@ elite_loot_mult = 3.0            # chits ×, and boosts the gear-drop chance
 # folded it in twelve. So an ordinary gatekeeper is a 5x wall a single party can finish, and a
 # Worldbreaker is 20x.
 #
-# THE REASON A STATIC MULTIPLE WORKS: `encounter_party_scale` is a four-entry table indexed by
-# hero count and CLAMPED to its length, so creature HP stops growing past four heroes. A merge
-# of four parties (sixteen heroes) faces the same pool a lone party of four does while bringing
-# four times the damage — which is what makes "sized for N parties" expressible as HP at all,
-# and why this multiplying by the party count does not double-count the merge. [TUNABLE]
-gatekeeper_hp_mult = 5.0
+# THE REASON A STATIC MULTIPLE WORKS: nothing else scales a creature to the crowd in front of
+# it. `encounter_party_scale` is retired ([runs]), so a gatekeeper's health is a property of
+# the GATEKEEPER and its depth, and a merge of four parties faces the pool this constant and
+# `warbands` declare — which is what makes "sized for N parties" expressible as HP at all.
+#
+# ⚠️ 22.0, not the 5.0 it read while party scaling was live. The whole ladder of measurements
+# behind this line — 464 turns against a level-40 party, `outgrowing_a_fight_lets_you_stomp_it`
+# holding parity at 20+ rounds — was taken by a party of FOUR, which met 4.4x on top. Leaving
+# 5.0 would have quietly made every boss in the game a quarter of the fight it was tuned to be.
+# So the old full-party multiple is folded in here, where it now says what it means: this is
+# how big a gatekeeper IS. Depth does the escalation from there (HP is linear in tier), which
+# is why a boss met deep is a wall and one met at the first gate is a fight. [TUNABLE]
+gatekeeper_hp_mult = 22.0
 gatekeeper_atk_mult = 1.6
 # P(a gatekeeper is a RAID, sized for more than one party) and how deep the roll can reach.
 # A raid boss is the fat reward on the door, so it must be rare enough to be an event and
@@ -846,8 +856,9 @@ end_fight_bosses = 3
 # near d3200 — about 251 if they reach it. Do not retune until BD-5 lands and the fight can
 # be played by a party that walked to it.
 #
-# `encounter_party_scale` still multiplies HP by party size on top of these, so a solo
-# player meets 1.0x and a full party 4.4x — the authored number is the per-boss baseline.
+# Nothing multiplies these by party size any more (`encounter_party_scale` is retired): the
+# authored number IS what every party meets, which is why the HP below carries the old
+# full-party multiple folded into it.
 #
 # **It is MEANT to expect really good loot, and today it does not** — see the warning on
 # the attack line below. That intent is live design work, not a property these numbers hold.
@@ -887,7 +898,13 @@ end_fight_bosses = 3
 # ungeared party lost 376 HP over 85 turns and was LOSING with a hero down; the tier-32 party
 # won in 47 turns having lost 172. The same all-enemy ability landed -25/-26/-7/-13 ungeared
 # and -0/-0/-7/-0 geared. Gear gates ability damage, and at that tier it can null it.
-end_fight_boss_hp = 1000
+#
+# ⚠️ 4400, not the 1000 those runs were taken at. Every measurement above was a party of FOUR
+# meeting `encounter_party_scale`'s 4.4x on top of the authored number; with that retired the
+# authored number has to BE the fight, or the apex folds in a quarter of the turns it was
+# tuned for. The ratio the runs establish is preserved exactly — the party still meets 4,400
+# HP a boss — and `end_fight_boss_atk` is untouched, because attack was never scaled.
+end_fight_boss_hp = 4400
 end_fight_boss_atk = 210
 end_fight_boss_xp = 40000
 # The biggest reward spike in the game — above a Gatekeeper's 9.0. This is what buys the
