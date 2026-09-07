@@ -127,7 +127,7 @@ fn fight_at(
         seed,
         &vec![None; heroes],
         &vec![None; heroes],
-        false,
+        meld_battle::Opening::Rolled,
     );
     let (mine, foes) = battle.wire_combatants();
     let hero_ids: Vec<String> = mine.iter().map(|c| c.combatant_id.clone()).collect();

@@ -1160,10 +1160,11 @@ pub fn build_battle(
     hp_overrides: &[Option<i32>],
     // Per-hero saved formation, aligned with `party` (see [`party_fighters`]).
     row_overrides: &[Option<bool>],
-    // A SURPRISE: the party walked into a creature a Psyker had pinned, so it chose the
-    // moment. Every hero opens with a full gauge and therefore the first move — which is
-    // the entire reason to spend a pin rather than simply avoid the creature.
-    surprise: bool,
+    // HOW IT OPENS (`meld_battle::Opening`): rolled by default, a SURPRISE when the party
+    // chose the moment (a creature a Psyker had pinned), an AMBUSH when something hunted
+    // the party down and reached it. One value rather than two flags, because a fight has
+    // exactly one opening and `surprise && ambush` is not a state.
+    opening: meld_battle::Opening,
 ) -> Battle {
     let mut allies = party_fighters(party, runs, balance, row_overrides);
     // ⚠️ NOTHING HERE LOOKS AT HOW MANY HEROES ARE STANDING. A creature is what its level
@@ -1200,9 +1201,7 @@ pub fn build_battle(
 
     let mut battle =
         Battle::new(battle_id, encounter_class, allies, enemy_fighters, balance, seed);
-    if surprise {
-        battle.open_with_full_party_gauges();
-    }
+    battle.open(opening);
     battle
 }
 
@@ -2160,7 +2159,7 @@ mod tests {
         let enemies = vec![(&arena.monsters[0], "mc".to_string())];
         let party: Vec<PartyMember> = vec![("p1".into(), "c1".into(), CharacterClass::Explorer, GearBonus::default())];
         // Carry a wounded hero in: start at 17 HP rather than full.
-        let battle = build_battle("b".into(), &party, &enemies, &runs, &b, 1, &[Some(17)], &[], false);
+        let battle = build_battle("b".into(), &party, &enemies, &runs, &b, 1, &[Some(17)], &[], meld_battle::Opening::Rolled);
         let (allies, _) = battle.wire_combatants();
         assert_eq!(allies.len(), 1);
         assert_eq!(allies[0].hp, 17, "wounded HP carried into the new battle");
@@ -2186,7 +2185,7 @@ mod tests {
         // Untouched: full, exactly as before this rule existed.
         let whole = {
             let enemies = vec![(&arena.monsters[0], "mc".to_string())];
-            let battle = build_battle("b".into(), &party, &enemies, &runs, &b, 1, &[], &[], false);
+            let battle = build_battle("b".into(), &party, &enemies, &runs, &b, 1, &[], &[], meld_battle::Opening::Rolled);
             let (_, foes) = battle.wire_combatants();
             assert_eq!(foes[0].hp, foes[0].max_hp, "an untouched creature is not at full");
             foes[0].max_hp
@@ -2195,7 +2194,7 @@ mod tests {
         // Halved out in the world: the pool is unchanged and the BAR shows the wound.
         arena.monsters[0].hp = arena.monsters[0].max_hp / 2;
         let enemies = vec![(&arena.monsters[0], "mc".to_string())];
-        let battle = build_battle("b".into(), &party, &enemies, &runs, &b, 1, &[], &[], false);
+        let battle = build_battle("b".into(), &party, &enemies, &runs, &b, 1, &[], &[], meld_battle::Opening::Rolled);
         let (_, foes) = battle.wire_combatants();
         assert_eq!(foes[0].max_hp, whole, "the wound shrank the creature instead of hurting it");
         assert!(foes[0].hp < foes[0].max_hp, "the wound is invisible in the fight");
@@ -2227,7 +2226,7 @@ mod tests {
 
         let enemies = vec![(gk, "mc".to_string())];
         let party: Vec<PartyMember> = vec![("p1".into(), "c1".into(), CharacterClass::Explorer, GearBonus::default())];
-        let battle = build_battle("b".into(), &party, &enemies, &runs, &b, 1, &[], &[], false);
+        let battle = build_battle("b".into(), &party, &enemies, &runs, &b, 1, &[], &[], meld_battle::Opening::Rolled);
         let (_, wire_enemies) = battle.wire_combatants();
         let boss = &wire_enemies[0];
 
@@ -2657,7 +2656,7 @@ mod tests {
 
         let foe_of = |party: &[PartyMember], hp: &[Option<i32>]| -> (i32, i32, i32) {
             let enemies = vec![(&arena.monsters[0], "mc".to_string())];
-            let battle = build_battle("b".into(), party, &enemies, &runs, &b, 1, hp, &[], false);
+            let battle = build_battle("b".into(), party, &enemies, &runs, &b, 1, hp, &[], meld_battle::Opening::Rolled);
             let (_, foes) = battle.wire_combatants();
             let f = &foes[0];
             (f.max_hp, f.hp, f.level)
@@ -2852,7 +2851,7 @@ mod tests {
                 1,
                 &[],
                 &[],
-                false,
+                meld_battle::Opening::Rolled,
             );
             let (_, foes) = battle.wire_combatants();
             let f = foes.into_iter().find(|f| f.combatant_id == "e0").expect("no enemy built");
@@ -2964,7 +2963,7 @@ mod tests {
                 1,
                 &[],
                 &[],
-                false,
+                meld_battle::Opening::Rolled,
             );
             let hp = battle.combatant_hp("e0").unwrap_or(0) as f64;
             let f = &party_fighters(&party, &runs, &b, &[])[0];
@@ -3005,7 +3004,7 @@ mod tests {
             1,
             &[],
             &[],
-            false,
+            meld_battle::Opening::Rolled,
         );
         let hp = battle.combatant_hp("e0").unwrap_or(0) as f64;
         let f = &party_fighters(&party, &runs, &b, &[])[0];
@@ -3177,7 +3176,7 @@ mod tests {
                     })
                     .collect();
                 let mut battle =
-                    build_battle("b".into(), &party, &enemies, &runs, &b, 1, &[], &[], false);
+                    build_battle("b".into(), &party, &enemies, &runs, &b, 1, &[], &[], meld_battle::Opening::Rolled);
                 let (allies, foes) = battle.wire_combatants();
                 let hero_ids: std::collections::HashSet<String> =
                     allies.iter().map(|c| c.combatant_id.clone()).collect();

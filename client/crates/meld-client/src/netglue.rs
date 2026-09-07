@@ -384,6 +384,7 @@ pub(crate) fn pump_net(
                 combatants,
                 monster_combatant,
                 spectating,
+                opening,
             } => {
                 battle.battle_id = battle_id;
                 battle.your_ids = your_combatant_ids;
@@ -393,6 +394,31 @@ pub(crate) fn pump_net(
                 battle.queued.clear();
                 battle.spectating = spectating;
                 battle.active = battle.your_ids.first().cloned();
+                // **SAY HOW IT OPENED.** An ambush costs the party a whole round and a
+                // surprise hands it one; both were previously invisible — the gauges simply
+                // started somewhere different and the player was left to infer it. A
+                // watcher is told nothing, because the opening was not theirs.
+                //
+                // On the first hero rather than the arena's centre: the callout machinery
+                // hangs a bubble over a combatant, and the party is who it is news for.
+                if !spectating {
+                    if let Some(text) = match opening.as_str() {
+                        "ambush" => Some("AMBUSHED!"),
+                        "surprise" => Some("SURPRISE!"),
+                        _ => None,
+                    } {
+                        if let Some(first) = battle.your_ids.first().cloned() {
+                            hitfx.callouts.retain(|c| c.combatant_id != first);
+                            hitfx.callouts.push(Callout {
+                                combatant_id: first,
+                                text: text.to_string(),
+                                age: 0.0,
+                                ttl: 2.0,
+                                flashing: true,
+                            });
+                        }
+                    }
+                }
                 reset_menu(&mut menu);
                 if *state.get() != Screen::Battle {
                     next.set(Screen::Battle);

@@ -777,6 +777,10 @@ pub enum ServerMsg {
         /// roster looks like — and the back-compat fallback below turns that into a
         /// hero id of `""`, which would hand a watcher a menu aimed at nobody.
         spectating: bool,
+        /// How the fight opened (`"rolled"` / `"surprise"` / `"ambush"`), so the arena can
+        /// SAY so — an ambush costs the party a round and is the one opening they most
+        /// need told.
+        opening: String,
     },
     TurnReady { combatant_id: String },
     /// An action resolved — drives hit feedback (floating numbers + flash).
@@ -3121,6 +3125,7 @@ impl Inner {
                         combatants,
                         monster_combatant,
                         spectating: b.spectating,
+                        opening: b.opening.clone(),
                     });
                 }
             }

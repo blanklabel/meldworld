@@ -3543,6 +3543,25 @@ budgeted so the creature sim never threatens the single-owner loop or the server
     **inverted** — it held that a full party's fights are LONGER — and now holds the two
     claims the design actually makes: a full party's fights are shorter, and XP per second
     is flat across party size.
+- [x] **CR-15 — A fight opens on a roll, and an ambush is the mirror of a surprise.**
+  Reported from play: *"seems like we need to randomize battle order… we should roll
+  everyone's initiative (with someone like the Shifter having advantage)"*, then *"then we
+  could figure out ambush (monsters all attack first) or surprise (party attacks first)"*.
+  - Every gauge used to start at 0, so the first round was a pure function of `speed_stat`
+    — the same encounter opened the same way forever. `meld_battle::Opening` is three arms
+    of one mechanism (an enum, not two booleans: `Surprise | Ambush` is not a state).
+  - **Rolled** caps at `[battle] initiative_max` (0.45), well under a full gauge: a roll
+    decides the ORDER and must never hand out a free turn. **Advantage goes to INNATE
+    DODGE** rather than to a named class — the Shifter, the Iron Hull and the `runner_dodge`
+    affix all earn it, and a dodge class added later gets it instead of being left off a
+    list. ⚠️ Dex is deliberately not a bonus on top: it already buys `speed_stat`.
+  - **Ambush** rides `MonsterSpawn::hunting`, written every step from the mover's own
+    targeting decision. "Is it aggressive" was the cheap approximation and answers yes for
+    a sleeping boar a player walked into. **A pin outranks a hunt.**
+  - ⚠️ **An opening arms none of the gauge-knock rebuke**: `staggered` is armed by a gauge
+    being TAKEN, and an opening is one being GIVEN.
+  - ⚠️ **And it rides `battle.started` as a word**, because both openings were otherwise
+    invisible — the only tell was gauges starting somewhere different.
 - [ ] **CR-3 — Living ecology: diets, needs, and breeding.** Creatures have a
   **diet class — carnivore / omnivore / herbivore** — that drives behavior: they
   eat (hunt prey / graze nodes), sleep (tied to FS-5 day/night), and **breed**,

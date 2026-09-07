@@ -3756,10 +3756,21 @@ impl WorldActor {
                 r.fights += 1;
             }
         }
-        // A pinned creature is the whole point of the pin: the party chose the moment, so
-        // it opens with every gauge full. Read off the creature that was actually TOUCHED,
-        // not the group — pinning one of a pack does not surprise the pack.
-        let surprise = inst.arena.monsters[monster_idx].held_for > 0.0;
+        // **HOW THIS FIGHT OPENS**, read off the creature that was actually TOUCHED and not
+        // off the group — pinning one of a pack does not surprise the pack, and one hunter
+        // in a herd does not ambush on the herd's behalf.
+        //
+        // A PIN outranks a hunt: if the party stopped the thing where it stood, the party
+        // chose the moment whatever that creature wanted a moment ago. Anything else the
+        // party walked into is a ROLL.
+        let touched = &inst.arena.monsters[monster_idx];
+        let opening = if touched.held_for > 0.0 {
+            meld_battle::Opening::Surprise
+        } else if touched.hunting {
+            meld_battle::Opening::Ambush
+        } else {
+            meld_battle::Opening::Rolled
+        };
         let mut battle = build_battle(
             battle_id.clone(),
             &party,
@@ -3769,7 +3780,7 @@ impl WorldActor {
             seed,
             &hp_overrides,
             &row_overrides,
-            surprise,
+            opening,
         );
         // Whatever still had hold of a hero when the last fight ended has hold of it now.
         // Afflictions do not expire, so walking away from the creature that poisoned you is
@@ -3848,6 +3859,7 @@ impl WorldActor {
                     your_combatant_ids: yours,
                     triggered_by: Some(toucher.to_string()),
                     spectating: false,
+                    opening: opening.wire().to_string(),
                 },
             ));
         }
@@ -3987,9 +3999,11 @@ impl WorldActor {
             seed,
             &hp_overrides,
             &row_overrides,
-            // Joining a fight already in progress is not a surprise: the moment was
-            // chosen by whoever started it.
-            false,
+            // A DUNGEON BOSS is fought through a door you opened: nobody chose the moment
+            // out from under anybody, so it rolls like any other fight. It must not be an
+            // ambush in particular — a boss on a full gauge before the party has drawn
+            // breath is the free-turn case the roll cap exists to prevent.
+            meld_battle::Opening::Rolled,
         );
         let slot = BattleSlot {
             battle,
@@ -4032,6 +4046,7 @@ impl WorldActor {
                     your_combatant_ids: yours,
                     triggered_by: Some(pid.to_string()),
                     spectating: false,
+                    opening: meld_battle::Opening::Rolled.wire().to_string(),
                 },
             ));
         }
@@ -6747,6 +6762,7 @@ impl WorldActor {
                 your_combatant_ids: Vec::new(),
                 triggered_by: None,
                 spectating: true,
+                opening: meld_battle::Opening::Rolled.wire().to_string(),
             },
         )]
     }
@@ -6877,6 +6893,9 @@ impl WorldActor {
                                 your_combatant_ids: Vec::new(),
                                 triggered_by: None,
                                 spectating: true,
+                                // A CLASH is two creatures already at it — a watcher
+                                // arrives mid-fight, so nobody's opening is theirs to see.
+                                opening: meld_battle::Opening::Rolled.wire().to_string(),
                             },
                         ));
                         continue;
@@ -7221,6 +7240,7 @@ impl WorldActor {
                     your_combatant_ids: yours,
                     triggered_by: Some(toucher.to_string()),
                     spectating: false,
+                    opening: meld_battle::Opening::Rolled.wire().to_string(),
                 },
             ));
         }

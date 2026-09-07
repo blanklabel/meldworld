@@ -1614,6 +1614,40 @@ shared interest cull, which would show everyone everything. Both harvest perks r
 `hash_str(node) ^ hash_str(player) ^ tick` so the outcome is reproducible rather than
 wall-clock.
 
+**A FIGHT OPENS ON A ROLL, AND AN AMBUSH IS THE MIRROR OF A SURPRISE**
+(`meld_battle::Opening`). Every gauge used to start at 0, so the first round was a pure
+function of `speed_stat` — the same encounter opened the same way forever, and "who went
+first" was computed rather than *happening*. Three arms of one mechanism, an enum rather
+than two booleans because `Surprise | Ambush` is not a state a fight can be in:
+
+- **Rolled** — everyone rolls, capped at `[battle] initiative_max` (0.45) well under a full
+  gauge. A roll decides the ORDER of the opening and must never hand out a free turn.
+  **Advantage (`initiative_advantage_rolls`, kept-best) goes to INNATE DODGE** — one rule
+  instead of a list of class keys, so the Shifter, the Iron Hull and anything wearing the
+  Shifter's `runner_dodge` affix all get it, and a dodge class added later gets it for free
+  rather than being left off the list. If you are quick enough to dodge a blow you are
+  quick enough to see it coming. ⚠️ Dex is deliberately NOT a bonus on top: Dex already
+  buys `speed_stat`, so a quick hero reaches its turn sooner from the same roll, and a Dex
+  term here would charge one stat twice and make the roll decorative.
+- **Surprise** — the party chose the moment (a Psyker's pin): heroes full, creatures zero.
+- **Ambush** — something hunted the party down and reached it: creatures full, heroes zero.
+  Triggered off `MonsterSpawn::hunting`, which the mover writes every step from its OWN
+  targeting decision. "Is it aggressive" was the cheap approximation and it answers yes for
+  a sleeping boar a player deliberately walked into — the one case that is plainly not an
+  ambush. Recomputed rather than latched: a creature that lost interest is not lying in
+  wait. **A pin outranks a hunt** — if the party stopped the thing where it stood, the party
+  chose the moment whatever that creature wanted a moment ago.
+
+⚠️ **NOTHING IN AN OPENING ARMS THE GAUGE-KNOCK REBUKE.** `staggered` and the
+`gauge_guard_turns` countdown are armed by a gauge being TAKEN; an opening is a gauge being
+GIVEN. An ambushed party is not owed a rebuke and an ambushing creature has not been
+interrupted — the same distinction that keeps a naturally-empty gauge from arming it.
+
+⚠️ **AND IT RIDES `battle.started` AS A WORD, because a mechanic nobody is told about does
+not exist.** An ambush costs the party a whole round and a surprise hands it one; both were
+invisible until the client shouted them, since the only tell was gauges starting somewhere
+different. A watcher is told nothing — the opening was not theirs.
+
 **A GAUGE KNOCK COSTS ONE TURN, AND THE BOSS ANSWERS.** Gauge denial was implemented by hand
 at **fourteen** call sites and nothing checked what chaining them did: measured, a party's
 Ransack (116 casts) and Holy Censure (34) held a 66,792 HP gatekeeper at 29% gauge for **464

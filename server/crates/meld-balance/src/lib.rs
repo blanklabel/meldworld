@@ -150,6 +150,10 @@ pub struct Battle {
     pub tick_ms: u64,
     pub gauge_fill_divisor: f64,
     pub turn_timeout_ms: u64,
+    /// The largest share of the gauge an initiative roll can grant at the bell.
+    pub initiative_max: f64,
+    /// Rolls kept-best for a fighter with innate dodge — see `[battle]` in balance.
+    pub initiative_advantage_rolls: u32,
     pub flee_base: f64,
     pub flee_penalty_per_tier: f64,
     pub flee_floor: f64,
