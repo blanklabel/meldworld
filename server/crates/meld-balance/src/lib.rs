@@ -1190,6 +1190,8 @@ pub struct WorldGen {
     pub dungeon_depth_level_step: i64,
     /// DG-3b/DG-4: base HP a sprung dungeon trap deals (scaled up by dungeon depth).
     pub dungeon_trap_damage: i32,
+    pub dungeon_dark_sight: f64,
+    pub dungeon_dark_lantern_mult: f64,
     pub dungeon_disarm_dex_divisor: f64,
     pub dungeon_disarm_shifter_bonus: f64,
     /// WG-4: crossing this far west of the hub returns the player to Last City.

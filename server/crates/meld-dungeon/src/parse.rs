@@ -194,6 +194,10 @@ struct RawDungeon {
     #[serde(default)]
     gate: BTreeMap<String, RawWhen>,
     #[serde(default)]
+    mover: BTreeMap<String, RawWhen>,
+    #[serde(default)]
+    timer: BTreeMap<String, RawTimer>,
+    #[serde(default)]
     boss: BTreeMap<String, RawBoss>,
     #[serde(default)]
     spawn: BTreeMap<String, RawSpawn>,
@@ -208,6 +212,9 @@ struct RawDungeon {
 #[derive(Deserialize)]
 struct RawFloor {
     grid: String,
+    /// Unlit: the party sees only what is near them (DG-10).
+    #[serde(default)]
+    dark: bool,
 }
 
 #[derive(Deserialize)]
@@ -227,6 +234,14 @@ struct RawBoss {
     sprite: String,
     #[serde(default)]
     on_enter_spawn: bool,
+}
+
+#[derive(Deserialize)]
+struct RawTimer {
+    /// How long it runs, in engine ticks.
+    ticks: u32,
+    /// The emitter whose firing starts the clock.
+    started_by: String,
 }
 
 #[derive(Deserialize)]
@@ -290,8 +305,11 @@ enum KindTag {
     Trap,
     Door,
     Gate,
+    Mover,
+    Timer,
     Boss,
     Spawn,
+    Block,
     Chest,
     Stair,
     Teleporter,
@@ -313,6 +331,21 @@ pub fn parse_str(src: &str) -> Result<DungeonDef, DungeonError> {
     }
     for (id, g) in &raw.gate {
         objects.insert(id.clone(), ObjectKind::Gate { when: cond(id, &g.when)? });
+    }
+    for (id, m) in &raw.mover {
+        objects.insert(id.clone(), ObjectKind::Mover { when: cond(id, &m.when)? });
+    }
+    for (id, t) in &raw.timer {
+        if t.ticks == 0 {
+            return Err(DungeonError::BadTable {
+                id: id.clone(),
+                reason: "a timer of zero ticks has already run out".into(),
+            });
+        }
+        objects.insert(
+            id.clone(),
+            ObjectKind::Timer { ticks: t.ticks, started_by: t.started_by.clone() },
+        );
     }
     for (id, b) in &raw.boss {
         objects.insert(id.clone(), ObjectKind::Boss { sprite: b.sprite.clone(), on_enter_spawn: b.on_enter_spawn });
@@ -410,7 +443,7 @@ pub fn parse_str(src: &str) -> Result<DungeonDef, DungeonError> {
                 cells.push(cell);
             }
         }
-        grids.push(Grid { width, height, cells });
+        grids.push(Grid { width, height, cells, dark: f.dark });
     }
 
     Ok(DungeonDef { name: raw.name, biome: raw.biome, grids, objects, placements, entrances, exits })
@@ -459,8 +492,11 @@ fn parse_legend(ch: char, spec: &str) -> Result<LegendEntry, DungeonError> {
         "trap" => (KindTag::Trap, need_id()?, None, true),
         "door" => (KindTag::Door, need_id()?, None, true),
         "gate" => (KindTag::Gate, need_id()?, None, true),
+        "mover" => (KindTag::Mover, need_id()?, None, true),
+        "timer" => (KindTag::Timer, need_id()?, None, true),
         "boss" => (KindTag::Boss, need_id()?, None, true),
         "spawn" => (KindTag::Spawn, need_id()?, None, true),
+        "block" => (KindTag::Block, need_id()?, None, true),
         "chest" => (KindTag::Chest, need_id()?, None, true),
         "plate" => {
             let momentary = match toks.get(2).copied() {
@@ -513,6 +549,7 @@ fn register_object(objects: &mut BTreeMap<Id, ObjectKind>, e: &LegendEntry) -> R
             needs_table("pedestal"),
         ),
         KindTag::Stair => insert_once(objects, &e.id, ObjectKind::Stair),
+        KindTag::Block => insert_once(objects, &e.id, ObjectKind::Block),
         KindTag::Teleporter => require(
             objects,
             &e.id,
@@ -522,6 +559,8 @@ fn register_object(objects: &mut BTreeMap<Id, ObjectKind>, e: &LegendEntry) -> R
         KindTag::Trap => require(objects, &e.id, |k| matches!(k, ObjectKind::Trap { .. }), needs_table("trap")),
         KindTag::Door => require(objects, &e.id, |k| matches!(k, ObjectKind::Door { .. }), needs_table("door")),
         KindTag::Gate => require(objects, &e.id, |k| matches!(k, ObjectKind::Gate { .. }), needs_table("gate")),
+        KindTag::Mover => require(objects, &e.id, |k| matches!(k, ObjectKind::Mover { .. }), needs_table("mover")),
+        KindTag::Timer => require(objects, &e.id, |k| matches!(k, ObjectKind::Timer { .. }), needs_table("timer")),
         KindTag::Boss => require(objects, &e.id, |k| matches!(k, ObjectKind::Boss { .. }), needs_table("boss")),
         KindTag::Spawn => require(objects, &e.id, |k| matches!(k, ObjectKind::Spawn { .. }), needs_table("spawn")),
         KindTag::Chest => require(objects, &e.id, |k| matches!(k, ObjectKind::Chest { .. }), needs_table("chest")),
