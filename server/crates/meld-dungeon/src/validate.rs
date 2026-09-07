@@ -19,6 +19,7 @@ pub fn validate(d: &DungeonDef) -> Vec<DungeonError> {
     references(d, &mut errs);
     sequences(d, &mut errs);
     stairs(d, &mut errs);
+    teleporters(d, &mut errs);
     // Only attempt the solvability search once the graph is well-formed; a
     // dangling reference or unpaired stair would make it meaningless.
     if errs.is_empty() {
@@ -48,7 +49,8 @@ fn structural(d: &DungeonDef, errs: &mut Vec<DungeonError>) {
 fn placements(d: &DungeonDef, errs: &mut Vec<DungeonError>) {
     for (id, kind) in &d.objects {
         let count = d.placements_of(id).count();
-        let is_stair = matches!(kind, ObjectKind::Stair);
+        let is_stair =
+            matches!(kind, ObjectKind::Stair | ObjectKind::Teleporter { .. });
         if count == 0 {
             errs.push(DungeonError::Unplaced { id: id.clone() });
         } else if is_stair {
@@ -61,6 +63,25 @@ fn placements(d: &DungeonDef, errs: &mut Vec<DungeonError>) {
 
 /// Every id named by a condition exists and is a sensible type for the predicate.
 fn references(d: &DungeonDef, errs: &mut Vec<DungeonError>) {
+    // A pedestal's `wants` is a reference too, and the only one that is not in a
+    // condition — an unresolvable one would otherwise surface as "the barrier behind this
+    // pedestal can never open", which is true and unhelpful.
+    for (id, kind) in &d.objects {
+        if let ObjectKind::Pedestal { wants } = kind {
+            match d.objects.get(wants) {
+                Some(ObjectKind::Key) => {}
+                Some(_) => errs.push(DungeonError::TypeMismatch {
+                    id: id.clone(),
+                    referenced: wants.clone(),
+                    reason: "a pedestal's `wants` must name a key".into(),
+                }),
+                None => errs.push(DungeonError::UnknownRef {
+                    id: id.clone(),
+                    referenced: wants.clone(),
+                }),
+            }
+        }
+    }
     for (id, kind) in &d.objects {
         let Some(cond) = kind.condition() else { continue };
         let mut refs = Vec::new();
@@ -71,7 +92,13 @@ fn references(d: &DungeonDef, errs: &mut Vec<DungeonError>) {
                 continue;
             };
             let ok = match want {
-                RefKind::Activatable => matches!(target_kind, ObjectKind::Lever | ObjectKind::Plate { .. }),
+                // A PEDESTAL is an emitter like any other once it has been fed, so it can
+                // be a bare atom. Excluding it made the whole object inert: nothing could
+                // name it, so setting the idol down opened nothing.
+                RefKind::Activatable => matches!(
+                    target_kind,
+                    ObjectKind::Lever | ObjectKind::Plate { .. } | ObjectKind::Pedestal { .. }
+                ),
                 RefKind::Key => matches!(target_kind, ObjectKind::Key),
                 RefKind::Boss => matches!(target_kind, ObjectKind::Boss { .. }),
                 RefKind::Clearable => {
@@ -84,7 +111,9 @@ fn references(d: &DungeonDef, errs: &mut Vec<DungeonError>) {
                     id: id.clone(),
                     referenced: target,
                     reason: match want {
-                        RefKind::Activatable => "a bare atom / seq element must name a lever or plate".into(),
+                        RefKind::Activatable => {
+                            "a bare atom / seq element must name a lever, plate or pedestal".into()
+                        }
                         RefKind::Key => "has_key(…) must name a key".into(),
                         RefKind::Boss => "boss_dead(…) must name a boss".into(),
                         RefKind::Clearable => {
@@ -141,6 +170,27 @@ fn sequences(d: &DungeonDef, errs: &mut Vec<DungeonError>) {
     }
 }
 
+/// Each teleporter: exactly one `from` pad and one `to` pad. Unlike a stair there is NO
+/// floor constraint — a pad may land you on the same floor, which is the whole point.
+fn teleporters(d: &DungeonDef, errs: &mut Vec<DungeonError>) {
+    for (id, kind) in &d.objects {
+        if !matches!(kind, ObjectKind::Teleporter { .. }) {
+            continue;
+        }
+        let ps: Vec<&Placement> = d.placements_of(id).collect();
+        let from = ps.iter().filter(|p| p.dir == Some(StairDir::Down)).count();
+        let to = ps.iter().filter(|p| p.dir == Some(StairDir::Up)).count();
+        if from != 1 || to != 1 {
+            errs.push(DungeonError::BadStair {
+                id: id.clone(),
+                reason: format!(
+                    "a teleporter needs exactly one 'from' pad and one 'to' pad (got {from} from, {to} to)"
+                ),
+            });
+        }
+    }
+}
+
 /// Each stair id: exactly one `Down` on floor n and one `Up` on floor n+1.
 fn stairs(d: &DungeonDef, errs: &mut Vec<DungeonError>) {
     for (id, kind) in &d.objects {
@@ -193,6 +243,16 @@ fn solvable(d: &DungeonDef) -> Result<(), DungeonError> {
         }
         let mut changed = false;
         for id in reached_emitters {
+            // A PEDESTAL is the one emitter reaching is not enough for: you have to be
+            // carrying what it wants. Reached-but-unfed simply does not activate yet —
+            // the fixpoint runs again once the key is in the active set, so the order
+            // "find the idol, then bring it here" falls out rather than being sequenced
+            // by hand.
+            if let Some(ObjectKind::Pedestal { wants }) = d.objects.get(&id) {
+                if !active.contains(wants) {
+                    continue;
+                }
+            }
             if active.insert(id) {
                 changed = true;
             }
@@ -272,7 +332,11 @@ fn walkable(d: &DungeonDef, (f, x, y): Node, open: &HashSet<Id>) -> bool {
     }
 }
 
-/// Map each stair endpoint cell to its paired endpoint on the neighbouring floor.
+/// Map each linked endpoint cell to where standing on it takes you.
+///
+/// DIRECTED, because a one-way teleporter is directed: the search must not walk back
+/// through a pad a player cannot walk back through, or it would prove an exit reachable
+/// by a route nobody can take — in a space with no Town Portal.
 fn stair_links(d: &DungeonDef) -> BTreeMap<Node, Node> {
     let mut by_id: BTreeMap<&str, Vec<&Placement>> = BTreeMap::new();
     for p in &d.placements {
@@ -281,11 +345,17 @@ fn stair_links(d: &DungeonDef) -> BTreeMap<Node, Node> {
         }
     }
     let mut links = BTreeMap::new();
-    for ps in by_id.values() {
-        if ps.len() == 2 {
-            let a = (ps[0].floor, ps[0].x, ps[0].y);
-            let b = (ps[1].floor, ps[1].x, ps[1].y);
-            links.insert(a, b);
+    for (id, ps) in &by_id {
+        if ps.len() != 2 {
+            continue;
+        }
+        let one_way = matches!(d.objects.get(*id), Some(ObjectKind::Teleporter { one_way: true }));
+        // `Down` is a stair's lower end and a teleporter's ENTRY pad.
+        let (from, to) = if ps[0].dir == Some(StairDir::Down) { (ps[0], ps[1]) } else { (ps[1], ps[0]) };
+        let a = (from.floor, from.x, from.y);
+        let b = (to.floor, to.x, to.y);
+        links.insert(a, b);
+        if !one_way {
             links.insert(b, a);
         }
     }

@@ -30,7 +30,13 @@ pub enum Tile {
 /// floor `n` and one `Up` endpoint on floor `n+1`; stepping either transitions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum StairDir {
+    /// A stair's DOWN endpoint — and, for a [`ObjectKind::Teleporter`], its ENTRY pad.
     Down,
+    /// A stair's UP endpoint — and a teleporter's DESTINATION pad.
+    ///
+    /// The names are reused rather than a second two-variant enum being added beside
+    /// them: a link has two ends, and `Placement.dir` is where that is recorded. A
+    /// teleporter's legend says `from` / `to`, so an author never types "down" for a pad.
     Up,
 }
 
@@ -97,8 +103,20 @@ pub enum ObjectKind {
     Plate { momentary: bool },
     /// A carried key: an emitter satisfying `has_key(id)` once picked up.
     Key,
-    /// An item sink ("place the idol here"); emitter active once used.
-    Pedestal,
+    /// An ITEM SINK — "carry the idol over there and set it down here" (DG-10).
+    ///
+    /// `wants` names a [`ObjectKind::Key`] placed in this dungeon: the pedestal activates
+    /// when a party standing on it is carrying that key, and what it opens is somewhere
+    /// else. That is the difference from a door gated on `has_key`, which opens where you
+    /// are standing — a pedestal is a REMOTE effect, which is what makes fetching the
+    /// thing a journey rather than a formality.
+    ///
+    /// It wants a key rather than a free-text item name on purpose: an in-dungeon object
+    /// is something the solvability search can REASON about, so "the idol is unreachable"
+    /// is a compile error rather than a party sealed in. It also does not CONSUME the key
+    /// — the active set is monotone, and everything downstream (the search's fixpoint
+    /// included) depends on that.
+    Pedestal { wants: Id },
     /// A hazard. Fires on contact while armed; `disarmable` ones can be neutralised
     /// via a Dex/Shifter check (design decision §5). Not a movement barrier.
     Trap { kind: String, disarmable: bool },
@@ -129,6 +147,16 @@ pub enum ObjectKind {
     /// `Up` on floor `n+1`) share this id; the direction lives on each
     /// [`Placement`], so both endpoints register the same `Stair` kind.
     Stair,
+    /// A teleport pad pair (DG-10) — the Wizardry / Etrian Odyssey / Grimrock primitive,
+    /// and Silph Co.'s. Two endpoints like a stair, but with the stair's ONE constraint
+    /// dropped: the ends may sit anywhere, including the same floor, which is what makes
+    /// it a maze tool rather than a way between levels.
+    ///
+    /// `one_way` is the other half of that lineage: a pad that drops you somewhere you
+    /// cannot walk back from turns a floor plan into a puzzle about where you can still
+    /// get to. It is enforced in the LINK MAP, which is directed already, so the runtime
+    /// and the solvability search both honour it with no code of their own.
+    Teleporter { one_way: bool },
 }
 
 impl ObjectKind {
@@ -154,7 +182,7 @@ impl ObjectKind {
             ObjectKind::Lever
                 | ObjectKind::Plate { .. }
                 | ObjectKind::Key
-                | ObjectKind::Pedestal
+                | ObjectKind::Pedestal { .. }
                 | ObjectKind::Boss { .. }
                 // Like a boss: the SEARCH treats a spawn you can reach as one you can
                 // beat, so a door behind it is provably openable. The runtime does not

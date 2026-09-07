@@ -134,7 +134,7 @@ fn style(kind: &ObjectKind, dir: Option<StairDir>) -> (&'static str, &'static st
         ObjectKind::Lever => ("L", "#e08a1e"),
         ObjectKind::Plate { .. } => ("P", "#c8a415"),
         ObjectKind::Key => ("K", "#b8860b"),
-        ObjectKind::Pedestal => ("Pd", "#a1785a"),
+        ObjectKind::Pedestal { .. } => ("Pd", "#a1785a"),
         ObjectKind::Trap { .. } => ("T", "#c0392b"),
         ObjectKind::Door { .. } => ("D", "#8a5a2b"),
         ObjectKind::Gate { .. } => ("G", "#6b4423"),
@@ -143,6 +143,11 @@ fn style(kind: &ObjectKind, dir: Option<StairDir>) -> (&'static str, &'static st
         // (a fight holding a door) at ordinary strength.
         ObjectKind::Spawn { .. } => ("M", "#a05fb4"),
         ObjectKind::Chest { .. } => ("$", "#148f77"),
+        ObjectKind::Teleporter { one_way } => match (dir, one_way) {
+            (Some(StairDir::Up), _) => ("◇", "#1f9c9c"),
+            (_, true) => ("→", "#1f9c9c"),
+            _ => ("◈", "#1f9c9c"),
+        },
         ObjectKind::Stair => match dir {
             Some(StairDir::Up) => ("▲", "#2d6cdf"),
             _ => ("▼", "#2d6cdf"),
@@ -172,13 +177,16 @@ fn collect_markers(def: &DungeonDef) -> HashMap<(usize, usize, usize), Marker> {
 /// The legend's rows. Module-scope so `every_marker_kind_is_in_the_legend` can hold it
 /// against [`style`] — a hand-written list beside a `match` is a list the next variant
 /// gets left off, and a marker with no legend row is a symbol the reader cannot decode.
-const ITEMS: [(&str, &str, &str); 14] = [
+const ITEMS: [(&str, &str, &str); 17] = [
         ("IN", "#3aa35a", "entrance"),
         ("OUT", "#c0392b", "exit"),
         ("▼", "#2d6cdf", "stairs down"),
     // The up-stair drew a glyph the legend never explained — found by the guard below the
     // moment it started walking the real registry instead of a second hand-written list.
     ("▲", "#2d6cdf", "stairs up"),
+    ("◈", "#1f9c9c", "teleport pad"),
+    ("→", "#1f9c9c", "one-way pad (entry)"),
+    ("◇", "#1f9c9c", "pad landing"),
         ("L", "#e08a1e", "lever"),
         ("P", "#c8a415", "plate"),
         ("K", "#b8860b", "key"),
@@ -231,7 +239,7 @@ mod tests {
             (Lever, None),
             (Plate { momentary: true }, None),
             (Key, None),
-            (Pedestal, None),
+            (Pedestal { wants: "K1".into() }, None),
             (Trap { kind: "pit".into(), disarmable: false }, None),
             (Door { when: Condition::Ref("x".into()) }, None),
             (Gate { when: Condition::Ref("x".into()) }, None),
@@ -240,7 +248,29 @@ mod tests {
             (Chest { when: None, loot: ChestLoot::Rolled }, None),
             (Stair, Some(StairDir::Down)),
             (Stair, Some(StairDir::Up)),
+            (Teleporter { one_way: false }, Some(StairDir::Down)),
+            (Teleporter { one_way: true }, Some(StairDir::Down)),
+            (Teleporter { one_way: false }, Some(StairDir::Up)),
         ];
+        // ⚠️ EXHAUSTIVENESS WITNESS. `every` above is itself a hand-written list — the
+        // exact shape this test exists to police — so the compiler is made to police it:
+        // adding an `ObjectKind` variant fails to compile HERE until it is listed above.
+        for (k, _) in &every {
+            match k {
+                Lever | Plate { .. } | Key | Pedestal { .. } | Trap { .. } | Door { .. }
+                | Gate { .. } | Boss { .. } | Spawn { .. } | Chest { .. } | Stair
+                | Teleporter { .. } => {}
+            }
+        }
+        for want in [
+            "Lever", "Plate", "Key", "Pedestal", "Trap", "Door", "Gate", "Boss", "Spawn",
+            "Chest", "Stair", "Teleporter",
+        ] {
+            assert!(
+                every.iter().any(|(k, _)| format!("{k:?}").starts_with(want)),
+                "{want} is an ObjectKind the legend guard never checks"
+            );
+        }
         for (kind, dir) in &every {
             let (glyph, fill) = style(kind, *dir);
             assert!(
