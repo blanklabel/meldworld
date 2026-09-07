@@ -198,6 +198,10 @@ struct RawDungeon {
     #[serde(default)]
     spawn: BTreeMap<String, RawSpawn>,
     #[serde(default)]
+    teleporter: BTreeMap<String, RawTeleporter>,
+    #[serde(default)]
+    pedestal: BTreeMap<String, RawPedestal>,
+    #[serde(default)]
     chest: BTreeMap<String, RawChest>,
 }
 
@@ -231,6 +235,19 @@ struct RawSpawn {
     /// single guard rather than a parse error.
     #[serde(default = "one")]
     count: u32,
+}
+
+#[derive(Deserialize)]
+struct RawPedestal {
+    /// The `Key` this pedestal is waiting for.
+    wants: String,
+}
+
+#[derive(Deserialize)]
+struct RawTeleporter {
+    /// One-way pads are the interesting ones; two-way is the safe default.
+    #[serde(default)]
+    one_way: bool,
 }
 
 #[derive(Deserialize)]
@@ -277,6 +294,7 @@ enum KindTag {
     Spawn,
     Chest,
     Stair,
+    Teleporter,
 }
 
 /// Parse a `*.dungeon.toml` string into a [`DungeonDef`] (no semantic validation).
@@ -307,6 +325,12 @@ pub fn parse_str(src: &str) -> Result<DungeonDef, DungeonError> {
             });
         }
         objects.insert(id.clone(), ObjectKind::Spawn { count: s.count });
+    }
+    for (id, t) in &raw.teleporter {
+        objects.insert(id.clone(), ObjectKind::Teleporter { one_way: t.one_way });
+    }
+    for (id, pd) in &raw.pedestal {
+        objects.insert(id.clone(), ObjectKind::Pedestal { wants: pd.wants.clone() });
     }
     for (id, c) in &raw.chest {
         let when = match &c.when {
@@ -454,6 +478,17 @@ fn parse_legend(ch: char, spec: &str) -> Result<LegendEntry, DungeonError> {
             };
             (KindTag::Stair, need_id()?, Some(dir), true)
         }
+        // `from` / `to` rather than `down` / `up`: a teleporter's two ends are not a
+        // direction through the floor stack, and a one-way pad's whole meaning is which
+        // end is which.
+        "teleporter" => {
+            let dir = match toks.get(2).copied() {
+                Some("from") => StairDir::Down,
+                Some("to") => StairDir::Up,
+                _ => return Err(bad("teleporter needs an end: from|to")),
+            };
+            (KindTag::Teleporter, need_id()?, Some(dir), true)
+        }
         o => return Err(bad(&format!("unknown object type {o:?}"))),
     };
     Ok(LegendEntry { kind_tag, id, dir, plate_momentary })
@@ -471,8 +506,19 @@ fn register_object(objects: &mut BTreeMap<Id, ObjectKind>, e: &LegendEntry) -> R
         KindTag::Lever => insert_once(objects, &e.id, ObjectKind::Lever),
         KindTag::Plate => insert_once(objects, &e.id, ObjectKind::Plate { momentary: e.plate_momentary }),
         KindTag::Key => insert_once(objects, &e.id, ObjectKind::Key),
-        KindTag::Pedestal => insert_once(objects, &e.id, ObjectKind::Pedestal),
+        KindTag::Pedestal => require(
+            objects,
+            &e.id,
+            |k| matches!(k, ObjectKind::Pedestal { .. }),
+            needs_table("pedestal"),
+        ),
         KindTag::Stair => insert_once(objects, &e.id, ObjectKind::Stair),
+        KindTag::Teleporter => require(
+            objects,
+            &e.id,
+            |k| matches!(k, ObjectKind::Teleporter { .. }),
+            needs_table("teleporter"),
+        ),
         KindTag::Trap => require(objects, &e.id, |k| matches!(k, ObjectKind::Trap { .. }), needs_table("trap")),
         KindTag::Door => require(objects, &e.id, |k| matches!(k, ObjectKind::Door { .. }), needs_table("door")),
         KindTag::Gate => require(objects, &e.id, |k| matches!(k, ObjectKind::Gate { .. }), needs_table("gate")),

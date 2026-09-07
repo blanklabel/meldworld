@@ -3014,7 +3014,7 @@ impl WorldActor {
         // scaled to the dungeon's stamped distance and applied to the party; a wipe
         // ends the run in death (back to town, backpack lost).
         let trap_hit = if cell_changed {
-            self.dungeons.get(&key).and_then(|d| d.spring_trap(final_floor, final_pos))
+            self.dungeons.get_mut(&key).and_then(|d| d.spring_trap(final_floor, final_pos))
         } else {
             None
         };
@@ -3272,6 +3272,17 @@ impl WorldActor {
                             // them: not the client, and not a player trying to find
                             // the way down. A floor's exit being invisible is a bug
                             // whether a human or a bot is looking for it.
+                            // A pad you cannot see is a pad you step on by accident, and
+                            // a ONE-WAY one is the most consequential cell on the floor.
+                            // Drawn as a stair, which is the nearest thing the client
+                            // already renders — "something here moves you".
+                            Some(ObjectKind::Teleporter { .. }) => {
+                                entities.push(dungeon_prop(
+                                    format!("dpad-{floor}-{id}-{x}-{y}"),
+                                    pos,
+                                    "stair",
+                                ));
+                            }
                             Some(ObjectKind::Stair) => {
                                 entities.push(dungeon_prop(
                                     format!("dstair-{floor}-{id}"),
@@ -3281,12 +3292,20 @@ impl WorldActor {
                             }
                             // An ARMED trap the Runner can read from here. A disarmed
                             // one is furniture and stays unmarked.
+                            // Armed, and either the Runner reads it from here or the
+                            // party already FOUND it (stepped on it, or tried to defuse
+                            // it). Without the second clause a party with no Runner never
+                            // saw a trap at all — not even one that had just hit them —
+                            // so a corridor was a memory test and DG-9's disarm was
+                            // Shifter-only in practice. A disarmed trap is furniture and
+                            // stays unmarked either way.
                             Some(ObjectKind::Trap { kind, .. })
-                                if trap_radius > 0.0
-                                    && d.trap_state(id) == Some(meld_dungeon_run::TrapState::Armed)
-                                    && sensed_from.is_some_and(|from| {
-                                        from.distance_to(&pos) <= trap_radius
-                                    }) =>
+                                if d.trap_state(id) == Some(meld_dungeon_run::TrapState::Armed)
+                                    && (d.trap_found(id)
+                                        || (trap_radius > 0.0
+                                            && sensed_from.is_some_and(|from| {
+                                                from.distance_to(&pos) <= trap_radius
+                                            }))) =>
                             {
                                 entities.push(dungeon_prop(
                                     format!("dtrap-{id}"),

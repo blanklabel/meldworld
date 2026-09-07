@@ -124,6 +124,15 @@ pub struct DungeonInstance<'a> {
     traps: HashMap<Id, TrapState>,
     /// Chest ids already looted (DG-5/C) — a chest opens once.
     opened_chests: HashSet<Id>,
+    /// Traps the group has FOUND — by springing one, or by disarming it.
+    ///
+    /// Only `shifter_trap_radius` ever put a trap in the snapshot, so a party with no
+    /// Runner could not see one at all: it stepped on the same armed trap, took the hit,
+    /// and had nothing on screen afterwards to say the cell was rigged. That made
+    /// `DG-9`'s disarm effectively Shifter-only and turned a corridor into a memory test.
+    /// Shared by the group, because a trap one member found is a trap the party knows
+    /// about.
+    found_traps: HashSet<Id>,
 }
 
 impl<'a> DungeonInstance<'a> {
@@ -148,6 +157,7 @@ impl<'a> DungeonInstance<'a> {
                 .map(|(id, _)| (id.clone(), TrapState::Armed))
                 .collect(),
             opened_chests: HashSet::new(),
+            found_traps: HashSet::new(),
         }
     }
 
@@ -381,6 +391,16 @@ impl<'a> DungeonInstance<'a> {
         if !is_emitter {
             return Vec::new();
         }
+        // A PEDESTAL wants something set down on it. Standing there empty-handed does
+        // nothing — and it must not even count as a PRESS, or a `seq` could be advanced by
+        // walking over an idol socket you cannot use. Mirrors the solvability search's own
+        // rule (`meld_dungeon::validate::solvable`), which skips a reached-but-unfed
+        // pedestal until its key is in hand.
+        if let Some(ObjectKind::Pedestal { wants }) = self.def.objects.get(id) {
+            if !self.active.contains(wants) {
+                return Vec::new();
+            }
+        }
         // ⚠️ AN ALREADY-ACTIVE EMITTER STILL COUNTS AS A PRESS, and it has to.
         //
         // This used to return early on `active.contains(id)`, which was invisible while
@@ -507,17 +527,27 @@ impl DungeonInstance<'_> {
     /// path (the driver calls this when a player steps onto the cell). Returns the
     /// [`TrapHit`]; `None` if the cell has no armed trap. Does not change state
     /// (armed traps are persistent hazards).
-    pub fn spring_trap(&self, floor: usize, pos: Position) -> Option<TrapHit> {
-        let id = self.object_at(floor, pos)?;
-        if self.traps.get(id) != Some(&TrapState::Armed) {
+    pub fn spring_trap(&mut self, floor: usize, pos: Position) -> Option<TrapHit> {
+        let id = self.object_at(floor, pos)?.clone();
+        if self.traps.get(&id) != Some(&TrapState::Armed) {
             return None;
         }
-        match self.def.objects.get(id) {
+        match self.def.objects.get(&id) {
             Some(ObjectKind::Trap { kind, .. }) => {
-                Some(TrapHit { kind: kind.clone(), severity: self.effective_distance(floor) })
+                let hit =
+                    TrapHit { kind: kind.clone(), severity: self.effective_distance(floor) };
+                // Finding it the hard way still counts as finding it.
+                self.found_traps.insert(id);
+                Some(hit)
             }
             _ => None,
         }
+    }
+
+    /// Has the group found this trap — sprung it, or disarmed it? Traps are otherwise
+    /// only ever revealed by a Runner's trap-sense.
+    pub fn trap_found(&self, id: &str) -> bool {
+        self.found_traps.contains(id)
     }
 
     /// Attempt to disarm the trap on `(floor, pos)` — the `run.interact` path. A Dex
@@ -556,6 +586,8 @@ impl DungeonInstance<'_> {
         let bonus = if is_shifter { shifter_bonus } else { 0.0 };
         let p = (dex as f64 / dex_divisor + bonus).clamp(0.05, 0.95);
         let mut s = seed;
+        // Either way the party now knows the cell is rigged: they were standing over it.
+        self.found_traps.insert(id.clone());
         if unit(splitmix64(&mut s)) < p {
             self.traps.insert(id, TrapState::Disarmed);
             DisarmOutcome::Disarmed
@@ -617,17 +649,29 @@ impl DungeonInstance<'_> {
 fn build_stair_links(def: &DungeonDef) -> HashMap<(usize, usize, usize), (usize, usize, usize)> {
     let mut by_id: HashMap<&str, Vec<&meld_dungeon_content::Placement>> = HashMap::new();
     for p in &def.placements {
-        if p.dir.is_some() && matches!(def.objects.get(&p.id), Some(ObjectKind::Stair)) {
+        let linked = matches!(
+            def.objects.get(&p.id),
+            Some(ObjectKind::Stair | ObjectKind::Teleporter { .. })
+        );
+        if p.dir.is_some() && linked {
             by_id.entry(p.id.as_str()).or_default().push(p);
         }
     }
     let mut links = HashMap::new();
-    for ps in by_id.values() {
+    for (id, ps) in &by_id {
         if let [a, b] = ps[..] {
-            // Order-independent: link whichever is Down to whichever is Up.
-            let (down, up) = if a.dir == Some(StairDir::Down) { (a, b) } else { (b, a) };
-            links.insert((down.floor, down.x, down.y), (up.floor, up.x, up.y));
-            links.insert((up.floor, up.x, up.y), (down.floor, down.x, down.y));
+            // Order-independent: `Down` is a stair's lower end and a teleporter's ENTRY.
+            let (from, to) = if a.dir == Some(StairDir::Down) { (a, b) } else { (b, a) };
+            links.insert((from.floor, from.x, from.y), (to.floor, to.x, to.y));
+            // ⚠️ DIRECTED for a one-way pad, and this must agree with the SOLVABILITY
+            // search's own link map (`meld_dungeon::validate::stair_links`). If the gate
+            // walked a pad in a direction the runtime refuses, it would certify an exit
+            // reachable by a route nobody can take — in a space with no Town Portal.
+            let one_way =
+                matches!(def.objects.get(*id), Some(ObjectKind::Teleporter { one_way: true }));
+            if !one_way {
+                links.insert((to.floor, to.x, to.y), (from.floor, from.x, from.y));
+            }
         }
     }
     links
@@ -897,6 +941,98 @@ mod tests {
                 "{} stayed solvable when seq started meaning order",
                 d.name
             );
+        }
+    }
+
+    /// A TRAP YOU HAVE ALREADY MET STAYS FOUND. Only a Runner's trap-sense ever put a
+    /// trap in the snapshot, so a party without one stepped on the same armed cell, took
+    /// the hit, and had nothing on screen afterwards — a corridor became a memory test and
+    /// DG-9's disarm was Shifter-only in practice.
+    #[test]
+    fn a_trap_you_sprang_is_a_trap_you_know_about() {
+        let def = forest();
+        let mut d = DungeonInstance::new(1, def, 300, 20);
+        let (tf, tp) = cell(def, "T1");
+        assert!(!d.trap_found("T1"), "unfound before anyone touches it");
+        d.spring_trap(tf, tp).expect("armed trap fires");
+        assert!(d.trap_found("T1"), "stepping on it is finding it");
+    }
+
+    /// So does one you reached for and failed to defuse — you were standing over it.
+    #[test]
+    fn a_trap_you_tried_to_disarm_is_found_either_way() {
+        let def = forest();
+        let (tf, tp) = cell(def, "T1");
+        for (dex, label) in [(1, "a botched attempt"), (10_000, "a clean one")] {
+            let mut d = DungeonInstance::new(1, def, 300, 20);
+            d.attempt_disarm(tf, tp, dex, false, 120.0, 0.35, 7);
+            assert!(d.trap_found("T1"), "{label} still finds the cell");
+        }
+    }
+
+    /// A ONE-WAY pad sends you one way at RUNTIME too.
+    ///
+    /// The link map here and the solvability search's own map in `meld-dungeon` are two
+    /// implementations of the same rule; `meld_dungeon::validate`'s is private, so they are
+    /// held together by their observable behaviour instead — the search refuses a route
+    /// that walks a pad backwards (`a_one_way_pad_is_a_one_way_route_to_the_search`) and
+    /// this proves the runtime refuses the same step. If they disagreed, the gate would
+    /// certify a dungeon whose only way out is a move the engine will not make.
+    #[test]
+    fn a_one_way_pad_does_not_send_you_back() {
+        let src = r#"
+name = "oneway_rt"
+biome = "forest"
+[legend]
+a = "teleporter TP1 from"
+b = "teleporter TP1 to"
+[teleporter.TP1]
+one_way = true
+[[floor]]
+grid = """
+############
+#>.a##b..<##
+############
+"""
+"#;
+        let def = meld_dungeon_content::parse_and_validate(src).expect("valid");
+        let d = DungeonInstance::new(1, &def, 100, 20);
+        let pad = |id: &str, end: StairDir| {
+            let p = def
+                .placements
+                .iter()
+                .find(|p| p.id == id && p.dir == Some(end))
+                .expect("both pads placed");
+            (p.floor, cell_center(p.x, p.y))
+        };
+        let (ff, fp) = pad("TP1", StairDir::Down);
+        let (tf, tp) = pad("TP1", StairDir::Up);
+        assert!(d.stair_dest(ff, fp).is_some(), "the entry pad sends you across");
+        assert!(d.stair_dest(tf, tp).is_none(), "the landing pad is just floor");
+    }
+
+    /// A two-way pad works from both ends — the default, and the safe one.
+    #[test]
+    fn a_two_way_pad_works_from_either_end() {
+        let src = r#"
+name = "twoway_rt"
+biome = "forest"
+[legend]
+a = "teleporter TP1 from"
+b = "teleporter TP1 to"
+[teleporter.TP1]
+[[floor]]
+grid = """
+############
+#>.a##b..<##
+############
+"""
+"#;
+        let def = meld_dungeon_content::parse_and_validate(src).expect("valid");
+        let d = DungeonInstance::new(1, &def, 100, 20);
+        for end in [StairDir::Down, StairDir::Up] {
+            let p = def.placements.iter().find(|p| p.dir == Some(end)).unwrap();
+            assert!(d.stair_dest(p.floor, cell_center(p.x, p.y)).is_some(), "{end:?} works");
         }
     }
 
@@ -1240,7 +1376,7 @@ mod tests {
     #[test]
     fn an_armed_trap_springs_on_its_cell_and_stays_armed() {
         let def = forest();
-        let d = DungeonInstance::new(1, def, 300, 20);
+        let mut d = DungeonInstance::new(1, def, 300, 20);
         let (tf, tp) = cell(def, "T1"); // thorns, floor 0
         let hit = d.spring_trap(tf, tp).expect("armed trap fires");
         assert_eq!(hit.kind, "thorns");

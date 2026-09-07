@@ -352,6 +352,138 @@ grid = """
         );
     }
 
+    /// A PEDESTAL is a remote effect: fetch the idol, carry it here, and something opens
+    /// SOMEWHERE ELSE. Standing on it empty-handed does nothing, and the search knows it.
+    #[test]
+    fn a_pedestal_wants_its_idol_before_it_opens_anything() {
+        let src = r#"
+name = "idol"
+biome = "forest"
+[legend]
+k = "key K1"
+o = "pedestal PD1"
+X = "door D1"
+[pedestal.PD1]
+wants = "K1"
+[door.D1]
+when = "PD1"
+[[floor]]
+grid = """
+###############
+#>..o..X....<##
+#.............#
+#....k........#
+###############
+"""
+"#;
+        let d = parse_str(src).unwrap();
+        assert!(validate(&d).is_empty(), "{:?}", validate(&d));
+
+        // The same tomb with the idol walled away: the pedestal is reachable, the door is
+        // not openable, and the gate says so rather than shipping a party into a room they
+        // cannot leave.
+        let sealed = src.replace("#.............#\n#....k........#", "###############\n#####k#########");
+        let errs = validate(&parse_str(&sealed).unwrap());
+        assert!(
+            errs.iter().any(|e| matches!(e, DungeonError::Unsolvable { .. })),
+            "an unreachable idol makes its pedestal unsatisfiable, got {errs:?}"
+        );
+    }
+
+    /// `wants` has to name a KEY. Pointing it at a lever would otherwise surface as
+    /// "the barrier behind this pedestal can never open" — true, and unhelpful.
+    #[test]
+    fn a_pedestal_must_want_a_key() {
+        let src = r#"
+name = "badidol"
+biome = "forest"
+[legend]
+a = "lever L1"
+o = "pedestal PD1"
+[pedestal.PD1]
+wants = "L1"
+[[floor]]
+grid = """
+############
+#>.a.o....<#
+############
+"""
+"#;
+        let errs = validate(&parse_str(src).unwrap());
+        assert!(errs.iter().any(|e| matches!(e, DungeonError::TypeMismatch { .. })), "{errs:?}");
+    }
+
+    /// A teleporter may land you on the SAME floor — the constraint a stair has and this
+    /// deliberately drops. That is what makes it a maze tool (Wizardry, Etrian, Grimrock,
+    /// Silph Co.) rather than a way between levels.
+    #[test]
+    fn a_teleporter_may_link_two_cells_of_one_floor() {
+        let src = r#"
+name = "padmaze"
+biome = "forest"
+[legend]
+a = "teleporter TP1 from"
+b = "teleporter TP1 to"
+[teleporter.TP1]
+[[floor]]
+grid = """
+############
+#>.a####b.<#
+############
+"""
+"#;
+        let d = parse_str(src).unwrap();
+        assert!(validate(&d).is_empty(), "{:?}", validate(&d));
+    }
+
+    /// A ONE-WAY pad is honoured by the solvability search, which is the only reason it is
+    /// safe to author one: the search's link map is directed, so it cannot certify an exit
+    /// reachable only by walking backwards through a pad a player cannot walk back through.
+    #[test]
+    fn a_one_way_pad_is_a_one_way_route_to_the_search() {
+        // The exit sits behind the pad's landing side, walled off from the entrance —
+        // reachable only by taking the pad. Fine.
+        let ok = r#"
+name = "oneway_ok"
+biome = "forest"
+[legend]
+a = "teleporter TP1 from"
+b = "teleporter TP1 to"
+[teleporter.TP1]
+one_way = true
+[[floor]]
+grid = """
+############
+#>.a##b..<##
+############
+"""
+"#;
+        assert!(validate(&parse_str(ok).unwrap()).is_empty());
+
+        // Reversed: the ENTRANCE is on the landing side and the exit behind the entry pad,
+        // so the only route runs backwards through a one-way pad. Must be refused.
+        let bad = r#"
+name = "oneway_bad"
+biome = "forest"
+[legend]
+a = "teleporter TP1 from"
+b = "teleporter TP1 to"
+[teleporter.TP1]
+one_way = true
+[[floor]]
+grid = """
+############
+#.a<##b..>##
+############
+"""
+"#;
+        let errs = validate(&parse_str(bad).unwrap());
+        assert!(
+            errs.iter().any(|e| matches!(e, DungeonError::Unsolvable { .. })),
+            "walking a one-way pad backwards is not a route, got {errs:?}"
+        );
+    }
+
     /// `room_clear` gates a door on a fight, and the search proves the door can open —
     /// the same "reachable means beatable" argument a boss already gets.
     #[test]

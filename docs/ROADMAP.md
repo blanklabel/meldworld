@@ -1713,11 +1713,30 @@ design for this epic: [`proposals/worldgen-wg.md`](proposals/worldgen-wg.md).
       level that only ever falls. ⚠️ Toggles would put the committed-space guarantee at
       risk (the search would have to prove you can always still get OUT), so this is a
       design decision before it is a feature.
-    - **`pedestal` as a real item sink** — *Resident Evil's crests and emblems.* It is in
-      the grammar as an "item sink" and is a walk-over emitter identical to a lever.
-    - **Teleporter tiles / one-way doors** — *Wizardry, Etrian Odyssey, Grimrock, Silph
-      Co.* Cheap: a `Stair` already links two cells, and validation is the only thing
-      insisting the endpoints sit on different floors.
+    - [x] **`pedestal` IS AN ITEM SINK NOW** — *Resident Evil's crests and emblems.* ✅ It
+      was in the grammar as an "item sink" and was a walk-over emitter identical to a
+      lever. `Pedestal { wants }` names a `Key` placed in the same dungeon: standing on it
+      empty-handed does nothing, and what it opens is SOMEWHERE ELSE — a remote effect,
+      which is the difference from a door gated on `has_key`, and what makes fetching the
+      thing a journey. It wants a KEY rather than a free-text item name so the solvability
+      search can reason about it: an unreachable idol is a compile error rather than a
+      party sealed in. It does NOT consume the key — the active set is monotone and the
+      fixpoint depends on that. A pedestal may also be a bare atom in a condition, which it
+      could not before, so the whole object was inert: nothing could name it, and setting
+      the idol down opened nothing.
+    - [x] **TELEPORT PADS, AND ONE-WAY ONES** — *Wizardry, Etrian Odyssey, Grimrock, Silph
+      Co.* ✅ `Teleporter { one_way }`: two pads like a stair, with the stair's one
+      constraint dropped, so the ends may sit on the SAME floor — which is what makes it a
+      maze tool rather than a way between levels. ⚠️ The link map is DIRECTED, in the
+      runtime and in the solvability search alike: if the gate walked a pad in a direction
+      the engine refuses it would certify an exit reachable by a route nobody can take, in
+      a space with no Town Portal. The two maps are separate implementations of that rule
+      and are held together by their observable behaviour at both layers.
+    - [x] **A TRAP YOU HAVE ALREADY MET STAYS FOUND.** ✅ Only `shifter_trap_radius` ever
+      put a trap in the snapshot, so a party with no Runner never saw one — not even one
+      that had just hit them. A corridor was a memory test, and `DG-9`'s disarm was
+      Shifter-only in practice. Springing one or reaching for one now marks it found for
+      the whole group; a disarmed trap is furniture and stays unmarked.
     - **Darkness needing a light source** — *Blackreach, Grimrock.* The Explorer's lantern
       already exists on the overworld; nothing makes a dungeon floor dark.
     - **A trap you already SPRUNG should stay visible to the party that found it.** Only
