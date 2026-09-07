@@ -139,6 +139,9 @@ fn style(kind: &ObjectKind, dir: Option<StairDir>) -> (&'static str, &'static st
         ObjectKind::Door { .. } => ("D", "#8a5a2b"),
         ObjectKind::Gate { .. } => ("G", "#6b4423"),
         ObjectKind::Boss { .. } => ("B", "#7b2d8e"),
+        // A room's guards (DG-10) — the boss's purple, lighter: the same KIND of thing
+        // (a fight holding a door) at ordinary strength.
+        ObjectKind::Spawn { .. } => ("M", "#a05fb4"),
         ObjectKind::Chest { .. } => ("$", "#148f77"),
         ObjectKind::Stair => match dir {
             Some(StairDir::Up) => ("▲", "#2d6cdf"),
@@ -166,11 +169,16 @@ fn collect_markers(def: &DungeonDef) -> HashMap<(usize, usize, usize), Marker> {
 
 /// The full legend of marker kinds, wrapped to the available width. Returns the
 /// vertical space it consumed.
-fn draw_legend(out: &mut String, x: usize, y: usize, w: usize) -> usize {
-    const ITEMS: [(&str, &str, &str); 12] = [
+/// The legend's rows. Module-scope so `every_marker_kind_is_in_the_legend` can hold it
+/// against [`style`] — a hand-written list beside a `match` is a list the next variant
+/// gets left off, and a marker with no legend row is a symbol the reader cannot decode.
+const ITEMS: [(&str, &str, &str); 14] = [
         ("IN", "#3aa35a", "entrance"),
         ("OUT", "#c0392b", "exit"),
-        ("▼", "#2d6cdf", "stairs"),
+        ("▼", "#2d6cdf", "stairs down"),
+    // The up-stair drew a glyph the legend never explained — found by the guard below the
+    // moment it started walking the real registry instead of a second hand-written list.
+    ("▲", "#2d6cdf", "stairs up"),
         ("L", "#e08a1e", "lever"),
         ("P", "#c8a415", "plate"),
         ("K", "#b8860b", "key"),
@@ -179,8 +187,11 @@ fn draw_legend(out: &mut String, x: usize, y: usize, w: usize) -> usize {
         ("D", "#8a5a2b", "door"),
         ("G", "#6b4423", "gate"),
         ("B", "#7b2d8e", "boss"),
+        ("M", "#a05fb4", "room guards"),
         ("$", "#148f77", "chest"),
-    ];
+];
+
+fn draw_legend(out: &mut String, x: usize, y: usize, w: usize) -> usize {
     let _ = write!(out, r#"<text class="flabel" x="{x}" y="{y}">Legend</text>"#);
     let (mut lx, mut ly) = (x, y + 18);
     for (glyph, fill, label) in ITEMS {
@@ -206,6 +217,38 @@ fn esc(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every marker the map can DRAW has a legend row explaining it.
+    ///
+    /// `style` is a match on `ObjectKind` and the legend is a hand-written list beside it
+    /// — the pair that drifts. `Spawn` was added to the match and the map immediately drew
+    /// an "M" chip nothing anywhere explained. Held by walking the real registry rather
+    /// than a second hand-written list.
+    #[test]
+    fn every_marker_kind_is_in_the_legend() {
+        use meld_dungeon_content::{ChestLoot, Condition, ObjectKind::*, StairDir};
+        let every: Vec<(meld_dungeon_content::ObjectKind, Option<StairDir>)> = vec![
+            (Lever, None),
+            (Plate { momentary: true }, None),
+            (Key, None),
+            (Pedestal, None),
+            (Trap { kind: "pit".into(), disarmable: false }, None),
+            (Door { when: Condition::Ref("x".into()) }, None),
+            (Gate { when: Condition::Ref("x".into()) }, None),
+            (Boss { sprite: "s".into(), on_enter_spawn: true }, None),
+            (Spawn { count: 2 }, None),
+            (Chest { when: None, loot: ChestLoot::Rolled }, None),
+            (Stair, Some(StairDir::Down)),
+            (Stair, Some(StairDir::Up)),
+        ];
+        for (kind, dir) in &every {
+            let (glyph, fill) = style(kind, *dir);
+            assert!(
+                ITEMS.iter().any(|(g, f, _)| *g == glyph && *f == fill),
+                "{kind:?} draws as {glyph:?}/{fill} with no legend row to decode it"
+            );
+        }
+    }
 
     #[test]
     fn renders_a_valid_svg_for_the_reference_dungeon() {

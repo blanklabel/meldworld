@@ -1158,11 +1158,29 @@ struct BattleSlot {
     party_scale: f64,
 }
 
+/// What a dungeon fight IS — the one description both shapes of it share.
+///
+/// A boss (`boss_kind: Some(sprite)`, one body) and a `DG-10` room spawn
+/// (`boss_kind: None`, `count` ordinary creatures from the biome roster) are the SAME
+/// mechanism seen from two sides: both end in `finish_dungeon_battle` activating
+/// `cleared_id`, which is `boss_dead(id)` for one and `room_clear(id)` for the other.
+/// Bundled rather than passed loose so the two can never be described differently.
+struct DungeonFight<'a> {
+    cleared_id: &'a str,
+    boss_kind: Option<&'a str>,
+    count: u32,
+    biome: &'a str,
+    eff_dist: i64,
+}
+
 /// Dungeon context carried by a boss-fight [`BattleSlot`] (DG-3b).
 #[derive(Clone)]
 struct DungeonBattle {
     key: u64,
-    boss_id: String,
+    /// The dungeon object this fight CLEARS — a boss (`boss_dead(id)`) or a `DG-10`
+    /// room spawn (`room_clear(id)`). Activated on victory. It was `boss_id` while a boss
+    /// was the only thing a dungeon could make you fight.
+    cleared_id: String,
     /// The bounty this door's boss IS, or empty (AD-4). A dungeon boss is built here
     /// rather than placed in the arena, so the contract rides the battle instead of a
     /// `MonsterSpawn`.
@@ -2855,7 +2873,45 @@ impl WorldActor {
                     let d = &self.dungeons[&key];
                     (d.def().biome.to_string(), d.effective_distance(final_floor))
                 };
-                return self.start_dungeon_battle(pid, key, &boss_id, &sprite, &biome, eff);
+                return self.start_dungeon_battle(
+                    pid,
+                    key,
+                    DungeonFight {
+                        cleared_id: &boss_id,
+                        boss_kind: Some(sprite.as_str()),
+                        count: 1,
+                        biome: &biome,
+                        eff_dist: eff,
+                    },
+                );
+            }
+            // DG-10: and walking into a ROOM SPAWN starts an ordinary fight, once, until
+            // it is cleared — the same shape as the boss above, which is the point: a
+            // dungeon could previously place a boss and nothing else, so "a fight guards
+            // this door" and "a BOSS guards this door" were the same sentence.
+            let spawn = self.dungeons.get(&key).and_then(|d| {
+                let id = d.object_at(final_floor, final_pos)?.clone();
+                match d.def().objects.get(&id) {
+                    Some(ObjectKind::Spawn { count }) if !d.is_active(&id) => Some((id, *count)),
+                    _ => None,
+                }
+            });
+            if let Some((spawn_id, count)) = spawn {
+                let (biome, eff) = {
+                    let d = &self.dungeons[&key];
+                    (d.def().biome.to_string(), d.effective_distance(final_floor))
+                };
+                return self.start_dungeon_battle(
+                    pid,
+                    key,
+                    DungeonFight {
+                        cleared_id: &spawn_id,
+                        boss_kind: None,
+                        count,
+                        biome: &biome,
+                        eff_dist: eff,
+                    },
+                );
             }
         }
         // DG-3b(3/n): an armed trap on the newly-entered cell fires (DG-4a). Damage is
@@ -3083,6 +3139,38 @@ impl WorldActor {
                                     tag.push_str(&format!(":boss:{sprite}"));
                                 }
                                 entities.push(dungeon_prop(format!("dboss-{id}"), pos, &tag));
+                            }
+                            // DG-10: a room's guards, drawn as the biome creatures they
+                            // ARE so the party can see what is keeping the door before
+                            // walking into it. Gone once the room is cleared — a fight
+                            // already won must not still be standing there.
+                            //
+                            // The kind is resolved the same way `dungeon_creature` picks
+                            // it, so what you see is what you fight. A tag nothing renders
+                            // is a token that does not exist to the player, and an
+                            // invisible mandatory encounter is worse than none.
+                            Some(ObjectKind::Spawn { count }) if !d.is_active(id) => {
+                                let n = (*count).max(1) as usize;
+                                for i in 0..n {
+                                    let kind =
+                                        meld_world::dungeon_creature_kind(&def.biome, i);
+                                    // Fanned around the cell rather than stacked on its
+                                    // centre: `count` bodies drawn at one point read as
+                                    // ONE creature, which is the whole fact the party
+                                    // needs before deciding to walk in. The fight still
+                                    // triggers off the cell, so this is presentation.
+                                    let a = std::f64::consts::TAU * i as f64 / n as f64;
+                                    let r = if n > 1 { 0.30 } else { 0.0 };
+                                    let at = Position::new(
+                                        pos.x + r * a.cos(),
+                                        pos.y + r * a.sin(),
+                                    );
+                                    entities.push(dungeon_prop(
+                                        format!("dspawn-{id}-{i}"),
+                                        at,
+                                        &format!("mob:{kind}:hostile"),
+                                    ));
+                                }
                             }
                             // Stairs were never sent, so nothing downstream could see
                             // them: not the client, and not a player trying to find
@@ -3676,15 +3764,8 @@ impl WorldActor {
     /// faces the authored boss (scaled to the dungeon's stamped distance, FS-4 boss
     /// mechanics via `boss_kind`). Tagged with dungeon context so `finish_dungeon_battle`
     /// unlocks the boss-gated chest on victory / cleans up on defeat.
-    fn start_dungeon_battle(
-        &mut self,
-        pid: &str,
-        key: u64,
-        boss_id: &str,
-        boss_kind: &str,
-        biome: &str,
-        eff_dist: i64,
-    ) -> Vec<Outgoing> {
+    fn start_dungeon_battle(&mut self, pid: &str, key: u64, fight: DungeonFight<'_>) -> Vec<Outgoing> {
+        let DungeonFight { cleared_id, boss_kind, count, biome, eff_dist } = fight;
         let seed = now_ms();
         let balance = self.balance.clone();
         let bonuses = self.gear_bonuses.clone();
@@ -3737,7 +3818,7 @@ impl WorldActor {
             player_combatants.insert(r.player_id.clone(), cids);
         }
 
-        let boss_entity = format!("dboss-{key}-{boss_id}");
+        let boss_entity = format!("dboss-{key}-{cleared_id}");
         // AD-4: a bounty whose venue is a DESCENT waits at the bottom of one. If this
         // player holds such a contract and the door is deep enough for it, the thing
         // keeping the door IS their mark — built from the contract, so the fight it names
@@ -3753,29 +3834,55 @@ impl WorldActor {
                     && eff_dist >= spec.distance as i64
             })
             .map(|(id, spec)| (id.clone(), spec.clone()));
-        let boss = match &mark {
-            Some((id, spec)) => meld_world::MonsterSpawn::bounty_mark_at(
-                &balance,
-                boss_entity,
-                spec,
-                id,
-                pid,
-                eff_dist,
-                seed,
-            ),
-            None => meld_world::MonsterSpawn::dungeon_boss(
-                &balance,
-                boss_entity,
-                biome,
-                boss_kind,
-                eff_dist,
-                seed,
-            ),
+        // ONE fight, two shapes: a single boss (optionally the bounty mark waiting at the
+        // bottom of this descent), or a `DG-10` room spawn of ordinary creatures. Both end
+        // in `finish_dungeon_battle` activating `cleared_id`, so `boss_dead` and
+        // `room_clear` are the same mechanism seen from two sides.
+        let enemies: Vec<meld_world::MonsterSpawn> = match boss_kind {
+            Some(kind) => vec![match &mark {
+                Some((id, spec)) => meld_world::MonsterSpawn::bounty_mark_at(
+                    &balance,
+                    boss_entity,
+                    spec,
+                    id,
+                    pid,
+                    eff_dist,
+                    seed,
+                ),
+                None => meld_world::MonsterSpawn::dungeon_boss(
+                    &balance,
+                    boss_entity,
+                    biome,
+                    kind,
+                    eff_dist,
+                    seed,
+                ),
+            }],
+            None => (0..count.max(1) as usize)
+                .map(|i| {
+                    meld_world::MonsterSpawn::dungeon_creature(
+                        &balance,
+                        format!("{boss_entity}-{i}"),
+                        biome,
+                        eff_dist,
+                        i,
+                        seed,
+                    )
+                })
+                .collect(),
         };
-        if let Some((id, _)) = &mark {
-            inst.marks_placed.insert(id.clone());
+        // A bounty mark is a BOSS's business: it waits at the bottom of a descent, not in
+        // a guard room. Only consume the contract when one was actually built.
+        if boss_kind.is_some() {
+            if let Some((id, _)) = &mark {
+                inst.marks_placed.insert(id.clone());
+            }
         }
-        let enemies_ref: Vec<(&meld_world::MonsterSpawn, String)> = vec![(&boss, boss_cid.clone())];
+        let cids: Vec<String> = (0..enemies.len())
+            .map(|i| if i == 0 { boss_cid.clone() } else { Uuid::now_v7().to_string() })
+            .collect();
+        let enemies_ref: Vec<(&meld_world::MonsterSpawn, String)> =
+            enemies.iter().zip(cids.iter().cloned()).collect();
         let battle = build_battle(
             battle_id.clone(),
             &party,
@@ -3803,7 +3910,7 @@ impl WorldActor {
             pos: Position::new(0.0, 0.0),
             dungeon: Some(DungeonBattle {
                 key,
-                boss_id: boss_id.to_string(),
+                cleared_id: cleared_id.to_string(),
                 bounty: mark.as_ref().map(|(id, _)| id.clone()).unwrap_or_default(),
                 mark_boss: mark.as_ref().map(|(_, s)| s.boss_kind.clone()).unwrap_or_default(),
             }),
@@ -3846,7 +3953,8 @@ impl WorldActor {
         match outcome {
             BattleOutcome::Victory => {
                 if let Some(dj) = self.dungeons.get_mut(&d.key) {
-                    dj.activate(&d.boss_id); // boss_dead(<id>) → the vault unlocks
+                    // boss_dead(<id>) unlocks the vault; room_clear(<id>) opens the door.
+                    dj.activate(&d.cleared_id);
                 }
                 for pid in members {
                     if self.dungeon_of(pid).is_some() {

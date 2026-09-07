@@ -1851,6 +1851,18 @@ pub struct MonsterSpawn {
     rng: u64,
 }
 
+/// Which creature the `index`-th body of a `DG-10` dungeon room spawn IS.
+///
+/// ⚠️ **The snapshot and the battle must not answer this differently.** The dungeon
+/// snapshot draws a room's guards so a party can see what is keeping the door, and
+/// `MonsterSpawn::dungeon_creature` builds the fight — two call sites, one rule, or you
+/// walk up to a pack of boars and fight a pack of something else. That is the same
+/// "one funnel" discipline `softened_by_rank` and `blocking_field` are built on.
+pub fn dungeon_creature_kind(biome: &str, index: usize) -> &'static str {
+    let roster = creatures_for_biome(biome);
+    roster.get(index % roster.len().max(1)).copied().unwrap_or("forest_bloom_stalker")
+}
+
 impl MonsterSpawn {
     /// Build a spawn for `kind` at `position`, scaling the creature's base stats
     /// by `stat_mult` at that position's floored distance. `seed` drives its wander.
@@ -1931,6 +1943,30 @@ impl MonsterSpawn {
         m.promote(e.gatekeeper_hp_mult, e.gatekeeper_atk_mult, e.gatekeeper_xp_mult, "gatekeeper");
         m.become_boss(boss_kind);
         m
+    }
+
+    /// Build one ORDINARY creature standing in a dungeon room (`DG-10`).
+    ///
+    /// The sibling of [`Self::dungeon_boss`], and deliberately built the same way: the
+    /// kind comes from the dungeon's BIOME roster and the stats ride the dungeon's stamped
+    /// `effective_distance`, so a room's guards are as deep as the floor they stand on.
+    /// `index` varies the draw, so a pack of three is three creatures rather than one
+    /// creature three times.
+    ///
+    /// No promotion — that is what makes it *ordinary*, and the difference between this
+    /// and a boss is the whole reason it exists: before it, a dungeon could place a boss
+    /// and nothing else, so mandatory combat and a BOSS FIGHT were the same thing.
+    pub fn dungeon_creature(
+        balance: &Balance,
+        entity_id: Id,
+        biome: &str,
+        effective_distance: i64,
+        index: usize,
+        seed: u64,
+    ) -> Self {
+        let kind = dungeon_creature_kind(biome, index);
+        let pos = Position::new(effective_distance.max(0) as f64, 0.0);
+        Self::build(balance, entity_id, kind, pos, seed ^ (index as u64).wrapping_mul(0x9E37_79B9))
     }
 
     /// Build a **bounty mark** (`AD-4`): the named boss a generated contract names,
@@ -10901,6 +10937,43 @@ mod bd1_structural_stock {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// What the dungeon snapshot DRAWS is what the battle BUILDS. Both ask
+    /// `dungeon_creature_kind`, so this holds the property rather than the table: walk up
+    /// to a room of boars and the fight is boars.
+    #[test]
+    fn a_room_spawns_what_it_is_drawn_as() {
+        let b = Balance::load_default().unwrap();
+        for biome in ["forest", "desert", "tundra", "ashfall", "mire", "amber_wood"] {
+            for i in 0..6usize {
+                let drawn = dungeon_creature_kind(biome, i);
+                let built =
+                    MonsterSpawn::dungeon_creature(&b, format!("e{i}"), biome, 300, i, 42);
+                assert_eq!(
+                    built.monster_kind, drawn,
+                    "{biome} body {i}: drawn as {drawn}, fought as {}",
+                    built.monster_kind
+                );
+            }
+        }
+    }
+
+    /// A room's guards are ORDINARY — that is the whole difference from a boss, and the
+    /// reason `world_of_ruin` needed nine bosses to fill its runtime.
+    #[test]
+    fn a_room_spawn_is_not_promoted_like_a_boss() {
+        let b = Balance::load_default().unwrap();
+        let grunt = MonsterSpawn::dungeon_creature(&b, "g".into(), "forest", 300, 0, 7);
+        let boss = MonsterSpawn::dungeon_boss(&b, "b".into(), "forest", "hollowbishop", 300, 7);
+        assert!(
+            boss.max_hp > grunt.max_hp * 2,
+            "a boss should dwarf a room guard: {} vs {}",
+            boss.max_hp,
+            grunt.max_hp
+        );
+        assert!(grunt.boss_kind.is_empty(), "a room guard carries no boss identity");
+    }
+
 
     /// **THE WORLD FROZE AND THE INVENTORY STILL OPENED.** A live session went down like
     /// this: nine `myconid_brute` had been felled and banked for regrowth, the bestiary then

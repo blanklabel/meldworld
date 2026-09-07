@@ -1,0 +1,146 @@
+# The Tomb of Horrors — a hand-authored DESERT dungeon recreating the most infamous
+# dungeon in tabletop RPG history (structure, not a pixel-copy). Every set of
+# recreations in this pool so far has been a video game; this is the one they are all
+# descended from.
+#
+# It is also the first dungeon built on `DG-10`'s ROOM SPAWNS. Its doors are held by
+# ordinary guards rather than bosses — `room_clear(S1)` and `room_clear(S2)` — which was
+# impossible until now: a dungeon could place a `boss` and nothing else, so "a fight
+# guards this door" and "a BOSS guards this door" were the same sentence, and
+# `world_of_ruin` needs NINE bosses to fill twenty minutes for exactly that reason.
+#
+# The tomb's own idea is that the obvious way is the wrong way:
+#   Floor 0  THREE corridors leave the antechamber and only the middle one goes anywhere.
+#            The other two end in a treasure with something waiting on it — including the
+#            GREEN DEVIL'S MOUTH, which is a pit that does not negotiate
+#            (`disarmable = false`: you route around it or you do not).
+#   Floor 1  the crypt — the pillar combination, the inner guard, and Acererak.
+
+name  = "tomb_of_horrors"
+biome = "desert"
+
+[legend]
+g = "spawn S1"
+h = "spawn S2"
+X = "door D1"
+Z = "door D2"
+Y = "gate G1"
+"1" = "plate P1 latching"
+"2" = "plate P2 latching"
+"3" = "plate P3 latching"
+p = "trap devil_mouth"
+x = "trap poison_gas"
+d = "trap dart_hall"
+r = "trap glyph_ward"
+s = "stair ST1 down"
+w = "stair ST1 up"
+A = "chest false_cache"
+C = "chest devil_bait"
+N = "chest vault"
+Q = "boss B1"
+
+# Floor 0 — the three corridors. Two are baited dead ends.
+[[floor]]
+grid = """
+#############################################
+#############################################
+#############################################
+#############################################
+#############################################
+#######################.....#################
+#######################.....#..........######
+#######################..A..#..........######
+########....................#..d.......#....#
+########.......########..x..#..........#....#
+########.......##############..........#....#
+##>..............................g.....X..s.#
+########.......##############..........#....#
+########.......########..C..#..........#....#
+########....................#..........#....#
+#######################..p..#..........######
+#######################.....#..........######
+#######################.....#################
+#############################################
+#############################################
+#############################################
+#############################################
+#############################################
+"""
+
+# Floor 1 — the crypt.
+[[floor]]
+grid = """
+###########################################
+###########################################
+###########################################
+###########################################
+###########################################
+###################################.......#
+#############.............#.......#.......#
+##.......####.............#...r...#..N....#
+##.......####.............#.......#.......#
+##.......####.............#.......#.......#
+##...w..........1..2..3...Y...h...Z...Q...#
+##.......####.............#.......#.......#
+##.......####.............#.......#.......#
+##.......####.............#.......#....<..#
+#############.............#.......#.......#
+###################################.......#
+###########################################
+###########################################
+###########################################
+###########################################
+###########################################
+"""
+
+# The guards hold the doors. Ordinary creatures drawn from the biome's own roster —
+# the spawn deliberately names no creature KIND, so a typo cannot become content that
+# compiles and then spawns nothing, and the tomb works whatever biome it lands in.
+[spawn.S1]
+count = 3
+[spawn.S2]
+count = 4
+
+[door.D1]
+when = "room_clear(S1)"
+[door.D2]
+when = "room_clear(S2)"
+
+# The pillars, in the carved order. Enforced since DG-9 — and retryable, so a party that
+# guesses wrong walks them again rather than being sealed in.
+[gate.G1]
+when = "seq[P1,P2,P3]"
+
+# THE GREEN DEVIL'S MOUTH. The tomb's signature: a hole in a carved face, with treasure
+# beside it to make you come close. There is no check and no clever answer — the only
+# correct play is not to step there.
+[trap.devil_mouth]
+kind = "pit"
+disarmable = false
+
+# The rest of the tomb's spite CAN be answered, which is what makes the mouth mean
+# something by contrast — and what a Runner is for (DG-9's disarm).
+[trap.poison_gas]
+kind = "acid"
+disarmable = true
+[trap.dart_hall]
+kind = "dart"
+disarmable = true
+[trap.glyph_ward]
+kind = "rune"
+disarmable = true
+
+[boss.B1]
+sprite = "sepulcher"
+on_enter_spawn = true
+
+# Both dead-end caches are real treasure. A bait that paid nothing would teach players to
+# ignore the tomb's whole grammar after the first one.
+[chest.false_cache]
+loot = "rolled"
+[chest.devil_bait]
+loot = "rolled"
+
+[chest.vault]
+when = "boss_dead(B1)"
+loot = "rolled"

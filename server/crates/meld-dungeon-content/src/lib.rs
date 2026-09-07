@@ -173,6 +173,32 @@ mod tests {
         }
     }
 
+    /// THE POOL ACTUALLY USES ITS OWN MECHANICS. A vocabulary nothing authors is a
+    /// vocabulary that rots: `room_clear` sat in the DG-1 grammar with no runtime for as
+    /// long as it existed, and `seq` meant `all` for as long as anything used it. A
+    /// mechanic with no instance passes every test it has.
+    #[test]
+    fn the_pool_exercises_the_vocabulary_it_ships() {
+        let uses = |f: &dyn Fn(&ObjectKind) -> bool| all().iter().any(|d| d.objects.values().any(f));
+        assert!(
+            uses(&|k| matches!(k, ObjectKind::Spawn { .. })),
+            "no dungeon places a room SPAWN, so DG-10's ordinary encounter is dead content"
+        );
+        let clears = all().iter().any(|d| {
+            d.objects.values().filter_map(|k| k.condition()).any(|c| {
+                let mut refs = Vec::new();
+                c.referenced(&mut refs);
+                refs.iter().any(|(id, _)| {
+                    matches!(d.objects.get(id), Some(ObjectKind::Spawn { .. }))
+                })
+            })
+        });
+        assert!(clears, "no barrier is held by a room_clear, so nothing gates on a fight");
+        assert!(uses(&|k| matches!(k, ObjectKind::Boss { .. })));
+        assert!(uses(&|k| matches!(k, ObjectKind::Key)));
+        assert!(uses(&|k| matches!(k, ObjectKind::Trap { .. })));
+    }
+
     #[test]
     fn every_embedded_dungeon_revalidates_at_runtime() {
         // Belt-and-suspenders: the build already validated these, but prove the

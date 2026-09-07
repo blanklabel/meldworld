@@ -196,6 +196,8 @@ struct RawDungeon {
     #[serde(default)]
     boss: BTreeMap<String, RawBoss>,
     #[serde(default)]
+    spawn: BTreeMap<String, RawSpawn>,
+    #[serde(default)]
     chest: BTreeMap<String, RawChest>,
 }
 
@@ -221,6 +223,14 @@ struct RawBoss {
     sprite: String,
     #[serde(default)]
     on_enter_spawn: bool,
+}
+
+#[derive(Deserialize)]
+struct RawSpawn {
+    /// How many creatures stand here. Defaults to one, so `[spawn.S1]` on its own is a
+    /// single guard rather than a parse error.
+    #[serde(default = "one")]
+    count: u32,
 }
 
 #[derive(Deserialize)]
@@ -264,6 +274,7 @@ enum KindTag {
     Door,
     Gate,
     Boss,
+    Spawn,
     Chest,
     Stair,
 }
@@ -287,6 +298,15 @@ pub fn parse_str(src: &str) -> Result<DungeonDef, DungeonError> {
     }
     for (id, b) in &raw.boss {
         objects.insert(id.clone(), ObjectKind::Boss { sprite: b.sprite.clone(), on_enter_spawn: b.on_enter_spawn });
+    }
+    for (id, s) in &raw.spawn {
+        if s.count == 0 {
+            return Err(DungeonError::BadTable {
+                id: id.clone(),
+                reason: "a spawn of zero creatures is a room that clears itself".into(),
+            });
+        }
+        objects.insert(id.clone(), ObjectKind::Spawn { count: s.count });
     }
     for (id, c) in &raw.chest {
         let when = match &c.when {
@@ -416,6 +436,7 @@ fn parse_legend(ch: char, spec: &str) -> Result<LegendEntry, DungeonError> {
         "door" => (KindTag::Door, need_id()?, None, true),
         "gate" => (KindTag::Gate, need_id()?, None, true),
         "boss" => (KindTag::Boss, need_id()?, None, true),
+        "spawn" => (KindTag::Spawn, need_id()?, None, true),
         "chest" => (KindTag::Chest, need_id()?, None, true),
         "plate" => {
             let momentary = match toks.get(2).copied() {
@@ -456,6 +477,7 @@ fn register_object(objects: &mut BTreeMap<Id, ObjectKind>, e: &LegendEntry) -> R
         KindTag::Door => require(objects, &e.id, |k| matches!(k, ObjectKind::Door { .. }), needs_table("door")),
         KindTag::Gate => require(objects, &e.id, |k| matches!(k, ObjectKind::Gate { .. }), needs_table("gate")),
         KindTag::Boss => require(objects, &e.id, |k| matches!(k, ObjectKind::Boss { .. }), needs_table("boss")),
+        KindTag::Spawn => require(objects, &e.id, |k| matches!(k, ObjectKind::Spawn { .. }), needs_table("spawn")),
         KindTag::Chest => require(objects, &e.id, |k| matches!(k, ObjectKind::Chest { .. }), needs_table("chest")),
     }
 }

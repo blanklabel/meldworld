@@ -1660,12 +1660,30 @@ design for this epic: [`proposals/worldgen-wg.md`](proposals/worldgen-wg.md).
       `[worldgen] dungeon_disarm_dex_divisor` / `_shifter_bonus`.
   - [ ] **DG-10 — THE MECHANICS THE FAMOUS DUNGEONS STILL WANT.** The rest of the survey.
     Each of these blocks a specific, well-known dungeon, which is the argument for it:
-    - **`room_clear` + `spawn`** — *the whole MMO/raid family* (Deadmines' side rooms,
-      Scarlet Monastery, Karazhan). `room_clear` is in the DG-1 grammar with **no runtime
-      implementation at all** (zero references), and `spawn` is DG-4b. Together they are
-      also the only way to author a non-boss encounter: a dungeon can place a `Boss` and
-      nothing else, which is why `world_of_ruin` needs NINE bosses to make its playtime.
-      Highest value of anything left here.
+    - [x] **`room_clear` + `spawn` — A ROOM CAN BE HELD BY A FIGHT.** ✅ `room_clear` sat
+      in the DG-1 grammar with **no runtime implementation at all** (zero references
+      anywhere), and a dungeon could place a `Boss` and nothing else — so "a fight guards
+      this door" and "a BOSS guards this door" were the same sentence, and
+      `world_of_ruin` needs NINE bosses to fill twenty minutes for exactly that reason.
+      `ObjectKind::Spawn { count }` places ordinary creatures; walking in starts the
+      fight; winning satisfies `room_clear(id)`. It is the **same mechanism as a boss seen
+      from the other side** — one `start_dungeon_battle`, and `finish_dungeon_battle`
+      activates one `cleared_id`, so `boss_dead` and `room_clear` cannot drift apart.
+      A spawn names no creature KIND: the roster comes from the biome exactly as a boss's
+      stat base does, which keeps `meld-dungeon` a pure leaf (it has no way to check a
+      creature key), stops a typo becoming content that compiles and spawns nothing, and
+      lets a dungeon work in whatever biome it lands in.
+      `meld_world::dungeon_creature_kind` is the ONE rule the snapshot and the battle both
+      ask, so **what you walk up to is what you fight** (asserted); the guards are drawn
+      fanned around the cell, because `count` bodies stacked on one point read as one
+      creature, which is the fact a party needs before walking in. `room_clear` now
+      demands a `Clearable` referent — pointing it at a chest used to parse and then fail
+      the solvability search with "these barriers can never open", a true error naming the
+      wrong cause. First content on it: **`tomb_of_horrors`** (desert — D&D's Tomb of
+      Horrors, and the first recreation in this pool that is not a video game), whose doors
+      are held by ordinary guards and whose Green Devil's mouth is a `disarmable = false`
+      pit with treasure beside it. `the_pool_exercises_the_vocabulary_it_ships` keeps the
+      mechanic from rotting back into dead content.
     - **Pushable blocks** — *the single most common puzzle in the genre*: Zelda top to
       bottom, Pokémon's Victory Road, Sokoban rooms. Wants a `Block` object, a push rule
       in movement, and a block HOLDING a momentary plate — which would also make the

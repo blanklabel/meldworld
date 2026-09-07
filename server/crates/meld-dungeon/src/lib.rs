@@ -352,6 +352,83 @@ grid = """
         );
     }
 
+    /// `room_clear` gates a door on a fight, and the search proves the door can open —
+    /// the same "reachable means beatable" argument a boss already gets.
+    #[test]
+    fn a_room_clear_door_opens_behind_a_spawn() {
+        let src = r#"
+name = "guardroom"
+biome = "forest"
+[legend]
+g = "spawn S1"
+X = "door D1"
+[spawn.S1]
+count = 3
+[door.D1]
+when = "room_clear(S1)"
+[[floor]]
+grid = """
+##########
+#>.g.X..<#
+##########
+"""
+"#;
+        let d = parse_str(src).unwrap();
+        assert_eq!(d.objects.get("S1"), Some(&ObjectKind::Spawn { count: 3 }));
+        assert!(validate(&d).is_empty(), "{:?}", validate(&d));
+        // A spawn costs no BODIES — it is a fight, not a plate someone has to stand on.
+        assert_eq!(d.bodies_required(), 1);
+    }
+
+    /// `room_clear(…)` must name something a party can FIGHT. Pointing it at a chest used
+    /// to parse and then fail the solvability search with "these barriers can never open"
+    /// — a true error naming the wrong cause.
+    #[test]
+    fn room_clear_must_name_something_clearable() {
+        let src = r#"
+name = "badclear"
+biome = "forest"
+[legend]
+C = "chest loot"
+X = "door D1"
+[chest.loot]
+loot = "rolled"
+[door.D1]
+when = "room_clear(loot)"
+[[floor]]
+grid = """
+##########
+#>.C.X..<#
+##########
+"""
+"#;
+        let errs = validate(&parse_str(src).unwrap());
+        assert!(
+            errs.iter().any(|e| matches!(e, DungeonError::TypeMismatch { .. })),
+            "expected a type mismatch naming the cause, got {errs:?}"
+        );
+    }
+
+    /// A spawn of nobody is a room that clears itself.
+    #[test]
+    fn a_spawn_of_zero_is_refused() {
+        let src = r#"
+name = "empty"
+biome = "forest"
+[legend]
+g = "spawn S1"
+[spawn.S1]
+count = 0
+[[floor]]
+grid = """
+#########
+#>.g...<#
+#########
+"""
+"#;
+        assert!(parse_str(src).is_err());
+    }
+
     /// …and the same ids NOT adjacent are fine, because an unrelated press separates them.
     #[test]
     fn a_sequence_may_revisit_an_emitter_with_something_in_between() {
