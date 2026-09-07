@@ -13318,11 +13318,23 @@ mod watching_tests {
         // question that has nothing to do with the overworld.
         let bid = w.battles[0].battle_id.clone();
         let mut stamped = None;
-        let landed = |v: &serde_json::Value| {
-            v["effects"]
-                .as_array()
-                .is_some_and(|e| e.iter().any(|x| x["amount"].as_i64().unwrap_or(0) > 0))
-        };
+        // ⚠️ A NAMED HELPER, NOT A CLOSURE PASSED TO `Option::filter`.
+        //
+        // The first cut of this test wrote `sent(..).filter(&landed)` over a closure
+        // holding a nested `is_some_and(|e| e.iter().any(..))` chain on
+        // `serde_json::Value`. That single expression took clippy on this crate from
+        // **3 seconds to over 70 minutes**, and on a CI runner the job was killed 90
+        // seconds into `meld-server` — twice, identically, with no diagnostic. A plain
+        // `fn` with written-out types costs nothing and reads better.
+        fn landed(v: &serde_json::Value) -> bool {
+            let Some(effects) = v["effects"].as_array() else { return false };
+            for e in effects {
+                if e["amount"].as_i64().unwrap_or(0) > 0 {
+                    return true;
+                }
+            }
+            false
+        }
         for n in 0..600 {
             let evs = match w.battle_by_id_mut(&bid) {
                 Some(slot) => {
@@ -13342,9 +13354,11 @@ mod watching_tests {
                 None => break,
             };
             let (out, _) = w.emit_battle_events(&bid, evs);
-            if let Some(v) = sent(&out, "p1", wb::ActionResolved::TYPE).filter(&landed) {
-                stamped = Some(v);
-                break;
+            if let Some(v) = sent(&out, "p1", wb::ActionResolved::TYPE) {
+                if landed(&v) {
+                    stamped = Some(v);
+                    break;
+                }
             }
         }
         let v = stamped.expect("nothing landed a damaging blow in 60s of fighting");
