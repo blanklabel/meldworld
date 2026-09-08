@@ -432,6 +432,16 @@ pub mod battle {
         /// this fight" a fact on the wire instead of an inference.
         #[serde(default)]
         pub spectating: bool,
+        /// **HOW THIS FIGHT OPENED**, so the client can say so. A mechanic the player is
+        /// never told about does not exist to them — the same rule the `pack:` token and
+        /// the gang-up shout are here for — and an ambush is the one opening that costs
+        /// them a round, so it is the one they most need explained.
+        ///
+        /// `"rolled"` / `"surprise"` / `"ambush"`. A string rather than a new enum on the
+        /// wire because the client only ever prints it; `#[serde(default)]` so an older
+        /// client reads a fight that opened before it knew the field existed.
+        #[serde(default)]
+        pub opening: String,
     }
     impl Message for Started {
         const TYPE: &'static str = "battle.started";

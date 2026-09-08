@@ -1786,6 +1786,18 @@ pub struct MonsterSpawn {
     /// per-creature lookup of the leader is the kind of thing that made `step_creatures`
     /// 1,708 ms a tick at depth.
     pub pack_home: Position,
+    /// **THIS CREATURE IS CHASING A HERO RIGHT NOW**, set each step by the mover from its
+    /// own targeting decision (see [`Arena::step_creatures_with_aggro`]).
+    ///
+    /// It is what makes an AMBUSH honest. "Did the creature choose this fight?" could be
+    /// approximated as "is it aggressive", but that answers yes for a sleeping boar a
+    /// player deliberately walked into — the one case that is plainly not an ambush. The
+    /// AI already decides, every tick, whether it is hunting somebody; reading that
+    /// decision is cheaper and truer than re-deriving it at the touch.
+    ///
+    /// Recomputed every step rather than latched: a creature that lost interest is not
+    /// lying in wait, and a stale `true` would ambush on behalf of a hunt that ended.
+    pub hunting: bool,
     /// Seconds this creature remains PINNED by a Psyker (CL-2), counted down by
     /// [`Arena::step_creatures_with_aggro`]. A pinned creature does not move, chase or
     /// skirmish — but it is still touchable and still fights when reached, because the
@@ -1895,6 +1907,7 @@ impl MonsterSpawn {
             // A creature is its own pack of one until placement makes it part of one.
             pack: String::new(),
             pack_home: position,
+            hunting: false,
             held_for: 0.0,
             owner: String::new(),
             bounty: String::new(),
@@ -8994,6 +9007,11 @@ impl Arena {
                 (None, Some(c)) => (Some(c), true),
                 (None, None) => (None, false),
             };
+            // AMBUSH state, read straight off the decision just made: this creature is
+            // closing on a HERO. Written every step, never latched — a creature that has
+            // lost interest is not lying in wait, and a stale `true` would ambush on
+            // behalf of a hunt that had already ended.
+            m.hunting = target.is_some() && !is_creature;
             let (mut dx, mut dy, speed) = match target {
                 Some(p) => {
                     // Hold position once adjacent to a creature rival (trade blows in

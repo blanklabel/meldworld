@@ -93,6 +93,7 @@ fn main() {
                     monster_combatant,
                     combatants,
                     spectating: _,
+                    opening: _,
                 } => {
                     in_battle = true;
                     battle_id = b;

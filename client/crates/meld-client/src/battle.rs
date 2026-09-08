@@ -303,7 +303,23 @@ pub(crate) fn spawn_enemy_actor(
                 },
                 Mesh3d(wa.sprite_quad.clone()),
                 MeshMaterial3d(mat),
-                Transform::from_xyz(0.0, h * 0.5, 0.0).with_scale(Vec3::splat(h / 2.2)),
+                // ⚠️ **GROUNDED THROUGH THE ONE RULE, because `h * 0.5` is not it.** A
+                // character billboard draws the WHOLE canvas and the art fills the middle
+                // ~50% of it — measured 24.8% of transparent padding below the feet — so
+                // centring the quad on half its own height leaves the animal that padding
+                // clear of the ground. At h=2.5 that is 0.64 world units of daylight under
+                // a boar standing next to its own contact shadow.
+                //
+                // `grounded_sprite_y` is the same rule the OVERWORLD already came to, and
+                // its own note records this exact report — "the piggy is flying through the
+                // air" — for creatures out in the world. The battle arena simply never came
+                // through it: heroes escape because `place_billboards` rewrites
+                // `HeroBillboard`'s y from `Look::sprite_y` every frame, and a creature
+                // carries no such marker, so it keeps whatever it was spawned with. One
+                // rule, two call sites, and the second one was wrong — the same shape as
+                // the wall-collision line and the O(n^2) damage pass before it.
+                Transform::from_xyz(0.0, hd2d::grounded_sprite_y(h / hd2d::SPRITE_QUAD_HEIGHT), 0.0)
+                    .with_scale(Vec3::splat(h / hd2d::SPRITE_QUAD_HEIGHT)),
                 hd2d::Billboard,
             ));
             p.spawn((
@@ -394,7 +410,12 @@ pub(crate) fn spawn_enemy_actor(
             },
             Mesh3d(wa.sprite_quad.clone()),
             MeshMaterial3d(mat),
-            Transform::from_xyz(0.0, h * 0.5, 0.0).with_scale(Vec3::splat(h / 2.2)),
+            // Grounded through the one rule, exactly as the animated path above — this is
+            // the generic single-png fallback and it floated the same 24.8% of its own
+            // height. Two copies of the same wrong arithmetic inside ONE function is the
+            // clearest possible argument for the shared helper.
+            Transform::from_xyz(0.0, hd2d::grounded_sprite_y(h / hd2d::SPRITE_QUAD_HEIGHT), 0.0)
+                .with_scale(Vec3::splat(h / hd2d::SPRITE_QUAD_HEIGHT)),
             hd2d::Billboard,
         ));
         p.spawn((
@@ -3650,6 +3671,52 @@ mod pack_tests {
                  for the centring to centre"
             );
         }
+    }
+
+    /// **EVERY CREATURE BILLBOARD IN THE ARENA IS GROUNDED THROUGH THE ONE RULE.**
+    ///
+    /// `hd2d::grounded_sprite_y` exists because a character billboard draws its WHOLE
+    /// canvas and the art fills only the middle ~50%: centring the quad on half its own
+    /// height leaves the animal that bottom padding clear of the ground. The maths is
+    /// already held by `a_sprite_is_grounded_at_any_scale` — what that test cannot see is
+    /// whether a CALL SITE bothers to ask, and the battle arena did not. Two copies of
+    /// `h * 0.5` inside one function put every creature 0.64 units above its own contact
+    /// shadow, reported as creatures floating in battles.
+    ///
+    /// Heroes hid it: `place_billboards` rewrites `HeroBillboard`'s y from `Look::sprite_y`
+    /// every frame, so only the un-marked billboards — creatures, bosses — kept the value
+    /// they were spawned with. A source read is the only thing that catches the NEXT
+    /// call site, which is the same reason `the_kind_numbers_match_the_shader` reads WGSL.
+    #[test]
+    fn every_creature_billboard_is_grounded_through_the_helper() {
+        let src = include_str!("battle.rs");
+        // Split so the needle does not appear literally in this file and match THIS line —
+        // a source-reading test that finds itself reports a violation it just wrote.
+        let needle = concat!("with_scale(Vec3::splat(h ", "/");
+        let mut sized = 0;
+        for (n, line) in src.lines().enumerate() {
+            // A billboard scaled to its own height — the shape only a creature/boss uses.
+            if !line.contains(needle) {
+                continue;
+            }
+            sized += 1;
+            // Its centre comes from the shared helper, in the same Transform expression.
+            let near = src.lines().skip(n.saturating_sub(2)).take(3).collect::<String>();
+            assert!(
+                near.contains("grounded_sprite_y"),
+                "line {} scales a billboard to its own height without grounding it through \
+                 `hd2d::grounded_sprite_y` — that is the arithmetic that had every creature \
+                 floating over its own shadow:\n  {}",
+                n + 1,
+                line.trim()
+            );
+        }
+        assert!(
+            sized >= 2,
+            "expected the animated and fallback creature billboards to both be found; got \
+             {sized}. If the spawn was restructured, re-point this guard rather than \
+             deleting it."
+        );
     }
 
     /// The condition palette: afflictions read warm-to-sour, boons read cool herb/metal, and

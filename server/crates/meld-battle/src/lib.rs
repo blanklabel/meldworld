@@ -652,6 +652,40 @@ pub fn manifest_unlock_level(kind: &str) -> Option<i32> {
         .map(|d| d.unlock)
 }
 
+/// **HOW A FIGHT OPENS.** Everyone used to start at gauge 0, which made the order of the
+/// first round a pure function of `speed_stat` — the same encounter opened the same way
+/// every single time, and "who goes first" was not a thing that happened, it was a thing
+/// that was computed.
+///
+/// The three arms are one mechanism at three settings, which is why they are an enum and
+/// not two booleans: a fight has exactly one opening, and `Surprise | Ambush` is not a
+/// state that can exist.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Opening {
+    /// Everybody rolls (see [`Battle::roll_initiative`]). The default, and what a fight
+    /// you walked into looks like.
+    #[default]
+    Rolled,
+    /// The PARTY chose the moment — a creature a Psyker had pinned. Every hero opens on a
+    /// full gauge and therefore the first move, which is the whole reason to spend a pin.
+    Surprise,
+    /// The CREATURES chose it: something hunted you down and reached you. The mirror of a
+    /// surprise, and the reason an aggressive creature's aggro radius is worth shrinking.
+    Ambush,
+}
+
+impl Opening {
+    /// The word that rides `battle.started`. A mechanic the player is never told about
+    /// does not exist to them, and an ambush is the one opening that costs them a round.
+    pub fn wire(self) -> &'static str {
+        match self {
+            Opening::Rolled => "rolled",
+            Opening::Surprise => "surprise",
+            Opening::Ambush => "ambush",
+        }
+    }
+}
+
 /// One resolved effect on a target (maps to `battle.action_resolved.effects[]`).
 #[derive(Debug, Clone, PartialEq)]
 pub struct ResolvedEffect {
@@ -942,6 +976,8 @@ pub struct Battle {
     raid_wide_weight_per_party: f64,
     raid_wide_cooldown_per_party: f64,
     min_damage: i32,
+    initiative_max: f64,
+    initiative_advantage_rolls: u32,
     paralysis_break_base: f64,
     paralysis_break_per_wll: f64,
     paralysis_break_cap: f64,
@@ -1291,6 +1327,8 @@ impl Battle {
             raid_wide_weight_per_party: balance.encounters.raid_wide_weight_per_party,
             raid_wide_cooldown_per_party: balance.encounters.raid_wide_cooldown_per_party,
             min_damage: balance.combat_math.min_damage,
+            initiative_max: balance.battle.initiative_max,
+            initiative_advantage_rolls: balance.battle.initiative_advantage_rolls,
             paralysis_break_base: balance.affliction.paralysis_break_base,
             paralysis_break_per_wll: balance.affliction.paralysis_break_per_wll,
             paralysis_break_cap: balance.affliction.paralysis_break_cap,
@@ -3543,11 +3581,65 @@ impl Battle {
     /// creature a Psyker had pinned, so it picked the moment and moves first. Only the
     /// player side is filled: a surprise that also readied the creature would be no
     /// surprise at all.
-    pub fn open_with_full_party_gauges(&mut self) {
+    /// Set every gauge for the way this fight opened.
+    ///
+    /// ⚠️ **NOTHING HERE ARMS THE GAUGE-KNOCK REBUKE.** `staggered` and the
+    /// `gauge_guard_turns` countdown are armed by a gauge being TAKEN, and a fight's
+    /// opening is a gauge being GIVEN — so an ambushed party is not owed a rebuke and an
+    /// ambushing creature has not been interrupted. That distinction is the reason a
+    /// naturally-empty gauge never arms any of it, and the opening is the same case.
+    pub fn open(&mut self, opening: Opening) {
+        match opening {
+            Opening::Rolled => self.roll_initiative(),
+            // A side that chose the moment opens on a full gauge; the other side opens on
+            // nothing, which is what makes the first round one-sided rather than merely
+            // favourable. No roll at all — an ambush that could be out-rolled is not one.
+            Opening::Surprise => self.hand_the_opening(CombatantKind::Player),
+            Opening::Ambush => self.hand_the_opening(CombatantKind::Monster),
+        }
+    }
+
+    /// One side acts first, the other from a standing start.
+    fn hand_the_opening(&mut self, first: CombatantKind) {
         for f in self.fighters.iter_mut() {
-            if f.alive && f.kind == CombatantKind::Player {
-                f.gauge = 1.0;
+            if !f.alive {
+                continue;
             }
+            f.gauge = if f.kind == first { 1.0 } else { 0.0 };
+        }
+    }
+
+    /// **EVERYBODY ROLLS AT THE BELL.**
+    ///
+    /// A roll seeds the gauge rather than ordering a queue, because this is an ATB: the
+    /// gauge IS the turn order, so a head start is the only thing "went first" can mean.
+    /// Capped at `initiative_max` well under a full gauge — a roll decides the order of
+    /// the opening and must never hand out a free turn, which is what an ambush is for.
+    ///
+    /// **ADVANTAGE goes to innate dodge**, kept-best over `initiative_advantage_rolls`.
+    /// That is one rule instead of a list of class keys: the Shifter and the Iron Hull are
+    /// the classes whose base Dex clears `dodge_dex_floor`, a hero wearing the Shifter's
+    /// `runner_dodge` affix earns it too, and a dodge class added later gets it for free
+    /// rather than being left off the list — the mistake this repo has made with a list of
+    /// ability keys twice and a list of classes three times. If you are quick enough to
+    /// dodge a blow you are quick enough to see it coming.
+    ///
+    /// ⚠️ Dex is deliberately NOT a bonus on top. Dex already buys `speed_stat`, so a
+    /// quick hero reaches its turn sooner from the same roll — adding a Dex term here
+    /// would charge the same stat twice and make the roll decorative.
+    pub fn roll_initiative(&mut self) {
+        let cap = self.initiative_max.clamp(0.0, 1.0);
+        let rolls = self.initiative_advantage_rolls.max(1);
+        for i in 0..self.fighters.len() {
+            if !self.fighters[i].alive {
+                continue;
+            }
+            let n = if self.fighters[i].dodge > 0.0 { rolls } else { 1 };
+            let mut best = 0.0f64;
+            for _ in 0..n {
+                best = best.max(self.next_rand_unit());
+            }
+            self.fighters[i].gauge = best * cap;
         }
     }
 
@@ -6011,6 +6103,104 @@ impl Battle {
 
 #[cfg(test)]
 mod tests {
+    /// **A FIGHT NO LONGER OPENS THE SAME WAY TWICE.** Every gauge used to start at 0, so
+    /// the first round was a pure function of `speed_stat` — the same encounter, the same
+    /// opening, forever. A roll makes it a thing that happened.
+    #[test]
+    fn everybody_rolls_at_the_bell_and_two_fights_differ() {
+        let b = Balance::load_default().unwrap();
+        let gauges = |seed: u64| {
+            let mut battle = Battle::new(
+                "b".into(),
+                EncounterClass::Standard,
+                vec![player("h1", 60), player("h2", 60)],
+                vec![monster("m1", 900, 1), monster("m2", 900, 1)],
+                &b,
+                seed,
+            );
+            battle.open(Opening::Rolled);
+            let (mine, foes) = battle.wire_combatants();
+            mine.iter().chain(foes.iter()).map(|c| c.gauge).collect::<Vec<f64>>()
+        };
+        let a = gauges(1);
+        let c = gauges(999);
+        assert_ne!(a, c, "two seeds opened the same fight identically");
+        // Nobody is handed a free turn: a roll decides the ORDER, and an ambush is what
+        // "you act first" is for.
+        for g in a.iter().chain(c.iter()) {
+            assert!(
+                (0.0..=b.battle.initiative_max + 1e-9).contains(g),
+                "an initiative roll granted {g} of a gauge, past the {} cap",
+                b.battle.initiative_max
+            );
+        }
+        // And it is DETERMINISTIC — the engine is a seeded state machine.
+        assert_eq!(gauges(1), a, "the same seed opened the fight differently");
+    }
+
+    /// **ADVANTAGE GOES TO INNATE DODGE**, kept-best over `initiative_advantage_rolls`.
+    /// One rule instead of a list of class keys, so a dodge class added later gets it
+    /// rather than being forgotten — asserted as a DISTRIBUTION, because a single roll
+    /// says nothing about advantage and the values are `[TUNABLE]`.
+    #[test]
+    fn a_dodger_sees_it_coming_first() {
+        let b = Balance::load_default().unwrap();
+        let mean = |dodge: f64| {
+            let mut total = 0.0;
+            for seed in 1..200u64 {
+                let mut mine = vec![player("h1", 60)];
+                mine[0].dodge = dodge;
+                let mut battle = Battle::new(
+                    "b".into(),
+                    EncounterClass::Standard,
+                    mine,
+                    vec![monster("m1", 900, 1)],
+                    &b,
+                    seed,
+                );
+                battle.open(Opening::Rolled);
+                total += battle.wire_combatants().0[0].gauge;
+            }
+            total / 199.0
+        };
+        let plain = mean(0.0);
+        let quick = mean(12.0);
+        assert!(
+            quick > plain * 1.15,
+            "a dodge class opened no quicker than a plodder: {quick:.3} vs {plain:.3}"
+        );
+    }
+
+    /// **AN AMBUSH AND A SURPRISE ARE MIRRORS, AND NEITHER IS A ROLL.** A side that chose
+    /// the moment opens on a full gauge and the other on nothing — an opening that could
+    /// be out-rolled is not an ambush.
+    #[test]
+    fn an_ambush_is_the_mirror_of_a_surprise() {
+        let b = Balance::load_default().unwrap();
+        let open = |o: Opening| {
+            let mut battle = Battle::new(
+                "b".into(),
+                EncounterClass::Standard,
+                vec![player("h1", 60), player("h2", 60)],
+                vec![monster("m1", 900, 1), monster("m2", 900, 1)],
+                &b,
+                7,
+            );
+            battle.open(o);
+            let (m, f) = battle.wire_combatants();
+            (
+                m.iter().map(|c| c.gauge).collect::<Vec<_>>(),
+                f.iter().map(|c| c.gauge).collect::<Vec<_>>(),
+            )
+        };
+        let (heroes, foes) = open(Opening::Surprise);
+        assert!(heroes.iter().all(|g| *g == 1.0), "a surprised party did not act first");
+        assert!(foes.iter().all(|g| *g == 0.0), "a surprised creature kept its gauge");
+        let (heroes, foes) = open(Opening::Ambush);
+        assert!(foes.iter().all(|g| *g == 1.0), "an ambushing creature did not act first");
+        assert!(heroes.iter().all(|g| *g == 0.0), "an ambushed party kept its gauge");
+    }
+
 
     /// Dodging is the SHIFTER's identity, so the Shifter's own blink has to stay the better
     /// evasion — the Explorer's party-wide Safe Passage covers more people for less each.
@@ -7804,7 +7994,7 @@ mod tests {
             bt.fighters.iter().find(|f| f.combatant_id == id).unwrap().gauge
         };
         assert!(gauge(&battle, "p") < 1.0, "a normal fight does not open ready");
-        battle.open_with_full_party_gauges();
+        battle.open(Opening::Surprise);
         assert!(gauge(&battle, "p") >= 1.0, "the party did not get the first move");
         assert!(gauge(&battle, "m1") < 1.0, "the surprise also readied the creature");
     }

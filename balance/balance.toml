@@ -172,6 +172,22 @@ dodge_per_dex = 0.012   # dodge chance gained per Dex above the floor
 dodge_cap = 0.35        # maximum dodge chance
 
 [battle]
+# --- INITIATIVE: who moves first, rolled at the bell ------------------------------
+# Every fight used to open with every gauge at 0, so the order of the first round was
+# a pure function of `speed_stat` — the same fight, the same opening, every time. A roll
+# makes the first round a thing that HAPPENED rather than a thing that was computed.
+#
+# `initiative_max` is the largest share of the gauge a best roll can grant. Deliberately
+# well under 1.0: a roll should decide the ORDER of the opening, never hand somebody a
+# free turn — that is what an ambush and a surprise are for, and they are earned.
+initiative_max = 0.45            # [TUNABLE]
+# ADVANTAGE: roll this many times and keep the best. Granted to a fighter with INNATE
+# dodge — the Shifter, the Iron Hull, and anything wearing the Shifter's `runner_dodge`
+# affix. One rule rather than a list of class keys: if you are quick enough to dodge a
+# blow you are quick enough to see it coming, and a dodge class added later gets it for
+# free instead of being forgotten. [TUNABLE]
+initiative_advantage_rolls = 2
+
 tick_ms = 100                    # CANON §B ATB tick
 # gauge += speed_stat / divisor per 100ms tick; a turn fires at gauge 1.0.
 # 5200 → a speed-110 explorer acts every ~4.7s and the speed-80 stalker every
