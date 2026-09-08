@@ -293,7 +293,12 @@ pub(crate) fn pump_net(
                 // The dive can start from the City (solo, via The Threshold) or
                 // the Lobby (co-op).
                 lobby.in_lobby = false;
-                if matches!(*state.get(), Screen::City | Screen::Lobby) {
+                // …or from `Descending`, the screen that covers the wait while the server
+                // builds the world. Leaving it OUT of this match would strand a diver on the
+                // transition screen forever, which is a worse failure than the one it fixes.
+                if matches!(*state.get(), Screen::City | Screen::Lobby | Screen::Descending)
+                    && !crate::flags::descend_preview_flag()
+                {
                     next.set(Screen::Overworld);
                 }
                 // Arm the first-dive briefing only once the server has actually

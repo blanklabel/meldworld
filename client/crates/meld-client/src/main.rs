@@ -394,6 +394,12 @@ fn main() {
                 .run_if(in_state(Screen::City)),
         )
         // Lobby (co-op)
+        .add_systems(OnEnter(Screen::Descending), screens::descending_ui)
+        .add_systems(OnExit(Screen::Descending), despawn::<screens::DescendRoot>)
+        .add_systems(
+            Update,
+            screens::render_descending.run_if(in_state(Screen::Descending)),
+        )
         .add_systems(OnEnter(Screen::Lobby), lobby_ui)
         .add_systems(OnExit(Screen::Lobby), despawn::<LobbyRoot>)
         .add_systems(
@@ -755,6 +761,13 @@ enum Screen {
     City,
     /// Co-op lobby: create/join by code, ready up, host starts the shared dive.
     Lobby,
+    /// **The world is being made.** Between pressing the dive and `run.started` landing, the
+    /// server generates an entire world — the maze, its ranges, its rivers, the guaranteed
+    /// route — and the player used to sit in the city looking at a one-line status string
+    /// ("stepping through The Threshold…") with no sign that anything was happening. A wait
+    /// nobody explains reads as a hang, and this one is the game doing its most expensive
+    /// work.
+    Descending,
     Overworld,
     Battle,
     Ended,

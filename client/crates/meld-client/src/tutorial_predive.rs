@@ -167,6 +167,7 @@ fn spawn_predive_nav(p: &mut ChildSpawnerCommands, advance_label: &str, advancea
 pub(crate) fn tutorial_predive_buttons(
     mut predive: ResMut<TutorialPreDive>,
     mut session: ResMut<Session>,
+    mut next: ResMut<NextState<Screen>>,
     net: NonSend<NetRes>,
     advance_q: Query<&Interaction, (With<PreDiveAdvanceBtn>, Changed<Interaction>)>,
     skip_q: Query<&Interaction, (With<PreDiveSkipBtn>, Changed<Interaction>)>,
@@ -195,7 +196,8 @@ pub(crate) fn tutorial_predive_buttons(
             Some(PreDiveStage::Picking) if predive.picks.len() == 4 => {
                 session.entered = true;
                 session.coop = false;
-                session.status = "beginning the guided run...".to_string();
+                // The guided dive builds a world too — same screen, same reason.
+                next.set(Screen::Descending);
                 net.0.send(ClientCmd::EnterMaze {
                     party: predive.picks.iter().map(|s| s.to_string()).collect(),
                     tutorial: true,
