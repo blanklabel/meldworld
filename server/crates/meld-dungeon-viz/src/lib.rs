@@ -143,6 +143,12 @@ fn style(kind: &ObjectKind, dir: Option<StairDir>) -> (&'static str, &'static st
         // (a fight holding a door) at ordinary strength.
         ObjectKind::Spawn { .. } => ("M", "#a05fb4"),
         ObjectKind::Chest { .. } => ("$", "#148f77"),
+        // A timer has no cell and is never actually drawn (validation exempts it from
+        // being placed) — but `style` matches the model, so it gets a face rather than an
+        // `unreachable!()` panic sitting in a rendering path.
+        ObjectKind::Timer { .. } => ("⏱", "#5a6a8a"),
+        ObjectKind::Mover { .. } => ("↕", "#8a5a2b"),
+        ObjectKind::Block => ("■", "#7a6a55"),
         ObjectKind::Teleporter { one_way } => match (dir, one_way) {
             (Some(StairDir::Up), _) => ("◇", "#1f9c9c"),
             (_, true) => ("→", "#1f9c9c"),
@@ -177,26 +183,27 @@ fn collect_markers(def: &DungeonDef) -> HashMap<(usize, usize, usize), Marker> {
 /// The legend's rows. Module-scope so `every_marker_kind_is_in_the_legend` can hold it
 /// against [`style`] — a hand-written list beside a `match` is a list the next variant
 /// gets left off, and a marker with no legend row is a symbol the reader cannot decode.
-const ITEMS: [(&str, &str, &str); 17] = [
-        ("IN", "#3aa35a", "entrance"),
-        ("OUT", "#c0392b", "exit"),
-        ("▼", "#2d6cdf", "stairs down"),
-    // The up-stair drew a glyph the legend never explained — found by the guard below the
-    // moment it started walking the real registry instead of a second hand-written list.
+const ITEMS: [(&str, &str, &str); 20] = [
+    ("IN", "#3aa35a", "entrance"),
+    ("OUT", "#c0392b", "exit"),
+    ("▼", "#2d6cdf", "stairs down"),
     ("▲", "#2d6cdf", "stairs up"),
     ("◈", "#1f9c9c", "teleport pad"),
     ("→", "#1f9c9c", "one-way pad (entry)"),
     ("◇", "#1f9c9c", "pad landing"),
-        ("L", "#e08a1e", "lever"),
-        ("P", "#c8a415", "plate"),
-        ("K", "#b8860b", "key"),
-        ("Pd", "#a1785a", "pedestal"),
-        ("T", "#c0392b", "trap"),
-        ("D", "#8a5a2b", "door"),
-        ("G", "#6b4423", "gate"),
-        ("B", "#7b2d8e", "boss"),
-        ("M", "#a05fb4", "room guards"),
-        ("$", "#148f77", "chest"),
+    ("↕", "#8a5a2b", "mover (re-closes)"),
+    ("⏱", "#5a6a8a", "timer"),
+    ("■", "#7a6a55", "pushable block"),
+    ("L", "#e08a1e", "lever"),
+    ("P", "#c8a415", "plate"),
+    ("K", "#b8860b", "key"),
+    ("Pd", "#a1785a", "pedestal"),
+    ("T", "#c0392b", "trap"),
+    ("D", "#8a5a2b", "door"),
+    ("G", "#6b4423", "gate"),
+    ("B", "#7b2d8e", "boss"),
+    ("M", "#a05fb4", "room guards"),
+    ("$", "#148f77", "chest"),
 ];
 
 fn draw_legend(out: &mut String, x: usize, y: usize, w: usize) -> usize {
@@ -248,6 +255,9 @@ mod tests {
             (Chest { when: None, loot: ChestLoot::Rolled }, None),
             (Stair, Some(StairDir::Down)),
             (Stair, Some(StairDir::Up)),
+            (Mover { when: Condition::Ref("x".into()) }, None),
+            (Timer { ticks: 5, started_by: "L1".into() }, None),
+            (Block, None),
             (Teleporter { one_way: false }, Some(StairDir::Down)),
             (Teleporter { one_way: true }, Some(StairDir::Down)),
             (Teleporter { one_way: false }, Some(StairDir::Up)),
@@ -259,12 +269,12 @@ mod tests {
             match k {
                 Lever | Plate { .. } | Key | Pedestal { .. } | Trap { .. } | Door { .. }
                 | Gate { .. } | Boss { .. } | Spawn { .. } | Chest { .. } | Stair
-                | Teleporter { .. } => {}
+                | Block | Mover { .. } | Timer { .. } | Teleporter { .. } => {}
             }
         }
         for want in [
             "Lever", "Plate", "Key", "Pedestal", "Trap", "Door", "Gate", "Boss", "Spawn",
-            "Chest", "Stair", "Teleporter",
+            "Chest", "Stair", "Teleporter", "Block", "Mover", "Timer",
         ] {
             assert!(
                 every.iter().any(|(k, _)| format!("{k:?}").starts_with(want)),

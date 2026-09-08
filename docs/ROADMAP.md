@@ -1667,8 +1667,9 @@ design for this epic: [`proposals/worldgen-wg.md`](proposals/worldgen-wg.md).
       through the same `apply_trap_hit` a stepped-on one uses, so the durability tax and
       the wipe path cannot drift. Autoplay is excluded: it must not gamble the party away.
       `[worldgen] dungeon_disarm_dex_divisor` / `_shifter_bonus`.
-  - [ ] **DG-10 — THE MECHANICS THE FAMOUS DUNGEONS STILL WANT.** The rest of the survey.
-    Each of these blocks a specific, well-known dungeon, which is the argument for it:
+  - [x] **DG-10 — THE MECHANICS THE FAMOUS DUNGEONS WANTED.** ✅ *Complete.* Every item
+    came out of surveying the genre's best-known dungeons against what this engine could
+    express, and each is named for the dungeon it was blocking:
     - [x] **`room_clear` + `spawn` — A ROOM CAN BE HELD BY A FIGHT.** ✅ `room_clear` sat
       in the DG-1 grammar with **no runtime implementation at all** (zero references
       anywhere), and a dungeon could place a `Boss` and nothing else — so "a fight guards
@@ -1693,26 +1694,47 @@ design for this epic: [`proposals/worldgen-wg.md`](proposals/worldgen-wg.md).
       are held by ordinary guards and whose Green Devil's mouth is a `disarmable = false`
       pit with treasure beside it. `the_pool_exercises_the_vocabulary_it_ships` keeps the
       mechanic from rotting back into dead content.
-    - **Pushable blocks** — *the single most common puzzle in the genre*: Zelda top to
-      bottom, Pokémon's Victory Road, Sokoban rooms. Wants a `Block` object, a push rule
-      in movement, and a block HOLDING a momentary plate — which would also make the
-      existing co-op plate gates soloable the way Zelda does it. ⚠️ The cost is the
-      **solvability gate**: with blocks the search must explore block positions
-      (Sokoban is PSPACE-complete), so it needs a bounded push-aware BFS with a node cap,
-      and an over-approximation is NOT acceptable here — a gate that says "solvable" when
-      it isn't seals a party in.
-    - **`mover`** — *Sen's Fortress' rotating staircase, LttP's raising bridges.* ⚠️ **Its
-      substrate was DELETED**: DG-4b specs it as "reuses verticality's
-      `Terrain`/`Connector`/`level`", and `WG-11` stage 5 retired all of that (the grid,
-      the connectors, their wire fields). So this needs a new design, not an
-      implementation — the roadmap entry currently points at nothing.
-    - **`timer`** — *FF7's Temple of the Ancients clock room.* DG-4b, never built.
-    - **Non-monotone barriers** — *the real Water Temple*, where the water level rises
-      AND falls. Everything here assumes a barrier only ever opens; `water_temple` models
-      the three levels as three floors precisely because a monotone barrier can express a
-      level that only ever falls. ⚠️ Toggles would put the committed-space guarantee at
-      risk (the search would have to prove you can always still get OUT), so this is a
-      design decision before it is a feature.
+    - [x] **PUSHABLE BLOCKS** — *the most common puzzle in the genre*: Zelda top to bottom,
+      Pokémon's Victory Road, Sokoban rooms. ✅ `ObjectKind::Block` is impassable, shoves
+      one cell when you walk into it along an axis, and **presses a plate it lands on** —
+      which is a BODY a party does not have to bring, and the reason `water_temple` had to
+      keep its co-op vault off the critical path. ⚠️ **The solvability search treats a
+      block as a WALL, deliberately.** Proving what a push can reach is Sokoban
+      (PSPACE-complete) and a generous approximation would certify a route nobody can
+      walk, in a space with no Town Portal. So the gate proves the dungeon solvable with
+      **nothing moved**, and a block can only ever ADD options. The cost is real and worth
+      stating: a block cannot be load-bearing, and a plate parked behind one will not
+      compile — the first fixture written for it failed on exactly that.
+    - [x] **`mover` — REDESIGNED, BECAUSE ITS SUBSTRATE WAS DELETED.** ✅ DG-4b specced it
+      as "reuses verticality's `Terrain`/`Connector`/`level`" and `WG-11` stage 5 retired
+      all of it, so the entry pointed at nothing. In a GRID, "raise a bridge" and "drop a
+      wall" are the same act — a cell's passability changing — so a mover is a barrier
+      that can CLOSE rather than a piece of moving geometry. It is the only non-monotone
+      thing in the model, which is why it is its own object.
+      ⚠️ Its safety is a hard gate: the validator proves that from EVERY cell a party can
+      reach, an exit is still reachable **with every mover shut**, so no sequence of
+      closings can strand anyone. That is strictly stronger than searching orderings and
+      costs one reverse flood. A party standing ON a closing mover is not sealed in — they
+      step off — so its own cell counts as safe when a neighbour is.
+    - [x] **`not` WAS A SILENT LIE, AND IS NOW A COMPILE ERROR.** ✅ `open` never shrinks
+      for a door or a gate, in the runtime or the search, so `door.when = "not L1"` reads
+      as "shut once the lever is pulled" and does the opposite: opens at the start, stays
+      open forever. Nothing said so, and no content had tried it, which is the only reason
+      it went unnoticed. `not` is refused on a latching barrier and pointed at `mover`.
+    - [x] **`timer`** — *FF7's Temple of the Ancients clock room, Zelda's timed switches.*
+      ✅ `Timer { ticks, started_by }` is active for a window after its trigger fires, and
+      then is not. Driven by the WORLD tick, so a timed door is as replayable as everything
+      else down there. It is the one emitter that leaves the `active` set, so only a MOVER
+      may name it (a latching door told to open "while the clock runs" is the `not` lie
+      again) and it is refused inside a `seq[…]`, whose log is a record of PRESSES. Its
+      safety costs nothing extra: a timer can only act through a mover, and the stranding
+      proof already assumes every mover shut.
+    - [x] **DARKNESS** — *Blackreach, Grimrock.* ✅ A floor may be `dark`, and then the
+      party is only SENT what it can see. ⚠️ A cull, not a shader — the same rule blindness
+      follows, because a client told everything and merely declining to draw it is a client
+      that can be patched. The Explorer's lantern buys RADIUS
+      (`[worldgen] dungeon_dark_sight`, `dungeon_dark_lantern_mult`), which makes the order
+      whose whole fantasy is a lantern the answer to an unlit floor.
     - [x] **`pedestal` IS AN ITEM SINK NOW** — *Resident Evil's crests and emblems.* ✅ It
       was in the grammar as an "item sink" and was a walk-over emitter identical to a
       lever. `Pedestal { wants }` names a `Key` placed in the same dungeon: standing on it
@@ -1737,8 +1759,7 @@ design for this epic: [`proposals/worldgen-wg.md`](proposals/worldgen-wg.md).
       that had just hit them. A corridor was a memory test, and `DG-9`'s disarm was
       Shifter-only in practice. Springing one or reaching for one now marks it found for
       the whole group; a disarmed trap is furniture and stays unmarked.
-    - **Darkness needing a light source** — *Blackreach, Grimrock.* The Explorer's lantern
-      already exists on the overworld; nothing makes a dungeon floor dark.
+
     - **A trap you already SPRUNG should stay visible to the party that found it.** Only
       `shifter_trap_radius` ever puts a trap in the snapshot, so a party with no Runner
       cannot see one — which means `DG-9`'s disarm is, in practice, gated on having a

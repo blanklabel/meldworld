@@ -1517,6 +1517,15 @@ dungeon_trap_damage = 30         # base HP a sprung dungeon trap deals; scaled u
 # so 120 puts a fresh party near the 0.05 floor and a deep one around 0.5 — a coin-flip you
 # think about. The Shifter's bonus is deliberately LARGER than anything levelling buys, or
 # the class whose fantasy this is would just be a slightly better rogue. [TUNABLE]
+# DG-10 — an UNLIT floor. How far the party can see on one, in dungeon CELLS, before the
+# Explorer's lantern is added on top. Enforced as a server-side CULL (the client is never
+# told what the party cannot see, the same rule blindness follows), so this is not a
+# rendering knob: raising it sends more of the floor. [TUNABLE]
+dungeon_dark_sight = 4.5
+# What each point of the Explorer's `explorer_glow` perk is worth down here. The order
+# whose whole fantasy is a lantern should be the answer to a dark floor, and generously —
+# but not so generously that a dark floor stops being dark for everyone else. [TUNABLE]
+dungeon_dark_lantern_mult = 1.6
 dungeon_disarm_dex_divisor = 120.0
 dungeon_disarm_shifter_bonus = 0.35
 # WG-4: crossing this far WEST of the hub (behind spawn) returns you to Last City —

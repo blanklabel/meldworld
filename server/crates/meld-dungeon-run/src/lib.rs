@@ -124,6 +124,13 @@ pub struct DungeonInstance<'a> {
     traps: HashMap<Id, TrapState>,
     /// Chest ids already looted (DG-5/C) — a chest opens once.
     opened_chests: HashSet<Id>,
+    /// When each timer's clock STARTED, in world ticks (DG-10). Absent until its
+    /// `started_by` fires.
+    timer_started: HashMap<Id, u64>,
+    /// Where each pushable block currently STANDS (DG-10). Seeded from its placement and
+    /// then mutable — the only piece of dungeon geometry that moves, which is why it lives
+    /// here rather than being read off the grid like every other cell.
+    blocks: HashMap<Id, (usize, usize, usize)>,
     /// Traps the group has FOUND — by springing one, or by disarming it.
     ///
     /// Only `shifter_trap_radius` ever put a trap in the snapshot, so a party with no
@@ -158,6 +165,13 @@ impl<'a> DungeonInstance<'a> {
                 .collect(),
             opened_chests: HashSet::new(),
             found_traps: HashSet::new(),
+            timer_started: HashMap::new(),
+            blocks: def
+                .placements
+                .iter()
+                .filter(|p| matches!(def.objects.get(&p.id), Some(ObjectKind::Block)))
+                .map(|p| (p.id.clone(), (p.floor, p.x, p.y)))
+                .collect(),
         }
     }
 
@@ -281,6 +295,19 @@ impl<'a> DungeonInstance<'a> {
         let mag = (dx * dx + dy * dy).sqrt();
         let (nx, ny) = if mag > 1.0 { (dx / mag, dy / mag) } else { (dx, dy) };
         let full = Position { x: cur.x + nx * step, y: cur.y + ny * step };
+        // DG-10: walking into a block SHOVES it, and only then do we ask whether the cell
+        // is walkable — so the push and the step into the vacated cell are one move rather
+        // than two, which is what makes shoving feel like walking rather than a verb.
+        // Along the dominant axis only: a diagonal nudge must not slide a block sideways
+        // out from under the player's intent.
+        if let (Some((cx, cy)), Some((tx, ty))) = (cell_of(cur), cell_of(full)) {
+            if (tx, ty) != (cx, cy) && self.block_at(floor, tx, ty).is_some() {
+                let (dxc, dyc) = (tx as i32 - cx as i32, ty as i32 - cy as i32);
+                if dxc == 0 || dyc == 0 {
+                    self.push_block(floor, tx, ty, dxc, dyc);
+                }
+            }
+        }
         let dest = if self.walkable(floor, full) {
             full
         } else {
@@ -326,13 +353,96 @@ impl<'a> DungeonInstance<'a> {
         if cell.tile != Tile::Floor {
             return false;
         }
+        // A block blocks where it STANDS, not where it was authored — it is the one thing
+        // down here that moves, so the grid cell is only its starting point.
+        if self.block_at(floor, x, y).is_some() {
+            return false;
+        }
         match &cell.object {
             None => true,
             Some(id) => match self.def.objects.get(id) {
                 Some(k) if k.is_barrier() => self.open.contains(id),
+                // Its authored cell is ordinary floor once it has been pushed off.
+                Some(ObjectKind::Block) => true,
                 _ => true,
             },
         }
+    }
+
+    /// Advance the dungeon's clocks (DG-10). Driven by the world tick, so it is
+    /// deterministic and replayable — no wall-clock, like everything else in here.
+    ///
+    /// Returns the barriers that changed state, which for a timer is usually a MOVER
+    /// shutting: the one place in this engine where the way through closes on its own.
+    pub fn tick_timers(&mut self, now: u64) -> Vec<Id> {
+        let def = self.def;
+        let mut touched = false;
+        for (id, kind) in &def.objects {
+            let ObjectKind::Timer { ticks, started_by } = kind else { continue };
+            // Start the clock the first tick after its trigger has fired.
+            if !self.timer_started.contains_key(id) {
+                if self.active.contains(started_by) {
+                    self.timer_started.insert(id.clone(), now);
+                } else {
+                    continue;
+                }
+            }
+            let started = self.timer_started[id];
+            let running = now.saturating_sub(started) < *ticks as u64;
+            // ⚠️ A TIMER IS THE ONE THING THAT LEAVES `active`. Everything else in that
+            // set is monotone and the solvability search depends on it — which is exactly
+            // why validation lets only a MOVER name a timer, and keeps one out of `seq`.
+            if running {
+                touched |= self.active.insert(id.clone());
+            } else {
+                touched |= self.active.remove(id);
+            }
+        }
+        if touched {
+            self.reeval()
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// The block standing on `(floor, x, y)`, if any.
+    pub fn block_at(&self, floor: usize, x: usize, y: usize) -> Option<&Id> {
+        self.blocks.iter().find(|(_, at)| **at == (floor, x, y)).map(|(id, _)| id)
+    }
+
+    /// Where every block currently stands — for the driver's snapshot.
+    pub fn block_positions(&self) -> impl Iterator<Item = (&Id, (usize, usize, usize))> {
+        self.blocks.iter().map(|(id, at)| (id, *at))
+    }
+
+    /// Try to shove the block on `(floor, x, y)` one cell along `(dxc, dyc)`.
+    ///
+    /// Returns true if it moved. The cell beyond has to be ordinary walkable floor with no
+    /// other block on it — a block cannot be pushed into a wall, a shut door, or its
+    /// fellow, and there is nobody on the far side to be crushed because a dungeon's
+    /// occupants are all pushing from this one.
+    fn push_block(&mut self, floor: usize, x: usize, y: usize, dxc: i32, dyc: i32) -> bool {
+        let Some(id) = self.block_at(floor, x, y).cloned() else { return false };
+        let (Ok(tx), Ok(ty)) = (usize::try_from(x as i32 + dxc), usize::try_from(y as i32 + dyc))
+        else {
+            return false;
+        };
+        if self.block_at(floor, tx, ty).is_some() {
+            return false;
+        }
+        // `walkable` already answers walls, void, shut barriers and the block itself.
+        if !self.walkable(floor, cell_center(tx, ty)) {
+            return false;
+        }
+        self.blocks.insert(id, (floor, tx, ty));
+        // Landing on a plate PRESSES it — that is the whole reason to shove one, and it is
+        // how a lone player answers a gate authored for three bodies.
+        if let Some(obj) = self.def.grids[floor].at(tx, ty).object.clone() {
+            if matches!(self.def.objects.get(&obj), Some(ObjectKind::Plate { .. })) {
+                self.activate(&obj);
+            }
+        }
+        true
     }
 
     /// The object id on a cell, if any (an emitter to activate, a stair to take…).
@@ -466,13 +576,20 @@ impl<'a> DungeonInstance<'a> {
         let def = self.def; // copy the &ref so the loop doesn't borrow `self`
         let mut opened = Vec::new();
         for (id, kind) in &def.objects {
-            if kind.is_barrier() && !self.open.contains(id) {
-                if let Some(c) = kind.condition() {
-                    if c.eval_ordered(&self.active, Some(&self.activation_order)) {
-                        self.open.insert(id.clone());
-                        opened.push(id.clone());
-                    }
+            if !kind.is_barrier() {
+                continue;
+            }
+            let Some(c) = kind.condition() else { continue };
+            let holds = c.eval_ordered(&self.active, Some(&self.activation_order));
+            if holds {
+                if self.open.insert(id.clone()) {
+                    opened.push(id.clone());
                 }
+            } else if kind.can_close() {
+                // A MOVER is the one barrier that shuts again. Everything else latches —
+                // `open` never shrinks for a door or a gate, which is what the monotone
+                // solvability search assumes, and why `not` is refused on one.
+                self.open.remove(id);
             }
         }
         opened
@@ -1034,6 +1151,122 @@ grid = """
             let p = def.placements.iter().find(|p| p.dir == Some(end)).unwrap();
             assert!(d.stair_dest(p.floor, cell_center(p.x, p.y)).is_some(), "{end:?} works");
         }
+    }
+
+    /// A BLOCK GOES WHERE YOU SHOVE IT, and landing on a plate presses it. That is what
+    /// lets one player answer a gate authored for three bodies — Zelda's trick, and the
+    /// reason `water_temple` had to keep its co-op vault OFF the critical path.
+    ///
+    /// ⚠️ Note the fixture: the plate is reachable on FOOT, round the side. The gate
+    /// treats a block as a wall, so a plate parked behind one is unreachable and the
+    /// dungeon will not compile — which is the authoring rule a block comes with, and
+    /// this test first failed on exactly that.
+    #[test]
+    fn shoving_a_block_onto_a_plate_presses_it() {
+        let src = r#"
+name = "shove"
+biome = "forest"
+[legend]
+o = "block BK1"
+"1" = "plate P1"
+Y = "gate G1"
+[gate.G1]
+when = "P1"
+[[floor]]
+grid = """
+##############
+#>.......Y..<#
+#..o.........#
+#..1.........#
+#............#
+##############
+"""
+"#;
+        let def = meld_dungeon_content::parse_and_validate(src).expect("valid");
+        let mut d = DungeonInstance::new(1, &def, 100, 20);
+        d.enter("p1");
+        assert!(!d.is_open("G1"), "shut before the shove");
+        assert!(d.block_at(0, 3, 2).is_some(), "the block starts above the plate");
+        // East until the player stands in the block's own column, then south into it.
+        while d.occupant("p1").map(|o| o.pos.x as usize) != Some(3) {
+            d.try_move("p1", 1.0, 0.0, 0.25);
+        }
+        for _ in 0..3 {
+            d.try_move("p1", 0.0, 1.0, 0.34);
+        }
+        assert!(d.block_at(0, 3, 2).is_none(), "it did not stay where it started");
+        assert!(d.is_open("G1"), "shoving it onto the plate pressed it and opened the gate");
+    }
+
+    /// A block cannot be pushed into a wall, and the player does not walk through it —
+    /// which is what makes it geometry rather than scenery.
+    #[test]
+    fn a_block_against_a_wall_does_not_budge() {
+        let src = r#"
+name = "stuck"
+biome = "forest"
+[legend]
+o = "block BK1"
+[[floor]]
+grid = """
+###########
+#>.......o#
+#.........#
+#<........#
+###########
+"""
+"#;
+        let def = meld_dungeon_content::parse_and_validate(src).expect("valid");
+        let mut d = DungeonInstance::new(1, &def, 100, 20);
+        d.enter("p1");
+        for _ in 0..30 {
+            d.try_move("p1", 1.0, 0.0, 0.34);
+        }
+        assert!(d.block_at(0, 9, 1).is_some(), "the wall is right behind it; it is jammed");
+        let at = d.occupant("p1").unwrap().pos;
+        assert!(at.x < 9.0, "the player did not pass through it — they are at {at:?}");
+    }
+
+    /// A TIMED DOOR OPENS, AND THEN IT SHUTS. Hit the lever and run — FF7's clock room,
+    /// Zelda's timed switches. The only thing in this engine whose way through closes on
+    /// its own.
+    #[test]
+    fn a_timed_mover_runs_out() {
+        let src = r#"
+name = "clockroom"
+biome = "forest"
+[legend]
+a = "lever L1"
+M = "mover MV1"
+[timer.CLK]
+ticks = 10
+started_by = "L1"
+[mover.MV1]
+when = "CLK"
+[[floor]]
+grid = """
+##############
+#>.a....M....#
+#............#
+#<...........#
+##############
+"""
+"#;
+        let def = meld_dungeon_content::parse_and_validate(src).expect("valid");
+        let mut d = DungeonInstance::new(1, &def, 100, 20);
+        d.enter("p1");
+        d.tick_timers(100);
+        assert!(!d.is_open("MV1"), "the clock has not been started");
+
+        d.activate("L1");
+        d.tick_timers(101);
+        assert!(d.is_open("MV1"), "pulling the lever starts it and the way opens");
+
+        d.tick_timers(105);
+        assert!(d.is_open("MV1"), "still running");
+
+        d.tick_timers(111);
+        assert!(!d.is_open("MV1"), "and then it runs out and shuts again");
     }
 
     // --- entrance placement ---

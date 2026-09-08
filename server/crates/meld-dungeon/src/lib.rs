@@ -352,6 +352,83 @@ grid = """
         );
     }
 
+    /// `not` is refused on a LATCHING barrier. `open` never shrinks for a door or a gate,
+    /// so `when = "not L1"` reads as "shut once the lever is pulled" and does the opposite
+    /// — opens at the start, stays open forever. Nothing said so, and no content had tried
+    /// it, which is the only reason the lie went unnoticed.
+    #[test]
+    fn not_is_refused_on_a_door_and_allowed_on_a_mover() {
+        let door = r#"
+name = "latchlie"
+biome = "forest"
+[legend]
+a = "lever L1"
+X = "door D1"
+[door.D1]
+when = "not L1"
+[[floor]]
+grid = """
+############
+#>.a.X....<#
+############
+"""
+"#;
+        let errs = validate(&parse_str(door).unwrap());
+        assert!(errs.iter().any(|e| matches!(e, DungeonError::BadCondition { .. })), "{errs:?}");
+
+        // The same wiring on a MOVER is exactly what a mover is for — and here the exit is
+        // reachable without ever passing the mover, so nothing can be sealed in.
+        let mover = r#"
+name = "dropwall"
+biome = "forest"
+[legend]
+a = "lever L1"
+M = "mover MV1"
+[mover.MV1]
+when = "not L1"
+[[floor]]
+grid = """
+############
+#>.a.M.....#
+#..........#
+#<.........#
+############
+"""
+"#;
+        assert!(validate(&parse_str(mover).unwrap()).is_empty(), "{:?}", validate(&parse_str(mover).unwrap()));
+    }
+
+    /// A MOVER MUST NOT BE ABLE TO SEAL A PARTY IN. A dungeon takes no Town Portal, so a
+    /// wall dropping behind you is the one thing here that could end a run with no way out
+    /// but dying — and the gate proves the worst case survivable rather than trusting the
+    /// author.
+    #[test]
+    fn a_mover_that_could_seal_the_exit_away_is_refused() {
+        // The ONLY route to the exit runs through the mover, and pulling the lever shuts
+        // it. Stand past it, pull nothing, and you are fine — but the gate refuses the
+        // shape rather than relying on that.
+        let src = r#"
+name = "sealed"
+biome = "forest"
+[legend]
+a = "lever L1"
+M = "mover MV1"
+[mover.MV1]
+when = "not L1"
+[[floor]]
+grid = """
+##############
+#>.a....M...<#
+##############
+"""
+"#;
+        let errs = validate(&parse_str(src).unwrap());
+        assert!(
+            errs.iter().any(|e| matches!(e, DungeonError::Unsolvable { .. })),
+            "a closing mover on the only route out must be refused, got {errs:?}"
+        );
+    }
+
     /// A PEDESTAL is a remote effect: fetch the idol, carry it here, and something opens
     /// SOMEWHERE ELSE. Standing on it empty-handed does nothing, and the search knows it.
     #[test]

@@ -3185,7 +3185,21 @@ impl WorldActor {
         // Shifter trap sense: armed traps within the Runner's radius are revealed.
         // Server-side, because whether a trap is armed is authoritative state and a
         // client that could see every trap by asking would be a client that cheats.
-        let trap_radius = self.perks_for(pid).shifter_trap_radius as f64;
+        let perks = self.perks_for(pid);
+        let trap_radius = perks.shifter_trap_radius as f64;
+        // DG-10: on an UNLIT floor the party is only sent what it can see. A cull rather
+        // than a shader, for the same reason blindness is one — a client told everything
+        // and merely declining to draw it is a client that can be patched. The Explorer's
+        // lantern is the answer to a dark floor, and it buys RADIUS.
+        let dark_sight = self
+            .dungeons
+            .get(&key)
+            .and_then(|d| d.def().grids.get(floor))
+            .filter(|g| g.dark)
+            .map(|_| {
+                self.balance.worldgen.dungeon_dark_sight
+                    + perks.explorer_glow as f64 * self.balance.worldgen.dungeon_dark_lantern_mult
+            });
         let sensed_from = self
             .dungeons
             .get(&key)
@@ -3204,6 +3218,18 @@ impl WorldActor {
                     level: Some(0),
                     ..Default::default()
                 });
+            }
+            // DG-10: pushable blocks, drawn where they STAND rather than where the grid
+            // authored them — they are the one piece of dungeon geometry that moves, so
+            // reading them off the cell would draw yesterday's puzzle.
+            for (id, (bf, bx, by)) in d.block_positions() {
+                if bf == floor {
+                    entities.push(dungeon_prop(
+                        format!("dblock-{id}"),
+                        Position::new(bx as f64 + 0.5, by as f64 + 0.5),
+                        "obstacle:dungeon_block:0.5",
+                    ));
+                }
             }
             if let Some(grid) = def.grids.get(floor) {
                 for y in 0..grid.height {
@@ -3334,6 +3360,28 @@ impl WorldActor {
                     entities.push(dungeon_prop(format!("dexit-{floor}-{n}"), pos, "portal"));
                 }
             }
+        }
+        // The cull, applied last so nothing can be added below it and quietly escape:
+        // one rule over everything this floor emitted. The party's own avatars always
+        // survive it — a player must be able to see their own heroes in the dark.
+        if let Some(sight) = dark_sight {
+            let eyes: Vec<Position> = self
+                .dungeons
+                .get(&key)
+                .map(|d| {
+                    d.occupants()
+                        .filter(|(_, o)| o.floor == floor)
+                        .map(|(_, o)| o.pos)
+                        .collect()
+                })
+                .unwrap_or_default();
+            entities.retain(|e| {
+                e.entity_id == pid
+                    || eyes.iter().any(|from| {
+                        let (dx, dy) = (e.position.x - from.x, e.position.y - from.y);
+                        dx.hypot(dy) <= sight
+                    })
+            });
         }
         out_msg(pid, &wm::Snapshot { server_tick, entities })
     }
@@ -10066,6 +10114,13 @@ impl WorldActor {
     fn tick(&mut self) -> (Vec<Outgoing>, Vec<WorldEffect>) {
         let dt = (self.balance.battle.tick_ms.max(1) as f64) / 1000.0;
         self.tick_count += 1;
+        // DG-10: dungeon clocks advance on the WORLD tick, not wall-clock, so a timed door
+        // is as replayable as everything else down there. Cheap — it is a no-op for a
+        // dungeon with no timers, which is all of them until content asks for one.
+        let now = self.tick_count;
+        for d in self.dungeons.values_mut() {
+            d.tick_timers(now);
+        }
         let mut out = Vec::new();
         let mut effects: Vec<WorldEffect> = std::mem::take(&mut self.pending_effects);
 

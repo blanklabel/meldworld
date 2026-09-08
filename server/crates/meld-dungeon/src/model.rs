@@ -53,6 +53,16 @@ pub struct Grid {
     pub width: usize,
     pub height: usize,
     pub cells: Vec<Cell>,
+    /// A DARK floor (DG-10): you see only what is near you — Blackreach, Grimrock, the
+    /// unlit half of every crypt in the genre.
+    ///
+    /// ⚠️ **It is a CULL, not a shader.** The server stops sending what the party cannot
+    /// see, exactly as blindness drops creatures from `snapshot_msgs`, because a client
+    /// that is told everything and merely declines to draw it is a client that can be
+    /// patched. What the Explorer's lantern buys is a bigger radius, not a different
+    /// renderer.
+    #[serde(default)]
+    pub dark: bool,
 }
 
 impl Grid {
@@ -147,6 +157,57 @@ pub enum ObjectKind {
     /// `Up` on floor `n+1`) share this id; the direction lives on each
     /// [`Placement`], so both endpoints register the same `Stair` kind.
     Stair,
+    /// A TIMER (DG-10) — active for `ticks` after `started_by` fires, then NOT.
+    ///
+    /// FF7's Temple of the Ancients clock room, Zelda's timed switches: hit the lever and
+    /// run, because the way through is only open for so long.
+    ///
+    /// ⚠️ **It is the one emitter that can go INACTIVE**, which is why only a
+    /// [`ObjectKind::Mover`] may name it — a latching door told to open "while the timer
+    /// runs" would open once and stay open, which is the same silent lie `not` tells. It
+    /// is also refused inside a `seq[…]`, because the activation log is a record of
+    /// PRESSES and a timer is not something anybody pressed.
+    ///
+    /// Its safety costs nothing extra: `no_closing_can_strand` already proves the worst
+    /// case with every mover shut, and a timer can only act through one.
+    Timer { ticks: u32, started_by: Id },
+    /// A MOVER (DG-10) — "raise the bridge, drop the wall": a barrier that is open while
+    /// `when` holds and **SHUTS AGAIN when it stops holding**. Sen's Fortress' rotating
+    /// staircase, Link to the Past's raising bridges, the Water Temple's water levels.
+    ///
+    /// ⚠️ **IT IS THE ONLY NON-MONOTONE THING IN THE DUNGEON MODEL, AND THAT IS WHY IT IS
+    /// ITS OWN OBJECT.** A `Door`/`Gate` LATCHES: `open` never shrinks, in the runtime or
+    /// in the search. So `door.when = "not L1"` reads as "shut once the lever is pulled"
+    /// and does nothing of the kind — it opens at the start and stays open forever.
+    /// Validation refuses `not` on a latching barrier for exactly that reason, and points
+    /// at this.
+    ///
+    /// ⚠️ **DG-4b specced `mover` as "reuses verticality's `Terrain`/`Connector`/`level`"
+    /// and `WG-11` stage 5 DELETED all of that.** This is the redesign: in a grid, "raise
+    /// a bridge" and "drop a wall" are the same act — a cell's passability changing — so a
+    /// mover is a barrier that can close rather than a piece of moving geometry.
+    ///
+    /// Safety is a hard gate, not a convention: a dungeon takes no Town Portal, so a wall
+    /// dropping behind you could seal a party in forever. The validator proves that from
+    /// EVERY cell a party can reach, an exit is still reachable **with every mover shut** —
+    /// so no sequence of closings can strand anyone.
+    Mover { when: Condition },
+    /// A PUSHABLE BLOCK (DG-10) — the genre's most-used puzzle piece: Zelda top to
+    /// bottom, Pokémon's Victory Road, a hundred Sokoban rooms.
+    ///
+    /// It is impassable, and walking into it shoves it one cell on if the cell beyond is
+    /// clear. Its real job is to **stand on a momentary plate**, which is a BODY a party
+    /// does not have to bring — the thing that lets a lone player solve a gate authored
+    /// for three, exactly as Zelda does it.
+    ///
+    /// ⚠️ **THE SOLVABILITY SEARCH TREATS A BLOCK AS A WALL, DELIBERATELY.** Proving what
+    /// a push can reach is Sokoban, which is PSPACE-complete; an approximation that
+    /// guessed generously would certify a route nobody can walk, and a dungeon takes no
+    /// Town Portal. So the gate proves the dungeon is solvable **without moving anything**
+    /// — and a block can then only ever ADD options. The cost of that soundness is real
+    /// and worth stating: a block cannot be load-bearing. Never make the only route
+    /// depend on pushing one; the gate will refuse it, and it is right to.
+    Block,
     /// A teleport pad pair (DG-10) — the Wizardry / Etrian Odyssey / Grimrock primitive,
     /// and Silph Co.'s. Two endpoints like a stair, but with the stair's ONE constraint
     /// dropped: the ends may sit anywhere, including the same floor, which is what makes
@@ -162,13 +223,25 @@ pub enum ObjectKind {
 impl ObjectKind {
     /// A movement barrier while closed (needs its condition satisfied to pass).
     pub fn is_barrier(&self) -> bool {
-        matches!(self, ObjectKind::Door { .. } | ObjectKind::Gate { .. })
+        matches!(
+            self,
+            ObjectKind::Door { .. } | ObjectKind::Gate { .. } | ObjectKind::Mover { .. }
+        )
+    }
+
+    /// A barrier that can SHUT again once open. Only [`ObjectKind::Mover`]; everything
+    /// else latches, which is what the monotone `open` set in both the runtime and the
+    /// solvability search assumes.
+    pub fn can_close(&self) -> bool {
+        matches!(self, ObjectKind::Mover { .. })
     }
 
     /// The `when` condition of a barrier / conditional chest, if any.
     pub fn condition(&self) -> Option<&Condition> {
         match self {
-            ObjectKind::Door { when } | ObjectKind::Gate { when } => Some(when),
+            ObjectKind::Door { when } | ObjectKind::Gate { when } | ObjectKind::Mover { when } => {
+                Some(when)
+            }
             ObjectKind::Chest { when, .. } => when.as_ref(),
             _ => None,
         }
