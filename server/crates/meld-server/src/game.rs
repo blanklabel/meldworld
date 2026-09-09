@@ -13177,6 +13177,174 @@ mod dungeon_entrance_tests {
              hand-crafted dungeons are still effectively absent"
         );
     }
+
+    /// AND ONE REACHES THE PLAYER — the entrance is IN THE SNAPSHOT, tagged for the client.
+    ///
+    /// Placement is only half of "does a dungeon spawn". The other half is the wire: a
+    /// `DungeonEntrance` the world rolled has to survive the interest cull and arrive as
+    /// `entrance:<dungeon>:<bodies>`, or it is a door only the server knows about. This
+    /// repo has shipped exactly that failure more than once — `pack:` drove combat for a
+    /// long time without reaching the client, `boss_kind` never left the server, and a
+    /// whole inland-water feature generated correctly behind a WGSL function nothing
+    /// called.
+    ///
+    /// Driven through the real `stream_dungeon_entrances` + `snapshot_msgs` rather than a
+    /// hand-built entity, and with the REAL `dungeon_spawn_chance` — a forced 1.0 would
+    /// prove the plumbing while saying nothing about whether a world produces one. Seed 99
+    /// is pinned because it is measured to place `bleak_falls_barrow` at d1339, 16 units
+    /// off `route_point_at(1339)`, so a party that starts there is standing next to it.
+    #[test]
+    fn a_rolled_entrance_reaches_the_players_snapshot() {
+        let (mut w, rx) = super::shifting_lands_tests::world(1_000_000, 1);
+        std::mem::forget(rx);
+        let b = w.balance.clone();
+        // Seed 99, streamed past the barrow's ring.
+        w.arena = meld_world::Arena::generate(&b, 99, false);
+        for _ in 0..4096 {
+            if w.arena.ensure_frontier(&b, 1400.0).is_empty() {
+                break;
+            }
+        }
+        w.run.add_party(vec![("p1".into(), "p1".into(), CharacterClass::Explorer, "r1".into())]);
+        w.arena.add_avatar("p1".into(), 5.0);
+        // Stand the player where a party starting at this depth lands.
+        let at = w.arena.route_point_at(1339.0);
+        w.arena.avatar_mut("p1").expect("avatar").position = at;
+        // The real streaming pass — entrances are placed inside the world tick.
+        let _ = w.tick();
+        assert!(
+            !w.entrances.is_empty(),
+            "seed 99 streamed to d1339 placed no dungeon entrance at all — the roll or the \
+             biome pool is broken upstream of the wire"
+        );
+        let tags: Vec<String> = w
+            .snapshot_msgs()
+            .iter()
+            .filter(|o| o.player_id == "p1")
+            .filter_map(|o| serde_json::from_str::<serde_json::Value>(o.payload.get()).ok())
+            .flat_map(|v| {
+                v.get("entities")
+                    .and_then(|e| e.as_array())
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|e| {
+                                e.get("avatar_state")?.as_str().map(str::to_string)
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default()
+            })
+            .collect();
+        let entrance = tags.iter().find(|t| t.starts_with("entrance:"));
+        assert!(
+            entrance.is_some(),
+            "the world placed {} entrance(s) and NONE reached the player's snapshot — a door \
+             only the server knows about. Saw {} tags.",
+            w.entrances.len(),
+            tags.len()
+        );
+        let tag = entrance.unwrap();
+        // `entrance:<dungeon>:<bodies>` — the client splits on this to name the dungeon and
+        // warn how many heroes its doors want before a party commits to a space with no
+        // Town Portal.
+        let parts: Vec<&str> = tag.split(':').collect();
+        assert_eq!(parts.len(), 3, "malformed entrance tag {tag:?}");
+        assert!(
+            meld_dungeon_content::by_name(parts[1]).is_some(),
+            "{tag:?} names {:?}, which is not an authored dungeon",
+            parts[1]
+        );
+        assert!(
+            parts[2].parse::<usize>().is_ok_and(|n| (1..=4).contains(&n)),
+            "{tag:?} advertises a body count nobody can muster"
+        );
+    }
+
+    /// A STREAMED WORLD ACTUALLY CONTAINS DUNGEONS, AND THEY STAND ON DRY LAND.
+    ///
+    /// The guard above proves an entrance ANCHORS in its own section's band, which is what
+    /// `#338` broke — but an anchor is not a dungeon. Everything after it can still yield
+    /// nothing: the `dungeon_spawn_chance` roll, and `for_biome` returning an empty pool.
+    /// That second one is not hypothetical — `DG-10` found `ashfall`, `tundra` and
+    /// `amber_wood` shipping with no authored dungeon at all, so every section of three
+    /// biomes rolled and silently hosted none while the whole suite stayed green.
+    ///
+    /// Measured across five seeds out to d1600: 72 of 97 sections clear the doorstep guard
+    /// and **8** host an entrance, against 8.6 expected at a 12% roll. The floor here is
+    /// deliberately far below that — this asks whether the feature EXISTS in a real world,
+    /// not what its rate is, because the rate is a `[TUNABLE]` and a test that pins it
+    /// fails on a balance change rather than on a bug.
+    ///
+    /// ⚠️ It also checks each one is somewhere a player can stand. `entrance_anchor`
+    /// prefers the WEB, whose two endpoints are `nudge_to_walkable` — but `place_entrance`
+    /// interpolates to a point BETWEEN them, and nothing validates that. A web edge runs
+    /// 43-81 world units, so its midpoint can fall in water the endpoints missed.
+    #[test]
+    fn a_streamed_world_holds_dungeons_a_player_can_reach() {
+        let b = Balance::load_default().unwrap();
+        let chance = b.worldgen.dungeon_spawn_chance;
+        let (min_d, pr) = (b.worldgen.dungeon_min_distance, b.worldgen.player_radius);
+        let mut eligible = 0usize;
+        let mut placed: Vec<(&str, String, Position)> = Vec::new();
+        for seed in [1u64, 99, 424242] {
+            let mut arena = meld_world::Arena::generate(&b, seed, false);
+            let mut reach = 0.0f64;
+            while reach < 1600.0 {
+                reach += 60.0;
+                arena.ensure_frontier(&b, reach);
+            }
+            for i in 1..arena.areas.len() {
+                let a = &arena.areas[i];
+                let (lo, hi, portal, biome) = (a.start_x, a.end_x, a.portal, a.biome);
+                let seed_i = meld_world::section_seed(arena.seed, i);
+                let Some((p0, p1)) = entrance_anchor(&arena, lo, hi, portal, seed_i) else {
+                    continue;
+                };
+                if p0.distance_floor() < min_d as i64 {
+                    continue;
+                }
+                eligible += 1;
+                let Some(pl) = meld_dungeon_run::place_entrance(seed_i, biome, chance, p0, p1)
+                else {
+                    continue;
+                };
+                placed.push((pl.dungeon, biome.to_string(), pl.position));
+                // Checked HERE, against the world it was placed in. Hoisting this below
+                // the loop and regenerating one arena to check all of them would compare
+                // seed 99's entrance against seed 1's shoreline and props — a different
+                // world, so the check would be answering about terrain that is not there.
+                let (x, y) = (pl.position.x as f32, pl.position.y as f32);
+                assert!(
+                    arena.shore().is_land(x, y),
+                    "{} ({biome}, seed {seed}) is in the water at ({:.0},{:.0}) — \
+                     `place_entrance` interpolates BETWEEN two nudged web endpoints and \
+                     nothing checks the point it lands on",
+                    pl.dungeon,
+                    pl.position.x,
+                    pl.position.y
+                );
+                let buried = arena.obstacles.iter().any(|o| {
+                    let (dx, dy) = (o.position.x - pl.position.x, o.position.y - pl.position.y);
+                    (dx * dx + dy * dy).sqrt() < o.radius + pr
+                });
+                assert!(
+                    !buried,
+                    "{} ({biome}, seed {seed}) is inside a prop at ({:.0},{:.0})",
+                    pl.dungeon,
+                    pl.position.x,
+                    pl.position.y
+                );
+            }
+        }
+        assert!(
+            eligible >= 20,
+            "only {eligible} sections cleared the doorstep guard — the anchor is broken              upstream of the roll"
+        );
+        assert!(
+            !placed.is_empty(),
+            "{eligible} eligible sections and NOT ONE dungeon entrance across three worlds —              either the roll never fires or every biome's pool is empty (`for_biome`)"
+        );
+    }
 }
 
 #[cfg(test)]
