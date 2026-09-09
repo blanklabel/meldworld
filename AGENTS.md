@@ -1697,6 +1697,13 @@ sequence is `tally → LEVEL UP! → the world` and all of it happens where the 
 The CL-1 **unlock banner deliberately does not come along**: a class unlock is ACCOUNT news
 that merely landed during a fight, and a modal "you may now field a Resonant" over a
 corpse-strewn arena is an interruption rather than a reward.
+⚠️ **AND THE COMMAND MENU CAME BACK BETWEEN THE TWO CARDS.** It is hidden while the tally
+is up, and the tally now goes DOWN before the stat screens play — so Attack/Flee reappeared
+under them, clickable, in a fight that was over. Worse, the stat screen's own footer reads
+`[Space] next hero` and Space is exactly what `menu_keyboard` takes as ATTACK, so mashing
+through the scroll queued an order per hero. `battle::results_showing` is the one predicate
+both the keyboard guard and `rebuild_command_menu`'s `show` ask; hiding the WINDOW is also
+what stops the click path, since with no rows spawned there is no `Interaction` to press.
 ⚠️ **A ROOT WITH NO Z IS A ROOT THE BATTLE HUD DRAWS THROUGH.** Bevy orders separate UI roots
 arbitrarily, and the battle HUD's nameplates are roots — moving the stat block into the arena
 put the enemy names and their HP bars straight through the middle of "HP 52 → 62". Both cards

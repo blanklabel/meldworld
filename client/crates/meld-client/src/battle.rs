@@ -1500,21 +1500,34 @@ pub(crate) fn held_potions(backpack: &RunBackpack, slot: usize) -> Vec<(String, 
 /// 1-4 jump straight to a hero. In a sub-page ↑/↓ move the highlight, ENTER selects,
 /// ESC backs out. A Psyker's root is a short list, navigated like a sub-page.
 /// Autoplay queues each hero's class default.
+/// Is one of the fight's RESULTS cards up — the tally, or a stat screen it handed off to?
+///
+/// One predicate rather than two checks, because both cards mean the same thing about
+/// input: the fight is over, and nothing behind them may be commanded. The tally alone
+/// was enough while it was the only card drawn here — the level-up screen now plays on
+/// this screen too, and its own footer says `[Space] next hero`, which is precisely the
+/// key `menu_keyboard` reads as ATTACK. So mashing through the stat scroll would queue an
+/// order per hero behind it and pop the command window back up between the two cards.
+pub(crate) fn results_showing(report: &LootReport, lu: &LevelUpQueue) -> bool {
+    report.active || lu.current.is_some() || !lu.pending.is_empty()
+}
+
 pub(crate) fn menu_keyboard(
     keys: Res<ButtonInput<KeyCode>>,
     autoplay: Res<Autoplay>,
     tactics: Res<Tactics>,
     backpack: Res<RunBackpack>,
     report: Res<LootReport>,
+    levelup: Res<LevelUpQueue>,
     roster: Res<crate::PartyRoster>,
     mut menu: ResMut<BattleMenu>,
     mut battle: ResMut<BattleData>,
     mut tutorial_run: ResMut<TutorialRun>,
 ) {
-    // The fight is already won/lost/fled — the victory/loot tally is up, so no
-    // keyboard shortcut should be able to queue another action behind it (see
-    // the matching `show` gate in `rebuild_command_menu`).
-    if report.active {
+    // The fight is already won/lost/fled — a results card is up, so no keyboard
+    // shortcut should be able to queue another action behind it (see the matching
+    // `show` gate in `rebuild_command_menu`).
+    if results_showing(&report, &levelup) {
         return;
     }
     // The Items page offers only what the party is carrying (GR-4).
@@ -1739,16 +1752,18 @@ pub(crate) fn rebuild_command_menu(
     tactics: Res<Tactics>,
     backpack: Res<RunBackpack>,
     report: Res<LootReport>,
+    levelup: Res<LevelUpQueue>,
     mut menu: ResMut<BattleMenu>,
     roster: Res<crate::PartyRoster>,
     existing: Query<Entity, With<CommandWindow>>,
     tutorial_run: Res<TutorialRun>,
 ) {
-    // The fight is over the moment the loot report is up (victory/chest tally) —
-    // hidden here rather than left to decay naturally, since `battle.active` isn't
-    // cleared until the NEXT battle starts and would otherwise keep Attack/Flee
-    // live and clickable on top of the summary.
-    let show = battle.active.is_some() && !report.active;
+    // The fight is over the moment a results card is up — hidden here rather than left
+    // to decay naturally, since `battle.active` isn't cleared until the NEXT battle
+    // starts and would otherwise keep Attack/Flee live and clickable on top of the
+    // summary. Hiding the WINDOW is also what stops `menu_click`: with no rows spawned
+    // there is no `Interaction` to press, so the click path needs no guard of its own.
+    let show = battle.active.is_some() && !results_showing(&report, &levelup);
     let level = menu.level;
     let active_id = battle.active.clone().unwrap_or_default();
     // Include the dynamic row count so re-opening a Target page (same level) rebuilds,

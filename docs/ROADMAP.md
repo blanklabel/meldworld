@@ -3668,6 +3668,12 @@ budgeted so the creature sim never threatens the single-owner loop or the server
     CL-1 unlock banner deliberately does NOT come along: a class unlock is ACCOUNT news
     that merely landed during a fight, and a modal "you may now field a Resonant" over a
     corpse-strewn arena is an interruption rather than a reward.
+  - ⚠️ **And the command menu came back between the two cards.** It is hidden while the
+    tally is up, and the tally now goes down before the stat screens play — so Attack/Flee
+    reappeared under them, and the stat screen's own footer reads `[Space] next hero` while
+    Space is what `menu_keyboard` takes as ATTACK. Mashing through the scroll queued an
+    order per hero into a finished fight. `battle::results_showing` is one predicate asked
+    by both the keyboard guard and `rebuild_command_menu`'s `show`.
   - ⚠️ **A root with no z is a root the battle HUD draws through.** Moving the stat block
     into the arena put it among the battle HUD's other UI roots, and Bevy orders separate
     roots arbitrarily — the enemy nameplates and their HP bars came out straight through

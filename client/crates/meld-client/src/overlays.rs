@@ -1423,6 +1423,32 @@ mod the_fight_finishes_on_its_own_screen {
         );
     }
 
+    /// ⚠️ **AND THE COMMAND MENU CAME BACK BETWEEN THE TWO CARDS.** It is hidden while
+    /// the tally is up (`rebuild_command_menu`'s `show`) — and the tally now goes DOWN
+    /// before the stat screens play, so Attack/Flee reappeared under them, clickable. The
+    /// stat screen's own footer reads `[Space] next hero`, and Space is what
+    /// `menu_keyboard` takes as ATTACK: mashing through the scroll would have queued an
+    /// order per hero into a fight that was already over. Both now ask one predicate.
+    #[test]
+    fn nothing_is_commandable_behind_a_results_card() {
+        let quiet = LootReport { active: false, ..victory(false) };
+        assert!(
+            crate::battle::results_showing(
+                &quiet,
+                &LevelUpQueue { pending: [hero("Kestrel")].into(), ..default() }
+            ),
+            "the command menu was live under the stat screen"
+        );
+        assert!(
+            crate::battle::results_showing(&victory(true), &LevelUpQueue::default()),
+            "the tally stopped hiding the menu"
+        );
+        assert!(
+            !crate::battle::results_showing(&quiet, &LevelUpQueue::default()),
+            "a fight with no card up refused to take orders"
+        );
+    }
+
     /// ⚠️ Drawing it on the battle screen put it among the arena's OTHER UI roots, and
     /// Bevy orders separate roots arbitrarily — measured by rendering it, the enemy
     /// nameplates and their HP bars came out straight through the middle of the stat
