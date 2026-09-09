@@ -3149,10 +3149,19 @@ pub(crate) const TRAP_VARIANTS: usize = 4;
 /// blue art already in `PROP_KEYS` had never once been shown and depth looked identical
 /// from the on-ramp to the frontier.
 pub(crate) fn chest_art(tier: i32) -> &'static str {
-    match tier {
-        t if t >= 3 => "item_chest_red",
-        t if t >= 1 => "item_chest_rare",
-        _ => "item_chest_common",
+    // ⚠️ **THE LID IS THE CONTENTS.** `chest:<tier>` carries `Insurance::chest_tier()`, so
+    // these are not depth bands — a blue chest holds an INSURED piece and a red one an
+    // EPHEMERAL piece, which is what `Insurance`'s own variants are named after. Matched
+    // against the shared mapping rather than against hand-written numbers: painting from
+    // one rule while the loot rolled from another is how every shallow chest came out blue
+    // holding nothing insured at all.
+    use meld_proto::enums::Insurance;
+    if tier >= Insurance::Ephemeral.chest_tier() {
+        "item_chest_red"
+    } else if tier >= Insurance::Insured.chest_tier() {
+        "item_chest_rare"
+    } else {
+        "item_chest_common"
     }
 }
 
