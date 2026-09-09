@@ -2698,6 +2698,14 @@ Make time in the field a living, dangerous place worth screenshotting.
       `amber_wood` (a fall WOOD, with its own amber trees authored) drew **11.8 props per
       1000 u² against open grassland's 12.5**: an autumn forest thinner than a meadow.
       Now 17.1, beside forest's 17.3.
+      - ⚠️ **AND THAT NUMBER DID NOT ANSWER THE REPORT, BECAUSE IT IS A RING MEASUREMENT.**
+        17.1 is averaged over whole rings at every depth; a player walks a ROUTE. Measured
+        that way over five seeds, props within 30 units of the route COLLAPSE with depth —
+        **122.7 at d0-200 against 10.0 at d800-1000**, and a wood at d1000 shows 14 in sight
+        where one at d100 shows 154. The fall wood was two faults on top of each other and
+        this bullet only found the first. It is the same trap this stage records twice
+        already (`WG-6`'s trail band, and the guard that agreed with the broken placement
+        because both shared a frame): **a ring measurement cannot see what a player meets.**
       - And the MINIMAZE — stage 9's fourth mazing primitive — shipped **uniform at one rate
         everywhere**, which is the one thing this item's own rule forbids. It is per-biome now:
         a wood threads (0.55), the swamp's water already mazes it (0.22), ranges do ashfall
@@ -2707,6 +2715,28 @@ Make time in the field a living, dangerous place worth screenshotting.
       - `every_biome_says_how_it_mazes` reads the source for both tables, because "somebody
         made a decision here" is not observable from a function's output — a biome deliberately
         set to the fallback VALUE is fine, one that was never asked about is not.
+    - ✅ **THE DEPTH COLLAPSE, AND WHAT ACTUALLY BOUNDS IT.** Reported from play a second time:
+      *"in your tests it's nice dense woods, but when I play the REAL GAME the forests are
+      really sparse."* Two fixes, and one finding worth more than both.
+      - **A finer interior.** `minimaze_grid` 3 → 5. The spanning tree is why 3 was too few: a
+        k x k interior has `2k(k-1)` internal edges and the tree OPENS `k²-1`, so a 3x3 leaves
+        **four walls** — measured, 19 pieces in a cell 125 units across. A 5x5 leaves 16, with
+        the ~25-unit corridors stage 6 says the design wants and a macro cell cannot make.
+      - **A creature steers around a tree.** The mover tried the step, then WORLD-X, then
+        WORLD-Y, then gave up — and its own comment already admitted the result ("grinding
+        against the same tree for the rest of the dive"). World axes have nothing to do with
+        which way a creature FACES, and in cover both are blocked at once. It fans around its
+        heading now (0, ±40°, ±75°, ±110°) and re-rolls its destination immediately when boxed
+        in, rather than pushing at the wall until the leg times out.
+      - ⚠️ **THE DENSITY THIS WORLD CAN HOLD IS SET BY HOW WELL CREATURES WALK, NOT BY WHAT IT
+        COSTS TO DRAW.** `maze_radial_scale_cap` was 24 for two reasons that are both retired —
+        the blocking field is cached and generation is prefetched off the tick — so the real
+        ceiling is the mover: `a_wandering_creature_actually_goes_somewhere` (~1.9 of a 9.0
+        leash means "not moving") read 2.03 at cap 32 and 1.81 at 40 with the old slide, and
+        passes both with the fan, failing at 48. So the cap is 40, one step under the new
+        ceiling, and the deep world roughly doubles: props within 30u of the route go 10.0 →
+        20.3 at d800 and 11.3 → 21.7 at d1000. Creature step **3.1 ms at 46,320 props**,
+        unchanged from 3.1 at 27,600. **Raise the mover before raising the cap again.**
     - ⚠️ **The lesson worth carrying:** the wet share reuses `Basin`, so it INHERITS every rule a
       basin already had — the sea field, peaks, ranges, the trail, creatures, nodes — and it
       shipped inheriting none of them. Each came back as a gate failure. When a new feature
