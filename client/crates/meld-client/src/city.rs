@@ -213,6 +213,21 @@ pub(crate) struct Strolling {
     seed: u32,
 }
 
+/// How far out from the plaza the town is PAVED, and how far inside the beach ramp the
+/// paving stops. `CITY_TIP_REACH` is 34 and `BEACH_BLEND` 14, so a dry margin of 9 keeps
+/// every tile on ground that is flat to within a hand's width — a flat quad laid across
+/// the ramp itself would stair-step down the strand.
+/// The fountain's basin, as a wall. `fantasy-town/fountain-round` at scale 2.2 is about
+/// this wide, and it stands at the origin — the one prop in the plaza every walk crosses.
+const FOUNTAIN_RADIUS: f32 = 2.7;
+
+const PAVED_REACH: f32 = 24.0;
+const PAVED_DRY_MARGIN: f32 = 9.0;
+
+/// `(x, z, half-width)` of each garden left unpaved. South of the plaza, clear of every
+/// district anchor and of where the avatar arrives.
+const CITY_GARDENS: &[(f32, f32, f32)] = &[(-5.5, 16.5, 4.0), (7.5, 13.0, 3.5)];
+
 /// How far from home a stroller ranges, and how fast. Small on purpose: these people are
 /// meant to read as living in the plaza, not crossing it — and a tight radius is also what
 /// keeps them clear of the fountain and the counters without pathfinding around either.
@@ -603,11 +618,30 @@ pub(crate) struct MagitechLight {
     base: f32,
 }
 
+/// **HOW MUCH LIGHT A MONOLITH THROWS, AND HOW FAR.** Sized against the hero's own carried
+/// lamp rather than picked: a fixed street light that a passer-by out-shines is a prop.
+const MONOLITH_LIGHT: f32 = crate::battle::LAMP_STRENGTH * 0.8;
+const MONOLITH_REACH: f32 = crate::battle::LAMP_REACH * 0.85;
+
+/// How much brighter a monolith burns at midnight than at noon. It never goes OUT — the
+/// crystal is lit in daylight too, which is what makes it read as magitech rather than as
+/// a lamp post — so this is a lift on top of its base rather than the whole intensity.
+const MONOLITH_NIGHT_LIFT: f32 = 1.6;
+
 /// Gently pulse the magitech lamps so the hub feels alive (a slow energy breathing).
-pub(crate) fn pulse_magitech(time: Res<Time>, mut q: Query<(&MagitechLight, &mut PointLight)>) {
+pub(crate) fn pulse_magitech(
+    time: Res<Time>,
+    sky: Res<crate::Sky>,
+    mut q: Query<(&MagitechLight, &mut PointLight)>,
+) {
     let t = time.elapsed_secs();
+    // Night lifts them, the same fact `illuminate_players` reads for a carried lamp — one
+    // source for "how dark is it", so the crowd's lamps and the street's monoliths come up
+    // together instead of on two schedules.
+    let night = (1.0 - sky.day).clamp(0.0, 1.0);
+    let lift = 1.0 + night * (MONOLITH_NIGHT_LIFT - 1.0);
     for (m, mut light) in &mut q {
-        light.intensity = m.base * (0.82 + 0.18 * (t * 2.0 + m.phase).sin());
+        light.intensity = m.base * lift * (0.82 + 0.18 * (t * 2.0 + m.phase).sin());
     }
 }
 
@@ -651,32 +685,74 @@ pub(crate) fn city_scene(
     // LAND, not the sea. It used to scale the whole height expression, so at the City's
     // amp of 0 the sea level was multiplied to zero along with the hills.
 
-    // Central plaza (a paved square around the fountain).
-    commands.spawn((
-        CityScene,
-        Mesh3d(meshes.add(road_mesh(13.0, 13.0))),
-        MeshMaterial3d(street_mat.clone()),
-        Transform::from_xyz(0.0, ground_at(0.0, 0.0) + 0.02, 0.0),
-    ));
-    // A spoke from the plaza edge out to each district anchor.
-    for d in CITY_DISTRICTS {
-        let dir = Vec2::new(d.x, d.z);
-        let len = dir.length();
-        if len < 6.0 {
-            continue;
+    // --- THE TOWN IS PAVED, AND THE PAVING IS ITS OWN GEOMETRY. ---
+    //
+    // The ground SHADER draws forest grass under Last City: its city branch has no world
+    // region to ask, so it falls through to `biome_color(0)`. That made the hub a meadow
+    // with a cobbled square in the middle of it — and it is the one surface in the game
+    // that must not move, because a Meld repaints the world's cells and the town is the
+    // place you come back to. Laying the floor as static meshes settles both halves at
+    // once: it is stone because it is the street tile, and it cannot change because
+    // nothing derives it.
+    //
+    // A grid rather than one slab: the shelf ramps down to the waterline over
+    // `BEACH_BLEND`, and a single flat quad across that either floats at the shore or
+    // buries the plaza. Each tile stands on its own `ground_at`, the same rule every prop
+    // and every townsperson here already follows.
+    //
+    // The STRAND is deliberately left bare. Paving stops well inside the ramp, so the
+    // waterfront is sand and the wreck and the dock are standing on a beach rather than
+    // on a road that runs into the sea.
+    let tile = 4.0_f32;
+    let paving = meshes.add(road_mesh(tile, tile));
+    let mut x = -PAVED_REACH;
+    while x <= PAVED_REACH {
+        let mut z = -PAVED_REACH;
+        while z <= PAVED_REACH {
+            if meld_proto::coast::city_sea_depth(x, z) <= -PAVED_DRY_MARGIN
+                && !CITY_GARDENS.iter().any(|(gx, gz, r)| (x - gx).hypot(z - gz) < *r)
+            {
+                commands.spawn((
+                    CityScene,
+                    Mesh3d(paving.clone()),
+                    MeshMaterial3d(street_mat.clone()),
+                    Transform::from_xyz(x, ground_at(x, z) + 0.02, z),
+                ));
+            }
+            z += tile;
         }
-        let n = dir / len;
-        let start = 4.5; // leave the plaza; stop a bit short of the building
-        let seg_len = (len - start - 2.0).max(1.0);
-        let mid = n * (start + seg_len * 0.5);
-        let angle = f32::atan2(-n.y, n.x); // align the quad's local +X with the spoke
+        x += tile;
+    }
+    // …and the gardens, which are the whole reason the paving is a set of tiles that can
+    // be left out rather than a slab. Two of them: a hub of nothing but stone reads as a
+    // car park, and two is enough to say the city grows things without pretending the
+    // Foundry's plaza is a park.
+    let garden_mat = mats.add(StandardMaterial {
+        base_color: Color::srgb(0.82, 0.9, 0.78),
+        base_color_texture: Some(crate::world_render::load_tiled(&assets, "ground/grass_flowers0.png")),
+        perceptual_roughness: 0.97,
+        ..default()
+    });
+    for (gx, gz, r) in CITY_GARDENS {
         commands.spawn((
             CityScene,
-            Mesh3d(meshes.add(road_mesh(seg_len, 3.4))),
-            MeshMaterial3d(street_mat.clone()),
-            Transform::from_xyz(mid.x, ground_at(mid.x, mid.y) + 0.02, mid.y)
-                .with_rotation(Quat::from_rotation_y(angle)),
+            Mesh3d(meshes.add(road_mesh(r * 2.0, r * 2.0))),
+            MeshMaterial3d(garden_mat.clone()),
+            Transform::from_xyz(*gx, ground_at(*gx, *gz) + 0.03, *gz),
         ));
+        for k in 0..4 {
+            let a = std::f32::consts::TAU * (k as f32) / 4.0 + 0.4;
+            let (hx, hz) = (gx + a.cos() * (r - 0.9), gz + a.sin() * (r - 0.9));
+            commands.spawn((
+                CityScene,
+                WorldAssetRoot(
+                    assets.load(GltfAssetLabel::Scene(0).from_asset("models/fantasy-town/hedge.glb")),
+                ),
+                Transform::from_xyz(hx, ground_at(hx, hz), hz)
+                    .with_rotation(Quat::from_rotation_y(a))
+                    .with_scale(Vec3::splat(1.3)),
+            ));
+        }
     }
 
     // Buildings + district props (Kenney CC0 kits). The old fountain-ring lanterns are
@@ -742,6 +818,25 @@ pub(crate) fn city_scene(
                     Transform::from_xyz(0.0, look.sprite_y, 0.0)
                         .with_scale(Vec3::splat(look.sprite_scale)),
                     hd2d::Billboard,
+                    // A townsperson carries a lamp after dark, the same way a hero does —
+                    // literally the same way: `illuminate_players` drives every
+                    // `PlayerGlowSprite`'s emissive and every `NightLamp`'s intensity off
+                    // nightfall, and it already runs in every screen. Without it the crowd
+                    // went black at dusk while the player walked through it lit, which
+                    // reads as the town emptying rather than as night falling.
+                    crate::overworld::PlayerGlowSprite,
+                ));
+                p.spawn((
+                    crate::overworld::NightLamp { strength: crate::battle::LAMP_STRENGTH * 0.45 },
+                    PointLight {
+                        color: Color::srgb(1.0, 0.9, 0.68),
+                        intensity: 0.0,
+                        range: crate::battle::LAMP_REACH * 0.6,
+                        radius: crate::battle::LAMP_RADIUS,
+                        shadow_maps_enabled: false,
+                        ..default()
+                    },
+                    Transform::from_xyz(0.0, 1.1, 0.0),
                 ));
                 p.spawn((
                     Mesh3d(wa.shadow_mesh.clone()),
@@ -810,13 +905,19 @@ pub(crate) fn city_scene(
                     hd2d::Billboard,
                 ));
                 p.spawn((
-                    MagitechLight { phase: i as f32 * 1.7, base: 32_000.0 },
+                    MagitechLight { phase: i as f32 * 1.7, base: MONOLITH_LIGHT },
                     PointLight {
                         color: Color::srgb(0.35, 0.85, 1.15),
-                        intensity: 32_000.0,
-                        range: 15.0,
+                        intensity: MONOLITH_LIGHT,
+                        range: MONOLITH_REACH,
                         radius: 0.5,
-                        shadow_maps_enabled: false,
+                        // ⚠️ **A LIGHT THAT CASTS NO SHADOW DOES NOT LIGHT A STREET, IT
+                        // TINTS ONE.** Every building and every prop in the plaza stayed
+                        // evenly lit from all sides at night, so the monoliths read as
+                        // glowing decorations rather than as the things the town sees by.
+                        // The hero's own carried lamp has cast a real shadow all along;
+                        // these are the fixed lights beside it and must match.
+                        shadow_maps_enabled: true,
                         ..default()
                     },
                     Transform::from_xyz(0.0, h * 0.78, 0.0),
@@ -847,6 +948,22 @@ pub(crate) fn city_scene(
                 Transform::from_xyz(0.0, look.sprite_y, 0.0),
                 hd2d::Billboard,
                 hd2d::HeroBillboard,
+                // The hero carries the same lamp in town it carries in the maze and in the
+                // arena. It had one in both of those and none here, so walking into Last
+                // City after dark put the one character you are looking at into shadow.
+                crate::overworld::PlayerGlowSprite,
+            ));
+            p.spawn((
+                crate::overworld::NightLamp { strength: crate::battle::LAMP_STRENGTH },
+                PointLight {
+                    color: Color::srgb(1.0, 0.93, 0.72),
+                    intensity: 0.0,
+                    range: crate::battle::LAMP_REACH,
+                    radius: crate::battle::LAMP_RADIUS,
+                    shadow_maps_enabled: true,
+                    ..default()
+                },
+                Transform::from_xyz(0.0, 1.4, 0.0),
             ));
             p.spawn((
                 Mesh3d(wa.shadow_mesh.clone()),
@@ -1335,11 +1452,15 @@ pub(crate) fn city_move(
             }
         }
     }
-    // Soft-collide out of each building anchor.
-    for d in CITY_DISTRICTS {
-        let c = Vec2::new(d.x, d.z);
+    // Soft-collide out of each building anchor, and out of the fountain — which is a
+    // stone basin the size of a room and the only prop in the plaza a player is
+    // guaranteed to walk at, since it is what the whole square is arranged around.
+    let solid = CITY_DISTRICTS
+        .iter()
+        .map(|d| (Vec2::new(d.x, d.z), 2.4))
+        .chain(std::iter::once((Vec2::ZERO, FOUNTAIN_RADIUS)));
+    for (c, block) in solid {
         let off = pos - c;
-        let block = 2.4;
         if off.length() < block && off.length() > 1e-4 {
             pos = c + off.normalize() * block;
         }
@@ -4931,3 +5052,52 @@ fn commit_counter_pick(
     pick.clear();
 }
 
+
+#[cfg(test)]
+mod town_floor_tests {
+    use super::*;
+
+    /// Every garden has to be somewhere a player can actually reach and stand: on the dry
+    /// shelf, inside the paved area it is cut out of, and clear of the district anchors —
+    /// which are soft-collided, so a garden overlapping one is a flowerbed you are pushed
+    /// out of before you arrive.
+    #[test]
+    fn a_garden_is_on_dry_land_and_out_of_everybodys_way() {
+        for (gx, gz, r) in CITY_GARDENS {
+            assert!(
+                meld_proto::coast::city_sea_depth(*gx, *gz) <= -PAVED_DRY_MARGIN,
+                "the garden at ({gx}, {gz}) is on the strand or in the sea"
+            );
+            assert!(
+                gx.abs() + r <= PAVED_REACH && gz.abs() + r <= PAVED_REACH,
+                "the garden at ({gx}, {gz}) reaches past the paving it is cut out of"
+            );
+            for d in CITY_DISTRICTS {
+                let gap = (gx - d.x).hypot(gz - d.z);
+                assert!(
+                    gap > r + 2.4,
+                    "the garden at ({gx}, {gz}) overlaps {} ({gap:.1} apart)",
+                    d.label
+                );
+            }
+        }
+    }
+
+    /// The fountain is a wall now, so it must not be a wall the player starts inside of —
+    /// the soft-collide pushes outward from the centre, and a spawn AT the centre has no
+    /// direction to be pushed in.
+    #[test]
+    fn the_fountain_does_not_swallow_the_arrival() {
+        let spawn = Vec2::new(0.0, 11.0);
+        assert!(
+            spawn.length() > FOUNTAIN_RADIUS,
+            "the avatar arrives inside the fountain basin"
+        );
+        for (gx, gz, r) in CITY_GARDENS {
+            assert!(
+                Vec2::new(*gx, *gz).length() > FOUNTAIN_RADIUS + r,
+                "the garden at ({gx}, {gz}) is planted in the fountain"
+            );
+        }
+    }
+}

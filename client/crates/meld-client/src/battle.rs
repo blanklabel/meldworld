@@ -643,12 +643,12 @@ pub(crate) fn highlight_target(
 /// [`animate_battle_actors`] touches `base_color`/`emissive`, so the two compose.
 /// **THE LAMP EVERY BATTLE HERO CARRIES AT NIGHT.** Was the Explorer's alone — see the
 /// spawn site in `spawn_battle_actor` for why it is everyone's now.
-const LAMP_STRENGTH: f32 = 140_000.0;
+pub(crate) const LAMP_STRENGTH: f32 = 140_000.0;
 /// The Explorer's old 34.0 reach, widened by a third: far enough to light the enemy row
 /// from the party's side of the arena.
-const LAMP_REACH: f32 = 34.0 * crate::overworld::LAMP_REACH_MULT;
+pub(crate) const LAMP_REACH: f32 = 34.0 * crate::overworld::LAMP_REACH_MULT;
 /// Source SIZE, not distance — it softens the falloff, and is deliberately unchanged.
-const LAMP_RADIUS: f32 = 0.6;
+pub(crate) const LAMP_RADIUS: f32 = 0.6;
 /// How high the carried lamp hangs. Above head height on purpose — see the spawn site.
 const LAMP_HEIGHT: f32 = 2.7;
 

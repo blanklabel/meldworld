@@ -1264,6 +1264,8 @@ mod report_cost_tests {
     fn a_fight_that_cost_you_a_hero_says_so_on_the_card() {
         let lines = card_lines(LootReport {
             active: true,
+            xp_base: 0,
+            xp_bonuses: Vec::new(),
             title: "VICTORY".to_string(),
             xp: Some(120),
             chits: 4,
@@ -1286,6 +1288,8 @@ mod report_cost_tests {
     fn raising_a_card_never_inherits_the_last_ones_bill() {
         let mut card = LootReport {
             active: true,
+            xp_base: 0,
+            xp_bonuses: Vec::new(),
             title: "VICTORY".to_string(),
             xp: Some(120),
             chits: 9,
@@ -1307,6 +1311,8 @@ mod report_cost_tests {
     fn a_clean_win_carries_no_warning() {
         let lines = card_lines(LootReport {
             active: true,
+            xp_base: 0,
+            xp_bonuses: Vec::new(),
             title: "VICTORY".to_string(),
             xp: Some(120),
             chits: 4,
@@ -1348,6 +1354,8 @@ mod the_fight_finishes_on_its_own_screen {
     fn victory(gate: bool) -> LootReport {
         LootReport {
             active: true,
+            xp_base: 0,
+            xp_bonuses: Vec::new(),
             title: "VICTORY".to_string(),
             xp: Some(120),
             chits: 4,
