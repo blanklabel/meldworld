@@ -773,7 +773,6 @@ pub struct RegionBarrier {
     pub erase_mire: f64,
     pub erase_ashfall: f64,
     pub erase_default: f64,
-    pub dead_end_chest_tier_bonus: i32,
     pub band_half_width: f64,
     pub prop_spacing: f64,
 }

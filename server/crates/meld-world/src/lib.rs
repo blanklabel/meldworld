@@ -2431,8 +2431,6 @@ pub struct Fallen {
 pub struct Chest {
     pub entity_id: Id,
     pub position: Position,
-    /// Loot tier band at this depth (`tier(d) = floor(d/100)`), for loot scaling.
-    pub tier: i32,
     pub opened: bool,
     /// Elevation level the chest sits at (0 = ground). A chest atop a terrace can
     /// only be opened from that level — the reward for climbing the detour.
@@ -2441,6 +2439,21 @@ pub struct Chest {
     /// thing farming must not print, so its regrowth is by far the slowest of the
     /// three (`[world_persist] chest_regrow_ticks`).
     pub opened_tick: u64,
+}
+
+impl Chest {
+    /// **THE TIER THIS CHEST'S REWARD IS ROLLED AT** — and therefore the only number its
+    /// paint may use. `chest:<tier>` on the wire is read by exactly one thing, the
+    /// client's `chest_art` (0 common, 1-2 the rare BLUE chest, 3+ red), while the reward
+    /// comes from `roll_creature_loot` at this chest's own distance.
+    ///
+    /// It is DERIVED rather than stored because a stored copy drifts: the field was set at
+    /// placement from the corridor `x` while the reward reads the position's radial
+    /// distance, so a chest 200 units off the centre line was painted a whole tier below
+    /// what it pays. One expression on one value cannot disagree with itself.
+    pub fn tier(&self, balance: &Balance) -> i32 {
+        Scaling::new(balance).tier(self.position.distance_floor()) as i32
+    }
 }
 
 /// A field workstation a player has raised in the maze (MS-1). A smith who carries
@@ -4547,11 +4560,11 @@ impl Arena {
             // A guaranteed starter treasure chest opposite the node, so a new
             // player sees the loot loop (open → chits/materials) in area 0.
             let starter_chest_x = wg.first_monster_x * 0.5;
+            let starter_chest = Position::new(starter_chest_x, -3.0);
             self.chests.push(Chest {
                 opened_tick: 0,
                 entity_id: format!("chest-{}", self.chests.len()),
-                position: Position::new(starter_chest_x, -3.0),
-                tier: Scaling::new(balance).tier(starter_chest_x.floor() as i64) as i32,
+                position: starter_chest,
                 opened: false,
                 elevation: 0,
             });
@@ -5198,7 +5211,6 @@ impl Arena {
                         opened_tick: 0,
                         entity_id: format!("chest-{}", self.chests.len()),
                         position: summit,
-                        tier: Scaling::new(balance).tier(summit.x.floor() as i64) as i32,
                         opened: false,
                         elevation: 0,
                     });
@@ -5700,16 +5712,23 @@ impl Arena {
                 continue;
             }
             if degree == 1 || (attempt == 23 && degree > 0) {
-                let bonus = if degree == 1 {
-                    balance.region_barrier.dead_end_chest_tier_bonus
-                } else {
-                    0
-                };
+                // ⚠️ **A CHEST'S TIER IS WHAT IS INSIDE IT, AND THE ONLY THING THAT READS
+                // IT IS THE PAINT.** `handle_open_chest` takes `(_tier, distance)` and
+                // rolls the reward off the DISTANCE alone, so a bonus added here never
+                // reaches the loot — it only reaches `chest:<tier>` on the wire, and from
+                // there `chest_art`, which paints tier >= 1 as the rare BLUE chest.
+                //
+                // A dead-end bonus of 1 therefore repainted every shallow chest blue while
+                // changing nothing about its contents: `tier(d) = floor(d/100)` is 0 below
+                // d100, and chests are placed almost exclusively in dead ends (the loop
+                // above retries 23 times looking for one). Reported from play as
+                // "suddenly all chests are blue… blue chests are only for blue (insured)
+                // equipment", which is exactly right — the paint was promising a reward
+                // the roll had no idea it had offered.
                 self.chests.push(Chest {
                     opened_tick: 0,
                     entity_id: format!("chest-{}", self.chests.len()),
                     position: cpos,
-                    tier: Scaling::new(balance).tier(cx.floor() as i64) as i32 + bonus,
                     opened: false,
                     elevation: 0,
                 });
@@ -5726,7 +5745,6 @@ impl Arena {
                     opened_tick: 0,
                     entity_id: format!("chest-{}", self.chests.len()),
                     position: cpos,
-                    tier: Scaling::new(balance).tier(cpos.x.floor() as i64) as i32,
                     opened: false,
                     elevation: 0,
                 });
@@ -5976,7 +5994,6 @@ impl Arena {
                 opened_tick: 0,
                 entity_id: format!("chest-{}", self.chests.len()),
                 position: cpos,
-                tier: Scaling::new(balance).tier(chest_x.floor() as i64) as i32,
                 opened: false,
                 elevation,
             });
@@ -9702,7 +9719,7 @@ impl Arena {
     /// Open the treasure chest `entity_id` if `player` is within interaction range
     /// and it isn't already open. Marks it opened and returns `(tier, distance)`
     /// so the caller can roll its loot via balance.
-    pub fn open_chest(&mut self, player_id: &str, entity_id: &str) -> Option<(i32, i64)> {
+    pub fn open_chest(&mut self, player_id: &str, entity_id: &str) -> Option<i64> {
         let (ppos, pelev) = {
             let a = self.avatar(player_id)?;
             (a.position, a.elevation)
@@ -9718,7 +9735,7 @@ impl Arena {
             return None;
         }
         chest.opened = true;
-        Some((chest.tier, chest.position.distance_floor()))
+        Some(chest.position.distance_floor())
     }
 
     /// Raise a field station where this player stands. Pure: the caller has already
@@ -13921,10 +13938,17 @@ mod tests {
                 if degree == 0 {
                     sealed += 1;
                 }
-                // A dead-end chest is paid the bonus, so its tier runs ahead of the tier its
-                // own distance would give it.
-                let base = Scaling::new(&b).tier(world.x.hypot(world.y).floor() as i64) as i32;
-                if c.tier > base {
+                // ⚠️ **COUNT THE PLACEMENT, NOT THE PAINT.** This asked whether the chest's
+                // `tier` ran ahead of its own distance — which was only ever true because a
+                // dead end added `dead_end_chest_tier_bonus` to that field. That bonus never
+                // reached the reward (`handle_open_chest` discards the tier and rolls off
+                // distance), so it repainted the chest and paid nothing: the test was
+                // measuring the colour of the lid and calling it treasure.
+                //
+                // What is actually true, and worth holding, is that chests are PLACED down
+                // the dead ends. Whether a wrong turn also pays more is unimplemented — see
+                // the note below.
+                if degree == 1 {
                     rich += 1;
                 }
             }
@@ -13943,11 +13967,20 @@ mod tests {
             sealed * 20 <= total,
             "{sealed} of {total} chests sit in cells the graph seals on every side"
         );
-        // …and dead ends have to actually pay, or the maze's wrong turns are pure tax.
+        // …and the wrong turns have to be where the chests ARE, or exploring is pure tax.
         assert!(
             rich * 8 >= total,
-            "only {rich} of {total} chests are down a dead end — the wrong turns pay nothing"
+            "only {rich} of {total} chests are down a dead end — the wrong turns hold nothing"
         );
+        // ⚠️ **A DEAD-END CHEST DOES NOT YET PAY MORE THAN ANY OTHER.** Its reward is rolled
+        // from distance alone, and the one term that claimed otherwise was cosmetic: it
+        // moved `chest:<tier>` on the wire, which is read only by the client's `chest_art`,
+        // so every shallow chest came out painted the rare BLUE while holding exactly what
+        // a common one holds. Reported from play as "suddenly all chests are blue… blue
+        // chests are only for blue (insured) equipment".
+        //
+        // Making the wrong turn genuinely richer means feeding a bonus into the ROLL, where
+        // it can be seen, rather than into the paint, where it can only be believed.
         // ⚠️ **AND THE ROAD STILL PAYS SOMETHING — but it no longer has to pay MOST.**
         // This asserted `rich * 2 <= total`, i.e. the through-route carries the majority, and
         // `WG-11` stage 8 retired that premise rather than breaking it: halving the cells took
@@ -18769,6 +18802,63 @@ mod approach_tests {
         assert_eq!(
             approach_of(&at(0.0, 0.0), (0.0, 0.0), &at(-5.0, 0.0), (0.0, 0.0)),
             Approach::Even,
+        );
+    }
+}
+
+#[cfg(test)]
+mod chest_paint_tests {
+    use super::*;
+
+    /// **A CHEST IS PAINTED BY WHAT IS INSIDE IT.** `Chest::tier` rides the wire as
+    /// `chest:<tier>` and the client's `chest_art` is its ONLY reader — tier 0 is the
+    /// common chest, 1-2 the rare BLUE one, 3+ the red. The reward, meanwhile, is rolled
+    /// from the chest's DISTANCE (`handle_open_chest` discards the tier outright), so any
+    /// term added to this field that the roll does not also see is a chest that promises
+    /// a reward nobody handed it.
+    ///
+    /// That is not hypothetical: a dead-end bonus of +1 tier, on a placement loop that
+    /// hunts dead ends, painted every chest shallower than d100 blue while leaving its
+    /// contents exactly as they were.
+    #[test]
+    fn a_chests_tier_is_the_tier_its_reward_is_rolled_at() {
+        let b = Balance::load_default().unwrap();
+        let sc = Scaling::new(&b);
+        let mut arena = Arena::generate(&b, 424242, false);
+        for _ in 0..6 {
+            arena.ensure_frontier(&b, 900.0);
+        }
+        assert!(!arena.chests.is_empty(), "no chests to check — the census is the test");
+        for c in &arena.chests {
+            let d = c.position.distance_floor();
+            assert_eq!(
+                c.tier(&b),
+                sc.tier(d) as i32,
+                "the chest at d{d} is painted tier {} but its reward is rolled at tier {}",
+                c.tier(&b),
+                sc.tier(d),
+            );
+        }
+    }
+
+    /// And the shallow end stays BROWN. The regression was reported as "suddenly all
+    /// chests are blue", so the property worth holding is the one a player actually met:
+    /// nothing above the common chest before the loot tiers begin.
+    #[test]
+    fn the_shallow_end_is_not_painted_rare() {
+        let b = Balance::load_default().unwrap();
+        let mut arena = Arena::generate(&b, 424242, false);
+        arena.ensure_frontier(&b, 300.0);
+        let shallow: Vec<i32> = arena
+            .chests
+            .iter()
+            .filter(|c| c.position.distance_floor() < 100)
+            .map(|c| c.tier(&b))
+            .collect();
+        assert!(!shallow.is_empty(), "no shallow chests generated — nothing was measured");
+        assert!(
+            shallow.iter().all(|t| *t == 0),
+            "a chest shallower than d100 is painted {shallow:?} rather than the common chest"
         );
     }
 }
