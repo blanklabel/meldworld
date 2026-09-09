@@ -378,6 +378,14 @@ pub(crate) fn mock_tally_setup(mut report: ResMut<LootReport>) {
         active: true,
         title: "Extracted".to_string(),
         xp: Some(248),
+        // Seeded so `MELD_TALLY` shows a gain line and the penalty line side by side —
+        // the point of the flag is catching a breakdown that reads wrong.
+        xp_base: 165,
+        xp_bonuses: vec![
+            ("OUTMATCHED".to_string(), 35),
+            ("FLAWLESS".to_string(), 25),
+            ("OUTGROWN".to_string(), -10),
+        ],
         chits: 137,
         items: vec![
             ("bloom_herb".to_string(), 7),

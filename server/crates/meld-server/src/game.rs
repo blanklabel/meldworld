@@ -1157,10 +1157,43 @@ struct BattleSlot {
     /// Overworld position of this fight (the touched creature's spot), so a nearby
     /// teammate can opt in via `run.join_battle`.
     pos: Position,
+    /// player_id -> the total HP its heroes had when the bell rang, and how many bodies
+    /// stood on the far side. Both are facts about HOW the fight was fought that only
+    /// exist while it is running: `hero_hp` is overwritten with the END state before the
+    /// victory award is computed, and the creatures are marked defeated a line later.
+    opened: HashMap<String, OpeningState>,
     /// `Some` for a DG-3b dungeon boss fight — the dungeon key + the boss object id.
     /// Drives the post-battle fixups (victory ⇒ `boss_dead`, defeat ⇒ dungeon
     /// cleanup) in `finish_dungeon_battle`. `None` for every overworld battle.
     dungeon: Option<DungeonBattle>,
+}
+
+/// One party's standing at the moment a fight opened, kept so the tally can say how it
+/// was won rather than only that it was.
+#[derive(Debug, Clone, Default)]
+struct OpeningState {
+    /// Total HP across this player's heroes. A FLAWLESS win is one that ends at the same
+    /// number — not one that ends at full, since heroes carry wounds between fights and a
+    /// party that walked in hurt can still take nothing.
+    hp: i32,
+    /// Heroes this player fielded, against `foes`, for the outnumbered bonus.
+    heroes: usize,
+    foes: usize,
+}
+
+/// How each party stood when the bell rang, read off the battle the moment it is built.
+fn opening_state(
+    battle: &Battle,
+    player_combatants: &HashMap<String, Vec<String>>,
+    foes: usize,
+) -> HashMap<String, OpeningState> {
+    player_combatants
+        .iter()
+        .map(|(pid, cids)| {
+            let hp = cids.iter().filter_map(|c| battle.combatant_hp(c)).sum();
+            (pid.clone(), OpeningState { hp, heroes: cids.len(), foes })
+        })
+        .collect()
 }
 
 /// What a dungeon fight IS — the one description both shapes of it share.
@@ -3908,8 +3941,10 @@ impl WorldActor {
             .iter()
             .filter_map(|&gi| inst.arena.monsters.get(gi).map(|m| m.entity_id.clone()))
             .collect();
+        let battle_ref = battle;
         let slot = BattleSlot {
-            battle,
+            opened: opening_state(&battle_ref, &player_combatants, enemy_members.len()),
+            battle: battle_ref,
             battle_id: battle_id.clone(),
             monster_ids,
             // Built from the SAME list the enemy fighters were, so the two cannot drift.
@@ -4114,8 +4149,10 @@ impl WorldActor {
             // breath is the free-turn case the roll cap exists to prevent.
             meld_battle::Opening::Rolled,
         );
+        let battle_ref = battle;
         let slot = BattleSlot {
-            battle,
+            opened: opening_state(&battle_ref, &player_combatants, 1),
+            battle: battle_ref,
             battle_id: battle_id.clone(),
             monster_ids: vec![],
             // A dungeon boss is built in the battle rather than standing in the arena, so
@@ -11384,6 +11421,40 @@ impl WorldActor {
                     .filter(|r| bp.contains(&r.party_id))
                     .map(|r| (r.player_id.clone(), r.run_level))
                     .collect();
+                // HOW it was won, per party — asked here because `hero_hp` has just been
+                // overwritten with the END state and the creatures are marked defeated a
+                // few lines up, so both facts are gone a moment later.
+                let bonus_mult: HashMap<String, (f64, Vec<wb::XpBonus>)> = inst.battles[bidx]
+                    .opened
+                    .iter()
+                    .map(|(pid, o)| {
+                        let ended_hp: i32 =
+                            hero_hp_snapshot.get(pid).map(|v| v.iter().sum()).unwrap_or(o.hp);
+                        let mut mult = 1.0;
+                        let mut lines = Vec::new();
+                        if o.hp > 0 && ended_hp >= o.hp {
+                            mult += balance.runs.xp_bonus_flawless;
+                            lines.push(wb::XpBonus {
+                                label: "FLAWLESS".to_string(),
+                                pct: (balance.runs.xp_bonus_flawless * 100.0).round() as i32,
+                            });
+                        }
+                        if o.foes > o.heroes && o.heroes > 0 {
+                            mult += balance.runs.xp_bonus_outnumbered;
+                            lines.push(wb::XpBonus {
+                                label: "OUTNUMBERED".to_string(),
+                                pct: (balance.runs.xp_bonus_outnumbered * 100.0).round() as i32,
+                            });
+                        }
+                        (pid.clone(), (mult, lines))
+                    })
+                    .collect();
+                // What each party actually banked, and the shape of it, for the tally.
+                // The message used to report the encounter's RAW pool — before the split
+                // across standing heroes and before the level gap — so the number on the
+                // screen was one nobody received.
+                let mut banked: HashMap<String, (i64, i64, i64, Vec<wb::XpBonus>)> =
+                    HashMap::new();
                 for r in inst.run.runs.iter_mut().filter(|r| bp.contains(&r.party_id)) {
                     let hps = hero_hp_snapshot.get(&r.player_id).cloned().unwrap_or_default();
                     let comp = party_classes_snapshot
@@ -11404,12 +11475,24 @@ impl WorldActor {
                         // Each hero weighs the encounter against ITS OWN level, so the
                         // one that has fallen behind still learns from ground the rest
                         // of the party has outgrown.
-                        let paid = meld_run::xp_after_level_gap(
+                        let gapped = meld_run::xp_after_level_gap(
                             xp_reward,
                             encounter_level,
                             r.hero_level(slot),
                             &balance,
                         );
+                        let fallback = (1.0, Vec::new());
+                        let (mult, lines) = bonus_mult.get(&r.player_id).unwrap_or(&fallback);
+                        let paid = ((gapped as f64) * mult).round() as i64;
+                        {
+                            let share = (standing as i64).max(1);
+                            let e = banked
+                                .entry(r.player_id.clone())
+                                .or_insert_with(|| (0, 0, 0, lines.clone()));
+                            e.0 += xp_reward / share;
+                            e.1 += gapped / share;
+                            e.2 += paid / share;
+                        }
                         let hero_before = r.hero_level(slot);
                         if r.award_hero_xp(slot, standing, size, paid, &balance) > 0 {
                             // THIS hero's own rise, for its own card. A fallen hero never
@@ -11647,13 +11730,32 @@ impl WorldActor {
                             run_gear_snapshot = Some(r.looted_gear.clone());
                         }
                     }
+                    // WHAT THIS PARTY BANKED, and the shape of it. The encounter's raw
+                    // pool is not the award: it is split across the heroes still standing
+                    // and then weighed against each one's own level, so reporting
+                    // `xp_reward` here put a number on the screen nobody received.
+                    let (base, gapped, final_xp, flat) =
+                        banked.get(pid).cloned().unwrap_or((xp_reward, xp_reward, xp_reward, Vec::new()));
+                    let mut bonuses = Vec::new();
+                    if base > 0 {
+                        let pct = (((gapped as f64 / base as f64) - 1.0) * 100.0).round() as i32;
+                        if pct != 0 {
+                            bonuses.push(wb::XpBonus {
+                                label: if pct > 0 { "OUTMATCHED".into() } else { "OUTGROWN".into() },
+                                pct,
+                            });
+                        }
+                    }
+                    bonuses.extend(flat);
                     let ended = wb::Ended {
                         battle_id: battle_id.to_string(),
                         outcome: BattleOutcome::Victory,
                         xp_awards: vec![wb::XpAward {
                             player_id: pid.clone(),
-                            xp: xp_reward,
+                            xp: final_xp,
                             run_level_after: *run_level,
+                            base_xp: base,
+                            bonuses,
                         }],
                         loot: [Some(loot_item.clone()), potion_item.clone()]
                             .into_iter()

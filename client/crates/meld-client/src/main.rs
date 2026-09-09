@@ -2181,6 +2181,10 @@ struct LootReport {
     active: bool,
     title: String,
     xp: Option<i64>,
+    /// The award's breakdown: what the encounter pays flat, then each named multiplier
+    /// as a signed percentage. Empty for a payout that is not a fight (a chest).
+    xp_base: i64,
+    xp_bonuses: Vec<(String, i32)>,
     chits: i64,
     items: Vec<(String, i32)>,
     /// `(name, insurance)` per piece. The WORD travels with the name because this card is
@@ -2219,6 +2223,8 @@ impl LootReport {
             active: true,
             title: title.to_string(),
             xp,
+            xp_base: 0,
+            xp_bonuses: Vec::new(),
             chits,
             items,
             gear,

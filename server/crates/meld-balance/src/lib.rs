@@ -121,6 +121,12 @@ pub struct Runs {
     pub xp_up_knee: i32,
     pub xp_up_per_level_steep: f64,
     pub xp_up_max: f64,
+    /// HOW the fight was won, on top of what was fought. A share of the award, added
+    /// after the level-gap term: `xp_bonus_flawless` for a party that finished without
+    /// losing a single point of HP, `xp_bonus_outnumbered` for one that was outnumbered
+    /// when the bell rang.
+    pub xp_bonus_flawless: f64,
+    pub xp_bonus_outnumbered: f64,
     /// Town Portal item economy (extraction is mostly this item now).
     pub starting_town_portals: i32,
     pub town_portal_drop_chance: f64,

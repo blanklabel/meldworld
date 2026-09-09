@@ -813,6 +813,11 @@ pub enum ServerMsg {
     BattleEnded {
         outcome: String,
         xp: i64,
+        /// What the encounter pays flat, and the signed percentages that took it to `xp`
+        /// (`OUTMATCHED +47`, `FLAWLESS +25`). One number that is merely larger or
+        /// smaller than last time teaches nothing about what to go and do.
+        xp_base: i64,
+        xp_bonuses: Vec<(String, i32)>,
         chits: i64,
         items: Vec<(String, i32)>,
         gear_drops: Vec<(String, meld_proto::enums::Insurance)>,
@@ -3227,12 +3232,15 @@ impl Inner {
                         .and_then(|v| v.as_str().map(String::from))
                         .unwrap_or_else(|| "over".to_string());
                     // Our own XP award, if any (the payload lists every participant).
-                    let xp = e
-                        .xp_awards
-                        .iter()
-                        .find(|a| a.player_id == self.player_id)
-                        .map(|a| a.xp)
-                        .unwrap_or(0);
+                    let mine = e.xp_awards.iter().find(|a| a.player_id == self.player_id);
+                    let xp = mine.map(|a| a.xp).unwrap_or(0);
+                    // The award's SHAPE, not just its size: what the encounter pays flat
+                    // and what each thing about how it was won did to that. A reward the
+                    // player cannot see the shape of is a reward they cannot aim at.
+                    let xp_base = mine.map(|a| a.base_xp).unwrap_or(0);
+                    let xp_bonuses: Vec<(String, i32)> = mine
+                        .map(|a| a.bonuses.iter().map(|b| (b.label.clone(), b.pct)).collect())
+                        .unwrap_or_default();
                     let items = e
                         .loot
                         .into_iter()
@@ -3250,6 +3258,8 @@ impl Inner {
                     self.out.push_back(ServerMsg::BattleEnded {
                         outcome,
                         xp,
+                        xp_base,
+                        xp_bonuses,
                         chits: e.chits_found,
                         items,
                         gear_drops,
