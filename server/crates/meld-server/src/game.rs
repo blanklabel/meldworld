@@ -1185,8 +1185,11 @@ struct OpeningState {
 fn opening_state(
     battle: &Battle,
     player_combatants: &HashMap<String, Vec<String>>,
-    foes: usize,
 ) -> HashMap<String, OpeningState> {
+    // Counted off the FIGHT rather than passed in: a dungeon room spawn fields several
+    // bodies and a boss one, and the two build their slots at different call sites — a
+    // number handed in from each is a number one of them gets wrong.
+    let foes = battle.wire_combatants().1.len();
     player_combatants
         .iter()
         .map(|(pid, cids)| {
@@ -3904,7 +3907,7 @@ impl WorldActor {
             // creature's aggro radius is an order of magnitude wider than touch range,
             // so `hunting` answers yes for nearly every fight in the world and would
             // make every one of them an ambush.
-            let hero = inst.arena.avatar(&toucher);
+            let hero = inst.arena.avatar(toucher);
             match hero.map(|a| {
                 meld_world::approach_of(&a.position, a.facing, &touched.position, touched.facing)
             }) {
@@ -3943,7 +3946,7 @@ impl WorldActor {
             .collect();
         let battle_ref = battle;
         let slot = BattleSlot {
-            opened: opening_state(&battle_ref, &player_combatants, enemy_members.len()),
+            opened: opening_state(&battle_ref, &player_combatants),
             battle: battle_ref,
             battle_id: battle_id.clone(),
             monster_ids,
@@ -4151,7 +4154,7 @@ impl WorldActor {
         );
         let battle_ref = battle;
         let slot = BattleSlot {
-            opened: opening_state(&battle_ref, &player_combatants, 1),
+            opened: opening_state(&battle_ref, &player_combatants),
             battle: battle_ref,
             battle_id: battle_id.clone(),
             monster_ids: vec![],

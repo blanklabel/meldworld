@@ -917,7 +917,12 @@ pub(crate) fn city_scene(
                         // glowing decorations rather than as the things the town sees by.
                         // The hero's own carried lamp has cast a real shadow all along;
                         // these are the fixed lights beside it and must match.
-                        shadow_maps_enabled: true,
+                        //
+                        // Only the PLAZA four, though. A shadow-mapped point light is six
+                        // faces of render, and the street lamps line spokes the camera is
+                        // rarely looking down — so the ones that pay for themselves are the
+                        // four standing where the player actually is.
+                        shadow_maps_enabled: i < 4,
                         ..default()
                     },
                     Transform::from_xyz(0.0, h * 0.78, 0.0),

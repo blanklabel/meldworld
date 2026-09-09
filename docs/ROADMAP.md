@@ -240,6 +240,25 @@ the dive→extract→dive loop. This epic finishes M1–M3.
 
 Right now the party is fixed at dive time; players can't rearrange or save teams.
 
+- [x] **PT-5 — The Drill Yard on the three-column convention, and a visible cursor.**
+  Reported from play as *"the party screen text keeps expanding and retracting"*: the
+  panel was one centred auto-width column, so the whole screen re-measured whenever the
+  detail text changed — which it does on hover, so picking a class moved the classes.
+  - *Shipped:* `glass::columns()` at the standard 1/6 · 1/2 · 1/3 — nav is the party
+    read top-to-bottom, main is the roster, detail is the class on the far right; saved
+    parties along the bottom under all three. The cursor highlight repaints in place, so
+    nothing rebuilds on a click. `glass::caret` is one blinking cursor for every typable
+    box (loadout name, hero rename, both login fields) — a still `_` in a UI with no
+    focus ring is another glyph in the string.
+
+- [x] **PT-6 — Your last party is the default, with its gear.** The composition was
+  already persisted per slot (`heroes.class_key`) and already seeded back, but the seed
+  reads `UnlocksRes` — which arrives over the WEBSOCKET while the hero roster arrives
+  over HTTP. Roster first meant "owns nothing, one slot": every saved class rewritten to
+  Explorer and the party truncated to one hero, once, for the session.
+  - *Shipped:* the seed and the newcomer prompt both wait for BOTH fetches, and a roster
+    recorded before later slots were earned is padded to the width the server fields.
+
 - [x] **PT-1 — Change party rows (front / back row).** Let a player assign each
   hero to a front or back row and swap them, with the row affecting combat
   (melee reach / damage taken / target priority — pick the rule, add its
@@ -3239,6 +3258,18 @@ budgeted so the creature sim never threatens the single-owner loop or the server
 > SC-3 lands (no sim rework). A **wiped region always recovers** via a colonization
 > trickle seeded from the biome table (local extinction possible; global impossible).
 
+
+- [x] **CR-17 — A fight opens on whose BACK it was.** Reported from play: *"every fight
+  starts as an ambush."* True — the opening was read off `MonsterSpawn::hunting`, which
+  is set for any creature with a hero inside its aggro radius, an order of magnitude
+  wider than touch range. So every fight with an aggressive creature was an ambush and
+  the `CR-15` initiative roll never got a turn.
+  - *Shipped:* an avatar and a creature each carry a `facing`, and `approach_of` reads
+    the pair — it came at your back = Ambush, you came at its back = Surprise, near
+    face-on = Rolled. A Psyker's pin still outranks both. The rear arc is deliberately
+    wider than a hemisphere: at 0.0 every encounter is a back-stab one way or the other
+    and `Approach::Even` becomes unreachable.
+
 - [x] **CR-10 — A wandering creature actually goes somewhere.** Reported from play:
   *"creature movement in the overworld makes no sense whatsoever."* The wander
   DESTINATION was re-rolled inside the movement pass on **every tick** — a fresh angle
@@ -4833,6 +4864,48 @@ Small but high-leverage interface work — the parts that must work for **everyo
 regardless of party**. Note the deliberate split from classes: **map/threat
 awareness *in the maze* is a class perk (CL-2), not universal UI.** These items are
 only the things that can't be class-gated.
+
+
+- [x] **UX-7 — The tally says what the fight was worth, and why.** The level-gap XP
+  scaling was already correct and completely invisible, and `battle.ended` reported the
+  encounter's RAW pool — before the split across standing heroes and before the gap — so
+  the number on screen was one nobody received.
+  - *Shipped:* the award now reports what was banked, with `base_xp` and named signed
+    percentages beside it: OUTMATCHED / OUTGROWN for the level axis, plus FLAWLESS (not a
+    point of party HP lost) and OUTNUMBERED. Both new bonuses are `[TUNABLE]` and held by
+    test below the punch-up ceiling — a flawless win is usually a fight you had already
+    outgrown, and a bonus for it that out-earned depth would pay you to farm the shallows.
+
+- [x] **UX-8 — The avatar rubber-bands while the world moves cleanly.** The local player
+  is the only entity that EXTRAPOLATES; everything else renders a tick behind, interpolated
+  between two received samples. Its velocity was a difference of two snapshot positions
+  over the gap between two RECEIPTS, so jitter landed straight on the extrapolated target
+  — and a player who let go of the key kept that velocity for the whole clamp window and
+  glided a stride past themselves before being yanked back.
+  - *Shipped:* the direction comes from `Steer` (exact, and zero the instant the key is
+    released) and only the magnitude is measured, smoothed by an EMA over a clamped dt. It
+    decays to nothing within two ticks when the walk is blocked, so the avatar no longer
+    extrapolates into a tree and gets snapped out of it.
+
+- [x] **UX-9 — A hero you can recognise in the arena, and every hero that acts animates.**
+  Your own party is locked facing the monsters and the battle camera sits behind it, so
+  the world→screen lookup resolved to `north` and every hero rendered as the back of its
+  sprite. Separately, `auto_fire_queued` cleared a hero's ready/queued flags whether or
+  not `fire_order` built anything — and it builds nothing for an aimed order with no live
+  target — so that hero never swung while everyone beside it landed a blow.
+  - *Shipped:* `CharSprite::view_dir` overrides the pose in screen space to a front
+    three-quarter angled inward, separately from `facing` so the lunge and recoil still
+    aim at the defender. An unaimable order is HELD rather than spent, and
+    `drive_battle_action_clips` spends only the clips it actually played.
+
+- [x] **UX-10 — A stone town that stays stone, lit after dark.** The ground shader has no
+  world region to ask inside Last City, so it fell through to forest grass: the hub was a
+  meadow with one cobbled square in it, derived from a table a Meld repaints.
+  - *Shipped:* the dry shelf is paved as static geometry (a grid, not a slab — the shelf
+    ramps to the waterline) with two gardens cut out of it and the strand left bare; the
+    fountain joins the district anchors in the one soft-collide list; and the townsfolk,
+    the city avatar and the monoliths all light at night off `illuminate_players` and the
+    same `Sky`, which they simply were not carrying.
 
 - [ ] **UX-1 — Last City minimap & compass (town-only).** A minimap and compass
   **for Last City itself** so players can navigate the hub — locate the districts
