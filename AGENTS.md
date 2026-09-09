@@ -374,6 +374,21 @@ is what mustering buys.** Scaling the world to the party is what made depth mean
 time a hero was added, and depth is the only difficulty axis this game has. So the early game
 IS easy, and it balances later because you have to walk further to find anything.
 
+⚠️ **AND THE PARTY-SLOT LADDER HAD TO COME DOWN WITH IT.** `encounter_party_scale` had
+been almost exactly CANCELLING the XP split (per-hero rate 0.95x / 1.00x / 1.10x at two /
+three / four heroes); retiring it made the rate 1/n. So a bar asking for N heroes at level L
+costs **N times** the fights one hero needs — and the old ladder raised the level AND the
+count together, so the two multiplied: `3 heroes @L30` was **384** at-level fights in ONE
+dive (levels are dive-scoped) and `4 heroes @L40` was **844**, against 22 for the first bar.
+Worse, they landed on the wrong side of the wall: the fourth slot arrived at level 30 and
+the fight that WANTS four heroes at level 24 — a ladder handing you the answer after the
+exam, which is the "requires what it grants" trap the retired PG-2 hubs fell into. Lowered
+to **2 @L14 / 3 @L18 / 4 @L20** (74 / 165 / 260 fights), which restores roughly the old cost
+and puts a full party in hand before the wall. **As the hero count goes up, the bar level
+must come down** — `every_hero_bar_lands_before_the_wall_it_exists_for` holds the ceiling,
+and the cost side is documented rather than asserted because `meld-proto` has no
+`balance.toml` and must not grow a second copy of the level curve.
+
 **SO WHEN DO YOU REALLY NEED FOUR HEROES? MEASURED: AROUND d300 / LEVEL 24.**
 `party_size_sweep` plays the real encounter the world generates nearest a ring, at the level
 that depth grants, over FIVE worlds per cell — ungeared, no potions, attack-only, so read
@@ -1637,6 +1652,19 @@ than two booleans because `Surprise | Ambush` is not a state a fight can be in:
   ambush. Recomputed rather than latched: a creature that lost interest is not lying in
   wait. **A pin outranks a hunt** — if the party stopped the thing where it stood, the party
   chose the moment whatever that creature wanted a moment ago.
+
+**AND A FIGHT DOES NOT START SWINGING.** Nothing acts and no gauge moves for
+`[battle] open_grace_ms` (2000) — the beat in which the arena appears, the initiative lands,
+and the player reads what is in front of them. Reported from play as *"creatures now attack
+you as soon as a fight starts"*; the roll sharpened it rather than causing it, since an
+AMBUSH opens on a full gauge and used to resolve on tick 1, before the battle screen had
+finished arriving. ⚠️ It holds **both sides**, so the order the roll decided survives it
+exactly — a grace that paused only the creatures would hand the party the first move for
+free and make an ambush unlosable. ⚠️ And it lives in the ENGINE rather than in the server
+loop, because every driver has to see the pacing the player does: a `qa/` bot or `mcp/`
+harness that skipped it would be measuring a different game. It cost seven existing engine
+tests, which counted ticks from the bell — `Battle::skip_opening` is test-only and
+deliberately private.
 
 ⚠️ **NOTHING IN AN OPENING ARMS THE GAUGE-KNOCK REBUKE.** `staggered` and the
 `gauge_guard_turns` countdown are armed by a gauge being TAKEN; an opening is a gauge being

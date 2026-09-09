@@ -771,6 +771,19 @@ pub(crate) fn lobby_input(
     mut next: ResMut<NextState<Screen>>,
 ) {
     if !lobby.in_lobby {
+        // ⚠️ **ESC GETS YOU OUT BEFORE YOU HAVE JOINED ANYTHING, TOO.** Escape used to be
+        // handled only in the in-lobby branch below, and this one early-`return`s — so a
+        // player who opened co-op by mistake and had not yet typed a code had no way back
+        // at all. Reported from play: "there is no way to leave the lobby for co-op… you
+        // should hit esc to leave if you didn't mean to be there."
+        //
+        // No `LobbyLeave` sent: there is nothing to leave yet, and telling the server you
+        // left a lobby you were never in is a message that means nothing.
+        if keys.just_pressed(KeyCode::Escape) {
+            lobby.code_input.clear();
+            next.set(Screen::City);
+            return;
+        }
         // Not in a lobby yet: create one, or type a code and join.
         if keys.just_pressed(KeyCode::Enter) {
             // ENTER with no code = create; with a code = join.
@@ -827,7 +840,11 @@ pub(crate) fn render_lobby(
     for (btn, mut node) in &mut btns {
         let show = match btn.0 {
             LobbyAct::Create => !lobby.in_lobby,
-            LobbyAct::Ready | LobbyAct::Leave => lobby.in_lobby,
+            LobbyAct::Ready => lobby.in_lobby,
+            // LEAVE is the way out of the SCREEN, not only out of a lobby — it is what a
+            // player who opened co-op by mistake reaches for, and that is before they have
+            // joined anything.
+            LobbyAct::Leave => true,
             LobbyAct::Start => lobby.in_lobby && host_is_me,
         };
         node.display = if show { Display::Flex } else { Display::None };
@@ -835,7 +852,7 @@ pub(crate) fn render_lobby(
     let Ok(mut t) = q.single_mut() else { return };
     if !lobby.in_lobby {
         **t = format!(
-            "Join code: {}_\n\ntype a code + ENTER to join,\nor ENTER (empty) to create a new lobby",
+            "Join code: {}_\n\ntype a code + ENTER to join,\nor ENTER (empty) to create a new lobby\n\n[ESC] back to the city",
             lobby.code_input
         );
         return;
@@ -888,7 +905,10 @@ pub(crate) fn lobby_buttons(
                 }
             }
             LobbyAct::Leave => {
-                net.0.send(ClientCmd::LobbyLeave);
+                // Only tell the server when there is something to leave.
+                if lobby.in_lobby {
+                    net.0.send(ClientCmd::LobbyLeave);
+                }
                 lobby.in_lobby = false;
                 lobby.code_input.clear();
                 next.set(Screen::City);

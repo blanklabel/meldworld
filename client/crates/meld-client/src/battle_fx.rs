@@ -486,18 +486,35 @@ pub(crate) fn advance_screen_wash(
 /// ⚠️ **AND IT DELIBERATELY DOES NOT TOUCH THE MATERIAL.** Colour on a battle sprite has
 /// exactly one owner, `animate_battle_actors` — the night-glow note there records what
 /// two systems writing one material costs: whichever the scheduler ran second decided the
-/// frame, and the party flickered for the whole fight. Scale is a transform, so it can
-/// live here; the rage TINT belongs beside the flash, and that is where it is.
+/// frame, and the party flickered for the whole fight. The rage TINT belongs beside the
+/// flash, and that is where it is.
+///
+/// ⚠️ **AND IT SCALES THE ACTOR ROOT, NOT THE SPRITE QUAD — I made both mistakes the note
+/// above warns about.** Writing the quad's `Transform` walked straight into the same trap
+/// twice over:
+///
+/// 1. **A second writer.** `hd2d::place_billboards` sets `translation.y` and `scale` on
+///    every `HeroBillboard` from `Look`, every frame, and a battle hero's quad IS one. Two
+///    systems, one field, no ordering — so the scale alternated between `sprite_scale`
+///    (1.6) and `1.0 + swell` depending on which ran second. Reported from play as the
+///    characters *bouncing when they don't do anything*.
+/// 2. **Un-grounding.** The quad is centred at `grounded_sprite_y`, so scaling it about its
+///    own centre lifts the feet off the floor and drops them back — a swell on a grounded
+///    billboard is a vertical bob whether anything else writes it or not.
+///
+/// The ROOT is at ground level (`y = 0`) and nothing else writes its scale, so scaling it
+/// grows the body UPWARD FROM ITS FEET and cannot fight anybody. The shadow scales with it,
+/// which is what a bigger body should do.
 pub(crate) fn react_to_conditions(
     time: Res<Time>,
     battle: Res<crate::BattleData>,
     hitfx: Res<crate::HitFx>,
     feel: Res<BattleFeel>,
-    mut q: Query<(&crate::battle::SpriteQuad, &mut Transform)>,
+    mut q: Query<(&crate::battle::BattleActor, &mut Transform)>,
 ) {
     let t = time.elapsed_secs();
     let dt = time.delta_secs();
-    for (s, mut tf) in &mut q {
+    for (actor, mut tf) in &mut q {
         // **YOU CAN SEE THE BIG ONE COMING.** A telegraphed creature ability shouted a
         // bubble and did nothing else to the creature, so the one mechanic in the game
         // built to be REACTED to was a line of text over a sprite that looked exactly like
@@ -506,9 +523,9 @@ pub(crate) fn react_to_conditions(
         // a decision rather than an announcement.
         let charging = hitfx
             .charging()
-            .find(|(id, _)| *id == s.id.as_str())
+            .find(|(id, _)| *id == actor.id.as_str())
             .map(|(_, age)| age);
-        let want = match battle.view(&s.id) {
+        let want = match battle.view(&actor.id) {
             // A DOWNED body does not swell. Its boons are still on the wire — a Barrier
             // does not clear because its holder fell — so without this a corpse keeps
             // breathing at full size beside the fight it lost.

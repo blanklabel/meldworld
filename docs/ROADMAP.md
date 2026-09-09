@@ -3618,6 +3618,36 @@ budgeted so the creature sim never threatens the single-owner loop or the server
     being TAKEN, and an opening is one being GIVEN.
   - ⚠️ **And it rides `battle.started` as a word**, because both openings were otherwise
     invisible — the only tell was gauges starting somewhere different.
+- [x] **CR-16 — Four bugs from the battle work, and the slot ladder that CR-14 broke.**
+  - **The party-slot bars had to come down.** `encounter_party_scale` had been almost
+    exactly cancelling the XP split (per-hero rate 0.95x / 1.00x / 1.10x); retiring it made
+    it 1/n, so a bar asking for N heroes at level L costs **N x** the fights one hero needs.
+    The old ladder raised level AND count together and they multiplied: `3 @L30` was **384**
+    at-level fights in ONE dive (levels are dive-scoped) and `4 @L40` was **844**, against
+    22 for the first bar. And they landed past the wall — the fourth slot at level 30, the
+    fight that wants four heroes at level 24. Now **2 @L14 / 3 @L18 / 4 @L20** (74 / 165 /
+    260 fights). `every_hero_bar_lands_before_the_wall_it_exists_for` holds the ceiling.
+  - **Characters bounced when idle.** `react_to_conditions` wrote the sprite quad's
+    `Transform`, and `hd2d::place_billboards` writes `translation.y` + `scale` on every
+    `HeroBillboard` — the same entity, unordered, so the scale alternated between 1.6 and
+    ~1.05 frame to frame. The exact night-glow bug AGENTS.md warns about, reintroduced.
+    Scaling the quad about its own grounded centre also un-grounds it, so it was a vertical
+    bob twice over. The swell moved to the actor ROOT: it sits at `y = 0`, nothing else
+    writes its scale, and the body grows UPWARD FROM ITS FEET.
+  - **Dead heroes got level-up screens.** `hero_level_ups` mapped over the whole of
+    `party_classes` and gave every hero the RUN's `old`/`new` — so a hero that fell (and
+    earned nothing, since `award_hero_xp` only pays those standing) still got a card, and a
+    hero behind the party read the leader's statline. It takes `(slot, from, to)` per hero
+    that actually rose now, so a card for a hero that did not is unaskable.
+  - **A fight opened swinging.** `[battle] open_grace_ms` (2000): nothing acts and no gauge
+    moves for the first beat. Holds BOTH sides so the initiative order survives — pausing
+    only the creatures would make an ambush unlosable. In the ENGINE, not the server loop,
+    so `qa/` and `mcp/` see the pacing the player does; it cost seven engine tests that
+    counted ticks from the bell (`Battle::skip_opening`, test-only and private).
+  - **No way out of the co-op lobby.** Escape was handled only in the in-lobby branch, and
+    the code-entry branch early-`return`s — so a player who opened co-op by mistake and had
+    not yet typed a code was stuck. Escape now leaves from both, the LEAVE button shows in
+    both, and the screen says `[ESC] back to the city`.
 - [ ] **CR-3 — Living ecology: diets, needs, and breeding.** Creatures have a
   **diet class — carnivore / omnivore / herbivore** — that drives behavior: they
   eat (hunt prey / graze nodes), sleep (tied to FS-5 day/night), and **breed**,

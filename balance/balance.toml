@@ -187,6 +187,19 @@ initiative_max = 0.45            # [TUNABLE]
 # blow you are quick enough to see it coming, and a dodge class added later gets it for
 # free instead of being forgotten. [TUNABLE]
 initiative_advantage_rolls = 2
+# **A FIGHT DOES NOT START SWINGING.** Nothing acts and no gauge fills for this long after
+# the bell — the beat where the arena appears, the initiative lands, and the player reads
+# who is standing in front of them before anything is asked of them.
+#
+# Reported from play: "creatures now attack you as soon as a fight starts... we should give
+# a good 2 seconds of start time". Initiative made it worse rather than causing it — an
+# ambushing creature opens on a FULL gauge and used to act on the very first tick, before
+# the battle screen had finished arriving.
+#
+# It pauses BOTH sides, so the opening order the roll decided is preserved exactly: a grace
+# that only held the creatures would quietly hand the party the first move and make an
+# ambush unlosable. [TUNABLE]
+open_grace_ms = 2000
 
 tick_ms = 100                    # CANON §B ATB tick
 # gauge += speed_stat / divisor per 100ms tick; a turn fires at gauge 1.0.
