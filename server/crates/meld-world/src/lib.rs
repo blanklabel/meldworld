@@ -672,7 +672,42 @@ fn biome_obstacle_mult(wg: &meld_balance::WorldGen, biome: &str) -> f64 {
         "ashfall" => wg.ashfall_obstacle_mult,
         "tundra" => wg.tundra_obstacle_mult,
         "mire" => wg.mire_obstacle_mult,
+        "amber_wood" => wg.amber_wood_obstacle_mult,
+        "nestiphian_cradle" => wg.nestiphian_cradle_obstacle_mult,
+        "seized_engine" => wg.seized_engine_obstacle_mult,
+        "hearth_plains" => wg.hearth_plains_obstacle_mult,
+        "seraphic_oubliette" => wg.seraphic_oubliette_obstacle_mult,
         _ => wg.maze_obstacle_mult,
+    }
+}
+
+/// **HOW OFTEN A CELL OF THIS BIOME IS A MAZE INSIDE** — `WG-11` stage 9's fourth mazing
+/// primitive, and the one that shipped UNIFORM.
+///
+/// `AGENTS.md` states the rule the other three already follow: *"each biome mazes with a
+/// different primitive … which one a biome uses is what makes it feel like a place."* Scattered
+/// fill, ranges and standing water are all per-biome; the minimaze was one rate everywhere, so
+/// a desert threaded as often as a wood.
+///
+/// ⚠️ **A WOOD IS NOT A PROP COUNT.** Reported from play about the fall wood: *"the amount of
+/// trees … doesn't really feel like a forest."* Part of that was a missing density arm (it drew
+/// thinner than open grassland), but raising the count alone makes a denser SCATTER — and a
+/// forest is ground you cannot see across and have to thread, which is an interior. That is
+/// what this buys, and it is why the wood biomes sit far above everything else here.
+fn biome_minimaze_chance(wg: &meld_balance::WorldGen, biome: &str) -> f64 {
+    match biome {
+        "amber_wood" => wg.amber_wood_minimaze_chance,
+        "forest" => wg.forest_minimaze_chance,
+        "nestiphian_cradle" => wg.nestiphian_cradle_minimaze_chance,
+        "tundra" => wg.tundra_minimaze_chance,
+        "mire" => wg.mire_minimaze_chance,
+        "ashfall" => wg.ashfall_minimaze_chance,
+        "seized_engine" => wg.seized_engine_minimaze_chance,
+        "field" => wg.field_minimaze_chance,
+        "hearth_plains" => wg.hearth_plains_minimaze_chance,
+        "desert" => wg.desert_minimaze_chance,
+        "seraphic_oubliette" => wg.seraphic_oubliette_minimaze_chance,
+        _ => wg.minimaze_chance,
     }
 }
 
@@ -7591,7 +7626,7 @@ impl Arena {
     /// construction rather than by a check afterwards.
     fn push_minimaze(&mut self, balance: &Balance, start_x: f64, end_x: f64) {
         let wg = &balance.worldgen;
-        if wg.minimaze_chance <= 0.0 || self.radial_half <= 0.0 || self.tutorial {
+        if self.radial_half <= 0.0 || self.tutorial {
             return;
         }
         let g = self.regions;
@@ -7617,7 +7652,8 @@ impl Arena {
                 let mut rng = Rng(splitmix64(
                     self.seed_base ^ (c.key() as u64).wrapping_mul(0x_D06E_00D0_6E00_D06E),
                 ));
-                if rng.unit() >= wg.minimaze_chance {
+                // Per BIOME — a wood threads, a plain does not. See `biome_minimaze_chance`.
+                if rng.unit() >= biome_minimaze_chance(wg, self.biome_of_cell(c)) {
                     continue;
                 }
                 // ── The interior: a k x k sub-grid in (radius, bearing), and a SPANNING TREE
