@@ -513,7 +513,9 @@ pub(crate) fn city_action_buttons(
                 if !session.entered {
                     session.entered = true;
                     session.coop = false;
-                    session.status = "stepping through The Threshold...".to_string();
+                    // The world is built between here and `run.started`; cover the wait with
+                    // a screen that says so. See `screens::descending_ui`.
+                    next.set(Screen::Descending);
                     net.0.send(ClientCmd::EnterMaze {
                         party: session.party.clone(),
                         tutorial: false,
@@ -898,6 +900,7 @@ pub(crate) fn city_input(
     net: NonSend<NetRes>,
     autoplay: Res<Autoplay>,
     city_idle: Res<CityIdle>,
+    mut next: ResMut<NextState<Screen>>,
     mut session: ResMut<Session>,
     mut city: ResMut<CityUi>,
     mut overlay: ResMut<Overlay>,
@@ -915,7 +918,6 @@ pub(crate) fn city_input(
     // this system returns above (see the note further down). `pick` rides this tuple because
     // the system is at Bevy's 16-param ceiling.
     (tutorial, mut pick): (Res<Tutorial>, ResMut<CounterPick>),
-    mut next: ResMut<NextState<Screen>>,
     mut predive: ResMut<tutorial_predive::TutorialPreDive>,
 ) {
     let (hunts, bounties) = (&mut boards.0, &boards.1);
@@ -960,7 +962,7 @@ pub(crate) fn city_input(
     if dive && !session.entered {
         session.entered = true;
         session.coop = false;
-        session.status = "stepping through The Threshold...".to_string();
+        next.set(Screen::Descending);
         net.0.send(ClientCmd::EnterMaze {
             party: session.party.clone(),
             tutorial: false,

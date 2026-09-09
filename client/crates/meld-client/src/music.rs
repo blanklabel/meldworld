@@ -66,7 +66,11 @@ pub(crate) fn setup_music(mut commands: Commands, assets: Res<AssetServer>) {
 fn track_for(screen: &Screen) -> Track {
     match screen {
         Screen::Join | Screen::Lobby => Track::Party,
-        Screen::City => Track::Town,
+        // The descent keeps the TOWN theme rather than starting the overworld's: the player
+        // has not arrived anywhere yet, and swapping tracks twice in two seconds — town, then
+        // a stub of overworld, then overworld again once the world lands — is worse than
+        // holding one until they are actually through.
+        Screen::City | Screen::Descending => Track::Town,
         Screen::Overworld | Screen::Ended => Track::Overworld,
         Screen::Battle => Track::Battle,
     }

@@ -1553,6 +1553,7 @@ pub(crate) fn sync_overworld_sprites(
     dungeon: Res<world_render::DungeonSceneRes>,
     mut q: Query<(Entity, &WorldEntity, &mut Transform)>,
 ) {
+    let _t = crate::world_render::Spike::new("sync_overworld_sprites");
     let Some(wa) = wa else { return };
     // Every water body in the snapshot, so a pool being spawned can tell whether its rim
     // is really a shore or just the middle of a larger mere (`blob_basin_mesh_merged`).
@@ -1641,10 +1642,49 @@ pub(crate) fn sync_overworld_sprites(
                     tf.translation.x = sx;
                     tf.translation.z = sy;
                 }
-                // Responsive: chase the latest snapshot directly.
+                // ⚠️ **CHASE A TARGET THAT MOVES, OR THE WALK SAWTOOTHS AT 10 Hz.**
+                //
+                // This chased the latest snapshot itself. Snapshots land every 100 ms while the
+                // client draws at 60+, so the target JUMPS once a tick and then holds still: the
+                // avatar sprints at it, arrives, and waits for the next one. Measured per frame
+                // while walking, that is a speed of mean 2.9 u/s with a standard deviation of
+                // 3.6 — over 100% of the mean — with the 5th percentile at **0.00** (frames
+                // where it does not move at all) and the 95th at 10. Reported from play, exactly
+                // as it should have been, as "jitter when walking around".
+                //
+                // The target is the latest snapshot carried forward by its OWN velocity, so it
+                // slides continuously between ticks and the exponential chase settles to a
+                // constant lag rather than a stop-start. Responsiveness is untouched — this adds
+                // no delay, unlike the ~one-tick buffer every OTHER entity renders behind.
+                //
+                // The extrapolation is CLAMPED: past a couple of ticks with no news the
+                // honest thing is to stop, or a player who let go of the stick keeps gliding.
                 None => {
-                    tf.translation.x += (e.x - tf.translation.x) * k;
-                    tf.translation.z += (e.y - tf.translation.z) * k;
+                    let before = (tf.translation.x, tf.translation.z);
+                    // ⚠️ **THE AUTHORITATIVE POSITION IS `e`; THE BUFFER ONLY LENDS A
+                    // VELOCITY.** The first cut of this took the target from the buffered
+                    // sample instead — and the buffer only rolls when the snapshot SEQ changes,
+                    // so any stall in that left the avatar chasing a dead point. Measured, it
+                    // froze outright: 1,800 consecutive frames without moving, which is a far
+                    // worse bug than the jitter it was fixing. `e` is always the newest thing
+                    // the server said; the buffer is consulted for nothing but the slope.
+                    let (tx, ty) = match interp.states.get(&we.0) {
+                        Some((prev, cur)) if cur.t - prev.t > 1e-4 => {
+                            let dt = cur.t - prev.t;
+                            let (vx, vy) = ((cur.x - prev.x) / dt, (cur.y - prev.y) / dt);
+                            let ahead = (now - cur.t).clamp(0.0, OW_EXTRAPOLATE_MAX);
+                            (e.x + vx * ahead, e.y + vy * ahead)
+                        }
+                        _ => (e.x, e.y),
+                    };
+                    tf.translation.x += (tx - tf.translation.x) * k;
+                    tf.translation.z += (ty - tf.translation.z) * k;
+                    crate::world_render::note_step(
+                        (tf.translation.x - before.0).hypot(tf.translation.z - before.1),
+                        time.delta_secs(),
+                        e.x,
+                        e.y,
+                    );
                 }
             }
         } else if let Some((prev, cur)) = interp.states.get(&we.0) {
@@ -2238,6 +2278,7 @@ pub(crate) fn sync_chests(
     mut mats: ResMut<Assets<StandardMaterial>>,
     wa: Res<WorldAssets>,
 ) {
+    let _t = crate::world_render::Spike::new("sync_chests");
     use std::collections::HashSet;
     let mut present: HashSet<String> = HashSet::new();
     for (entity, ce) in &existing {

@@ -31,6 +31,13 @@ pub(crate) fn city_idle_flag() -> bool {
     std::env::var("MELD_CITY").is_ok()
 }
 
+/// **Hold the descent screen** — the transition that covers world generation. It is normally
+/// on screen for as long as the server takes to build a world, which on a warm machine is a
+/// flash, so there is no way to look at it otherwise. `MELD_DESCEND`.
+pub(crate) fn descend_preview_flag() -> bool {
+    std::env::var("MELD_DESCEND").is_ok()
+}
+
 /// Open the Apothecary's shelf on arrival (with `MELD_CITY`) — a stable frame for
 /// screenshotting the shop without walking to the district. Native: `MELD_SHOP`.
 ///

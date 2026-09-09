@@ -2020,6 +2020,95 @@ pub(crate) struct Mote {
 }
 
 /// Deterministic hash of a world cell → 64 bits of stable per-cell randomness.
+/// **WHERE DOES A 3.7-SECOND FRAME GO?** Reported from play as "the overworld chugs", and this
+/// crate had no way to see a frame: every performance number in the repo is SERVER-side.
+/// Measured with `MELD_FPS=1`: forest median 33 ms, p90 425 ms, worst 3,732 ms — so the problem
+/// is HITCHES, not steady load, and an average hides them completely.
+///
+/// Prints only when a scope runs long, and only under the flag, so it costs an env read
+/// otherwise.
+/// Is `MELD_FPS` on? Read once — see `note_step` for why this is not an env lookup per call.
+pub(crate) fn fps_flag() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("MELD_FPS").is_ok_and(|v| v != "0"))
+}
+
+/// **TEMPORARY (`MELD_FPS`): is the local avatar's speed steady, or does it sawtooth?**
+/// Reported from play as jitter while walking. The local player chases the latest snapshot
+/// exponentially, and snapshots arrive at 10 Hz — so the TARGET jumps once a tick and the
+/// avatar decelerates toward a stale one in between. If that is what is happening, per-frame
+/// speed swings with a ~100 ms period even at a rock-steady frame rate.
+pub(crate) fn note_step(dist: f32, dt: f32, sx: f32, sy: f32) {
+    use std::sync::Mutex;
+    // ⚠️ Cached: `std::env::var` ALLOCATES, and this runs once per frame. An instrument that
+    // costs a heap allocation on the hot path is measuring itself.
+    if !fps_flag() {
+        return;
+    }
+    static ACC: Mutex<Vec<f32>> = Mutex::new(Vec::new());
+    if dt <= 0.0 {
+        return;
+    }
+    // ⚠️ Only frames where the avatar is ACTUALLY WALKING, and a count of the rest — autoplay
+    // stands still for long stretches (fighting, channelling), so batches full of zeros drown
+    // the signal, and a batch that never fills cannot be told from an avatar that is frozen.
+    static STOOD: Mutex<u64> = Mutex::new(0);
+    if dist / dt < 0.05 {
+        let mut n = STOOD.lock().unwrap();
+        *n += 1;
+        if (*n).is_multiple_of(600) {
+            // ⚠️ Report the SERVER position too. A frozen render and a player who simply is not
+            // walking look identical from the transform alone, and the difference is which half
+            // of the game to go and look at.
+            static LAST: Mutex<(f32, f32)> = Mutex::new((f32::NAN, f32::NAN));
+            let mut l = LAST.lock().unwrap();
+            let moved = if l.0.is_nan() { f32::NAN } else { (sx - l.0).hypot(sy - l.1) };
+            eprintln!(
+                "WALK (standing {} frames; server at {sx:.1},{sy:.1} — moved {moved:.2} since \
+                 the last report)",
+                *n
+            );
+            *l = (sx, sy);
+        }
+        return;
+    }
+    let mut v = ACC.lock().unwrap();
+    v.push(dist / dt);
+    if v.len() >= 120 {
+        let mut s: Vec<f32> = v.drain(..).collect();
+        s.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let n = s.len();
+        let mean = s.iter().sum::<f32>() / n as f32;
+        let sd = (s.iter().map(|x| (x - mean).powi(2)).sum::<f32>() / n as f32).sqrt();
+        eprintln!(
+            "WALK speed mean {mean:6.2} u/s  sd {sd:5.2} ({:4.1}% of mean)  p05 {:6.2}  p95 {:6.2}",
+            100.0 * sd / mean.max(0.001),
+            s[n / 20],
+            s[n - n / 20 - 1]
+        );
+    }
+}
+
+pub(crate) struct Spike(&'static str, std::time::Instant, bool);
+
+impl Spike {
+    pub(crate) fn new(what: &'static str) -> Self {
+        Spike(what, std::time::Instant::now(), fps_flag())
+    }
+}
+
+impl Drop for Spike {
+    fn drop(&mut self) {
+        if !self.2 {
+            return;
+        }
+        let ms = self.1.elapsed().as_secs_f64() * 1000.0;
+        if ms > 20.0 {
+            eprintln!("SPIKE {:<28} {ms:8.1} ms", self.0);
+        }
+    }
+}
+
 pub(crate) fn detail_hash(c: IVec2) -> u64 {
     let mut x = (c.x as u64)
         .wrapping_mul(0x9E37_79B9_7F4A_7C15)
@@ -2283,6 +2372,8 @@ pub(crate) fn tile_ground_detail(
         Without<Camera3d>,
     >,
 ) {
+    let _t = Spike::new("tile_ground_detail");
+
     let (Ok(cam), Some(kit)) = (cam_q.single(), kit) else { return };
     let focus = ground_focus(cam);
     // Height comes from `terrain_height`, which applies the `terrain_amp` flatten AND the

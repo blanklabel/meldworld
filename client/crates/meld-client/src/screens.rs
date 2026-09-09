@@ -561,6 +561,105 @@ pub(crate) fn join_login_refresh(
 
 // ---------------------------------------------------------------- lobby ----
 
+/// Marker for the descent screen's root, so `despawn::<DescendRoot>` clears it.
+#[derive(Component)]
+pub(crate) struct DescendRoot;
+
+/// The live line — what the world is doing right now, and how long it has taken.
+#[derive(Component)]
+pub(crate) struct DescendStatus;
+
+/// **THE WORLD IS BEING MADE, AND THE PLAYER SHOULD SEE THAT.**
+///
+/// Between the dive and `run.started` the server builds an entire world: the maze is decided,
+/// its ranges raised, its rivers walked downhill, its guaranteed route routed. That is the most
+/// expensive thing this game does. The player used to wait through it in the city, looking at a
+/// one-line status string in the bottom strip — *"stepping through The Threshold…"* — which
+/// does not read as work happening. It reads as a hang.
+///
+/// ⚠️ **THE READOUT IS HONEST, WHICH IS THE WHOLE POINT.** It shows ELAPSED TIME rather than a
+/// progress bar, because the client has no idea how far along generation is — the server sends
+/// nothing until it is finished — and a bar that fills on a timer is a lie that gets found out
+/// the first time a world takes twice as long. A clock that ticks is proof of life; a fake bar
+/// is a promise nobody made.
+pub(crate) fn descending_ui(mut commands: Commands) {
+    commands
+        .spawn((
+            DescendRoot,
+            Node {
+                width: Val::Percent(100.0),
+                height: Val::Percent(100.0),
+                flex_direction: FlexDirection::Column,
+                align_items: AlignItems::Center,
+                justify_content: JustifyContent::Center,
+                row_gap: Val::Px(18.0),
+                ..default()
+            },
+            BackgroundColor(Color::srgba(0.02, 0.03, 0.06, 1.0)),
+        ))
+        .with_children(|p| {
+            p.spawn((
+                Text::new("THE THRESHOLD"),
+                TextFont { font_size: FontSize::Px(44.0), ..default() },
+                TextColor(Color::srgb(0.86, 0.91, 1.0)),
+            ));
+            p.spawn((
+                // ⚠️ Not "made FOR YOU": a world outlives its divers (CANON §W1) and a co-op
+                // dive joins one somebody else opened, so the personal phrasing is false half
+                // the time. It IS always being drawn, though — restoring a saved world
+                // regenerates it from its seed and replays its Shift log, which is the same
+                // work.
+                Text::new("The world is being drawn."),
+                TextFont { font_size: FontSize::Px(22.0), ..default() },
+                TextColor(Color::srgb(0.72, 0.80, 0.95)),
+            ));
+            // What is actually happening out there, in the game's own terms. These are the
+            // real passes `push_section` runs, in the order it runs them — not invented steps.
+            p.spawn((
+                Text::new(
+                    "the maze is decided  ·  its ranges raised  ·  its rivers walked downhill\n                     a way through is guaranteed before you ever set foot on it",
+                ),
+                TextFont { font_size: FontSize::Px(15.0), ..default() },
+                TextColor(Color::srgb(0.50, 0.58, 0.74)),
+            ));
+            p.spawn((
+                DescendStatus,
+                Text::new(""),
+                TextFont { font_size: FontSize::Px(18.0), ..default() },
+                TextColor(Color::srgb(0.78, 0.86, 1.0)),
+            ));
+        });
+}
+
+/// Ticks the descent readout: a moving ellipsis so the screen is visibly alive, and the
+/// elapsed seconds once the wait is long enough to be worth naming.
+pub(crate) fn render_descending(
+    time: Res<Time>,
+    mut started: Local<f32>,
+    mut q: Query<&mut Text, With<DescendStatus>>,
+) {
+    let Ok(mut t) = q.single_mut() else {
+        // Not on this screen: forget the clock so the next descent starts from zero.
+        *started = 0.0;
+        return;
+    };
+    let now = time.elapsed_secs();
+    if *started <= 0.0 {
+        *started = now;
+    }
+    let secs = (now - *started).max(0.0);
+    let dots = ".".repeat(1 + ((secs * 2.0) as usize % 3));
+    // ⚠️ The number appears only after a couple of seconds. A counter that starts at 0.0s on a
+    // world that arrives in 200 ms is noise flashing past; one that appears when the wait
+    // becomes noticeable is the screen answering the question the player has just started
+    // asking.
+    **t = if secs < 2.0 {
+        format!("stepping through{dots}")
+    } else {
+        format!("stepping through{dots}    {secs:.0}s")
+    };
+}
+
 pub(crate) fn lobby_ui(mut commands: Commands) {
     commands
         .spawn((
