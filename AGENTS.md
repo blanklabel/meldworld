@@ -1191,6 +1191,28 @@ the wasm client, and `flags.rs` is one reader per flag now instead of two.
 screenshot states. `MELD_TALLY` holds an extraction haul on screen, since the real one
 rolls off on a timer long enough to be gone before a capture lands.
 
+⚠️ **A FRAME MEASUREMENT THROUGH VSYNC MEASURES THE DISPLAY.** `MELD_FPS=1` prints
+`frame_time`, and Bevy presents with `AutoVsync` by default — so a GPU that finishes inside
+the refresh interval reports the INTERVAL, and every A/B comes back "no change" however much
+work is removed. Measured through the cap, **30x fewer pixels and 15.5x fewer ground vertices
+BOTH read as no change**; uncapped (`MELD_VSYNC=0`) the same two arms moved -69% and -74%.
+Two hypotheses were "refuted" by a clamp before anyone noticed. **Uncap before concluding
+anything about where a frame goes** — and cap it again to play, since the uncapped renderer
+is not the game's pacing.
+⚠️ **And `MELD_WIN` was INERT for as long as it existed**, which is the third time this repo
+has tuned through a broken instrument (`MELD_GEAR_TIER`, the MCP backpack). `mode` was
+`default_window_mode()` unconditionally, so the window always took the monitor's video mode
+and `resolution` stayed the *windowed fallback* its own comment names — the pixel count never
+moved, and the fill-rate A/B its comment promises answered confidently about nothing. It
+leaves fullscreen when asked now. `MELD_GROUND_SUB=<n>` is its counterpart for the half
+`MELD_WIN` structurally cannot see: the ground is ONE mesh of 161,604 vertices, each running
+`total_height` five times (once to displace, four for `terrain_normal`), and none of that
+scales with pixels.
+⚠️ **Any timing taken on this box while other agents build is noise** — measured at load
+average 29-49, identical configs drifted 24 -> 35 ms back-to-back and produced a 92 ms
+"baseline" that was pure contamination. Prefer a SAME-PROCESS A/B (`LOOK_FILE` toggles flip
+live) over separate runs, and read a suspicious result as the instrument before the code.
+
 ⚠️ **Autoplay takes no onboarding, and that is load-bearing for this loop.** The town
 tour and the "Before You Dive" card are modal, nothing presses their buttons for you, and
 `city_input` returns early while a tour step is open — so autoplay used to sit in the hub
