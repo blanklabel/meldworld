@@ -3648,6 +3648,35 @@ budgeted so the creature sim never threatens the single-owner loop or the server
     the code-entry branch early-`return`s — so a player who opened co-op by mistake and had
     not yet typed a code was stuck. Escape now leaves from both, the LEAVE button shows in
     both, and the screen says `[ESC] back to the city`.
+- [x] **UX-6 — The fight says how it opened, and finishes on its own screen.**
+  - **The opening is a POP-UP.** `CR-15` shipped the ambush/surprise tell as a head-height
+    `Callout` over hero slot 0 — the same bubble a poison tick draws, in the corner of the
+    arena, at the one instant the eye is everywhere at once because the battle screen has
+    just arrived. An ambush costs the party a whole round and a surprise hands it one, so
+    it gets the middle of the frame: `BattleOpening` + `render_opening_card`, red for an
+    ambush and green for a surprise, over the beat `[battle] open_grace_ms` already holds
+    still for, and each arm says WHO MOVES FIRST rather than only shouting a word.
+    Deliberately not a `glass::scrim`, and — measured by rendering it — deliberately
+    **below the pack**: the first cut sat a third of the way down, squarely over the
+    creatures and their HP bars, hiding the formation the grace beat exists for you to read.
+  - **And the level-up plays where it was earned.** The tally already drew over the arena
+    and gated the walk back out; the stat screens it earned did not — they were registered
+    on Overworld/City/Ended and *despawned on the way INTO* a fight, so a victory read
+    `tally -> the world -> LEVEL UP! over a world you are already walking around in`. The
+    gate is handed from one card to the other (`LevelUpQueue::gate_return`), so a fight
+    reads `tally -> LEVEL UP! -> the world`, all of it on the screen it happened on. The
+    CL-1 unlock banner deliberately does NOT come along: a class unlock is ACCOUNT news
+    that merely landed during a fight, and a modal "you may now field a Resonant" over a
+    corpse-strewn arena is an interruption rather than a reward.
+  - ⚠️ **A root with no z is a root the battle HUD draws through.** Moving the stat block
+    into the arena put it among the battle HUD's other UI roots, and Bevy orders separate
+    roots arbitrarily — the enemy nameplates and their HP bars came out straight through
+    the middle of "HP 52 -> 62". It carries an explicit `GlobalZIndex` (95) now, under the
+    tally's 100, and a test holds both bounds. On the overworld it had nothing to collide
+    with, which is why it had never needed one.
+  - `MELD_OPENING=ambush|surprise` is the screenshot fixture, on the same argument as
+    `MELD_FX`: the card is raised by a `battle.started` the static mockup never receives,
+    so it was otherwise unreachable in a capture. `feel.opening_ttl` is the one dial.
 - [ ] **CR-3 — Living ecology: diets, needs, and breeding.** Creatures have a
   **diet class — carnivore / omnivore / herbivore** — that drives behavior: they
   eat (hunt prey / graze nodes), sleep (tied to FS-5 day/night), and **breed**,

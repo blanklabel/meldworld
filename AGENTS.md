@@ -1676,6 +1676,33 @@ not exist.** An ambush costs the party a whole round and a surprise hands it one
 invisible until the client shouted them, since the only tell was gauges starting somewhere
 different. A watcher is told nothing — the opening was not theirs.
 
+**AND IT IS A POP-UP, NOT A BUBBLE OVER SOMEBODY'S HEAD.** The first cut of the tell was a
+head-height `Callout` on hero slot 0 — the same machinery a poison tick uses, in the corner
+of the arena, at the one instant the eye is everywhere at once because the battle screen has
+just arrived. That is the wrong LOUDNESS for the biggest swing a fight can hand you unasked:
+`BattleOpening` draws a centred card instead (red ambush, green surprise), and each arm says
+**who moves first** rather than only shouting a word, because "AMBUSHED!" alone is mood.
+Deliberately not a `glass::scrim` and — measured by RENDERING it — deliberately **below the
+pack**: at a third of the way down the card sat squarely over the creatures and their HP
+bars, hiding the formation the grace beat exists for you to read. It lives exactly
+`feel.opening_ttl` (2 s), which is that beat; `MELD_OPENING=ambush|surprise` is the fixture,
+since the static mockup never receives a `battle.started` to raise it.
+
+**A FIGHT ALSO FINISHES ON ITS OWN SCREEN.** The tally drew over the arena and gated the walk
+back out (`LootReport::gate_return`); the LEVEL-UP screens it earned did not — they were
+registered on Overworld/City/Ended and *despawned on the way INTO* a fight, so a victory read
+`tally → the world → LEVEL UP! over a world you are already walking around in`. The gate is
+HANDED from one card to the other (`LevelUpQueue::gate_return`) rather than spent, so the
+sequence is `tally → LEVEL UP! → the world` and all of it happens where the XP was earned.
+The CL-1 **unlock banner deliberately does not come along**: a class unlock is ACCOUNT news
+that merely landed during a fight, and a modal "you may now field a Resonant" over a
+corpse-strewn arena is an interruption rather than a reward.
+⚠️ **A ROOT WITH NO Z IS A ROOT THE BATTLE HUD DRAWS THROUGH.** Bevy orders separate UI roots
+arbitrarily, and the battle HUD's nameplates are roots — moving the stat block into the arena
+put the enemy names and their HP bars straight through the middle of "HP 52 → 62". Both cards
+carry an explicit `GlobalZIndex` (opening 90, level-up 95, tally 100); on the overworld the
+stat block had nothing to collide with, which is why it had never needed one.
+
 **A GAUGE KNOCK COSTS ONE TURN, AND THE BOSS ANSWERS.** Gauge denial was implemented by hand
 at **fourteen** call sites and nothing checked what chaining them did: measured, a party's
 Ransack (116 casts) and Holy Censure (34) held a 66,792 HP gatekeeper at 29% gauge for **464
