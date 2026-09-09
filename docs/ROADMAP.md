@@ -5010,6 +5010,33 @@ Directly underpins CR-4 (sim budget), MON-2 (persistent camps/instances), and LC
   send in parallel across cores. Decouples sim cadence from snapshot cadence
   (enables sub-stepped projectiles). Single-owner invariant preserved — workers
   only read a frozen copy.
+- [ ] **SC-4 — A LOBBY YOU CAN BROWSE: worlds you can SEE, not codes you have to be
+  told.** Depends on `SC-3` (there is exactly one world until it lands —
+  `const WORLD_KEY = "default"`, whose own comment says multi-world is what varies it).
+  Recorded because the co-op that EXISTS reads as a placeholder for this and is easy to
+  mistake for a broken version of it. What ships today is a **private code party**: `[C]`
+  opens the lobby, `lobby.create` mints a 6-char code, friends `lobby.join` it, the host
+  starts a shared dive. There is no discovery, and the mental model people arrive with —
+  *a seed is an instance, browse the instances, see who is on each* — is not a half-built
+  version of that, it is a different feature. What it wants, none of which exists:
+  - **A seed on the wire.** `lobby.create`, `lobby.join` and `run.enter_maze` carry no
+    seed field at all; the only way to pick a world is `MELD_SEED`, a dev env var read at
+    the server boundary. "Play seed 424242 with me" is currently unsayable.
+  - **A listing.** Nothing under `/v1/` enumerates worlds, so there is no world list to
+    render — local, remote or otherwise — and no occupancy to show. The `worlds` table is
+    already keyed and already stores a seed, so the schema is ready; what is missing is a
+    second key and a reader.
+  - **Occupancy.** Nothing counts players per world. "3 divers on this seed" is the single
+    line that makes a browser worth opening rather than a list of numbers.
+  - **A per-world board.** The Vanguard Wall shows the GLOBAL seasonal leaderboard
+    (`/v1/leaderboards/vanguard`); `VanguardEntry` has no world or seed field. A
+    per-instance table is a different query, and arguably the better one — a board scoped
+    to the world you are standing in is a reason to keep diving THAT world.
+  ⚠️ Scope it against `SC-3` rather than bolting it onto the lobby: the hard parts
+  (worlds are seeded, persistent and replayable from `(seed, generation)`) are already
+  built, and the temptation is to fake a browser over one world and inherit a shape that
+  cannot hold many.
+
 - [ ] **SC-3 — World sharding (`Router` + `WorldActor`).** Split `GameState` into a
   routing/matchmaking supervisor and one actor per **world/realm** (each its own
   tick, no locks). A **world** = one **player-seeded** persistent overworld + its
