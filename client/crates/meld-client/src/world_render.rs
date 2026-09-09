@@ -33,6 +33,27 @@ pub(crate) const GROUND_SIZE: f32 = 2000.0;
 pub(crate) const GROUND_SUBDIVISIONS: u32 = 400;
 /// World distance between adjacent ground vertices — the lattice the follow snaps to
 /// (see [`follow_world_ground`]) so the tessellation stops swimming under the hills.
+/// `MELD_GROUND_SUB=<n>` overrides [`GROUND_SUBDIVISIONS`] — the A/B for whether the frame
+/// is bound by the ground's VERTEX stage.
+///
+/// The plane is one mesh of `(n + 2)^2` vertices, and every vertex runs `total_height`
+/// FIVE times (once to displace, four more for `terrain_normal`'s finite differences),
+/// each walking every landform loop. Nothing about that cost scales with pixels — which
+/// is why `MELD_WIN` cannot see it, and why halving `n` (quartering the vertices) is the
+/// only instrument that can.
+///
+/// ⚠️ **MEASUREMENT ONLY — it desyncs [`GROUND_CELL`].** The plane snaps its slide to a
+/// whole `GROUND_CELL`, and that constant is derived from `GROUND_SUBDIVISIONS`, not from
+/// this — so an overridden mesh snaps on the wrong lattice and the ground visibly swims.
+/// That costs nothing in frame time (which is what this exists to measure) but it is not a
+/// knob to ship a value through: lowering the real density means lowering the CONST.
+pub(crate) fn ground_subdivisions() -> u32 {
+    std::env::var("MELD_GROUND_SUB")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(GROUND_SUBDIVISIONS)
+}
+
 pub(crate) const GROUND_CELL: f32 = GROUND_SIZE / (GROUND_SUBDIVISIONS as f32 + 1.0);
 
 /// Uniform for [`GroundBiome`] — the ACTUAL per-section biome rings, so the ground
@@ -984,7 +1005,7 @@ pub(crate) fn setup(
             Plane3d::default()
                 .mesh()
                 .size(GROUND_SIZE, GROUND_SIZE)
-                .subdivisions(GROUND_SUBDIVISIONS),
+                .subdivisions(ground_subdivisions()),
         )),
         MeshMaterial3d(ground_mat.clone()),
         Transform::default(),

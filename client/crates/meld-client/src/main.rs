@@ -85,6 +85,14 @@ fn raise_open_file_limit() {
 }
 
 /// The window mode at launch: borderless-fullscreen, which is big and readable.
+/// `MELD_WIN=<w>x<h>` — the fill-rate A/B's window size, if asked for. `None` means
+/// fullscreen at the monitor's own resolution (the normal way to play).
+fn win_size() -> Option<(u32, u32)> {
+    let v = std::env::var("MELD_WIN").ok()?;
+    let (w, h) = v.split_once('x')?;
+    Some((w.parse().ok()?, h.parse().ok()?))
+}
+
 fn default_window_mode() -> bevy::window::WindowMode {
     bevy::window::WindowMode::BorderlessFullscreen(bevy::window::MonitorSelection::Current)
 }
@@ -140,15 +148,34 @@ fn main() {
                         // frame is GPU-bound in the ground shader (which loops 16 ridges, 16
                         // basins and 32 river nodes PER FRAGMENT), quartering the pixels
                         // roughly halves the frame time; if it is CPU-bound, nothing moves.
-                        resolution: std::env::var("MELD_WIN")
-                            .ok()
-                            .and_then(|v| {
-                                let (w, h) = v.split_once('x')?;
-                                Some((w.parse::<u32>().ok()?, h.parse::<u32>().ok()?))
-                            })
-                            .unwrap_or((1280u32, 800u32))
-                            .into(),
-                        mode: default_window_mode(),
+                        // ⚠️ **AND IT HAS TO LEAVE FULLSCREEN TO DO THAT, WHICH IT DID NOT.**
+                        // `mode` was `default_window_mode()` unconditionally, so the window
+                        // always took the monitor's own video mode and `resolution` stayed
+                        // what the comment calls it — the *windowed fallback*, never applied.
+                        // The pixel count was therefore identical with and without the flag,
+                        // and the A/B this comment promises answered "CPU-bound" whatever the
+                        // frame was really doing. Same shape as the inert `MELD_GEAR_TIER`:
+                        // an instrument that returns a confident number about nothing.
+                        resolution: win_size().unwrap_or((1280, 800)).into(),
+                        mode: if win_size().is_some() {
+                            bevy::window::WindowMode::Windowed
+                        } else {
+                            default_window_mode()
+                        },
+                        // ⚠️ **`MELD_VSYNC=0` UNCAPS THE FRAME, AND WITHOUT IT NO RENDER
+                        // MEASUREMENT HERE MEANS ANYTHING.** Bevy's default is `AutoVsync`,
+                        // so `frame_time` reports the DISPLAY's 16.7 ms interval whenever the
+                        // GPU finishes inside it — the renderer's actual cost is hidden under
+                        // the wait, and every A/B comes back "no change" however much work is
+                        // removed. Measured: 30x fewer pixels (`MELD_WIN`) and 15.5x fewer
+                        // ground vertices (`MELD_GROUND_SUB`) BOTH read as no change, which
+                        // is the clamp talking, not the frame. Uncap before concluding
+                        // anything about where a frame goes; leave it capped to play.
+                        present_mode: if std::env::var("MELD_VSYNC").is_ok_and(|v| v == "0") {
+                            bevy::window::PresentMode::AutoNoVsync
+                        } else {
+                            bevy::window::PresentMode::AutoVsync
+                        },
                         ..default()
                     }),
                     ..default()

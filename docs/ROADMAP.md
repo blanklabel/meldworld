@@ -2527,6 +2527,44 @@ design for this epic: [`proposals/worldgen-wg.md`](proposals/worldgen-wg.md).
   instrument (`MELD_GEAR_TIER` inert for a release while conclusions were drawn through it;
   the MCP harness reporting an empty backpack whatever you carried).
 
+
+  - ✅ **The instrument exists now, and TWO-THIRDS OF IT WAS LYING.** `MELD_FPS=1` had
+    landed, but the two flags that answer *where* a frame goes could not:
+    - ⚠️ **`MELD_WIN` WAS INERT.** `mode: default_window_mode()` was unconditional, so the
+      window always took the monitor's own video mode and `resolution` stayed what its own
+      comment calls it — the *windowed fallback*, never applied. The pixel count was
+      identical with and without the flag, so the fill-rate A/B the comment promises
+      answered "not fill-rate-bound" whatever the frame was really doing. It drops to
+      `Windowed` when asked now. **Third instance of the inert-instrument trap** this file
+      already records twice (`MELD_GEAR_TIER`, the MCP backpack).
+    - ⚠️ **AND `frame_time` WAS MEASURING THE DISPLAY, NOT THE RENDERER.** Bevy's default
+      is `PresentMode::AutoVsync` and nothing overrode it, so a GPU that finishes inside
+      the refresh interval reports the interval. Measured through the cap, **30x fewer
+      pixels AND 15.5x fewer ground vertices BOTH read as "no change"** — two hypotheses
+      apparently refuted by a clamp. `MELD_VSYNC=0` uncaps it; uncapped, the same two arms
+      moved -69% and -74%. **Uncap before concluding anything about a frame.**
+    - **`MELD_GROUND_SUB=<n>`** overrides the ground plane's subdivisions, because that
+      cost is pixel-INDEPENDENT and `MELD_WIN` structurally cannot see it: the plane is one
+      mesh of 161,604 vertices and every vertex runs `total_height` **five** times (once to
+      displace, four for `terrain_normal`'s finite differences), each walking every landform
+      loop. Measurement only — it desyncs `GROUND_CELL`.
+
+  - **What the instruments say so far, and why it is not yet a tuning target.** Every run
+    was taken on a box at load average 29-49 (about five concurrent agents), where
+    identical configs drifted 24 -> 35 ms between back-to-back runs and a 92 ms "uncapped
+    baseline" turned out to be pure contamination. The one trustworthy reading is a
+    SAME-PROCESS A/B flipping `LOOK_FILE` toggles, which is immune to that drift: **DoF and
+    bloom are free** (~0-1 ms against a 14->51 ms within-phase swing), and billboard
+    shadows were the largest toggle at ~2.3 ms. So the distance-legibility work below costs
+    nothing to switch on. **Re-measure the uncapped arms on a quiet box before tuning
+    anything** — that is now a five-minute job rather than an arithmetic exercise.
+
+  - **Structural findings that do not depend on the clock.** The sun has no
+    `CascadeShadowConfig`, so it is Bevy's default **4 cascades** over 150 units at 2048 —
+    and the ground being ONE 2000x2000 mesh means it cannot be culled out of any of them.
+    `fog_end` is 500, so ~80% of those 161,604 vertices sit in pure fog colour. Tightening
+    the cascades makes near shadows *sharper* at the same time as cheaper.
+
   **The known cost.** The ground shader runs SEVEN landform loops per fragment (bridges,
   ridges, peaks, basins, rivers, straits, lobes), each iteration doing distance math, over
   most of the screen. `#337` took the worst case from ~106 to ~124 iterations per ground
