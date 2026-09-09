@@ -284,6 +284,24 @@ pub enum Insurance {
 }
 
 impl Insurance {
+    /// **THE CHEST THIS TIER COMES OUT OF**, as the number that rides `chest:<tier>` and
+    /// the only thing the client's `chest_art` reads. The names above are not decoration:
+    /// `Insured` IS the blue chest and `Ephemeral` IS the red one, so the lid and the
+    /// contents are the same fact and there is one place that says so.
+    ///
+    /// ⚠️ Mirrored by `chest_art` on the client, which is why it lives here rather than
+    /// twice: a chest painted from `floor(d/100)` while its loot was rolled from something
+    /// else is exactly how every shallow chest came out blue holding nothing insured.
+    pub fn chest_tier(self) -> i32 {
+        match self {
+            Insurance::Ephemeral => 3,
+            Insurance::Insured => 1,
+            Insurance::Standard => 0,
+        }
+    }
+}
+
+impl Insurance {
     /// The player-facing label.
     pub fn label(self) -> &'static str {
         match self {

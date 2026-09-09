@@ -2521,7 +2521,11 @@ impl WorldActor {
                 entity_id: c.entity_id.clone(),
                 position: c.position,
                 velocity: wm::Velocity { x: 0.0, y: 0.0 },
-                avatar_state: Some(format!("chest:{}:{}", c.tier, c.opened as u8)),
+                avatar_state: Some(format!(
+                    "chest:{}:{}",
+                    c.tier(&self.balance, self.arena.seed),
+                    c.opened as u8
+                )),
                 level: Some(c.elevation),
                 ..Default::default()
             });
@@ -9727,12 +9731,14 @@ impl WorldActor {
         if self.dungeon_of(player_id).is_some() {
             return self.open_dungeon_chest(player_id, &req.entity_id, raw.seq);
         }
-        let Some((_tier, distance)) = self.arena.open_chest(player_id, &req.entity_id) else {
+        let Some((distance, promised)) = self.arena.open_chest(&balance, player_id, &req.entity_id)
+        else {
             return (vec![error(player_id, ErrorCode::OutOfRange, "No chest in reach.", Some(raw.seq))], Vec::new());
         };
         // Deterministic per (chest, player); the chest can only be opened once.
         let seed = self.arena.seed ^ hash_str(&req.entity_id) ^ hash_str(player_id);
-        let loot = meld_world::roll_creature_loot(&balance, distance, CHEST_RICHNESS, 1.0, seed);
+        // The lid already said what is in here — see `Chest::insurance`.
+        let loot = meld_world::roll_chest_loot(&balance, distance, CHEST_RICHNESS, seed, promised);
         let loot_item = ItemStack {
             item_id: Uuid::now_v7().to_string(),
             item_kind: loot.material.to_string(),

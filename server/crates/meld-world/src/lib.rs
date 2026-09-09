@@ -1057,12 +1057,40 @@ pub fn potion_drop_pool(balance: &Balance, distance: i64) -> Vec<&'static str> {
 /// floored distance (drives chit/gear scaling) and `monster_count` the number of
 /// creatures in the group. Pure — the caller owns the seed (server rolls it from
 /// the instance seed ⊕ player ⊕ clock, like the Town Portal drop).
+/// **A CHEST PAYS WHAT ITS LID PROMISED.** `promised` is the chest's own
+/// [`Chest::insurance`], and the gear this rolls carries exactly it — guaranteed, when it
+/// is not `Standard`, because a blue chest that rolled no gear is a blue chest holding
+/// nothing insured, which is the whole complaint.
+///
+/// Everything else is the ordinary creature roll, so a chest's materials, chits and
+/// potions are unchanged.
+pub fn roll_chest_loot(
+    balance: &Balance,
+    distance: i64,
+    monster_count: i32,
+    seed: u64,
+    promised: Insurance,
+) -> CreatureLoot {
+    roll_loot(balance, distance, monster_count, 1.0, seed, Some(promised))
+}
+
 pub fn roll_creature_loot(
     balance: &Balance,
     distance: i64,
     monster_count: i32,
     loot_mult: f64,
     seed: u64,
+) -> CreatureLoot {
+    roll_loot(balance, distance, monster_count, loot_mult, seed, None)
+}
+
+fn roll_loot(
+    balance: &Balance,
+    distance: i64,
+    monster_count: i32,
+    loot_mult: f64,
+    seed: u64,
+    promised: Option<Insurance>,
 ) -> CreatureLoot {
     let mut rng = Rng(seed);
     let sc = Scaling::new(balance);
@@ -1092,8 +1120,10 @@ pub fn roll_creature_loot(
     // Red-chest gear ramps in with depth (`gear_drop_chance_at`) and a reward spike
     // (loot_mult) boosts — and can guarantee — the drop. Still exactly ONE `rng.unit()`
     // draw whatever the chance works out to, so the stream past here is unmoved.
-    let gear = if rng.unit() < (gear_drop_chance_at(balance, distance) * loot_mult.max(0.0)).min(1.0)
-    {
+    // A promised piece is not rolled for — the lid already said it is in there. The
+    // `rng.unit()` is still drawn so the stream past here is identical either way.
+    let wanted = rng.unit() < (gear_drop_chance_at(balance, distance) * loot_mult.max(0.0)).min(1.0);
+    let gear = if wanted || matches!(promised, Some(p) if p != Insurance::Standard) {
         let tier = sc.tier(distance) as i32;
         let a_cfg = &balance.affix;
         let floor_tier = sc.tier(balance.world_scaling.red_chest_floor_distance) as i32;
@@ -1176,14 +1206,17 @@ pub fn roll_creature_loot(
         // encounter (`loot_mult > 1` — a champion, gatekeeper, rite or chest, and
         // nothing else) can yield the two special tiers; trash always drops standard.
         let spike = loot_mult > 1.0;
+        // The draw happens either way, so forcing the tier cannot shift the stream.
         let roll = rng.unit();
-        let insurance = if spike && roll < l.ephemeral_gear_chance {
-            Insurance::Ephemeral
-        } else if spike && roll < l.ephemeral_gear_chance + l.permanent_gear_chance {
-            Insurance::Insured
-        } else {
-            Insurance::Standard
-        };
+        let insurance = promised.unwrap_or({
+            if spike && roll < l.ephemeral_gear_chance {
+                Insurance::Ephemeral
+            } else if spike && roll < l.ephemeral_gear_chance + l.permanent_gear_chance {
+                Insurance::Insured
+            } else {
+                Insurance::Standard
+            }
+        });
         let tier_mult = match insurance {
             Insurance::Ephemeral => l.ephemeral_power_mult,
             Insurance::Insured => l.insured_power_mult,
@@ -2431,8 +2464,6 @@ pub struct Fallen {
 pub struct Chest {
     pub entity_id: Id,
     pub position: Position,
-    /// Loot tier band at this depth (`tier(d) = floor(d/100)`), for loot scaling.
-    pub tier: i32,
     pub opened: bool,
     /// Elevation level the chest sits at (0 = ground). A chest atop a terrace can
     /// only be opened from that level — the reward for climbing the detour.
@@ -2441,6 +2472,51 @@ pub struct Chest {
     /// thing farming must not print, so its regrowth is by far the slowest of the
     /// three (`[world_persist] chest_regrow_ticks`).
     pub opened_tick: u64,
+}
+
+impl Chest {
+    /// **WHAT THIS CHEST PAYS — which is also what colour it is.**
+    ///
+    /// `Insurance`'s own names are the rule: `Insured` is the blue chest, `Ephemeral` the
+    /// red one. So the lid is not a hint about the depth, it is a statement about the
+    /// contents, and `open_chest` hands this straight to the roll so the statement is
+    /// kept. ONLY a blue chest carries an insured piece, and it always does.
+    ///
+    /// ⚠️ **NO CHEST COULD PAY EITHER TIER BEFORE THIS.** The insurance roll requires a
+    /// reward SPIKE (`loot_mult > 1.0`) and `handle_open_chest` passed `1.0` — measured
+    /// over 4,000 opens at d50/300/900/2000, every single piece came back `Standard`. The
+    /// blue and red art existed the whole time with nothing behind it.
+    ///
+    /// Derived rather than stored, off the chest's own id and the world seed, so it cannot
+    /// drift from the position the depth gates read — the failure the tier field had.
+    pub fn insurance(&self, balance: &Balance, world_seed: u64) -> Insurance {
+        let l = &balance.loot;
+        let d = self.position.distance_floor();
+        // Below the depth gear drops at, a chest has nothing insurable to hold.
+        if d < l.gear_ramp_start_distance {
+            return Insurance::Standard;
+        }
+        let id_hash = self
+            .entity_id
+            .bytes()
+            .fold(0xcbf2_9ce4_8422_2325u64, |h, b| (h ^ u64::from(b)).wrapping_mul(0x1000_0000_01b3));
+        let r = Rng(splitmix64(world_seed ^ id_hash)).unit();
+        // EPHEMERAL IS THE DEEP REWARD, held to the gear game's own home so the strongest
+        // tier in the game is not handed out on the on-ramp.
+        if d >= balance.world_scaling.red_chest_floor_distance && r < l.ephemeral_gear_chance {
+            Insurance::Ephemeral
+        } else if r < l.ephemeral_gear_chance + l.permanent_gear_chance {
+            Insurance::Insured
+        } else {
+            Insurance::Standard
+        }
+    }
+
+    /// The chest's PAINT — `chest:<tier>` on the wire, read only by the client's
+    /// `chest_art`. One mapping, in `meld_proto`, shared with the side that draws it.
+    pub fn tier(&self, balance: &Balance, world_seed: u64) -> i32 {
+        self.insurance(balance, world_seed).chest_tier()
+    }
 }
 
 /// A field workstation a player has raised in the maze (MS-1). A smith who carries
@@ -4547,11 +4623,11 @@ impl Arena {
             // A guaranteed starter treasure chest opposite the node, so a new
             // player sees the loot loop (open → chits/materials) in area 0.
             let starter_chest_x = wg.first_monster_x * 0.5;
+            let starter_chest = Position::new(starter_chest_x, -3.0);
             self.chests.push(Chest {
                 opened_tick: 0,
                 entity_id: format!("chest-{}", self.chests.len()),
-                position: Position::new(starter_chest_x, -3.0),
-                tier: Scaling::new(balance).tier(starter_chest_x.floor() as i64) as i32,
+                position: starter_chest,
                 opened: false,
                 elevation: 0,
             });
@@ -5198,7 +5274,6 @@ impl Arena {
                         opened_tick: 0,
                         entity_id: format!("chest-{}", self.chests.len()),
                         position: summit,
-                        tier: Scaling::new(balance).tier(summit.x.floor() as i64) as i32,
                         opened: false,
                         elevation: 0,
                     });
@@ -5700,16 +5775,23 @@ impl Arena {
                 continue;
             }
             if degree == 1 || (attempt == 23 && degree > 0) {
-                let bonus = if degree == 1 {
-                    balance.region_barrier.dead_end_chest_tier_bonus
-                } else {
-                    0
-                };
+                // ⚠️ **A CHEST'S TIER IS WHAT IS INSIDE IT, AND THE ONLY THING THAT READS
+                // IT IS THE PAINT.** `handle_open_chest` takes `(_tier, distance)` and
+                // rolls the reward off the DISTANCE alone, so a bonus added here never
+                // reaches the loot — it only reaches `chest:<tier>` on the wire, and from
+                // there `chest_art`, which paints tier >= 1 as the rare BLUE chest.
+                //
+                // A dead-end bonus of 1 therefore repainted every shallow chest blue while
+                // changing nothing about its contents: `tier(d) = floor(d/100)` is 0 below
+                // d100, and chests are placed almost exclusively in dead ends (the loop
+                // above retries 23 times looking for one). Reported from play as
+                // "suddenly all chests are blue… blue chests are only for blue (insured)
+                // equipment", which is exactly right — the paint was promising a reward
+                // the roll had no idea it had offered.
                 self.chests.push(Chest {
                     opened_tick: 0,
                     entity_id: format!("chest-{}", self.chests.len()),
                     position: cpos,
-                    tier: Scaling::new(balance).tier(cx.floor() as i64) as i32 + bonus,
                     opened: false,
                     elevation: 0,
                 });
@@ -5726,7 +5808,6 @@ impl Arena {
                     opened_tick: 0,
                     entity_id: format!("chest-{}", self.chests.len()),
                     position: cpos,
-                    tier: Scaling::new(balance).tier(cpos.x.floor() as i64) as i32,
                     opened: false,
                     elevation: 0,
                 });
@@ -5976,7 +6057,6 @@ impl Arena {
                 opened_tick: 0,
                 entity_id: format!("chest-{}", self.chests.len()),
                 position: cpos,
-                tier: Scaling::new(balance).tier(chest_x.floor() as i64) as i32,
                 opened: false,
                 elevation,
             });
@@ -9702,12 +9782,18 @@ impl Arena {
     /// Open the treasure chest `entity_id` if `player` is within interaction range
     /// and it isn't already open. Marks it opened and returns `(tier, distance)`
     /// so the caller can roll its loot via balance.
-    pub fn open_chest(&mut self, player_id: &str, entity_id: &str) -> Option<(i32, i64)> {
+    pub fn open_chest(
+        &mut self,
+        balance: &Balance,
+        player_id: &str,
+        entity_id: &str,
+    ) -> Option<(i64, Insurance)> {
         let (ppos, pelev) = {
             let a = self.avatar(player_id)?;
             (a.position, a.elevation)
         };
         let radius = self.interaction_radius;
+        let seed = self.seed;
         let chest = self
             .chests
             .iter_mut()
@@ -9718,7 +9804,7 @@ impl Arena {
             return None;
         }
         chest.opened = true;
-        Some((chest.tier, chest.position.distance_floor()))
+        Some((chest.position.distance_floor(), chest.insurance(balance, seed)))
     }
 
     /// Raise a field station where this player stands. Pure: the caller has already
@@ -13921,10 +14007,17 @@ mod tests {
                 if degree == 0 {
                     sealed += 1;
                 }
-                // A dead-end chest is paid the bonus, so its tier runs ahead of the tier its
-                // own distance would give it.
-                let base = Scaling::new(&b).tier(world.x.hypot(world.y).floor() as i64) as i32;
-                if c.tier > base {
+                // ⚠️ **COUNT THE PLACEMENT, NOT THE PAINT.** This asked whether the chest's
+                // `tier` ran ahead of its own distance — which was only ever true because a
+                // dead end added `dead_end_chest_tier_bonus` to that field. That bonus never
+                // reached the reward (`handle_open_chest` discards the tier and rolls off
+                // distance), so it repainted the chest and paid nothing: the test was
+                // measuring the colour of the lid and calling it treasure.
+                //
+                // What is actually true, and worth holding, is that chests are PLACED down
+                // the dead ends. Whether a wrong turn also pays more is unimplemented — see
+                // the note below.
+                if degree == 1 {
                     rich += 1;
                 }
             }
@@ -13943,11 +14036,20 @@ mod tests {
             sealed * 20 <= total,
             "{sealed} of {total} chests sit in cells the graph seals on every side"
         );
-        // …and dead ends have to actually pay, or the maze's wrong turns are pure tax.
+        // …and the wrong turns have to be where the chests ARE, or exploring is pure tax.
         assert!(
             rich * 8 >= total,
-            "only {rich} of {total} chests are down a dead end — the wrong turns pay nothing"
+            "only {rich} of {total} chests are down a dead end — the wrong turns hold nothing"
         );
+        // ⚠️ **A DEAD-END CHEST DOES NOT YET PAY MORE THAN ANY OTHER.** Its reward is rolled
+        // from distance alone, and the one term that claimed otherwise was cosmetic: it
+        // moved `chest:<tier>` on the wire, which is read only by the client's `chest_art`,
+        // so every shallow chest came out painted the rare BLUE while holding exactly what
+        // a common one holds. Reported from play as "suddenly all chests are blue… blue
+        // chests are only for blue (insured) equipment".
+        //
+        // Making the wrong turn genuinely richer means feeding a bonus into the ROLL, where
+        // it can be seen, rather than into the paint, where it can only be believed.
         // ⚠️ **AND THE ROAD STILL PAYS SOMETHING — but it no longer has to pay MOST.**
         // This asserted `rich * 2 <= total`, i.e. the through-route carries the majority, and
         // `WG-11` stage 8 retired that premise rather than breaking it: halving the cells took
@@ -18770,5 +18872,171 @@ mod approach_tests {
             approach_of(&at(0.0, 0.0), (0.0, 0.0), &at(-5.0, 0.0), (0.0, 0.0)),
             Approach::Even,
         );
+    }
+}
+
+#[cfg(test)]
+mod chest_paint_tests {
+    use super::*;
+
+    /// The shallow end stays BROWN. Reported from play as "suddenly all chests are blue",
+    /// so this holds the property a player actually meets rather than the arithmetic
+    /// behind it: nothing above the common chest before there is anything insurable in the
+    /// world to put in one.
+    #[test]
+    fn the_shallow_end_is_not_painted_rare() {
+        let b = Balance::load_default().unwrap();
+        let mut arena = Arena::generate(&b, 424242, false);
+        arena.ensure_frontier(&b, 300.0);
+        let shallow: Vec<i32> = arena
+            .chests
+            .iter()
+            .filter(|c| c.position.distance_floor() < b.loot.gear_ramp_start_distance)
+            .map(|c| c.tier(&b, arena.seed))
+            .collect();
+        assert!(!shallow.is_empty(), "no shallow chests generated — nothing was measured");
+        assert!(
+            shallow.iter().all(|t| *t == 0),
+            "a chest on the on-ramp is painted {shallow:?} rather than the common chest"
+        );
+    }
+}
+
+#[cfg(test)]
+mod chest_promise_tests {
+    use super::*;
+
+    /// **ONLY A BLUE CHEST HOLDS AN INSURED PIECE, AND IT ALWAYS DOES.** Both halves are
+    /// the rule: a lid that sometimes lies is no better than one that always does.
+    ///
+    /// Played through the real path — the chest's own `insurance` into `roll_chest_loot`,
+    /// which is exactly what `handle_open_chest` does.
+    #[test]
+    fn the_lid_tells_the_truth_about_the_contents() {
+        let b = Balance::load_default().unwrap();
+        let (mut blue, mut red, mut brown) = (0usize, 0usize, 0usize);
+        // Several worlds, streamed deep: RED is a 10% roll gated past the gear game's own
+        // home, so a single shallow world can hold none at all and prove nothing about it.
+        let mut chests = Vec::new();
+        for seed in [1u64, 7, 42] {
+            let mut arena = Arena::generate(&b, seed, false);
+            let mut reach = 0.0_f64;
+            while reach < 1200.0 {
+                reach += 200.0;
+                arena.ensure_frontier(&b, reach);
+            }
+            let s = arena.seed;
+            chests.extend(arena.chests.iter().cloned().map(move |c| (c, s)));
+        }
+        for (c, arena_seed) in &chests {
+            let promised = c.insurance(&b, *arena_seed);
+            let d = c.position.distance_floor();
+            let loot = roll_chest_loot(&b, d, 4, 99, promised);
+            let got = loot.gear.as_ref().map(|g| g.insurance);
+            match promised {
+                Insurance::Insured => {
+                    blue += 1;
+                    assert_eq!(
+                        got,
+                        Some(Insurance::Insured),
+                        "the blue chest at d{d} paid {got:?}"
+                    );
+                }
+                Insurance::Ephemeral => {
+                    red += 1;
+                    assert_eq!(
+                        got,
+                        Some(Insurance::Ephemeral),
+                        "the red chest at d{d} paid {got:?}"
+                    );
+                }
+                Insurance::Standard => {
+                    brown += 1;
+                    assert_ne!(
+                        got,
+                        Some(Insurance::Insured),
+                        "a common chest at d{d} held an INSURED piece"
+                    );
+                    assert_ne!(
+                        got,
+                        Some(Insurance::Ephemeral),
+                        "a common chest at d{d} held an EPHEMERAL piece"
+                    );
+                }
+            }
+        }
+        // A census, because a rule that holds over an empty set holds nothing — and this
+        // whole class of bug (a feature with no instances) has shipped here before.
+                // A census, because a rule that holds over an empty set holds nothing. RED is not
+        // asserted here: it is a 10% roll gated past d300, so a world sample yields one or
+        // none and a count of 1 is the fragile single-instance bound this repo has been
+        // bitten by twice. `a_red_chest_pays_what_it_promises` covers that arm directly.
+        let _ = red;
+        assert!(blue > 0 && brown > 0, "blue {blue}, red {red}, brown {brown}");
+    }
+
+    /// **THE RED ARM, DIRECTLY.** An ephemeral chest is rare by design — a 10% roll held
+    /// past the gear game's own home — so a generated-world census turns up one or none of
+    /// them, and asserting on a count of 1 is the single-instance bound that has flipped
+    /// under an unrelated retune twice in this repo. A chest is cheap to construct, so this
+    /// asks the arm itself rather than hoping a world contains it.
+    #[test]
+    fn a_red_chest_pays_what_it_promises() {
+        let b = Balance::load_default().unwrap();
+        let deep = b.world_scaling.red_chest_floor_distance as f64 + 400.0;
+        let mut found = 0;
+        for n in 0..400u64 {
+            let c = Chest {
+                opened_tick: 0,
+                entity_id: format!("chest-{n}"),
+                position: Position::new(deep, 0.0),
+                opened: false,
+                elevation: 0,
+            };
+            if c.insurance(&b, 424242) != Insurance::Ephemeral {
+                continue;
+            }
+            found += 1;
+            let loot = roll_chest_loot(&b, deep as i64, 4, 7, Insurance::Ephemeral);
+            assert_eq!(
+                loot.gear.as_ref().map(|g| g.insurance),
+                Some(Insurance::Ephemeral),
+                "a red chest paid {:?}",
+                loot.gear.as_ref().map(|g| g.insurance)
+            );
+        }
+        assert!(found > 10, "only {found} of 400 chests rolled red — the arm is unreachable");
+    }
+
+    /// The paint is the promise, so it may only ever come from it.
+    #[test]
+    fn the_paint_is_the_promise() {
+        let b = Balance::load_default().unwrap();
+        let mut arena = Arena::generate(&b, 7, false);
+        for _ in 0..12 {
+            arena.ensure_frontier(&b, 900.0);
+        }
+        for c in &arena.chests {
+            assert_eq!(c.tier(&b, arena.seed), c.insurance(&b, arena.seed).chest_tier());
+        }
+    }
+
+    /// The shallow on-ramp has nothing insurable in it, so nothing there is painted for it.
+    #[test]
+    fn the_on_ramp_holds_no_insured_gear() {
+        let b = Balance::load_default().unwrap();
+        let mut arena = Arena::generate(&b, 424242, false);
+        arena.ensure_frontier(&b, 300.0);
+        for c in arena.chests.iter().filter(|c| {
+            c.position.distance_floor() < b.loot.gear_ramp_start_distance
+        }) {
+            assert_eq!(
+                c.insurance(&b, arena.seed),
+                Insurance::Standard,
+                "a chest at d{} promises {:?} before gear can drop at all",
+                c.position.distance_floor(),
+                c.insurance(&b, arena.seed)
+            );
+        }
     }
 }

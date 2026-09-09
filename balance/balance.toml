@@ -2753,7 +2753,6 @@ erase_default = 0.30             # the deep authored biomes until they are tuned
 # REWARD. That is what makes wandering worth doing rather than a tax, and it is the answer to
 # "why would anyone go north or south" that no invariant can give. A chest found down one is
 # worth more than a chest on the road. [TUNABLE]
-dead_end_chest_tier_bonus = 1    # extra loot tier for a chest at the end of a wrong turn
 band_half_width = 3.0            # half-thickness of the wall, world units
 prop_spacing = 3.0               # distance between barrier prop CENTRES along the line. Two
                                  # props of radius r leave a gap of `spacing - 2r`, and a
