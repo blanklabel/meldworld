@@ -797,6 +797,20 @@ pub struct CharSprite {
     /// while everyone else keeps their fighting stance. Doesn't touch `facing`, so the
     /// lunge direction (driven off `SpriteQuad.forward`) is unaffected.
     pub face_cam: bool,
+    /// **A FIXED FRAME OF [`DIRS`], IN SCREEN SPACE**, overriding the world-facing
+    /// lookup — the same override `face_cam` is, but for any pose rather than dead front.
+    ///
+    /// A battle hero is locked facing the monsters, and the monsters stand between it and
+    /// the far edge of the arena while the camera sits behind it. Resolved through the
+    /// world→screen mapping, that is index 4 (`north`) — the character's BACK — so every
+    /// hero in your own party renders as an unrecognisable dark silhouette while the same
+    /// art reads perfectly on the overworld. A class you cannot tell apart in the one
+    /// screen where you command it is the whole cost of it.
+    ///
+    /// Separate from `facing` on purpose: `SpriteQuad::forward` — which aims the lunge and
+    /// the recoil — is built from the world facing, so turning the ART toward the viewer
+    /// must not turn the COMBAT direction with it.
+    pub view_dir: Option<usize>,
 }
 
 impl CharSprite {
@@ -812,6 +826,7 @@ impl CharSprite {
             locked: None,
             action: None,
             face_cam: false,
+            view_dir: None,
         }
     }
 }
@@ -869,6 +884,8 @@ pub fn animate_chars(
         // command looks at the viewer, without disturbing its locked lunge direction.
         let dir = if cs.face_cam {
             0
+        } else if let Some(d) = cs.view_dir {
+            d % 8
         } else {
             let toward_cam = -cs.facing.dot(fwd); // + = facing the viewer (front)
             let screen_right = cs.facing.dot(right);

@@ -131,6 +131,13 @@ pub(crate) fn spawn_hero_actor(
     let mut cs = CharSprite::new(frames.clone(), mat.clone(), root);
     cs.facing = facing;
     cs.locked = Some(facing); // a battle hero always faces the monsters
+    // …and is DRAWN in three-quarter view, which is not the same statement. Facing the
+    // monsters puts the camera at the hero's back, so the world→screen lookup lands on
+    // `north` and the whole party renders as silhouettes from behind — the one screen
+    // where telling a Hunter from an Explorer decides what you press. The pose is angled
+    // INWARD (a hero left of centre turns right, and vice versa) so the line still reads
+    // as a formation squared up on the enemy rather than four people facing the viewer.
+    cs.view_dir = Some(if root.x <= 0.0 { 1 } else { 7 });
     let forward = Vec3::new(facing.x, 0.0, facing.y); // toward the foes
     let quad = if bust { wa.bust_quad.clone() } else { wa.sprite_quad.clone() };
     commands
@@ -690,8 +697,15 @@ pub(crate) fn drive_battle_action_clips(
     if hitfx.act_clip.is_empty() {
         return;
     }
+    // ⚠️ **ONLY THE CLIPS ACTUALLY HANDED TO A SPRITE ARE SPENT.** Clearing the whole map
+    // drops the clip of any actor whose entity is not in the query yet — `sync_battle_actors`
+    // spawns through `Commands`, so an actor is one frame behind the message that first
+    // names it, and a hero joining mid-fight is several. That reads as the hero taking its
+    // turn without an animation while its damage lands like everyone else's.
+    let mut played: Vec<String> = Vec::new();
     for (ba, mut cs) in &mut q {
         if let Some(clip) = hitfx.act_clip.get(&ba.id) {
+            played.push(ba.id.clone());
             if cs.frames.clips.contains_key(clip) {
                 cs.action = Some((clip.clone(), 0.0));
             } else if swings_at_a_foe(clip) && cs.frames.clips.contains_key(GENERIC_STRIKE) {
@@ -710,7 +724,7 @@ pub(crate) fn drive_battle_action_clips(
             }
         }
     }
-    hitfx.act_clip.clear();
+    hitfx.act_clip.retain(|actor, _| !played.contains(actor));
 }
 
 /// Turn the hero currently AWAITING your command to face the camera (look at you);
@@ -1309,6 +1323,16 @@ pub(crate) fn auto_fire_queued(net: NonSend<NetRes>, mut battle: ResMut<BattleDa
             .target
             .filter(|t| battle.alive(t))
             .or_else(|| default_target(&battle, order.kind));
+        // ⚠️ **AN ORDER THAT CANNOT BE AIMED IS HELD, NOT SPENT.** `fire_order` builds no
+        // command at all for an aimed kind with no target, so clearing `ready`/`queued`
+        // regardless threw the order away in silence: that hero simply never swung, and
+        // stood there until the 15 s auto-defend spent its turn, while every hero beside
+        // it landed a blow. It happens when the combatant list is momentarily behind —
+        // the queued target has died and the replacement has not arrived — so holding the
+        // order costs one frame and fires it the moment there is something to hit.
+        if needs_a_target(order.kind) && target.is_none() {
+            continue;
+        }
         // Remember the exact skill so the sprite layer can play its clip when the
         // server echoes back the (coarse) resolution.
         if let QueuedKind::Skill(sk) = order.kind {
@@ -1318,6 +1342,14 @@ pub(crate) fn auto_fire_queued(net: NonSend<NetRes>, mut battle: ResMut<BattleDa
         battle.ready.remove(&hero);
         battle.queued.remove(&hero);
     }
+}
+
+/// Whether [`fire_order`] will refuse to build a command for `kind` without a target.
+/// Read off the same match `fire_order` uses, so the two cannot disagree about which
+/// orders are aimed — a kind that is aimed here and not there is an order held forever,
+/// and one that is aimed there and not here is an order dropped forever.
+pub(crate) fn needs_a_target(kind: QueuedKind) -> bool {
+    matches!(kind, QueuedKind::Attack | QueuedKind::Skill(_))
 }
 
 /// The `&'static str` manifestation kind matching a dynamic `kind` string (from a
@@ -4201,5 +4233,67 @@ mod opening_card_tests {
             z < 100,
             "the card would cover the loot report, which is drawn at 100 (`overlays.rs`)"
         );
+    }
+}
+
+#[cfg(test)]
+mod battle_pose_tests {
+    use crate::hd2d::{dir_index, DIRS};
+    use bevy::prelude::*;
+
+    /// The battle camera sits behind the party and the party is locked facing the
+    /// monsters, so resolving the pose through the world→screen mapping draws every hero
+    /// from BEHIND. This is the arithmetic that does it, held so the reason the override
+    /// exists cannot quietly stop being true.
+    #[test]
+    fn facing_the_monsters_resolves_to_the_back_of_the_head() {
+        // Ground-projected camera forward for `Vec3::new(0.0, 8.6, 11.2)` looking at the
+        // arena, and the screen-right that goes with it.
+        let (fwd, right) = (Vec2::new(0.0, -1.0), Vec2::new(1.0, 0.0));
+        let facing = Vec2::new(0.0, -1.0); // toward the foes
+        let toward_cam = -facing.dot(fwd);
+        let screen_right = facing.dot(right);
+        assert_eq!(
+            DIRS[dir_index(Vec2::new(screen_right, toward_cam))],
+            "north",
+            "a hero squared up on the enemy line is drawn from behind"
+        );
+    }
+
+    /// So the pose is overridden to a FRONT three-quarter, angled inward. Both halves
+    /// matter: front, or the class is unreadable; angled, or the line reads as four
+    /// people looking at the viewer instead of a formation.
+    #[test]
+    fn a_battle_hero_is_drawn_from_the_front_and_turned_inward() {
+        let pose = |x: f32| if x <= 0.0 { 1usize } else { 7usize };
+        for x in [-2.7f32, -1.0, 0.0, 1.0, 2.7] {
+            let name = DIRS[pose(x)];
+            assert!(
+                name.starts_with("south"),
+                "a hero at x={x} is drawn as `{name}`, which is not a face"
+            );
+            assert_ne!(name, "south", "dead-front is `face_cam`'s pose, not the stance");
+        }
+        assert_eq!(DIRS[pose(-2.7)], "south-east", "the left of the line turns right");
+        assert_eq!(DIRS[pose(2.7)], "south-west", "the right of the line turns left");
+    }
+}
+
+#[cfg(test)]
+mod simultaneous_turn_tests {
+    use super::*;
+
+    /// Every hero that acts must be able to animate. `fire_order` builds no command at
+    /// all for an aimed order with no target, so the set of kinds that need one has to be
+    /// the same on both sides: a kind `needs_a_target` misses is an order thrown away in
+    /// silence, and one it over-claims is an order that never fires.
+    #[test]
+    fn the_aimed_orders_are_the_ones_that_need_aiming() {
+        for kind in [QueuedKind::Attack, QueuedKind::Skill("power_strike")] {
+            assert!(needs_a_target(kind), "{kind:?} builds no command without a target");
+        }
+        for kind in [QueuedKind::Defend, QueuedKind::Flee, QueuedKind::Hold] {
+            assert!(!needs_a_target(kind), "{kind:?} is not aimed and must still fire");
+        }
     }
 }
