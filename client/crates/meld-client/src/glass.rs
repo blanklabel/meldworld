@@ -159,6 +159,23 @@ pub fn hud(width: Val) -> impl Bundle {
     )
 }
 
+/// **THE BLINKING CARET FOR A FOCUSED TEXT FIELD.** One place, because a caret that is
+/// present in one field and absent in the next is how a player learns that only some boxes
+/// can be typed into — which is the opposite of what a text field is for.
+///
+/// A blink rather than a static underscore: this UI has no focus ring and no system caret,
+/// so a still `_` is just another glyph in the string. Movement is the whole signal.
+pub fn caret(elapsed: f32, focused: bool) -> &'static str {
+    if focused && (elapsed * CARET_HZ).fract() < 0.5 {
+        "|"
+    } else {
+        ""
+    }
+}
+
+/// Blinks per second. Slow enough not to nag, fast enough to read as a cursor.
+const CARET_HZ: f32 = 1.6;
+
 /// A box nested inside a panel — a hero cell, a shop row, a stat block. `focused`
 /// brightens its edge; it is a parameter rather than a component the caller adds on
 /// top, because a second `BorderColor` in the same bundle is a runtime panic.
@@ -403,5 +420,28 @@ mod tests {
         let nav = (w * COL_NAV / 100.0).max(COL_NAV_MIN);
         let detail = (w * COL_DETAIL / 100.0).max(COL_DETAIL_MIN);
         assert!(w - nav - detail > 200.0, "main must survive a narrow window");
+    }
+}
+
+#[cfg(test)]
+mod caret_tests {
+    use super::*;
+
+    /// A caret has to BLINK — an unfocused field never shows one, and a focused one shows
+    /// it for about half of every cycle. A still glyph is another character in the string,
+    /// which in a UI with no focus ring is exactly the thing that made the name field read
+    /// as a label.
+    #[test]
+    fn a_caret_is_only_ever_on_the_focused_field_and_it_moves() {
+        let period = 1.0 / CARET_HZ;
+        for step in 0..24 {
+            let t = period * (step as f32) / 12.0;
+            assert_eq!(caret(t, false), "", "an unfocused field drew a cursor at t={t}");
+        }
+        let on = (0..24).filter(|s| !caret(period * (*s as f32) / 24.0, true).is_empty()).count();
+        assert!(
+            (10..=14).contains(&on),
+            "the caret was visible for {on}/24 of a cycle — that is a flicker or a stall"
+        );
     }
 }

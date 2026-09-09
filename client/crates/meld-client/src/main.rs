@@ -347,9 +347,12 @@ fn main() {
                 city::seed_party_from_account,
                 city::prompt_party_if_unset,
                 city::party_panel,
-                city::party_panel_buttons,
-                city::loadout_buttons,
-                city::loadout_name_input,
+                (
+                    city::party_panel_buttons,
+                    city::loadout_buttons,
+                    city::loadout_name_input,
+                    city::loadout_name_caret,
+                ),
                 city::yard_rename_input,
                 city::party_panel_refresh,
                 (
