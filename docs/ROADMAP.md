@@ -2584,10 +2584,16 @@ design for this epic: [`proposals/worldgen-wg.md`](proposals/worldgen-wg.md).
 
 Make time in the field a living, dangerous place worth screenshotting.
 
-- [ ] **WG-11 — The world is a maze you hold open.** 🟡 *Stages -1 through 6 landed
-  (#339-#341, #344); links, the prison end-game and wall-density tuning remain —
+- [ ] **WG-11 — The world is a maze you hold open.** 🟡 *Stages -1 through **9** landed
+  (#339-#341, #344, #353, #355-#358, #360-#368, #377, #380); links and the prison
+  end-game remain —
   [`proposals/the-world-is-a-maze.md`](proposals/the-world-is-a-maze.md). Owner's direction;
-  supersedes `WG-7`'s ROUTES half and absorbs `WG-8` wholesale.* Reported from play, after
+  supersedes `WG-7`'s ROUTES half and absorbs `WG-8` wholesale.* ⚠️ **Wall density is no
+  longer "tuning" — it is bounded by the MOVER**, and stage 9 measured where: at
+  `maze_radial_scale_cap` 48 a creature's mean excursion falls to 2.07 of a 9.0 leash, i.e.
+  it stops walking. The cap sits at **40**, one step under that ceiling, so the next
+  increment of density has to be bought by making creatures steer better rather than by
+  raising the number. Reported from play, after
   `WG-6` landed: *"it doesn't feel maze like at all… just feels like weird rings on a map
   with some paths through… nothing should really be a ring at all particularly now that
   biomes are cells."* Correct on both counts, and the cause is structural: **cells decide
