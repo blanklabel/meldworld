@@ -780,8 +780,7 @@ pub(crate) fn lobby_input(
         // No `LobbyLeave` sent: there is nothing to leave yet, and telling the server you
         // left a lobby you were never in is a message that means nothing.
         if keys.just_pressed(KeyCode::Escape) {
-            lobby.code_input.clear();
-            next.set(Screen::City);
+            leave_lobby_state(&mut lobby, &mut next);
             return;
         }
         // Not in a lobby yet: create one, or type a code and join.
@@ -821,13 +820,42 @@ pub(crate) fn lobby_input(
     }
     if keys.just_pressed(KeyCode::Escape) {
         net.0.send(ClientCmd::LobbyLeave);
-        lobby.in_lobby = false;
-        lobby.code_input.clear();
-        next.set(Screen::City);
+        leave_lobby_state(&mut lobby, &mut next);
     }
 }
 
+/// Drop every trace of the lobby and go back to the city.
+///
+/// ⚠️ **`my_ready` is the one that was being left behind.** Both exits cleared `in_lobby`
+/// and `code_input` and neither cleared the ready flag, so it survived leaving: join a
+/// second lobby and the client believed you had already readied up, showed Ready as
+/// toggled, and the next `[R]` sent `ready: false` — un-readying you in a lobby you had
+/// never readied in. Shared by the key and the button so a third exit cannot forget again.
+fn leave_lobby_state(lobby: &mut LobbyData, next: &mut NextState<Screen>) {
+    lobby.in_lobby = false;
+    lobby.code_input.clear();
+    lobby.my_ready = false;
+    next.set(Screen::City);
+}
+
 #[allow(clippy::type_complexity)]
+/// Which lobby buttons apply right now: Create before you are in one, Ready once in,
+/// Start only for the host — and **LEAVE IN BOTH STATES**.
+///
+/// That last one is the way out of the SCREEN rather than out of a lobby, which is what a
+/// player who opened co-op by mistake reaches for, before they have joined anything. It is
+/// pulled out of the render loop so `a_player_can_always_leave_the_lobby_screen` can hold
+/// it: the rule was a one-line arm inside a `for` over `Node`s, where nothing could reach
+/// it, and it had already been wrong once.
+pub(crate) fn lobby_button_visible(act: LobbyAct, in_lobby: bool, host_is_me: bool) -> bool {
+    match act {
+        LobbyAct::Create => !in_lobby,
+        LobbyAct::Ready => in_lobby,
+        LobbyAct::Leave => true,
+        LobbyAct::Start => in_lobby && host_is_me,
+    }
+}
+
 pub(crate) fn render_lobby(
     lobby: Res<LobbyData>,
     session: Res<Session>,
@@ -838,15 +866,7 @@ pub(crate) fn render_lobby(
     // you're in a lobby; Ready/Leave once in; Start only for the host.
     let host_is_me = lobby.host == session.player_id;
     for (btn, mut node) in &mut btns {
-        let show = match btn.0 {
-            LobbyAct::Create => !lobby.in_lobby,
-            LobbyAct::Ready => lobby.in_lobby,
-            // LEAVE is the way out of the SCREEN, not only out of a lobby — it is what a
-            // player who opened co-op by mistake reaches for, and that is before they have
-            // joined anything.
-            LobbyAct::Leave => true,
-            LobbyAct::Start => lobby.in_lobby && host_is_me,
-        };
+        let show = lobby_button_visible(btn.0, lobby.in_lobby, host_is_me);
         node.display = if show { Display::Flex } else { Display::None };
     }
     let Ok(mut t) = q.single_mut() else { return };
@@ -909,9 +929,7 @@ pub(crate) fn lobby_buttons(
                 if lobby.in_lobby {
                     net.0.send(ClientCmd::LobbyLeave);
                 }
-                lobby.in_lobby = false;
-                lobby.code_input.clear();
-                next.set(Screen::City);
+                leave_lobby_state(&mut lobby, &mut next);
             }
         }
     }
@@ -1144,6 +1162,53 @@ mod tests {
     }
 
     use super::*;
+
+    /// **A PLAYER CAN ALWAYS LEAVE THE LOBBY SCREEN.** Leave was gated on `in_lobby`, so
+    /// opening Co-op and changing your mind before creating or joining left exactly one
+    /// button on screen (Create). Fixed in `#374`; held here, because the rule lived as a
+    /// one-line arm inside a `for` over `Node`s where no test could reach it.
+    #[test]
+    fn a_player_can_always_leave_the_lobby_screen() {
+        for in_lobby in [false, true] {
+            for host_is_me in [false, true] {
+                assert!(
+                    lobby_button_visible(LobbyAct::Leave, in_lobby, host_is_me),
+                    "no way out at in_lobby={in_lobby} host={host_is_me}"
+                );
+            }
+        }
+    }
+
+    /// The rest of the rule, so widening Leave did not quietly widen everything.
+    #[test]
+    fn the_other_lobby_buttons_still_follow_the_state() {
+        assert!(lobby_button_visible(LobbyAct::Create, false, false));
+        assert!(!lobby_button_visible(LobbyAct::Create, true, false));
+        assert!(!lobby_button_visible(LobbyAct::Ready, false, false));
+        assert!(lobby_button_visible(LobbyAct::Ready, true, false));
+        // Start is the host's alone, and only once there is a lobby to start.
+        assert!(lobby_button_visible(LobbyAct::Start, true, true));
+        assert!(!lobby_button_visible(LobbyAct::Start, true, false));
+        assert!(!lobby_button_visible(LobbyAct::Start, false, true));
+    }
+
+    /// **LEAVING FORGETS YOU WERE READY.** `my_ready` survived both exits, so the next
+    /// lobby you joined thought you had already readied up — and the next `[R]` sent
+    /// `ready: false`, un-readying you in a lobby you had never readied in.
+    #[test]
+    fn leaving_a_lobby_clears_the_ready_flag() {
+        let mut lobby = LobbyData {
+            in_lobby: true,
+            my_ready: true,
+            code_input: "ABC123".into(),
+            ..Default::default()
+        };
+        let mut next = NextState::<Screen>::default();
+        leave_lobby_state(&mut lobby, &mut next);
+        assert!(!lobby.my_ready, "a stale ready flag follows you into the next lobby");
+        assert!(!lobby.in_lobby);
+        assert!(lobby.code_input.is_empty());
+    }
 
     fn keys(typed: &[KeyCode]) -> LoginKeys<'_> {
         LoginKeys { tab: false, backspace: false, shift: false, typed }
