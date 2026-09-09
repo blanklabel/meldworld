@@ -1179,6 +1179,17 @@ pub struct WorldGen {
     pub wet_share_tundra: f64,
     pub wet_share_ashfall: f64,
     pub wet_share_desert: f64,
+    pub amber_wood_minimaze_chance: f64,
+    pub forest_minimaze_chance: f64,
+    pub nestiphian_cradle_minimaze_chance: f64,
+    pub tundra_minimaze_chance: f64,
+    pub mire_minimaze_chance: f64,
+    pub ashfall_minimaze_chance: f64,
+    pub seized_engine_minimaze_chance: f64,
+    pub field_minimaze_chance: f64,
+    pub hearth_plains_minimaze_chance: f64,
+    pub desert_minimaze_chance: f64,
+    pub seraphic_oubliette_minimaze_chance: f64,
     pub minimaze_chance: f64,
     pub minimaze_grid: usize,
     pub minimaze_inset: f64,
@@ -1238,6 +1249,11 @@ pub struct WorldGen {
     /// its authored `obstacles_for_biome` list.
     pub fill_signature_share: f64,
     /// Fallback fill density for any biome without its own multiplier.
+    pub amber_wood_obstacle_mult: f64,
+    pub nestiphian_cradle_obstacle_mult: f64,
+    pub seized_engine_obstacle_mult: f64,
+    pub hearth_plains_obstacle_mult: f64,
+    pub seraphic_oubliette_obstacle_mult: f64,
     pub maze_obstacle_mult: f64,
     /// Cap on the radial density compensation: a deep area's arc is much wider than the
     /// corridor, so its obstacle count is scaled up by the arc-stretch (min 1.0) to keep

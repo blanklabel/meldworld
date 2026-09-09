@@ -2672,6 +2672,22 @@ Make time in the field a living, dangerous place worth screenshotting.
     - ⚠️ **Deferred deliberately:** the `sector_bounds` bearing warp. This item's own text says
       the masses defuse it ("an exact radial edge stops mattering… the warp may never be
       needed"), and warping it re-rolls every seeded world.
+    - ✅ **A BIOME MUST SAY HOW IT MAZES** (follow-up, reported from play as *"the amount of
+      trees in the fall biome doesn't really feel like a forest"*). Five of the eleven biomes
+      had NO entry in the density table and silently drew the fallback — including
+      `seraphic_oubliette`, the exclusive band the whole walk out is pointed at. Measured,
+      `amber_wood` (a fall WOOD, with its own amber trees authored) drew **11.8 props per
+      1000 u² against open grassland's 12.5**: an autumn forest thinner than a meadow.
+      Now 17.1, beside forest's 17.3.
+      - And the MINIMAZE — stage 9's fourth mazing primitive — shipped **uniform at one rate
+        everywhere**, which is the one thing this item's own rule forbids. It is per-biome now:
+        a wood threads (0.55), the swamp's water already mazes it (0.22), ranges do ashfall
+        (0.10), a plain stays open (0.04) and the end-of-world arena has none, because a maze
+        around the last fight hides the thing the walk was for. Forest interiors went 458 →
+        1116 pieces, desert 135 → 38. Explorability held at 97.7 / 98.6 / 99.3%.
+      - `every_biome_says_how_it_mazes` reads the source for both tables, because "somebody
+        made a decision here" is not observable from a function's output — a biome deliberately
+        set to the fallback VALUE is fine, one that was never asked about is not.
     - ⚠️ **The lesson worth carrying:** the wet share reuses `Basin`, so it INHERITS every rule a
       basin already had — the sea field, peaks, ranges, the trail, creatures, nodes — and it
       shipped inheriting none of them. Each came back as a gate failure. When a new feature
