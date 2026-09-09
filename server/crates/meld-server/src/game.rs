@@ -3866,10 +3866,19 @@ impl WorldActor {
         let touched = &inst.arena.monsters[monster_idx];
         let opening = if touched.held_for > 0.0 {
             meld_battle::Opening::Surprise
-        } else if touched.hunting {
-            meld_battle::Opening::Ambush
         } else {
-            meld_battle::Opening::Rolled
+            // WHOSE BACK IT WAS. Read off the two facings rather than off aggro: a
+            // creature's aggro radius is an order of magnitude wider than touch range,
+            // so `hunting` answers yes for nearly every fight in the world and would
+            // make every one of them an ambush.
+            let hero = inst.arena.avatar(&toucher);
+            match hero.map(|a| {
+                meld_world::approach_of(&a.position, a.facing, &touched.position, touched.facing)
+            }) {
+                Some(meld_world::Approach::AtYourBack) => meld_battle::Opening::Ambush,
+                Some(meld_world::Approach::AtItsBack) => meld_battle::Opening::Surprise,
+                _ => meld_battle::Opening::Rolled,
+            }
         };
         let mut battle = build_battle(
             battle_id.clone(),
