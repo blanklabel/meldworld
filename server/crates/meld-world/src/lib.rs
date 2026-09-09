@@ -9221,26 +9221,68 @@ impl Arena {
                 }
                 let nx = if radial_half > 0.0 { nx } else { nx.max(x_min.max(m.area_min_x)).min(x_max.min(m.area_max_x)) };
                 let ny = ny.max(-lateral).min(lateral);
-                // Creatures don't walk through terrain either (slide per axis), and
-                // they stay on their own elevation (never wander off a terrace edge).
-                let cand = Position::new(nx, ny);
-                let axis_x = Position::new(nx, m.position.y);
-                let axis_y = Position::new(m.position.x, ny);
-                if !obstacles.blocks(&cand, 0.5)
-                    && dry(&cand)
-                    && area_level_at(areas, &corridorize(&cand)) == m.elevation
-                {
-                    m.position = cand;
-                } else if !obstacles.blocks(&axis_x, 0.5)
-                    && dry(&axis_x)
-                    && area_level_at(areas, &corridorize(&axis_x)) == m.elevation
-                {
-                    m.position.x = nx;
-                } else if !obstacles.blocks(&axis_y, 0.5)
-                    && dry(&axis_y)
-                    && area_level_at(areas, &corridorize(&axis_y)) == m.elevation
-                {
-                    m.position.y = ny;
+                // ⚠️ **A CREATURE STEERS AROUND A TREE; IT DOES NOT GRIND ALONG IT.**
+                //
+                // This tried the step, then WORLD-X, then WORLD-Y, then gave up — and the
+                // comment above it already admitted the outcome: "a destination can walk a
+                // creature into a rock, where the per-axis slide leaves it grinding against the
+                // same tree for the rest of the dive." Two things make that worse than it
+                // sounds. The world axes have nothing to do with the way the creature is
+                // FACING, so in the radial fan a slide is usually near-perpendicular to where
+                // it wanted to go; and in cover both axes are blocked at once, so the creature
+                // simply stops until its leg times out and it re-rolls into the same thicket.
+                //
+                // Measured, that is what capped how thick this world may be: wander collapses
+                // to 2.03 (of a 9.0 leash) at `maze_radial_scale_cap` 32 and 1.81 at 40, where
+                // ~1.9 means "not moving at all" — so the forest could not be made to look like
+                // a forest because its animals could not walk through one.
+                //
+                // A FAN around the desired heading instead: straight on first, then widening
+                // either side. That is the same thing an animal does at a trunk, it keeps
+                // whatever progress the heading still makes, and it costs a handful of hashed
+                // lookups rather than a path search.
+                let free = |px: f64, py: f64| -> bool {
+                    let q = Position::new(px, py);
+                    !obstacles.blocks(&q, 0.5)
+                        && dry(&q)
+                        && area_level_at(areas, &corridorize(&q)) == m.elevation
+                };
+                // Re-clamps each candidate the same way the straight step was clamped, or a
+                // steered creature could round its own area's radius band.
+                let settle = |hx: f64, hy: f64| -> (f64, f64) {
+                    let (mut px, mut py) = (m.position.x + hx * step, m.position.y + hy * step);
+                    if radial_half > 0.0 {
+                        let r = (px * px + py * py).sqrt();
+                        let (r_lo, r_hi) = (m.area_min_x.max(0.0), m.area_max_x);
+                        if r > 1e-6 && (r < r_lo || r > r_hi) {
+                            let rc = r.clamp(r_lo, r_hi);
+                            px *= rc / r;
+                            py *= rc / r;
+                        }
+                    } else {
+                        px = px.max(x_min.max(m.area_min_x)).min(x_max.min(m.area_max_x));
+                    }
+                    (px, py.max(-lateral).min(lateral))
+                };
+                let mut moved = false;
+                // 0, ±40°, ±75°, ±110° — past a right angle it is going round the back of the
+                // obstacle, which is what gets a body out of a pocket.
+                for off in [0.0f64, 0.7, -0.7, 1.31, -1.31, 1.92, -1.92] {
+                    let (c, sn) = (off.cos(), off.sin());
+                    let (hx, hy) = (dx * c - dy * sn, dx * sn + dy * c);
+                    let (px, py) = if off == 0.0 { (nx, ny) } else { settle(hx, hy) };
+                    if free(px, py) {
+                        m.position = Position::new(px, py);
+                        moved = true;
+                        break;
+                    }
+                }
+                // Boxed in on every heading: re-roll the destination NOW rather than pushing at
+                // the same wall until the leg times out. It costs one draw and it is the whole
+                // difference between a creature that is briefly stuck and one that is stuck for
+                // the dive.
+                if !moved {
+                    m.wander_to = None;
                 }
             }
         }
