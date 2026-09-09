@@ -271,6 +271,33 @@ pub(crate) fn mock_battle_setup(
 ///
 /// `MELD_FX=all` walks every element in turn on a cadence, which is the one run that proves
 /// each branch of the shader draws something — and something *different*.
+/// `MELD_OPENING=ambush|surprise`: re-raise the opening card just under its own life, so
+/// a capture at any moment catches it. See [`crate::flags::battle_opening_flag`].
+pub(crate) fn mock_battle_opening(
+    time: Res<Time>,
+    feel: Res<crate::feel::BattleFeel>,
+    mut open: ResMut<crate::battle::BattleOpening>,
+    mut next_at: Local<f32>,
+) {
+    let Some(spec) = crate::flags::battle_opening_flag() else {
+        return;
+    };
+    if !battle_mockup_flag() {
+        return;
+    }
+    let now = time.elapsed_secs();
+    if now < *next_at {
+        return;
+    }
+    // Just under the card's own TTL, for the same reason the FX tour re-fires under the
+    // burst's: a gap in the cadence reads as a broken card.
+    *next_at = now + (feel.opening_ttl * 0.85).max(0.1);
+    open.raise(&spec);
+    if open.kind.is_none() {
+        warn!("MELD_OPENING: `{spec}` is not `ambush` or `surprise`");
+    }
+}
+
 pub(crate) fn mock_battle_fx(
     time: Res<Time>,
     mut fx: ResMut<crate::battle_fx::BattleFx>,

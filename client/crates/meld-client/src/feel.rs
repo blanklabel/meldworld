@@ -75,6 +75,12 @@ pub(crate) struct BattleFeel {
     /// …and how fast it quickens. The QUICKENING is the tell: the beat itself says
     /// "soon" without needing a cast bar over the arena.
     pub charge_hz_ramp: f32,
+    /// How long the AMBUSHED!/SURPRISE! card holds at the bell. Wants to match
+    /// `[battle] open_grace_ms` (2.0 s) — the card is what that beat is FOR, so a card
+    /// that leaves early wastes the pause and one that outstays it covers the first turn.
+    /// It cannot be read from balance (this workspace has no loader), which is exactly
+    /// why the relationship is written down here.
+    pub opening_ttl: f32,
 }
 
 impl Default for BattleFeel {
@@ -110,6 +116,7 @@ impl Default for BattleFeel {
             charge_swell: 0.14,
             charge_hz_base: 4.0,
             charge_hz_ramp: 3.0,
+            opening_ttl: 2.0,
         }
     }
 }
@@ -160,6 +167,7 @@ impl BattleFeel {
                 "charge_swell" => self.charge_swell = v,
                 "charge_hz_base" => self.charge_hz_base = v,
                 "charge_hz_ramp" => self.charge_hz_ramp = v,
+                "opening_ttl" => self.opening_ttl = v,
                 _ => warn!("MELD_FEEL: no such knob `{key}`"),
             }
         }
@@ -193,6 +201,7 @@ mod tests {
             ("fx_ttl", f.fx_ttl),
             ("wash_ttl", f.wash_ttl),
             ("shake_ttl", f.shake_ttl),
+            ("opening_ttl", f.opening_ttl),
         ] {
             assert!(ttl > 0.0, "{name} must be positive, got {ttl}");
         }
