@@ -1000,6 +1000,20 @@ struct OwInterp {
     seen_seq: u64,
     /// entity id -> (previous sample, current sample)
     states: HashMap<String, (InterpSample, InterpSample)>,
+    /// **THE LOCAL PLAYER'S WALK SPEED, SMOOTHED** — units per second, an EMA over the
+    /// displacement between the last two snapshots.
+    ///
+    /// Differentiating two samples for the velocity to extrapolate along is what makes
+    /// the local avatar rubber-band while everything else moves cleanly: the divisor is
+    /// the wall-clock gap between two RECEIPTS, so ordinary network jitter (two frames
+    /// arriving 40 ms apart, then 160) swings the derived speed by a factor of four, and
+    /// the target it throws forward swings with it. Smoothing the MAGNITUDE and taking
+    /// the DIRECTION from the live steering vector removes both error terms: the
+    /// direction is exact and the magnitude no longer reads the jitter.
+    ///
+    /// It also falls to ~0 within a couple of ticks when the walk is blocked, which is
+    /// what stops the avatar extrapolating into a tree and being snapped back out of it.
+    speed: f32,
 }
 
 /// Render remote entities this many seconds behind the latest snapshot, so we
@@ -1253,6 +1267,12 @@ struct LevelUpRoot;
 struct UnlocksRes {
     owned: Vec<String>,
     party_slots: i32,
+    /// Whether `owned`/`party_slots` are the SERVER's answer yet, rather than the empty
+    /// default. It arrives over the websocket while the hero roster arrives over HTTP, so
+    /// which lands first is a race — and anything that reads the unlock set before it has
+    /// landed reads "this account owns nothing and has one party slot", which is
+    /// indistinguishable from a brand-new player.
+    loaded: bool,
     /// PG-2: the account's all-time deepest distance — the Vanguard Wall's own number.
     /// It no longer gates a departure point: the authored deep hubs are retired and a
     /// `BD-5` forward town is its own proof you stood there (`meld_proto::hubs`).

@@ -158,6 +158,7 @@ pub(crate) fn pump_net(
                 roster.party_slots = party_slots;
                 announce.unlocks.owned = owned;
                 announce.unlocks.party_slots = party_slots;
+                announce.unlocks.loaded = true;
                 announce.unlocks.deepest_ever = deepest_ever;
                 if banner {
                     announce.unlocks.pending.extend(newly);

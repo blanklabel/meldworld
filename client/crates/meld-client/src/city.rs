@@ -3128,7 +3128,12 @@ pub(crate) fn seed_party_from_account(
     if *done || session.party_from_flags {
         return;
     }
-    if !hero_names.loaded {
+    // ⚠️ **BOTH HALVES, OR THE SEED SILENTLY THROWS THE PARTY AWAY.** The roster comes
+    // over HTTP and the unlock set over the websocket, so either can land first — and
+    // running against an unloaded `UnlocksRes` reads "owns nothing, one slot", which
+    // rewrites every saved class to Explorer and truncates the party to a single hero.
+    // It fires ONCE, so the wrong answer is the one that sticks for the session.
+    if !hero_names.loaded || !unlocks.loaded {
         return;
     }
     *done = true;
@@ -3143,7 +3148,7 @@ pub(crate) fn seed_party_from_account(
             .collect()
     };
     let slots = (unlocks.party_slots.max(1) as usize).min(4);
-    let saved: Vec<String> = hero_names
+    let mut saved: Vec<String> = hero_names
         .classes
         .iter()
         .take(slots)
@@ -3155,6 +3160,13 @@ pub(crate) fn seed_party_from_account(
             }
         })
         .collect();
+    // Pad a roster recorded before the account earned its later slots, so the restored
+    // party is exactly as wide as the slots it holds — the server normalizes `enter_maze`
+    // to that width anyway, and a short one leaves the builder drawing empty cards for
+    // heroes the dive is going to field regardless.
+    if !saved.is_empty() {
+        saved.resize(slots, "explorer".to_string());
+    }
     if !saved.is_empty() && saved.iter().any(|c| !c.is_empty()) {
         session.party = saved;
         session.party_chosen = true;
@@ -3178,14 +3190,17 @@ pub(crate) fn seed_party_from_account(
 /// first dive is a team someone chose rather than the newcomer default.
 pub(crate) fn prompt_party_if_unset(
     hero_names: Res<AccountHeroNames>,
+    unlocks: Res<UnlocksRes>,
     autoplay: Res<Autoplay>,
     session: Res<Session>,
     mut city: ResMut<CityUi>,
     mut asked: Local<bool>,
 ) {
-    // Wait for the roster fetch, or a brand-new account looks unset and gets asked
-    // before the answer has even arrived.
-    if *asked || !hero_names.loaded || autoplay.0 || session.party_from_flags {
+    // Wait for the roster fetch AND the unlock set, or a brand-new account looks unset
+    // and gets asked before the answer has even arrived. Both, because
+    // `seed_party_from_account` needs both before it can set `party_chosen` — asking on
+    // the roster alone re-prompts a returning player whose unlocks were still in flight.
+    if *asked || !hero_names.loaded || !unlocks.loaded || autoplay.0 || session.party_from_flags {
         return;
     }
     *asked = true;

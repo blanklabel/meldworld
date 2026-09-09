@@ -508,6 +508,7 @@ pub(crate) fn mock_overlay_setup(
             roster.locked = crate::overlays::locked_roster_lines(&owned);
             roster.party_slots = meld_proto::unlocks::party_slots(&owned);
             unlocks.owned = owned;
+            unlocks.loaded = true;
             unlocks.hold = true;
         }
     }
