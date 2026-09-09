@@ -728,6 +728,25 @@ pub(crate) fn render_loot_report(
                     TextFont { font_size: FontSize::Px(20.0), ..default() },
                     TextColor(Color::srgb(0.85, 0.92, 1.0)),
                 ));
+                // WHY it is that number. Punching up pays more and farming ground you have
+                // outgrown pays less, and neither is learnable from a total — so the base
+                // and each named multiplier get their own line, gains in green and the
+                // penalty in amber, which is the same warm/cool split the condition tints
+                // use for "this is being done TO you".
+                if !report.xp_bonuses.is_empty() {
+                    p.spawn((
+                        Text::new(format!("   base {} XP", report.xp_base)),
+                        TextFont { font_size: FontSize::Px(14.0), ..default() },
+                        TextColor(glass::DIM),
+                    ));
+                    for (label, pct) in &report.xp_bonuses {
+                        p.spawn((
+                            Text::new(format!("   {label}  {pct:+}%")),
+                            TextFont { font_size: FontSize::Px(15.0), ..default() },
+                            TextColor(if *pct >= 0 { glass::GOOD } else { glass::WARN }),
+                        ));
+                    }
+                }
                 // What you hauled out, as a row per stack: the thing's own icon, then
                 // how many. A tally is the payoff of the whole dive, so it should read
                 // like a loot list rather than a paragraph of text.
@@ -1245,6 +1264,8 @@ mod report_cost_tests {
     fn a_fight_that_cost_you_a_hero_says_so_on_the_card() {
         let lines = card_lines(LootReport {
             active: true,
+            xp_base: 0,
+            xp_bonuses: Vec::new(),
             title: "VICTORY".to_string(),
             xp: Some(120),
             chits: 4,
@@ -1267,6 +1288,8 @@ mod report_cost_tests {
     fn raising_a_card_never_inherits_the_last_ones_bill() {
         let mut card = LootReport {
             active: true,
+            xp_base: 0,
+            xp_bonuses: Vec::new(),
             title: "VICTORY".to_string(),
             xp: Some(120),
             chits: 9,
@@ -1288,6 +1311,8 @@ mod report_cost_tests {
     fn a_clean_win_carries_no_warning() {
         let lines = card_lines(LootReport {
             active: true,
+            xp_base: 0,
+            xp_bonuses: Vec::new(),
             title: "VICTORY".to_string(),
             xp: Some(120),
             chits: 4,
@@ -1329,6 +1354,8 @@ mod the_fight_finishes_on_its_own_screen {
     fn victory(gate: bool) -> LootReport {
         LootReport {
             active: true,
+            xp_base: 0,
+            xp_bonuses: Vec::new(),
             title: "VICTORY".to_string(),
             xp: Some(120),
             chits: 4,

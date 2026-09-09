@@ -1833,6 +1833,11 @@ pub struct MonsterSpawn {
     /// Recomputed every step rather than latched: a creature that lost interest is not
     /// lying in wait, and a stale `true` would ambush on behalf of a hunt that ended.
     pub hunting: bool,
+    /// Which way this creature is looking, as a unit vector — the last direction it
+    /// actually stepped. Unlike an avatar's, this IS the achieved heading: a creature
+    /// has no intent to distinguish from its motion, and one grinding against a rock is
+    /// looking along the rock.
+    pub facing: (f64, f64),
     /// Seconds this creature remains PINNED by a Psyker (CL-2), counted down by
     /// [`Arena::step_creatures_with_aggro`]. A pinned creature does not move, chase or
     /// skirmish — but it is still touchable and still fights when reached, because the
@@ -1943,6 +1948,7 @@ impl MonsterSpawn {
             pack: String::new(),
             pack_home: position,
             hunting: false,
+            facing: (-1.0, 0.0),
             held_for: 0.0,
             owner: String::new(),
             bounty: String::new(),
@@ -2621,6 +2627,82 @@ pub struct Avatar {
     pub elevation: u8,
     pub last_input_seq: u32,
     pub max_speed_tiles_per_sec: f64,
+    /// **WHICH WAY THIS AVATAR IS LOOKING**, as a unit vector — the last direction it
+    /// was ASKED to walk, not the direction it managed to move. A player pressing into
+    /// a tree is facing the tree; reading it off the achieved displacement instead has
+    /// them facing sideways along whatever the slide let through, which is exactly the
+    /// moment "did that come at my back" gets asked.
+    ///
+    /// Never decayed: standing still, you are still facing wherever you stopped facing.
+    pub facing: (f64, f64),
+}
+
+/// How a fight was WALKED INTO, from the two facings involved (`CR-17`).
+///
+/// The rule is about BACKS, not about interest: something that reached you from behind
+/// ambushed you, and something you reached from behind is one you got the drop on.
+/// Aggro is not the question — a creature's aggro radius is an order of magnitude wider
+/// than touch range, so "is it interested in me" answers yes for nearly every fight and
+/// cannot separate the two cases.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Approach {
+    /// It came at the hero's back.
+    AtYourBack,
+    /// The hero came at its back.
+    AtItsBack,
+    /// Face to face, or close enough that neither side was caught out.
+    Even,
+}
+
+/// How far behind `facing` (looking from `at`) the point `other` lies: `1.0` directly in
+/// front, `-1.0` directly behind. A zero-length input reads as "in front", so a body that
+/// has never moved is never treated as having been snuck up on.
+fn behindness(facing: (f64, f64), at: &Position, other: &Position) -> f64 {
+    let (fx, fy) = facing;
+    let fm = (fx * fx + fy * fy).sqrt();
+    let (dx, dy) = (other.x - at.x, other.y - at.y);
+    let dm = (dx * dx + dy * dy).sqrt();
+    if fm < 1e-6 || dm < 1e-6 {
+        return 1.0;
+    }
+    (fx * dx + fy * dy) / (fm * dm)
+}
+
+/// How far off straight-ahead a body has to be to count as "behind" it: a rear arc a
+/// little wider than a hemisphere (dot < -0.35 is more than ~110° off the facing).
+///
+/// Deliberately NOT a hemisphere. A grazing pass at exactly 90° is a back-stab from
+/// neither side, and with the boundary at 0.0 every approach in the world resolves to an
+/// ambush or a surprise and none of them to [`Approach::Even`] — so the roll, which is
+/// what makes an ordinary fight's order happen rather than be computed, would never open
+/// another fight.
+const BACK_ARC_COS: f64 = -0.35;
+
+/// Whose back the other one arrived at. **Neither** when the pair is anywhere near
+/// face-on; the STRONGER angle wins when both read as a back, which is the one case a
+/// single comparison cannot settle (two bodies backing into each other).
+pub fn approach_of(
+    hero_at: &Position,
+    hero_facing: (f64, f64),
+    foe_at: &Position,
+    foe_facing: (f64, f64),
+) -> Approach {
+    // How far behind the hero the creature stands, and vice versa. Lower = deeper round
+    // the other's blind side.
+    let foe_behind_hero = behindness(hero_facing, hero_at, foe_at);
+    let hero_behind_foe = behindness(foe_facing, foe_at, hero_at);
+    match (foe_behind_hero < BACK_ARC_COS, hero_behind_foe < BACK_ARC_COS) {
+        (true, true) => {
+            if foe_behind_hero <= hero_behind_foe {
+                Approach::AtYourBack
+            } else {
+                Approach::AtItsBack
+            }
+        }
+        (true, false) => Approach::AtYourBack,
+        (false, true) => Approach::AtItsBack,
+        (false, false) => Approach::Even,
+    }
 }
 
 /// The generated overworld for one MazeInstance (spike scope): a seeded chain of
@@ -9120,6 +9202,7 @@ impl Arena {
             if mag > 1e-6 {
                 dx /= mag;
                 dy /= mag;
+                m.facing = (dx, dy);
                 let step = speed * dt;
                 // Clamp to the world bounds AND the creature's own area so it stays in
                 // its biome. In the radial fan the area is a RADIUS band ([start_x,
@@ -9726,6 +9809,7 @@ impl Arena {
             elevation: 0,
             last_input_seq: 0,
             max_speed_tiles_per_sec: speed,
+            facing: (1.0, 0.0),
         });
     }
 
@@ -9856,10 +9940,17 @@ impl Arena {
             }
         };
 
+        let heading = {
+            let m = (nx * nx + ny * ny).sqrt();
+            (m > 1e-6).then(|| (nx / m, ny / m))
+        };
         let a = self.avatar_mut(player_id)?;
         a.position = dest;
         a.elevation = new_elev;
         a.last_input_seq = input_seq;
+        if let Some(h) = heading {
+            a.facing = h;
+        }
         Some(a.position)
     }
 
@@ -18567,5 +18658,75 @@ impl Arena {
         }
         self.structures.retain(|s| s.hp > 0);
         Some(ShiftHeld { anchors, inner_radius, outer_radius })
+    }
+}
+
+#[cfg(test)]
+mod approach_tests {
+    use super::*;
+
+    fn at(x: f64, y: f64) -> Position {
+        Position::new(x, y)
+    }
+
+    /// The three cases the fight's opening is made of. A hero walking east into
+    /// something walking west has met it head-on and neither side was caught out — which
+    /// is the case a rule written off aggro can never produce, because a creature that
+    /// close is always interested.
+    #[test]
+    fn a_back_is_what_decides_the_opening_not_interest() {
+        let east = (1.0, 0.0);
+        let west = (-1.0, 0.0);
+        assert_eq!(
+            approach_of(&at(0.0, 0.0), east, &at(5.0, 0.0), west),
+            Approach::Even,
+            "head-on is not an ambush and not a surprise"
+        );
+        assert_eq!(
+            approach_of(&at(0.0, 0.0), east, &at(-5.0, 0.0), east),
+            Approach::AtYourBack,
+            "it closed on the hero from behind"
+        );
+        assert_eq!(
+            approach_of(&at(0.0, 0.0), east, &at(5.0, 0.0), east),
+            Approach::AtItsBack,
+            "the hero walked up behind it"
+        );
+    }
+
+    /// A grazing pass is nobody's back. With the arc set at a hemisphere every encounter
+    /// in the world resolves to an ambush or a surprise, and [`Approach::Even`] — the
+    /// arm that hands the opening to the initiative ROLL — becomes unreachable.
+    #[test]
+    fn a_glancing_angle_is_nobodys_back() {
+        let east = (1.0, 0.0);
+        assert_eq!(
+            approach_of(&at(0.0, 0.0), east, &at(0.0, 5.0), east),
+            Approach::Even,
+            "square abeam is not behind anybody"
+        );
+    }
+
+    /// Two bodies backing into each other is the one pair a single comparison cannot
+    /// settle: both read as a back, so the DEEPER angle takes it.
+    #[test]
+    fn backing_into_each_other_gives_it_to_the_deeper_angle() {
+        let hero = at(0.0, 0.0);
+        let foe = at(-5.0, 0.0);
+        assert_eq!(
+            approach_of(&hero, (1.0, 0.0), &foe, (-1.0, 0.0)),
+            Approach::AtYourBack,
+            "the creature is dead astern of the hero and the hero is only astern of it"
+        );
+    }
+
+    /// A body that has never moved carries a facing all the same, so nothing is ever
+    /// silently treated as having been crept up on because its heading was zero.
+    #[test]
+    fn a_zero_facing_is_never_a_back() {
+        assert_eq!(
+            approach_of(&at(0.0, 0.0), (0.0, 0.0), &at(-5.0, 0.0), (0.0, 0.0)),
+            Approach::Even,
+        );
     }
 }

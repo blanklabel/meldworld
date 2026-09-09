@@ -213,6 +213,21 @@ pub(crate) struct Strolling {
     seed: u32,
 }
 
+/// How far out from the plaza the town is PAVED, and how far inside the beach ramp the
+/// paving stops. `CITY_TIP_REACH` is 34 and `BEACH_BLEND` 14, so a dry margin of 9 keeps
+/// every tile on ground that is flat to within a hand's width — a flat quad laid across
+/// the ramp itself would stair-step down the strand.
+/// The fountain's basin, as a wall. `fantasy-town/fountain-round` at scale 2.2 is about
+/// this wide, and it stands at the origin — the one prop in the plaza every walk crosses.
+const FOUNTAIN_RADIUS: f32 = 2.7;
+
+const PAVED_REACH: f32 = 24.0;
+const PAVED_DRY_MARGIN: f32 = 9.0;
+
+/// `(x, z, half-width)` of each garden left unpaved. South of the plaza, clear of every
+/// district anchor and of where the avatar arrives.
+const CITY_GARDENS: &[(f32, f32, f32)] = &[(-5.5, 16.5, 4.0), (7.5, 13.0, 3.5)];
+
 /// How far from home a stroller ranges, and how fast. Small on purpose: these people are
 /// meant to read as living in the plaza, not crossing it — and a tight radius is also what
 /// keeps them clear of the fountain and the counters without pathfinding around either.
@@ -603,11 +618,30 @@ pub(crate) struct MagitechLight {
     base: f32,
 }
 
+/// **HOW MUCH LIGHT A MONOLITH THROWS, AND HOW FAR.** Sized against the hero's own carried
+/// lamp rather than picked: a fixed street light that a passer-by out-shines is a prop.
+const MONOLITH_LIGHT: f32 = crate::battle::LAMP_STRENGTH * 0.8;
+const MONOLITH_REACH: f32 = crate::battle::LAMP_REACH * 0.85;
+
+/// How much brighter a monolith burns at midnight than at noon. It never goes OUT — the
+/// crystal is lit in daylight too, which is what makes it read as magitech rather than as
+/// a lamp post — so this is a lift on top of its base rather than the whole intensity.
+const MONOLITH_NIGHT_LIFT: f32 = 1.6;
+
 /// Gently pulse the magitech lamps so the hub feels alive (a slow energy breathing).
-pub(crate) fn pulse_magitech(time: Res<Time>, mut q: Query<(&MagitechLight, &mut PointLight)>) {
+pub(crate) fn pulse_magitech(
+    time: Res<Time>,
+    sky: Res<crate::Sky>,
+    mut q: Query<(&MagitechLight, &mut PointLight)>,
+) {
     let t = time.elapsed_secs();
+    // Night lifts them, the same fact `illuminate_players` reads for a carried lamp — one
+    // source for "how dark is it", so the crowd's lamps and the street's monoliths come up
+    // together instead of on two schedules.
+    let night = (1.0 - sky.day).clamp(0.0, 1.0);
+    let lift = 1.0 + night * (MONOLITH_NIGHT_LIFT - 1.0);
     for (m, mut light) in &mut q {
-        light.intensity = m.base * (0.82 + 0.18 * (t * 2.0 + m.phase).sin());
+        light.intensity = m.base * lift * (0.82 + 0.18 * (t * 2.0 + m.phase).sin());
     }
 }
 
@@ -651,32 +685,74 @@ pub(crate) fn city_scene(
     // LAND, not the sea. It used to scale the whole height expression, so at the City's
     // amp of 0 the sea level was multiplied to zero along with the hills.
 
-    // Central plaza (a paved square around the fountain).
-    commands.spawn((
-        CityScene,
-        Mesh3d(meshes.add(road_mesh(13.0, 13.0))),
-        MeshMaterial3d(street_mat.clone()),
-        Transform::from_xyz(0.0, ground_at(0.0, 0.0) + 0.02, 0.0),
-    ));
-    // A spoke from the plaza edge out to each district anchor.
-    for d in CITY_DISTRICTS {
-        let dir = Vec2::new(d.x, d.z);
-        let len = dir.length();
-        if len < 6.0 {
-            continue;
+    // --- THE TOWN IS PAVED, AND THE PAVING IS ITS OWN GEOMETRY. ---
+    //
+    // The ground SHADER draws forest grass under Last City: its city branch has no world
+    // region to ask, so it falls through to `biome_color(0)`. That made the hub a meadow
+    // with a cobbled square in the middle of it — and it is the one surface in the game
+    // that must not move, because a Meld repaints the world's cells and the town is the
+    // place you come back to. Laying the floor as static meshes settles both halves at
+    // once: it is stone because it is the street tile, and it cannot change because
+    // nothing derives it.
+    //
+    // A grid rather than one slab: the shelf ramps down to the waterline over
+    // `BEACH_BLEND`, and a single flat quad across that either floats at the shore or
+    // buries the plaza. Each tile stands on its own `ground_at`, the same rule every prop
+    // and every townsperson here already follows.
+    //
+    // The STRAND is deliberately left bare. Paving stops well inside the ramp, so the
+    // waterfront is sand and the wreck and the dock are standing on a beach rather than
+    // on a road that runs into the sea.
+    let tile = 4.0_f32;
+    let paving = meshes.add(road_mesh(tile, tile));
+    let mut x = -PAVED_REACH;
+    while x <= PAVED_REACH {
+        let mut z = -PAVED_REACH;
+        while z <= PAVED_REACH {
+            if meld_proto::coast::city_sea_depth(x, z) <= -PAVED_DRY_MARGIN
+                && !CITY_GARDENS.iter().any(|(gx, gz, r)| (x - gx).hypot(z - gz) < *r)
+            {
+                commands.spawn((
+                    CityScene,
+                    Mesh3d(paving.clone()),
+                    MeshMaterial3d(street_mat.clone()),
+                    Transform::from_xyz(x, ground_at(x, z) + 0.02, z),
+                ));
+            }
+            z += tile;
         }
-        let n = dir / len;
-        let start = 4.5; // leave the plaza; stop a bit short of the building
-        let seg_len = (len - start - 2.0).max(1.0);
-        let mid = n * (start + seg_len * 0.5);
-        let angle = f32::atan2(-n.y, n.x); // align the quad's local +X with the spoke
+        x += tile;
+    }
+    // …and the gardens, which are the whole reason the paving is a set of tiles that can
+    // be left out rather than a slab. Two of them: a hub of nothing but stone reads as a
+    // car park, and two is enough to say the city grows things without pretending the
+    // Foundry's plaza is a park.
+    let garden_mat = mats.add(StandardMaterial {
+        base_color: Color::srgb(0.82, 0.9, 0.78),
+        base_color_texture: Some(crate::world_render::load_tiled(&assets, "ground/grass_flowers0.png")),
+        perceptual_roughness: 0.97,
+        ..default()
+    });
+    for (gx, gz, r) in CITY_GARDENS {
         commands.spawn((
             CityScene,
-            Mesh3d(meshes.add(road_mesh(seg_len, 3.4))),
-            MeshMaterial3d(street_mat.clone()),
-            Transform::from_xyz(mid.x, ground_at(mid.x, mid.y) + 0.02, mid.y)
-                .with_rotation(Quat::from_rotation_y(angle)),
+            Mesh3d(meshes.add(road_mesh(r * 2.0, r * 2.0))),
+            MeshMaterial3d(garden_mat.clone()),
+            Transform::from_xyz(*gx, ground_at(*gx, *gz) + 0.03, *gz),
         ));
+        for k in 0..4 {
+            let a = std::f32::consts::TAU * (k as f32) / 4.0 + 0.4;
+            let (hx, hz) = (gx + a.cos() * (r - 0.9), gz + a.sin() * (r - 0.9));
+            commands.spawn((
+                CityScene,
+                WorldAssetRoot(
+                    assets.load(GltfAssetLabel::Scene(0).from_asset("models/fantasy-town/hedge.glb")),
+                ),
+                Transform::from_xyz(hx, ground_at(hx, hz), hz)
+                    .with_rotation(Quat::from_rotation_y(a))
+                    .with_scale(Vec3::splat(1.3)),
+            ));
+        }
     }
 
     // Buildings + district props (Kenney CC0 kits). The old fountain-ring lanterns are
@@ -742,6 +818,25 @@ pub(crate) fn city_scene(
                     Transform::from_xyz(0.0, look.sprite_y, 0.0)
                         .with_scale(Vec3::splat(look.sprite_scale)),
                     hd2d::Billboard,
+                    // A townsperson carries a lamp after dark, the same way a hero does —
+                    // literally the same way: `illuminate_players` drives every
+                    // `PlayerGlowSprite`'s emissive and every `NightLamp`'s intensity off
+                    // nightfall, and it already runs in every screen. Without it the crowd
+                    // went black at dusk while the player walked through it lit, which
+                    // reads as the town emptying rather than as night falling.
+                    crate::overworld::PlayerGlowSprite,
+                ));
+                p.spawn((
+                    crate::overworld::NightLamp { strength: crate::battle::LAMP_STRENGTH * 0.45 },
+                    PointLight {
+                        color: Color::srgb(1.0, 0.9, 0.68),
+                        intensity: 0.0,
+                        range: crate::battle::LAMP_REACH * 0.6,
+                        radius: crate::battle::LAMP_RADIUS,
+                        shadow_maps_enabled: false,
+                        ..default()
+                    },
+                    Transform::from_xyz(0.0, 1.1, 0.0),
                 ));
                 p.spawn((
                     Mesh3d(wa.shadow_mesh.clone()),
@@ -810,13 +905,24 @@ pub(crate) fn city_scene(
                     hd2d::Billboard,
                 ));
                 p.spawn((
-                    MagitechLight { phase: i as f32 * 1.7, base: 32_000.0 },
+                    MagitechLight { phase: i as f32 * 1.7, base: MONOLITH_LIGHT },
                     PointLight {
                         color: Color::srgb(0.35, 0.85, 1.15),
-                        intensity: 32_000.0,
-                        range: 15.0,
+                        intensity: MONOLITH_LIGHT,
+                        range: MONOLITH_REACH,
                         radius: 0.5,
-                        shadow_maps_enabled: false,
+                        // ⚠️ **A LIGHT THAT CASTS NO SHADOW DOES NOT LIGHT A STREET, IT
+                        // TINTS ONE.** Every building and every prop in the plaza stayed
+                        // evenly lit from all sides at night, so the monoliths read as
+                        // glowing decorations rather than as the things the town sees by.
+                        // The hero's own carried lamp has cast a real shadow all along;
+                        // these are the fixed lights beside it and must match.
+                        //
+                        // Only the PLAZA four, though. A shadow-mapped point light is six
+                        // faces of render, and the street lamps line spokes the camera is
+                        // rarely looking down — so the ones that pay for themselves are the
+                        // four standing where the player actually is.
+                        shadow_maps_enabled: i < 4,
                         ..default()
                     },
                     Transform::from_xyz(0.0, h * 0.78, 0.0),
@@ -847,6 +953,22 @@ pub(crate) fn city_scene(
                 Transform::from_xyz(0.0, look.sprite_y, 0.0),
                 hd2d::Billboard,
                 hd2d::HeroBillboard,
+                // The hero carries the same lamp in town it carries in the maze and in the
+                // arena. It had one in both of those and none here, so walking into Last
+                // City after dark put the one character you are looking at into shadow.
+                crate::overworld::PlayerGlowSprite,
+            ));
+            p.spawn((
+                crate::overworld::NightLamp { strength: crate::battle::LAMP_STRENGTH },
+                PointLight {
+                    color: Color::srgb(1.0, 0.93, 0.72),
+                    intensity: 0.0,
+                    range: crate::battle::LAMP_REACH,
+                    radius: crate::battle::LAMP_RADIUS,
+                    shadow_maps_enabled: true,
+                    ..default()
+                },
+                Transform::from_xyz(0.0, 1.4, 0.0),
             ));
             p.spawn((
                 Mesh3d(wa.shadow_mesh.clone()),
@@ -1335,11 +1457,15 @@ pub(crate) fn city_move(
             }
         }
     }
-    // Soft-collide out of each building anchor.
-    for d in CITY_DISTRICTS {
-        let c = Vec2::new(d.x, d.z);
+    // Soft-collide out of each building anchor, and out of the fountain — which is a
+    // stone basin the size of a room and the only prop in the plaza a player is
+    // guaranteed to walk at, since it is what the whole square is arranged around.
+    let solid = CITY_DISTRICTS
+        .iter()
+        .map(|d| (Vec2::new(d.x, d.z), 2.4))
+        .chain(std::iter::once((Vec2::ZERO, FOUNTAIN_RADIUS)));
+    for (c, block) in solid {
         let off = pos - c;
-        let block = 2.4;
         if off.length() < block && off.length() > 1e-4 {
             pos = c + off.normalize() * block;
         }
@@ -1745,7 +1871,10 @@ mod tests {
             .insert_resource(Session { party: vec!["explorer".into()], ..Default::default() })
             .insert_resource(UnlocksRes::default())
             .insert_resource(LoadoutData::default())
-            .add_systems(Update, (party_panel_buttons, yard_rename_input, loadout_name_input));
+            .add_systems(
+                Update,
+                (party_panel_buttons, yard_rename_input, loadout_name_input, loadout_name_caret),
+            );
         app
     }
 
@@ -3128,7 +3257,12 @@ pub(crate) fn seed_party_from_account(
     if *done || session.party_from_flags {
         return;
     }
-    if !hero_names.loaded {
+    // ⚠️ **BOTH HALVES, OR THE SEED SILENTLY THROWS THE PARTY AWAY.** The roster comes
+    // over HTTP and the unlock set over the websocket, so either can land first — and
+    // running against an unloaded `UnlocksRes` reads "owns nothing, one slot", which
+    // rewrites every saved class to Explorer and truncates the party to a single hero.
+    // It fires ONCE, so the wrong answer is the one that sticks for the session.
+    if !hero_names.loaded || !unlocks.loaded {
         return;
     }
     *done = true;
@@ -3143,7 +3277,7 @@ pub(crate) fn seed_party_from_account(
             .collect()
     };
     let slots = (unlocks.party_slots.max(1) as usize).min(4);
-    let saved: Vec<String> = hero_names
+    let mut saved: Vec<String> = hero_names
         .classes
         .iter()
         .take(slots)
@@ -3155,6 +3289,13 @@ pub(crate) fn seed_party_from_account(
             }
         })
         .collect();
+    // Pad a roster recorded before the account earned its later slots, so the restored
+    // party is exactly as wide as the slots it holds — the server normalizes `enter_maze`
+    // to that width anyway, and a short one leaves the builder drawing empty cards for
+    // heroes the dive is going to field regardless.
+    if !saved.is_empty() {
+        saved.resize(slots, "explorer".to_string());
+    }
     if !saved.is_empty() && saved.iter().any(|c| !c.is_empty()) {
         session.party = saved;
         session.party_chosen = true;
@@ -3178,14 +3319,17 @@ pub(crate) fn seed_party_from_account(
 /// first dive is a team someone chose rather than the newcomer default.
 pub(crate) fn prompt_party_if_unset(
     hero_names: Res<AccountHeroNames>,
+    unlocks: Res<UnlocksRes>,
     autoplay: Res<Autoplay>,
     session: Res<Session>,
     mut city: ResMut<CityUi>,
     mut asked: Local<bool>,
 ) {
-    // Wait for the roster fetch, or a brand-new account looks unset and gets asked
-    // before the answer has even arrived.
-    if *asked || !hero_names.loaded || autoplay.0 || session.party_from_flags {
+    // Wait for the roster fetch AND the unlock set, or a brand-new account looks unset
+    // and gets asked before the answer has even arrived. Both, because
+    // `seed_party_from_account` needs both before it can set `party_chosen` — asking on
+    // the roster alone re-prompts a returning player whose unlocks were still in flight.
+    if *asked || !hero_names.loaded || !unlocks.loaded || autoplay.0 || session.party_from_flags {
         return;
     }
     *asked = true;
@@ -3409,6 +3553,18 @@ pub(crate) fn party_panel(
     } else {
         city.yard_focus.as_str()
     });
+    // ⚠️ **THE THREE-COLUMN CONVENTION, BECAUSE THIS PANEL WAS CONTENT-SIZED.** Every
+    // element sat in one centred auto-width column, so the whole screen re-measured every
+    // time the detail text changed — and the detail text changes on hover. Picking a class
+    // moved the classes. `glass::columns()` is fixed fractions of the WINDOW, and every
+    // column's slot is spawned whether or not it has anything in it, so nothing here can
+    // shift sideways again.
+    //
+    // nav = the party you are building, one card per slot, read top to bottom.
+    // main = the roster you may field.
+    // detail = what the class you are looking at IS.
+    // …and the saved parties run along the BOTTOM, under all three: a loadout is a thing
+    // you do to the whole panel rather than to one column of it.
     commands
         .spawn((
             PartyPanelRoot,
@@ -3419,7 +3575,7 @@ pub(crate) fn party_panel(
                 flex_direction: FlexDirection::Column,
                 align_items: AlignItems::Center,
                 justify_content: JustifyContent::Center,
-                row_gap: Val::Px(8.0),
+                row_gap: Val::Px(10.0),
                 ..default()
             },
             BackgroundColor(glass::SCRIM),
@@ -3427,388 +3583,332 @@ pub(crate) fn party_panel(
         .with_children(|p| {
             p.spawn((
                 Text::new("THE DRILL YARD"),
-                TextFont { font_size: FontSize::Px(34.0), ..default() },
-                TextColor(Color::srgb(0.98, 0.9, 0.68)),
+                TextFont { font_size: FontSize::Px(30.0), ..default() },
+                TextColor(glass::TITLE),
             ));
-            p.spawn((
-                Text::new(format!(
-                    "{slots} of 4 slots earned \u{2014} click a hero, then a class. [R] renames."
-                )),
-                TextFont { font_size: FontSize::Px(16.0), ..default() },
-                TextColor(Color::srgb(0.6, 0.65, 0.8)),
-            ));
-
-            // The party itself: one card per slot, portrait + class + the hero's own
-            // name. A locked slot is drawn rather than omitted, so the roster you are
-            // working toward is legible instead of a list that stops short.
-            p.spawn(Node {
-                flex_direction: FlexDirection::Row,
-                column_gap: Val::Px(10.0),
-                margin: UiRect::top(Val::Px(4.0)),
-                ..default()
-            })
-            .with_children(|row| {
-                for i in 0..4 {
-                    if i < slots {
-                        let cls =
-                            session.party.get(i).cloned().unwrap_or_else(|| "explorer".into());
-                        let name = hero_names
-                            .names
-                            .get(i)
-                            .cloned()
-                            .filter(|n| !n.is_empty())
-                            .unwrap_or_else(|| format!("Hero {}", i + 1));
-                        yard_card(
-                            row,
-                            sprite(&cls),
-                            class_info(&cls).name,
-                            &name,
-                            118.0,
-                            PartySlotButton(i),
-                            PartySlotSprite(i),
-                            PartySlotLabel(i),
-                            PartySlotHeroName(i),
-                        );
-                    } else {
-                        row.spawn((
-                            Node {
-                                border_radius: BorderRadius::all(Val::Px(10.0)),
-                                width: Val::Px(118.0),
-                                flex_direction: FlexDirection::Column,
-                                align_items: AlignItems::Center,
-                                justify_content: JustifyContent::Center,
-                                padding: UiRect::all(Val::Px(8.0)),
-                                border: UiRect::all(Val::Px(2.0)),
-                                ..default()
-                            },
-                            BorderColor::all(glass::EDGE_SOFT),
-                            BackgroundColor(glass::CHIP_OFF),
-                        ))
-                        .with_children(|c| {
-                            c.spawn((
-                                Text::new(format!("{}\nlocked", i + 1)),
-                                TextFont { font_size: FontSize::Px(14.0), ..default() },
-                                TextColor(Color::srgb(0.45, 0.48, 0.58)),
-                            ));
-                        });
+            p.spawn(glass::columns()).with_children(|cols| {
+                // ── NAV: the party itself, vertically. A locked slot is DRAWN rather than
+                // omitted, so the roster you are working toward is legible instead of a
+                // list that stops short.
+                cols.spawn(glass::column(glass::COL_NAV)).with_children(|nav| {
+                    nav.spawn(glass::text("YOUR PARTY", 13.0, glass::DIM));
+                    for i in 0..4 {
+                        if i < slots {
+                            let cls =
+                                session.party.get(i).cloned().unwrap_or_else(|| "explorer".into());
+                            let name = hero_names
+                                .names
+                                .get(i)
+                                .cloned()
+                                .filter(|n| !n.is_empty())
+                                .unwrap_or_else(|| format!("Hero {}", i + 1));
+                            yard_slot_row(
+                                nav,
+                                sprite(&cls),
+                                class_info(&cls).name,
+                                &name,
+                                i == session.party_cursor,
+                                PartySlotButton(i),
+                                PartySlotSprite(i),
+                                PartySlotLabel(i),
+                                PartySlotHeroName(i),
+                            );
+                        } else {
+                            nav.spawn(glass::row_chip(false)).with_children(|c| {
+                                c.spawn(glass::text(
+                                    format!("{}  locked", i + 1),
+                                    13.0,
+                                    Color::srgb(0.45, 0.48, 0.58),
+                                ));
+                            });
+                        }
                     }
-                }
-            });
-
-            // Renaming lives beside the heroes it renames, rather than behind a menu
-            // in the middle of a dive — this is the screen where they are people.
-            p.spawn((
-                Button,
-                YardRenameButton,
-                Node {
-                    border_radius: BorderRadius::all(Val::Px(6.0)),
-                    padding: UiRect::axes(Val::Px(12.0), Val::Px(6.0)),
-                    border: UiRect::all(Val::Px(1.0)),
-                    ..default()
-                },
-                BorderColor::all(glass::EDGE_SOFT),
-                BackgroundColor(glass::CHIP_OFF),
-            ))
-            .with_children(|b| {
-                b.spawn((
-                    Text::new("Rename this hero"),
-                    YardRenameText,
-                    TextFont { font_size: FontSize::Px(14.0), ..default() },
-                    TextColor(Color::srgb(0.92, 0.94, 1.0)),
-                ));
-            });
-
-            // Only what the account owns — the whole reason this lives in town rather
-            // than on the pre-authentication login screen.
-            p.spawn(Node {
-                flex_direction: FlexDirection::Row,
-                column_gap: Val::Px(8.0),
-                flex_wrap: FlexWrap::Wrap,
-                row_gap: Val::Px(8.0),
-                justify_content: JustifyContent::Center,
-                margin: UiRect::top(Val::Px(2.0)),
-                ..default()
-            })
-            .with_children(|row| {
-                for key in &pool {
-                    let ci = class_info(key);
-                    yard_card(
-                        row,
-                        sprite(key),
-                        ci.name,
-                        "",
-                        104.0,
-                        PartyClassButton(key),
-                        PartyClassSprite(key),
-                        (),
-                        (),
+                    nav.spawn((Button, YardRenameButton, glass::row_chip(false))).with_children(
+                        |b| {
+                            b.spawn((
+                                Text::new("Rename this hero"),
+                                YardRenameText,
+                                TextFont { font_size: FontSize::Px(13.0), ..default() },
+                                TextColor(glass::TEXT),
+                            ));
+                        },
                     );
-                }
-            });
+                    nav.spawn(glass::text(
+                        format!("{slots} of 4 slots earned"),
+                        12.0,
+                        glass::DIM,
+                    ));
+                });
 
-            // The detail panel: what a class actually is, at the moment you are
-            // deciding whether to field it.
-            p.spawn((
-                Node {
-                    border_radius: BorderRadius::all(Val::Px(12.0)),
-                    width: Val::Px(780.0),
-                    flex_direction: FlexDirection::Row,
-                    column_gap: Val::Px(16.0),
-                    padding: UiRect::all(Val::Px(12.0)),
-                    border: UiRect::all(Val::Px(1.0)),
-                    ..default()
-                },
-                BorderColor::all(glass::EDGE),
-                BackgroundColor(glass::GLASS_DEEP),
-            ))
-            .with_children(|d| {
-                d.spawn((
-                    ImageNode::new(sprite(focus.key)),
-                    YardDetailSprite,
-                    Node { width: Val::Px(120.0), height: Val::Px(120.0), ..default() },
-                ));
-                d.spawn(Node {
-                    flex_direction: FlexDirection::Column,
-                    row_gap: Val::Px(5.0),
-                    flex_grow: 1.0,
-                    ..default()
-                })
-                .with_children(|col| {
-                    col.spawn((
-                        Text::new(focus.name.to_string()),
-                        YardDetailName,
-                        TextFont { font_size: FontSize::Px(26.0), ..default() },
-                        TextColor(Color::srgb(1.0, 0.85, 0.45)),
+                // ── MAIN: the roster this account may field.
+                cols.spawn(glass::column(glass::COL_MAIN)).with_children(|main| {
+                    main.spawn(glass::text("CHOOSE A CLASS", 13.0, glass::DIM));
+                    main.spawn(glass::text(
+                        "Click a hero on the left, then a class here.",
+                        12.0,
+                        glass::DIM,
                     ));
-                    col.spawn((
-                        Text::new(focus.role.to_string()),
-                        YardDetailRole,
-                        TextFont { font_size: FontSize::Px(15.0), ..default() },
-                        TextColor(Color::srgb(0.78, 0.82, 0.95)),
-                    ));
-                    col.spawn(Node {
+                    main.spawn(Node {
                         flex_direction: FlexDirection::Row,
-                        column_gap: Val::Px(24.0),
-                        margin: UiRect::top(Val::Px(3.0)),
+                        column_gap: Val::Px(8.0),
+                        row_gap: Val::Px(8.0),
+                        flex_wrap: FlexWrap::Wrap,
+                        justify_content: JustifyContent::Center,
                         ..default()
                     })
-                    .with_children(|body| {
-                        body.spawn(Node {
-                            flex_direction: FlexDirection::Column,
-                            row_gap: Val::Px(4.0),
-                            ..default()
-                        })
-                        .with_children(|stats| {
-                            for (si, name) in
-                                ["HP", "ATK", "SPD", "MAG", "DEF"].iter().enumerate()
-                            {
-                                stats
-                                    .spawn(Node {
-                                        flex_direction: FlexDirection::Row,
-                                        align_items: AlignItems::Center,
-                                        column_gap: Val::Px(6.0),
-                                        ..default()
-                                    })
-                                    .with_children(|r| {
-                                        r.spawn((
-                                            Text::new(name.to_string()),
-                                            TextFont { font_size: FontSize::Px(12.0), ..default() },
-                                            TextColor(Color::srgb(0.6, 0.65, 0.8)),
-                                            Node { width: Val::Px(34.0), ..default() },
-                                        ));
-                                        for seg in 0..5u8 {
-                                            r.spawn((
-                                                YardStatFill { stat: si as u8, seg },
-                                                Node {
-                                                    border_radius: BorderRadius::all(Val::Px(2.0)),
-                                                    width: Val::Px(20.0),
-                                                    height: Val::Px(9.0),
-                                                    ..default()
-                                                },
-                                                BackgroundColor(glass::CHIP_OFF),
-                                            ));
-                                        }
-                                    });
-                            }
-                        });
-                        body.spawn((
-                            Text::new(crate::screens::kit_text(focus)),
-                            YardDetailKit,
-                            TextFont { font_size: FontSize::Px(13.0), ..default() },
-                            TextColor(Color::srgb(0.7, 0.85, 0.7)),
-                        ));
+                    .with_children(|row| {
+                        for key in &pool {
+                            let ci = class_info(key);
+                            yard_card(
+                                row,
+                                sprite(key),
+                                ci.name,
+                                "",
+                                104.0,
+                                PartyClassButton(key),
+                                PartyClassSprite(key),
+                                (),
+                                (),
+                            );
+                        }
                     });
                 });
-            });
-            // PT-2: the saved compositions. Named rather than numbered slots because
-            // the point is recognising a team at a glance ("Delvers", "Boss squad").
-            p.spawn((
-                Text::new("Saved parties"),
-                TextFont { font_size: FontSize::Px(13.0), ..default() },
-                TextColor(Color::srgb(0.6, 0.65, 0.8)),
-                Node { margin: UiRect::top(Val::Px(6.0)), ..default() },
-            ));
-            if loadouts.list.is_empty() {
-                p.spawn((
-                    Text::new("none yet"),
-                    TextFont { font_size: FontSize::Px(13.0), ..default() },
-                    TextColor(Color::srgb(0.45, 0.48, 0.58)),
-                ));
-            }
-            for l in &loadouts.list {
-                p.spawn(Node {
-                    flex_direction: FlexDirection::Row,
-                    column_gap: Val::Px(6.0),
-                    align_items: AlignItems::Center,
-                    ..default()
-                })
-                .with_children(|row| {
-                    row.spawn((
-                        Button,
-                        LoadoutLoadButton(l.name.clone()),
+
+                // ── DETAIL: what a class actually IS, at the moment you are deciding
+                // whether to field it. On the far right, where every other cascade screen
+                // in the game puts the thing it is describing.
+                cols.spawn(glass::column(glass::COL_DETAIL)).with_children(|d| {
+                    d.spawn((
+                        ImageNode::new(sprite(focus.key)),
+                        YardDetailSprite,
                         Node {
-                            border_radius: BorderRadius::all(Val::Px(6.0)),
-                            flex_grow: 1.0,
-                            padding: UiRect::axes(Val::Px(9.0), Val::Px(6.0)),
-                            border: UiRect::all(Val::Px(1.0)),
+                            width: Val::Px(112.0),
+                            height: Val::Px(112.0),
+                            align_self: AlignSelf::Center,
                             ..default()
                         },
-                        BorderColor::all(glass::EDGE_SOFT),
-                        BackgroundColor(glass::CHIP_OFF),
-                    ))
-                    .with_children(|b| {
-                        let comp = l
-                            .classes
-                            .iter()
-                            .map(|c| class_info(c).name)
-                            .collect::<Vec<_>>()
-                            .join(" / ");
-                        b.spawn((
-                            Text::new(format!("{}  —  {comp}", l.name)),
-                            TextFont { font_size: FontSize::Px(13.0), ..default() },
-                            TextColor(Color::srgb(0.92, 0.94, 1.0)),
-                        ));
-                    });
-                    // Rename, using whatever is in the name field below — the same field
-                    // a save reads, so there is one place to type a name rather than two.
-                    row.spawn((
-                        Button,
-                        LoadoutRenameButton(l.name.clone()),
-                        Node {
-                            border_radius: BorderRadius::all(Val::Px(6.0)),
-                            padding: UiRect::axes(Val::Px(8.0), Val::Px(6.0)),
-                            border: UiRect::all(Val::Px(1.0)),
-                            ..default()
-                        },
-                        BorderColor::all(glass::EDGE_SOFT),
-                        BackgroundColor(glass::CHIP_OFF),
-                    ))
-                    .with_children(|b| {
-                        b.spawn((
-                            Text::new("rename"),
-                            TextFont { font_size: FontSize::Px(12.0), ..default() },
-                            TextColor(Color::srgb(0.78, 0.82, 0.95)),
-                        ));
-                    });
-                    row.spawn((
-                        Button,
-                        LoadoutDeleteButton(l.name.clone()),
-                        Node {
-                            border_radius: BorderRadius::all(Val::Px(6.0)),
-                            padding: UiRect::axes(Val::Px(8.0), Val::Px(6.0)),
-                            border: UiRect::all(Val::Px(1.0)),
-                            ..default()
-                        },
-                        BorderColor::all(glass::EDGE_SOFT),
-                        BackgroundColor(glass::CHIP_OFF),
-                    ))
-                    .with_children(|b| {
-                        b.spawn((
-                            Text::new("x"),
-                            TextFont { font_size: FontSize::Px(13.0), ..default() },
-                            TextColor(Color::srgb(0.9, 0.6, 0.6)),
-                        ));
-                    });
-                });
-            }
-            p.spawn((
-                Node {
-                    flex_direction: FlexDirection::Row,
-                    column_gap: Val::Px(6.0),
-                    align_items: AlignItems::Center,
-                    margin: UiRect::top(Val::Px(4.0)),
-                    ..default()
-                },
-            ))
-            .with_children(|row| {
-                row.spawn((
-                    Text::new("Name:"),
-                    TextFont { font_size: FontSize::Px(13.0), ..default() },
-                    TextColor(Color::srgb(0.6, 0.65, 0.8)),
-                ));
-                row.spawn((
-                    Node {
-                        border_radius: BorderRadius::all(Val::Px(5.0)),
-                        flex_grow: 1.0,
-                        padding: UiRect::axes(Val::Px(8.0), Val::Px(5.0)),
-                        border: UiRect::all(Val::Px(1.0)),
+                    ));
+                    d.spawn((
+                        Text::new(focus.name.to_string()),
+                        YardDetailName,
+                        TextFont { font_size: FontSize::Px(24.0), ..default() },
+                        TextColor(glass::TITLE),
+                    ));
+                    d.spawn((
+                        Text::new(focus.role.to_string()),
+                        YardDetailRole,
+                        TextFont { font_size: FontSize::Px(14.0), ..default() },
+                        TextColor(Color::srgb(0.78, 0.82, 0.95)),
+                    ));
+                    d.spawn(Node {
+                        flex_direction: FlexDirection::Column,
+                        row_gap: Val::Px(4.0),
+                        margin: UiRect::top(Val::Px(4.0)),
                         ..default()
-                    },
-                    BorderColor::all(glass::EDGE_SOFT),
-                    BackgroundColor(glass::CHIP_OFF),
-                ))
-                .with_children(|f| {
-                    // A PLACEHOLDER, because an empty `Text` node reads as decoration:
-                    // there is no caret and no focus ring here, so a field showing nothing
-                    // at all is indistinguishable from a label. Typing replaces it.
-                    f.spawn((
-                        Text::new("type a name\u{2026}".to_string()),
-                        LoadoutNameText,
+                    })
+                    .with_children(|stats| {
+                        for (si, name) in ["HP", "ATK", "SPD", "MAG", "DEF"].iter().enumerate() {
+                            stats
+                                .spawn(Node {
+                                    flex_direction: FlexDirection::Row,
+                                    align_items: AlignItems::Center,
+                                    column_gap: Val::Px(6.0),
+                                    ..default()
+                                })
+                                .with_children(|r| {
+                                    r.spawn((
+                                        Text::new(name.to_string()),
+                                        TextFont { font_size: FontSize::Px(12.0), ..default() },
+                                        TextColor(glass::DIM),
+                                        Node { width: Val::Px(34.0), ..default() },
+                                    ));
+                                    for seg in 0..5u8 {
+                                        r.spawn((
+                                            YardStatFill { stat: si as u8, seg },
+                                            Node {
+                                                border_radius: BorderRadius::all(Val::Px(2.0)),
+                                                width: Val::Px(18.0),
+                                                height: Val::Px(9.0),
+                                                ..default()
+                                            },
+                                            BackgroundColor(glass::CHIP_OFF),
+                                        ));
+                                    }
+                                });
+                        }
+                    });
+                    d.spawn((
+                        Text::new(crate::screens::kit_text(focus)),
+                        YardDetailKit,
                         TextFont { font_size: FontSize::Px(13.0), ..default() },
-                        TextColor(Color::srgb(0.92, 0.94, 1.0)),
+                        TextColor(Color::srgb(0.7, 0.85, 0.7)),
+                        Node { margin: UiRect::top(Val::Px(6.0)), ..default() },
                     ));
                 });
             });
+
+            // ── SAVED PARTIES, along the bottom. Same fixed width as the columns above so
+            // the panel is one shape rather than two.
             p.spawn((
-                Button,
-                LoadoutSaveButton,
                 Node {
-                    border_radius: BorderRadius::all(Val::Px(6.0)),
-                    padding: UiRect::axes(Val::Px(10.0), Val::Px(6.0)),
-                    margin: UiRect::top(Val::Px(2.0)),
+                    width: Val::Vw(100.0),
+                    flex_shrink: 0.0,
+                    flex_direction: FlexDirection::Row,
                     justify_content: JustifyContent::Center,
-                    border: UiRect::all(Val::Px(1.0)),
+                    padding: UiRect::axes(Val::Px(18.0), Val::Px(0.0)),
                     ..default()
                 },
-                BorderColor::all(glass::EDGE_SOFT),
-                BackgroundColor(glass::CHIP_OFF),
             ))
-            .with_children(|b| {
-                b.spawn((
-                    Text::new("Save this party"),
-                    TextFont { font_size: FontSize::Px(13.0), ..default() },
-                    TextColor(Color::srgb(0.92, 0.94, 1.0)),
-                ));
+            .with_children(|bar| {
+                bar.spawn((
+                    Node {
+                        border_radius: BorderRadius::all(Val::Px(8.0)),
+                        width: Val::Percent(100.0),
+                        flex_direction: FlexDirection::Column,
+                        row_gap: Val::Px(6.0),
+                        max_height: Val::Vh(28.0),
+                        overflow: Overflow::scroll_y(),
+                        padding: UiRect::all(Val::Px(14.0)),
+                        border: UiRect::all(Val::Px(2.0)),
+                        ..default()
+                    },
+                    BackgroundColor(glass::GLASS),
+                    BorderColor::all(glass::EDGE),
+                ))
+                .with_children(|box_| {
+                    box_.spawn(glass::text("SAVED PARTIES", 13.0, glass::DIM));
+                    if loadouts.list.is_empty() {
+                        box_.spawn(glass::text("none yet", 13.0, Color::srgb(0.45, 0.48, 0.58)));
+                    }
+                    for l in &loadouts.list {
+                        box_.spawn(Node {
+                            flex_direction: FlexDirection::Row,
+                            column_gap: Val::Px(6.0),
+                            align_items: AlignItems::Center,
+                            ..default()
+                        })
+                        .with_children(|row| {
+                            row.spawn((Button, LoadoutLoadButton(l.name.clone()), glass::row_chip(false)))
+                                .with_children(|b| {
+                                    let comp = l
+                                        .classes
+                                        .iter()
+                                        .map(|c| class_info(c).name)
+                                        .collect::<Vec<_>>()
+                                        .join(" / ");
+                                    b.spawn(glass::text(
+                                        format!("{}  \u{2014}  {comp}", l.name),
+                                        13.0,
+                                        glass::TEXT,
+                                    ));
+                                });
+                            row.spawn((
+                                Button,
+                                LoadoutRenameButton(l.name.clone()),
+                                glass::chip_sized(false, Val::Px(74.0)),
+                            ))
+                            .with_children(|b| {
+                                b.spawn(glass::text("rename", 12.0, Color::srgb(0.78, 0.82, 0.95)));
+                            });
+                            row.spawn((
+                                Button,
+                                LoadoutDeleteButton(l.name.clone()),
+                                glass::chip_sized(false, Val::Px(34.0)),
+                            ))
+                            .with_children(|b| {
+                                b.spawn(glass::text("x", 13.0, Color::srgb(0.9, 0.6, 0.6)));
+                            });
+                        });
+                    }
+                    box_.spawn(Node {
+                        flex_direction: FlexDirection::Row,
+                        column_gap: Val::Px(8.0),
+                        align_items: AlignItems::Center,
+                        margin: UiRect::top(Val::Px(4.0)),
+                        ..default()
+                    })
+                    .with_children(|row| {
+                        row.spawn(glass::text("Name:", 13.0, glass::DIM));
+                        // A real FIELD: `glass::inset(true)` gives it the focused edge every
+                        // other typable box in the game has, and the caret below blinks in
+                        // it. A bare `Text` node with no caret and no ring is
+                        // indistinguishable from a label, which is what this was.
+                        row.spawn((
+                            Node {
+                                border_radius: BorderRadius::all(Val::Px(5.0)),
+                                flex_grow: 1.0,
+                                padding: UiRect::axes(Val::Px(8.0), Val::Px(5.0)),
+                                border: UiRect::all(Val::Px(1.0)),
+                                ..default()
+                            },
+                            BorderColor::all(glass::EDGE),
+                            BackgroundColor(glass::GLASS_DEEP),
+                        ))
+                        .with_children(|f| {
+                            f.spawn((
+                                Text::new(String::new()),
+                                LoadoutNameText,
+                                TextFont { font_size: FontSize::Px(13.0), ..default() },
+                                TextColor(glass::TEXT),
+                            ));
+                        });
+                        row.spawn((Button, LoadoutSaveButton, glass::chip_sized(false, Val::Px(130.0))))
+                            .with_children(|b| {
+                                b.spawn(glass::text("Save this party", 13.0, glass::TEXT));
+                            });
+                        row.spawn((Button, PartyDoneButton, glass::chip_sized(true, Val::Px(90.0))))
+                            .with_children(|b| {
+                                b.spawn(glass::text("Done", 15.0, glass::TITLE));
+                            });
+                    });
+                });
             });
-            p.spawn((
-                Button,
-                PartyDoneButton,
-                Node {
-                    border_radius: BorderRadius::all(Val::Px(8.0)),
-                    padding: UiRect::axes(Val::Px(12.0), Val::Px(8.0)),
-                    margin: UiRect::top(Val::Px(4.0)),
-                    justify_content: JustifyContent::Center,
-                    border: UiRect::all(Val::Px(1.5)),
-                    ..default()
-                },
-                BorderColor::all(glass::EDGE),
-                BackgroundColor(glass::ACTIVE),
-            ))
-            .with_children(|b| {
-                b.spawn((
-                    Text::new("Done"),
-                    TextFont { font_size: FontSize::Px(15.0), ..default() },
-                    TextColor(Color::srgb(0.98, 0.9, 0.68)),
+        });
+}
+
+/// One row of the nav column: a slot's portrait, its class and the hero's own name, laid
+/// out horizontally so four of them read top-to-bottom in a sixth of the window.
+///
+/// Its own builder rather than [`yard_card`] with a flag: a nav row and a picker card have
+/// opposite axes, and the two have drifted into one function with three booleans in it in
+/// every UI that tried.
+#[allow(clippy::too_many_arguments)]
+fn yard_slot_row(
+    parent: &mut ChildSpawnerCommands,
+    sprite: Handle<Image>,
+    label: &str,
+    hero: &str,
+    selected: bool,
+    tags: impl Bundle,
+    sprite_tag: impl Bundle,
+    label_tag: impl Bundle,
+    sub_tag: impl Bundle,
+) {
+    parent
+        .spawn((Button, tags, glass::row_chip(selected)))
+        .with_children(|c| {
+            c.spawn((
+                ImageNode::new(sprite),
+                sprite_tag,
+                Node { width: Val::Px(38.0), height: Val::Px(38.0), ..default() },
+            ));
+            c.spawn(Node {
+                flex_direction: FlexDirection::Column,
+                row_gap: Val::Px(1.0),
+                ..default()
+            })
+            .with_children(|t| {
+                t.spawn((
+                    Text::new(hero.to_string()),
+                    sub_tag,
+                    TextFont { font_size: FontSize::Px(14.0), ..default() },
+                    TextColor(glass::TEXT),
+                ));
+                t.spawn((
+                    Text::new(label.to_string()),
+                    label_tag,
+                    TextFont { font_size: FontSize::Px(12.0), ..default() },
+                    TextColor(glass::DIM),
                 ));
             });
         });
@@ -3904,7 +4004,6 @@ pub(crate) fn loadout_name_input(
     keys: Res<ButtonInput<KeyCode>>,
     rename: Res<HeroRename>,
     mut city: ResMut<CityUi>,
-    mut q: Query<&mut Text, With<LoadoutNameText>>,
 ) {
     // Two text fields share one keyboard: while a hero is being renamed the letters
     // belong to it, or naming a hero would also name the loadout.
@@ -3912,29 +4011,56 @@ pub(crate) fn loadout_name_input(
         return;
     }
     let shift = keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight);
-    let mut changed = false;
     if keys.just_pressed(KeyCode::Backspace) {
         city.loadout_name.pop();
-        changed = true;
     }
     for key in keys.get_just_pressed() {
         if let Some(c) = crate::screens::typed_char(*key, shift) {
             if city.loadout_name.chars().count() < 24 {
                 city.loadout_name.push(c);
-                changed = true;
             }
         }
     }
-    if changed {
-        if let Ok(mut t) = q.single_mut() {
-            // Back to the placeholder when the buffer empties, or backspacing to nothing
-            // leaves a blank strip that reads as a label rather than a field.
-            **t = if city.loadout_name.is_empty() {
-                "type a name\u{2026}".to_string()
-            } else {
-                city.loadout_name.clone()
-            };
+}
+
+/// **THE NAME FIELD'S OWN TEXT, EVERY FRAME.** Its own system rather than a write inside
+/// the key handler, because a caret has to move on the CLOCK and the key handler only runs
+/// when a key is pressed — a caret written there is a still underscore, which is another
+/// glyph in the string rather than a cursor.
+///
+/// One writer, so the two cannot fight over the node: the key handler owns the BUFFER and
+/// this owns what is drawn.
+pub(crate) fn loadout_name_caret(
+    time: Res<Time>,
+    city: Res<CityUi>,
+    rename: Res<HeroRename>,
+    mut q: Query<&mut Text, (With<LoadoutNameText>, Without<PartySlotHeroName>)>,
+    mut hero_q: Query<(&PartySlotHeroName, &mut Text), Without<LoadoutNameText>>,
+) {
+    // The hero card being renamed shows the buffer you are typing INTO IT, rather than a
+    // field elsewhere on the screen collecting letters for it.
+    for (tag, mut t) in &mut hero_q {
+        if rename.slot != Some(tag.0) {
+            continue;
         }
+        let want = format!("{}{}", rename.buffer, glass::caret(time.elapsed_secs(), true));
+        if **t != want {
+            **t = want;
+        }
+    }
+    let Ok(mut t) = q.single_mut() else { return };
+    // Focus follows the same rule the keyboard does: while a hero is being renamed the
+    // letters belong to it, so this field is not the one being typed into and must not
+    // claim a cursor.
+    let focused = city.party_open && rename.slot.is_none();
+    let body = if city.loadout_name.is_empty() && !focused {
+        "type a name\u{2026}".to_string()
+    } else {
+        city.loadout_name.clone()
+    };
+    let want = format!("{body}{}", glass::caret(time.elapsed_secs(), focused));
+    if **t != want {
+        **t = want;
     }
 }
 
@@ -4043,7 +4169,7 @@ pub(crate) fn party_panel_refresh(
     mut hero_name_q: Query<(&PartySlotHeroName, &mut Text), (Without<PartySlotLabel>, Without<YardDetailName>, Without<YardDetailRole>, Without<YardDetailKit>, Without<YardRenameText>)>,
     mut slot_sprites: Query<(&PartySlotSprite, &mut ImageNode), (Without<PartyClassSprite>, Without<YardDetailSprite>)>,
     mut class_sprites: Query<(&PartyClassSprite, &mut ImageNode), (Without<PartySlotSprite>, Without<YardDetailSprite>)>,
-    mut slot_borders: Query<(&PartySlotButton, &mut BorderColor)>,
+    mut slot_borders: Query<(&PartySlotButton, &mut BorderColor, &mut BackgroundColor)>,
     mut det_sprite: Query<&mut ImageNode, (With<YardDetailSprite>, Without<PartySlotSprite>, Without<PartyClassSprite>)>,
     mut det_name: Query<&mut Text, (With<YardDetailName>, Without<PartySlotLabel>, Without<PartySlotHeroName>, Without<YardDetailRole>, Without<YardDetailKit>, Without<YardRenameText>)>,
     mut det_role: Query<&mut Text, (With<YardDetailRole>, Without<PartySlotLabel>, Without<PartySlotHeroName>, Without<YardDetailName>, Without<YardDetailKit>, Without<YardRenameText>)>,
@@ -4061,32 +4187,41 @@ pub(crate) fn party_panel_refresh(
     // While typing, the card shows the buffer with a caret — you are editing the hero
     // in front of you, not filling in a form somewhere else on screen.
     for (tag, mut t) in &mut hero_name_q {
-        let want = match rename.slot {
-            Some(s) if s == tag.0 => format!("{}_", rename.buffer),
-            _ => hero_names
-                .names
-                .get(tag.0)
-                .cloned()
-                .filter(|n| !n.is_empty())
-                .unwrap_or_else(|| format!("Hero {}", tag.0 + 1)),
-        };
+        // The slot BEING renamed belongs to `loadout_name_caret`, which owns every field
+        // with a cursor in it. This system is at Bevy's 16-param ceiling and cannot take a
+        // clock, and a caret written by something that only runs on a keypress is a still
+        // underscore rather than a cursor.
+        if rename.slot == Some(tag.0) {
+            continue;
+        }
+        let want = hero_names
+            .names
+            .get(tag.0)
+            .cloned()
+            .filter(|n| !n.is_empty())
+            .unwrap_or_else(|| format!("Hero {}", tag.0 + 1));
         if **t != want {
             **t = want;
         }
     }
-    for (tag, mut bc) in &mut slot_borders {
-        let want = if tag.0 == session.party_cursor {
-            Color::srgb(1.0, 0.85, 0.45)
-        } else {
-            glass::EDGE
-        };
+    // The cursor is a WASH as well as an edge: a nav row is the same chip a menu row is,
+    // and selection has to say "selected" the one way it says it everywhere else. Repainted
+    // in place rather than by rebuilding the panel — rebuilding on the cursor is what
+    // re-measured the whole screen every click.
+    for (tag, mut bc, mut fill) in &mut slot_borders {
+        let on = tag.0 == session.party_cursor;
+        let want = if on { glass::EDGE } else { glass::EDGE_SOFT };
         if bc.top != want {
             *bc = BorderColor::all(want);
+        }
+        let want_fill = if on { glass::CHIP_ON } else { glass::CHIP_OFF };
+        if fill.0 != want_fill {
+            *fill = BackgroundColor(want_fill);
         }
     }
     if let Ok(mut t) = rename_text.single_mut() {
         let want = if rename.slot.is_some() {
-            "typing\u{2026}  Enter to keep, Esc to drop".to_string()
+            "Enter to keep, Esc to drop".to_string()
         } else {
             "Rename this hero".to_string()
         };
@@ -4916,3 +5051,52 @@ fn commit_counter_pick(
     pick.clear();
 }
 
+
+#[cfg(test)]
+mod town_floor_tests {
+    use super::*;
+
+    /// Every garden has to be somewhere a player can actually reach and stand: on the dry
+    /// shelf, inside the paved area it is cut out of, and clear of the district anchors —
+    /// which are soft-collided, so a garden overlapping one is a flowerbed you are pushed
+    /// out of before you arrive.
+    #[test]
+    fn a_garden_is_on_dry_land_and_out_of_everybodys_way() {
+        for (gx, gz, r) in CITY_GARDENS {
+            assert!(
+                meld_proto::coast::city_sea_depth(*gx, *gz) <= -PAVED_DRY_MARGIN,
+                "the garden at ({gx}, {gz}) is on the strand or in the sea"
+            );
+            assert!(
+                gx.abs() + r <= PAVED_REACH && gz.abs() + r <= PAVED_REACH,
+                "the garden at ({gx}, {gz}) reaches past the paving it is cut out of"
+            );
+            for d in CITY_DISTRICTS {
+                let gap = (gx - d.x).hypot(gz - d.z);
+                assert!(
+                    gap > r + 2.4,
+                    "the garden at ({gx}, {gz}) overlaps {} ({gap:.1} apart)",
+                    d.label
+                );
+            }
+        }
+    }
+
+    /// The fountain is a wall now, so it must not be a wall the player starts inside of —
+    /// the soft-collide pushes outward from the centre, and a spawn AT the centre has no
+    /// direction to be pushed in.
+    #[test]
+    fn the_fountain_does_not_swallow_the_arrival() {
+        let spawn = Vec2::new(0.0, 11.0);
+        assert!(
+            spawn.length() > FOUNTAIN_RADIUS,
+            "the avatar arrives inside the fountain basin"
+        );
+        for (gx, gz, r) in CITY_GARDENS {
+            assert!(
+                Vec2::new(*gx, *gz).length() > FOUNTAIN_RADIUS + r,
+                "the garden at ({gx}, {gz}) is planted in the fountain"
+            );
+        }
+    }
+}

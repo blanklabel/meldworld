@@ -3270,3 +3270,43 @@ mod tests {
     }
 
 }
+
+#[cfg(test)]
+mod xp_shape_tests {
+    use super::*;
+
+    /// The two ends of the level axis, and the flat middle. This is the fact the tally's
+    /// breakdown reports, so it is asserted as an ORDERING rather than as values — every
+    /// number involved is `[TUNABLE]`.
+    #[test]
+    fn punching_up_pays_more_and_outgrown_ground_pays_less() {
+        let b = Balance::load_default().unwrap();
+        let base = 1000;
+        let at_level = xp_after_level_gap(base, 20, 20, &b);
+        let punching_up = xp_after_level_gap(base, 30, 20, &b);
+        let outgrown = xp_after_level_gap(base, 20, 40, &b);
+        assert_eq!(at_level, base, "a fight at your own level pays exactly its pool");
+        assert!(punching_up > at_level, "ten levels over your head paid {punching_up}");
+        assert!(outgrown < at_level, "twenty levels under you paid {outgrown}");
+        assert!(outgrown > 0, "a kill is still a kill");
+    }
+
+    /// Both HOW-it-was-won bonuses are real gains, and neither out-earns the reason to
+    /// walk deeper. A flawless win is usually a fight you had already outgrown, so a
+    /// bonus for it that beat the punch-up term would pay you to farm the shallows.
+    #[test]
+    fn how_you_won_pays_less_than_where_you_fought() {
+        let b = Balance::load_default().unwrap();
+        for (name, v) in [
+            ("flawless", b.runs.xp_bonus_flawless),
+            ("outnumbered", b.runs.xp_bonus_outnumbered),
+        ] {
+            assert!(v > 0.0, "{name} is not a bonus");
+            assert!(
+                1.0 + v < b.runs.xp_up_max,
+                "{name} ({v}) can out-earn the deepest punch-up ({})",
+                b.runs.xp_up_max
+            );
+        }
+    }
+}

@@ -106,6 +106,12 @@ max_hero_level = 255             # the ceiling a party is expected to reach befo
 # that killed them in one encounter. Two heroes at level 12 with no XP and no incoming
 # damage is what that looks like from the inside. The falloff makes the shallow grind
 # flatten out around level 6-8 and puts the next level where the danger is. [TUNABLE]
+# HOW a fight was won, paid on top of WHAT was fought. Both are a share of the award and
+# both are reported to the player at the tally — an unnamed reward teaches nothing, and
+# these two exist to be aimed at. Deliberately small: a fight you never take damage in is
+# usually a fight you had already outgrown, so this must not out-earn punching up. [TUNABLE]
+xp_bonus_flawless = 0.25         # not a single point of party HP lost
+xp_bonus_outnumbered = 0.15      # more bodies on the far side than heroes on yours
 xp_gap_grace = 3                 # levels above the encounter that still pay in full
 xp_gap_zero = 12                 # levels above it at which the payout hits the floor
 xp_gap_floor_mult = 0.05         # a kill is still a kill — never zero

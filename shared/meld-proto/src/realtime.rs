@@ -641,6 +641,25 @@ pub mod battle {
         pub player_id: Id,
         pub xp: i64,
         pub run_level_after: i32,
+        /// What the encounter pays flat, before anything about HOW it was won is applied.
+        /// `xp` minus this is the whole story the bonuses below tell.
+        #[serde(default)]
+        pub base_xp: i64,
+        /// The multipliers that took `base_xp` to `xp`, in the order they should be read.
+        ///
+        /// A reward the player cannot see the shape of is a reward they cannot aim at:
+        /// punching up pays more and farming ground you have outgrown pays less, and
+        /// neither fact is learnable from one number that is simply larger or smaller
+        /// than the last one.
+        #[serde(default)]
+        pub bonuses: Vec<XpBonus>,
+    }
+    /// One line of an [`XpAward`]'s breakdown: what it is called and what it did to the
+    /// award, as a signed percentage (`+60`, `-40`).
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct XpBonus {
+        pub label: String,
+        pub pct: i32,
     }
     #[derive(Debug, Clone, Serialize, Deserialize)]
     pub struct EmblemDrop {

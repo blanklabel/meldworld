@@ -534,6 +534,7 @@ pub(crate) fn join_input(
 /// the focused field, and a gold border on it.
 #[allow(clippy::type_complexity)]
 pub(crate) fn join_login_refresh(
+    time: Res<Time>,
     session: Res<Session>,
     login: Res<LoginFocus>,
     mut user_text: Query<&mut Text, (With<JoinUserText>, Without<JoinPassText>)>,
@@ -542,14 +543,15 @@ pub(crate) fn join_login_refresh(
     mut pass_border: Query<&mut BorderColor, (With<JoinPassField>, Without<JoinUserField>)>,
 ) {
     let gold = glass::EDGE;
+    // One caret for every typable box in the game (`glass::caret`), so a field that can be
+    // typed into is recognisable as one wherever you meet it.
+    let now = time.elapsed_secs();
     if let Ok(mut t) = user_text.single_mut() {
-        let caret = if login.0 == Some(0) { "_" } else { "" };
-        **t = format!("{}{caret}", session.username);
+        **t = format!("{}{}", session.username, glass::caret(now, login.0 == Some(0)));
     }
     if let Ok(mut t) = pass_text.single_mut() {
         let masked: String = "\u{2022}".repeat(session.password.chars().count());
-        let caret = if login.0 == Some(1) { "_" } else { "" };
-        **t = format!("{masked}{caret}");
+        **t = format!("{masked}{}", glass::caret(now, login.0 == Some(1)));
     }
     if let Ok(mut b) = user_border.single_mut() {
         *b = BorderColor::all(if login.0 == Some(0) { gold } else { glass::EDGE_SOFT });

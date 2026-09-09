@@ -158,6 +158,7 @@ pub(crate) fn pump_net(
                 roster.party_slots = party_slots;
                 announce.unlocks.owned = owned;
                 announce.unlocks.party_slots = party_slots;
+                announce.unlocks.loaded = true;
                 announce.unlocks.deepest_ever = deepest_ever;
                 if banner {
                     announce.unlocks.pending.extend(newly);
@@ -602,13 +603,15 @@ pub(crate) fn pump_net(
                     }
                 }
             }
-            ServerMsg::BattleEnded { outcome, xp, chits, items, gear_drops, worn } => {
+            ServerMsg::BattleEnded { outcome, xp, xp_base, xp_bonuses, chits, items, gear_drops, worn } => {
                 // Victory returns to the overworld (go extract!) and pops up the
                 // after-action report; defeat ends the run.
                 if outcome == "victory" {
                     // Stay on the battle screen and show the tally THERE; dismissing
                     // it is what walks you back out (`render_loot_report`).
                     report.raise("VICTORY", Some(xp), chits, items, gear_drops);
+                    report.xp_base = xp_base;
+                    report.xp_bonuses = xp_bonuses;
                     report.worn = worn;
                     report.gate_return = *state.get() == Screen::Battle;
                 } else if outcome == "fled" {

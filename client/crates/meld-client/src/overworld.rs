@@ -537,6 +537,11 @@ pub(crate) fn world_pos(x: f32, y: f32, height: f32) -> Vec3 {
 /// snapshots (higher = snappier + less smoothing). Kills the pixel-sprite jitter.
 pub(crate) const OW_SMOOTH_RATE: f32 = 16.0;
 
+/// How hard each snapshot pulls [`OwInterp::speed`] toward what it just measured.
+/// Fast enough that walking into a tree stops the extrapolation within two ticks, slow
+/// enough that one jittered receipt cannot move it far.
+const OW_SPEED_EMA: f32 = 0.35;
+
 /// Client render-unload radii (world units from the player). The server sends EVERY
 /// entity in the instance each snapshot; as you dive deep that set grows without
 /// bound. So the client only *renders* what's near: an entity beyond `_FAR` is
@@ -1550,6 +1555,7 @@ pub(crate) fn sync_overworld_sprites(
     mut sprite_mats: ResMut<SpriteMats>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut interp: ResMut<OwInterp>,
+    steer: Res<Steer>,
     dungeon: Res<world_render::DungeonSceneRes>,
     mut q: Query<(Entity, &WorldEntity, &mut Transform)>,
 ) {
@@ -1576,6 +1582,17 @@ pub(crate) fn sync_overworld_sprites(
     // previous), so remote sprites can lerp between the two most recent samples.
     if interp.seen_seq != world.seq {
         interp.seen_seq = world.seq;
+        // The local player's own pace, smoothed, BEFORE the buffer rolls — the sample
+        // about to be overwritten is the one this needs. `dt` is clamped to a plausible
+        // band of tick intervals so a jittered receipt cannot report a sprint or a stop;
+        // that clamp plus the EMA is the whole rubber-band fix (see `OwInterp::speed`).
+        if let (Some((_, cur)), Some(e)) =
+            (interp.states.get(&session.player_id), world.entities.get(&session.player_id))
+        {
+            let dt = (now - cur.t).clamp(0.05, 0.30);
+            let observed = (e.x - cur.x).hypot(e.y - cur.y) / dt;
+            interp.speed += (observed - interp.speed) * OW_SPEED_EMA;
+        }
         for (id, e) in &world.entities {
             let cur = InterpSample { x: e.x, y: e.y, t: now };
             interp
@@ -1668,12 +1685,21 @@ pub(crate) fn sync_overworld_sprites(
                     // froze outright: 1,800 consecutive frames without moving, which is a far
                     // worse bug than the jitter it was fixing. `e` is always the newest thing
                     // the server said; the buffer is consulted for nothing but the slope.
+                    //
+                    // ⚠️ **AND THE SLOPE IS THE STEERING VECTOR, NOT A DIFFERENCE OF TWO
+                    // SAMPLES.** Differentiating positions divides by the gap between two
+                    // RECEIPTS, so network jitter lands directly on the extrapolated target
+                    // and the avatar visibly rubber-bands — alone, because it is the one
+                    // entity that extrapolates at all. Worse, a stopped player kept the last
+                    // velocity for the whole clamp window and glided a full stride past where
+                    // they actually were before being yanked back. `Steer` is exact and
+                    // reaches ZERO the instant the key is released, so the overshoot at the
+                    // end of every walk is gone by construction rather than by tuning.
                     let (tx, ty) = match interp.states.get(&we.0) {
-                        Some((prev, cur)) if cur.t - prev.t > 1e-4 => {
-                            let dt = cur.t - prev.t;
-                            let (vx, vy) = ((cur.x - prev.x) / dt, (cur.y - prev.y) / dt);
+                        Some((_, cur)) if steer.0 != Vec2::ZERO => {
                             let ahead = (now - cur.t).clamp(0.0, OW_EXTRAPOLATE_MAX);
-                            (e.x + vx * ahead, e.y + vy * ahead)
+                            let d = steer.0.normalize_or_zero() * (interp.speed * ahead);
+                            (e.x + d.x, e.y + d.y)
                         }
                         _ => (e.x, e.y),
                     };
