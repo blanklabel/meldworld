@@ -131,13 +131,18 @@ pub(crate) fn spawn_hero_actor(
     let mut cs = CharSprite::new(frames.clone(), mat.clone(), root);
     cs.facing = facing;
     cs.locked = Some(facing); // a battle hero always faces the monsters
-    // …and is DRAWN in three-quarter view, which is not the same statement. Facing the
-    // monsters puts the camera at the hero's back, so the world→screen lookup lands on
-    // `north` and the whole party renders as silhouettes from behind — the one screen
-    // where telling a Hunter from an Explorer decides what you press. The pose is angled
-    // INWARD (a hero left of centre turns right, and vice versa) so the line still reads
-    // as a formation squared up on the enemy rather than four people facing the viewer.
-    cs.view_dir = Some(if root.x <= 0.0 { 1 } else { 7 });
+    // …and is DRAWN in three-quarter view, which is not the same statement. Squared up on
+    // the enemy the world→screen lookup lands on `north`, and a line of dead-back
+    // silhouettes is the one screen where telling a Hunter from an Explorer decides what
+    // you press. The pose is turned a notch INWARD so more of each body reads.
+    //
+    // ⚠️ **INWARD IS THE NORTH HALF OF THE COMPASS, NOT THE SOUTH HALF.** `dir_index` takes
+    // `(screen_right, toward_cam)`, so 1/7 (south-east / south-west) are angled toward the
+    // VIEWER — a party posed with those turns to face ITSELF, ignoring the creature it is
+    // fighting. 3/5 (north-east / north-west) are the same inward angle on the far side of
+    // the compass: still turned toward the centre, but converging up-screen on the enemy,
+    // which is where a formation looks.
+    cs.view_dir = Some(if root.x <= 0.0 { 3 } else { 5 });
     let forward = Vec3::new(facing.x, 0.0, facing.y); // toward the foes
     let quad = if bust { wa.bust_quad.clone() } else { wa.sprite_quad.clone() };
     commands
@@ -480,13 +485,24 @@ pub(crate) fn sync_battle_actors(
     q: Query<(Entity, &BattleActor)>,
 ) {
     let Some(wa) = wa else { return };
-    let mut seen = HashSet::new();
-    for (ent, a) in &q {
-        if battle.combatants.iter().any(|c| c.id == a.id) {
-            seen.insert(a.id.clone());
-        } else {
-            commands.entity(ent).despawn();
-        }
+    // ⚠️ **AN ACTOR'S PLACE DEPENDS ON HOW MANY THERE ARE, so patching newcomers in around
+    // the ones already standing lays out a party that never existed.** Every x below is
+    // centred on its own line's COUNT (`i - (n-1)/2`), and the roster arrives over several
+    // frames — `battle.started`, then `CombatantsJoined`, then a called-in reinforcement.
+    // Skipping an actor that already exists therefore freezes it at the position it was
+    // given when the line was shorter: with two heroes the first sits where the middle of a
+    // one-hero party was, and the pose — which is chosen by which SIDE of centre the body
+    // stands on — can come out mirrored for the same hero from one fight to the next.
+    //
+    // The roster changes rarely and the arena is a dozen entities, so rebuild the whole
+    // thing when the SET changes and do nothing at all when it has not.
+    let live: HashSet<&str> = battle.combatants.iter().map(|c| c.id.as_str()).collect();
+    let have: HashSet<&str> = q.iter().map(|(_, a)| a.id.as_str()).collect();
+    if live == have {
+        return;
+    }
+    for (ent, _) in &q {
+        commands.entity(ent).despawn();
     }
     // Split combatants: my heroes, each ally player's heroes (grouped by owner,
     // first-seen order), and the enemies.
@@ -517,9 +533,6 @@ pub(crate) fn sync_battle_actors(
     let is_back = |c: &&CombatantView| c.statuses.iter().any(|s| s == "row:back");
     let n = mine.len().max(1) as f32;
     for (i, c) in mine.iter().enumerate() {
-        if seen.contains(&c.id) {
-            continue;
-        }
         let back = is_back(c);
         // Even spread across x; a small depth offset (and bust crop) sets the rows.
         // Enemies are to the north (−z); the camera is to the south (+z). So the
@@ -540,9 +553,6 @@ pub(crate) fn sync_battle_actors(
         let edge = edges[gi.min(edges.len() - 1)];
         let heroes = &allies[owner];
         for (i, c) in heroes.iter().enumerate() {
-            if seen.contains(&c.id) {
-                continue;
-            }
             let (root, facing) = edge.slot(i, heroes.len());
             spawn_hero_actor(&mut commands, &wa, &mut mats, c, root, facing, false);
         }
@@ -565,9 +575,6 @@ pub(crate) fn sync_battle_actors(
         (rear.iter().filter(|b| !**b).count(), rear.iter().filter(|b| **b).count());
     let (mut fi, mut bi) = (0usize, 0usize);
     for (i, c) in enemies.iter().enumerate() {
-        if seen.contains(&c.id) {
-            continue;
-        }
         // The back rank sits deeper and is inset half a gap, so it reads as *behind* the
         // front rather than as a second unrelated line.
         let (n, idx, z_off, inset) = if rear[i] {
@@ -4260,22 +4267,33 @@ mod battle_pose_tests {
         );
     }
 
-    /// So the pose is overridden to a FRONT three-quarter, angled inward. Both halves
-    /// matter: front, or the class is unreadable; angled, or the line reads as four
-    /// people looking at the viewer instead of a formation.
+    /// So the pose is overridden to a three-quarter turned INWARD — and inward has to be
+    /// taken on the NORTH half of the compass, which is the half that faces the enemy.
+    ///
+    /// ⚠️ **THIS TEST ONCE ASSERTED THE BUG.** It required `starts_with("south")`, and the
+    /// south half is the half angled toward the VIEWER: the party posed with 1/7 turned to
+    /// face ITSELF across the arena and ignored the creature it was fighting. Asserting
+    /// "you can see a face" was asserting the wrong property — a battle hero is identified
+    /// by silhouette and kit from behind, and what it must never do is look away from the
+    /// fight. The rule is the HEADING, so that is what this holds.
     #[test]
-    fn a_battle_hero_is_drawn_from_the_front_and_turned_inward() {
-        let pose = |x: f32| if x <= 0.0 { 1usize } else { 7usize };
+    fn a_battle_hero_faces_the_enemy_and_is_turned_inward() {
+        let pose = |x: f32| if x <= 0.0 { 3usize } else { 5usize };
         for x in [-2.7f32, -1.0, 0.0, 1.0, 2.7] {
             let name = DIRS[pose(x)];
             assert!(
-                name.starts_with("south"),
-                "a hero at x={x} is drawn as `{name}`, which is not a face"
+                name.starts_with("north"),
+                "a hero at x={x} is drawn as `{name}`, which is turned away from the enemy"
             );
-            assert_ne!(name, "south", "dead-front is `face_cam`'s pose, not the stance");
+            assert_ne!(name, "north", "dead-back is the pose the override exists to avoid");
         }
-        assert_eq!(DIRS[pose(-2.7)], "south-east", "the left of the line turns right");
-        assert_eq!(DIRS[pose(2.7)], "south-west", "the right of the line turns left");
+        assert_eq!(DIRS[pose(-2.7)], "north-east", "the left of the line turns right");
+        assert_eq!(DIRS[pose(2.7)], "north-west", "the right of the line turns left");
+        // …and the two sides converge rather than diverge: whatever the angle, both look
+        // up-screen, so no pair of heroes can end up face to face.
+        for x in [-2.7f32, 2.7] {
+            assert!(DIRS[pose(x)].starts_with("north"));
+        }
     }
 }
 
