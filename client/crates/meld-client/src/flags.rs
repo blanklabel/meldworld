@@ -86,6 +86,33 @@ pub(crate) fn hunts_preview_flag() -> bool {
     std::env::var("MELD_HUNTS").is_ok()
 }
 
+/// Open the **Drill Yard** on arrival (with `MELD_CITY`) — a stable frame for the party
+/// screen without walking to the district and pressing [E]. `MELD_YARD=1`.
+///
+/// It also stands the town tour down, for the reason `autoplay_flag` does: the tour is a
+/// modal card, nothing presses its button for you, and it lands squarely over the panel you
+/// asked to look at.
+pub(crate) fn yard_preview_flag() -> bool {
+    std::env::var("MELD_YARD").is_ok()
+}
+
+/// Land with one hero's CLASS PICKER already open (`MELD_YARD_PICK=<slot>`, 0-based, with
+/// `MELD_YARD`) — the picker is a click deep and a capture is one frame. Its own variable
+/// rather than a value on `MELD_YARD`, because every other flag here is `=1` and
+/// `MELD_YARD=1` reading as "slot 1" is a trap: it opens the picker when you asked for the
+/// screen.
+pub(crate) fn yard_pick_preview_flag() -> Option<usize> {
+    std::env::var("MELD_YARD_PICK").ok().and_then(|v| v.trim().parse().ok()).filter(|i| *i < 4)
+}
+
+/// PIN the Drill Yard's detail column on one class (`MELD_YARD_FOCUS=<class key>`, with
+/// `MELD_YARD`) instead of whatever the cursor last touched. Two captures at two classes are
+/// how you prove the panel does NOT move when the description under the cursor changes —
+/// which is the whole point of the fixed row height, and is unobservable in a single frame.
+pub(crate) fn yard_focus_preview_flag() -> Option<String> {
+    std::env::var("MELD_YARD_FOCUS").ok().filter(|s| !s.is_empty())
+}
+
 /// Preview a boss/elite sprite in The Last City plaza (with `MELD_CITY`) — a stable
 /// frame for eyeballing the encounter art (`MELD_BOSS=ironmaw`). See `meld_proto::bosses` for valid ids.
 pub(crate) fn boss_preview() -> Option<String> {

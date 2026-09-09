@@ -944,7 +944,17 @@ explains itself the moment it opens. Tests hold both halves — a purpose is req
 be short enough for the 1/6 column, and must read as a phrase rather than a title —
 because a new district shipping with no purpose is a new district that reads as scenery.
 
-**The three-column convention.** Every cascade screen is **nav | main | detail** at fixed
+**The three-column convention.** ⚠️ **IT FIXES THE HORIZONTAL AXIS AND, UNTIL `PT-7`, LEFT
+THE VERTICAL ONE FREE — WHICH IS THE SAME BUG.** A cascade screen centres its columns row,
+and the row is as tall as its tallest column, so a detail column describing whatever is
+HOVERED re-measures the row on every hover and slides every column — including the one the
+cursor is on ("everyone is kinda bouncing around as you highlight them"). `glass::
+columns_fixed(height)` pins it and `glass::column` fills the height it is given, scrolling
+its own overflow. Opt-in, because a counter with three rows in it would become a
+window-height pane of empty glass; reach for it on any screen whose detail column changes
+with the cursor. The same rule applies INSIDE a column: the Drill Yard's role sentence
+keeps three lines of room whether it needs them or not, or the stat bars under it move.
+Every cascade screen is **nav | main | detail** at fixed
 fractions of the window — **1/6, 1/2, 1/3**, which tile it exactly (asserted at compile time
 in [`glass.rs`](client/crates/meld-client/src/glass.rs)). Fractions, not content-sizing,
 and every column's SLOT is spawned even when empty: the menu's row used to have no width at
@@ -1187,9 +1197,16 @@ the whole dance for one biome.
 the wasm client, and `flags.rs` is one reader per flag now instead of two.
 `MELD_PARTY` / `MELD_CLASS` preset the party, `MELD_AUTOPLAY` self-drives the loop, and
 `MELD_CITY` (+ `MELD_WALL` for the Vanguard Wall, `MELD_SHOP` for the counter,
-`MELD_FORGE` for the Forge & Alembic) parks in Last City — handy for deterministic
-screenshot states. `MELD_TALLY` holds an extraction haul on screen, since the real one
-rolls off on a timer long enough to be gone before a capture lands.
+`MELD_FORGE` for the Forge & Alembic, `MELD_YARD` for the Drill Yard) parks in Last City
+— handy for deterministic screenshot states. `MELD_TALLY` holds an extraction haul on
+screen, since the real one rolls off on a timer long enough to be gone before a capture
+lands. `MELD_YARD` does two more things for the same reason: it stands the town tour down
+(a modal card nothing presses for you, centred on the panel you asked to look at), and it
+stands the ACCOUNT up to four slots and the full roster client-side — an in-memory account
+is always a brand-new one, so the only frame the party screen could otherwise produce is
+one hero beside one class, which is not a size at which a layout can be judged.
+`MELD_YARD_PICK=<slot>` lands with that hero's class picker already open, which is the half
+of that screen a capture cannot reach without a click.
 
 ⚠️ **Autoplay takes no onboarding, and that is load-bearing for this loop.** The town
 tour and the "Before You Dive" card are modal, nothing presses their buttons for you, and

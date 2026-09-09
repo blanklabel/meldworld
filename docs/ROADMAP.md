@@ -251,6 +251,39 @@ Right now the party is fixed at dive time; players can't rearrange or save teams
     box (loadout name, hero rename, both login fields) — a still `_` in a UI with no
     focus ring is another glyph in the string.
 
+- [x] **PT-7 — The party is the main column, and the class palette is a dialog.**
+  Reported from play as *"the party screen is a train wreck... the name text box keeps
+  opening and closing with the cursor blink"*. Two faults, one screen. The **field**: a
+  caret is `"|"` for half a cycle and `""` for the other half, so an empty field's text
+  node had no glyphs and therefore no HEIGHT — the box collapsed and sprang open in time
+  with the blink, re-flowing the panel under it. The **layout**: `PT-5` put the four
+  heroes in the 1/6 nav (38px portraits) and ten classes you are not choosing between in
+  half the window, which is the screen's subject at its smallest.
+  - *Shipped:* every text field that carries a caret is a FIXED shape whatever is in it
+    (the name box has a height; an emptied rename buffer keeps an ellipsis under the
+    cursor). Nav is the saved parties — a list you scroll, which is what a nav is
+    everywhere else here. Main is the party: four big cards. Clicking a hero opens a
+    class picker FOR THAT HERO, so the class lands on the hero you pointed at rather than
+    on wherever the cursor was left; the picker covers nav+main and deliberately not the
+    detail column, so the class you are hovering is still described beside it. Esc or
+    Cancel backs out, and the name field stands down while it is up.
+  - *And the columns stopped moving.* Reported next as *"everyone is kinda bouncing around
+    as you highlight them"*: `PT-5` fixed the horizontal axis and left the vertical one
+    content-sized, so the row was as tall as its tallest column and a vertically-centred row
+    moves EVERY column when the detail text under the cursor changes length. `glass::
+    columns_fixed` pins the row's height (opt-in: a three-row counter would otherwise be a
+    window-height pane of empty glass) and `glass::column` fills it and scrolls its own
+    overflow; the role sentence keeps three lines of room whether it needs them or not, so
+    the stat bars and the kit under it hold still too. Measured on two captures pinned to
+    two different classes (`MELD_YARD_FOCUS`): the panel's edges and the HP bar land on the
+    same pixel row in both.
+  - *Also:* the district nameplates are their own UI root and were drawing "The Forge &
+    Alembic" straight through the panel's nav column — they stand down under a modal now,
+    the way the travel column already does. And `MELD_YARD` pins this screen for a capture
+    (it stands the tour down and the account up; `MELD_YARD_PICK=<slot>` opens the picker),
+    because an in-memory account is a brand-new one and one hero beside one class is not a
+    size at which a layout can be judged.
+
 - [x] **PT-6 — Your last party is the default, with its gear.** The composition was
   already persisted per slot (`heroes.class_key`) and already seeded back, but the seed
   reads `UnlocksRes` — which arrives over the WEBSOCKET while the hero roster arrives

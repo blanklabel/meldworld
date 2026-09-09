@@ -347,6 +347,7 @@ fn main() {
                 city::seed_party_from_account,
                 city::prompt_party_if_unset,
                 city::party_panel,
+                city::party_picker_panel,
                 (
                     city::party_panel_buttons,
                     city::loadout_buttons,
@@ -2038,6 +2039,10 @@ struct CityUi {
     /// hovered or clicked. Separate from the party itself, so you can read a class
     /// before deciding to field it.
     yard_focus: String,
+    /// Which party slot the class picker is open FOR, if it is open. The palette is a
+    /// dialog you open by clicking a hero rather than a column standing there permanently,
+    /// so the slot is the question the picker exists to answer.
+    yard_picker: Option<usize>,
 }
 
 impl CityUi {

@@ -73,8 +73,9 @@ pub(crate) fn render_town_tour(
     // autoplay cannot press the button that dismisses it — so every autoplay launch sat in
     // the hub forever, which made screenshotting anything past town impossible on the
     // embedded build (an in-memory account is always a fresh one, so the tour always fires).
-    // The tour is for a person; autoplay is an instrument.
-    if crate::flags::autoplay_flag() {
+    // The tour is for a person; autoplay is an instrument — and so is `MELD_YARD`, which
+    // asks for the party screen and got this card centred on top of it.
+    if crate::flags::autoplay_flag() || crate::flags::yard_preview_flag() {
         tutorial.town_step = None;
         tutorial.town_seen = true;
     } else if tutorial.loaded && !tutorial.town_seen && tutorial.town_step.is_none() {
@@ -300,7 +301,7 @@ pub(crate) fn first_run_popup(
     // Same rule as the town tour above, and the same predicate: autoplay takes no
     // onboarding. Nobody is at the keyboard to dismiss this card, so it sat over a third
     // of every captured frame for the whole demo/screenshot run.
-    if crate::flags::autoplay_flag() {
+    if crate::flags::autoplay_flag() || crate::flags::yard_preview_flag() {
         tutorial.show_run_popup = false;
     }
     if !tutorial.show_run_popup {

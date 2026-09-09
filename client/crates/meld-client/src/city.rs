@@ -319,6 +319,7 @@ pub(crate) fn city_hud(
     mut city: ResMut<CityUi>,
     mut heat: ResMut<crate::overworld::HeatUi>,
     mut pick: ResMut<CounterPick>,
+    mut unlocks: ResMut<UnlocksRes>,
 ) {
     inv.loaded = false;
     net.0.fetch_inventory();
@@ -336,6 +337,29 @@ pub(crate) fn city_hud(
         net.0.fetch_recipes();
     }
     city.hunts_open = crate::flags::hunts_preview_flag();
+    // `MELD_YARD` opens the party screen on arrival, and `MELD_YARD_PICK=<slot>` opens that
+    // hero's class picker with it — the picker is a click deep, and a capture is one frame.
+    //
+    // It also stands the ACCOUNT up to four slots and the full roster, client-side, the way
+    // `MELD_HEAT` seeds a heat and `MELD_TALLY` seeds a haul: an in-memory account is always
+    // a brand-new one, so the only frame this screen could otherwise produce is one hero and
+    // one class — which is the size at which nothing about the layout can be judged. The
+    // server is untouched and clamps the party at dive time as it always did.
+    if crate::flags::yard_preview_flag() {
+        city.party_open = true;
+        city.yard_picker = crate::flags::yard_pick_preview_flag();
+        if let Some(key) = crate::flags::yard_focus_preview_flag() {
+            city.yard_focus = key;
+        }
+        unlocks.party_slots = unlocks.party_slots.max(4);
+        for key in crate::mocks::party_classes() {
+            let owned = format!("class_{key}");
+            if !unlocks.owned.iter().any(|k| k == &owned) {
+                unlocks.owned.push(owned);
+            }
+        }
+        unlocks.loaded = true;
+    }
     // Screenshot-only: land with a row already picked, so the detail column's description,
     // amount and commit buttons are on screen without a click to make them appear.
     if let Some(row) = crate::flags::pick_preview_flag() {
@@ -1930,6 +1954,61 @@ mod tests {
         );
     }
 
+    /// Clicking a hero opens the picker FOR THAT HERO, and the class you then choose
+    /// dresses that hero. The old panel took the class first and applied it to whichever
+    /// slot the cursor had been left on, so a click on a class re-dressed somebody you
+    /// were not looking at.
+    #[test]
+    fn a_class_lands_on_the_hero_whose_card_opened_the_picker() {
+        let mut app = yard_app();
+        app.insert_resource(UnlocksRes {
+            party_slots: 4,
+            owned: vec!["class_explorer".into(), "class_hunter".into()],
+            ..Default::default()
+        });
+        app.world_mut().resource_mut::<Session>().party =
+            vec!["explorer".into(), "explorer".into(), "explorer".into(), "explorer".into()];
+        let card = app.world_mut().spawn((PartySlotButton(2), Interaction::Pressed)).id();
+        app.update();
+        assert_eq!(
+            app.world().resource::<CityUi>().yard_picker,
+            Some(2),
+            "clicking a hero card should open the picker for that hero"
+        );
+        app.world_mut().entity_mut(card).despawn();
+        app.world_mut().spawn((PartyClassButton("hunter"), Interaction::Pressed));
+        app.update();
+        let session = app.world().resource::<Session>();
+        assert_eq!(session.party[2], "hunter", "the class landed on the wrong hero");
+        assert_eq!(session.party[0], "explorer", "it dressed a hero nobody clicked");
+        assert!(
+            app.world().resource::<CityUi>().yard_picker.is_none(),
+            "answering the question should close the dialog"
+        );
+    }
+
+    /// Esc backs out of the picker without changing the party, and only when no hero
+    /// is being renamed, since Esc belongs to the rename buffer while one is open.
+    #[test]
+    fn esc_closes_the_picker_and_leaves_the_party_alone() {
+        let mut app = yard_app();
+        app.world_mut().resource_mut::<CityUi>().yard_picker = Some(1);
+        press(&mut app, KeyCode::Escape);
+        assert!(app.world().resource::<CityUi>().yard_picker.is_none());
+    }
+
+    /// The party name field swallows letters, but not from behind the picker: a name the
+    /// player never saw themselves type is a name they did not mean to save.
+    #[test]
+    fn the_name_field_stands_down_while_the_picker_is_open() {
+        let mut app = yard_app();
+        app.world_mut().resource_mut::<CityUi>().yard_picker = Some(0);
+        for k in [KeyCode::KeyA, KeyCode::KeyB] {
+            press(&mut app, k);
+        }
+        assert_eq!(app.world().resource::<CityUi>().loadout_name, "");
+    }
+
     /// The two fields must not both eat the same keystroke: typing a hero's name should
     /// never also be typing the party's, or one of them is always wrong.
     #[test]
@@ -3431,13 +3510,24 @@ pub(crate) struct YardStatFill {
     pub seg: u8,
 }
 
-/// Click to start renaming the focused hero.
+/// Click to start renaming the hero in this slot. It carries the slot rather than acting
+/// on the cursor: with the class palette behind a modal, "click the hero then click
+/// Rename" would mean opening the picker and cancelling out of it to rename anybody.
 #[derive(Component)]
-pub(crate) struct YardRenameButton;
+pub(crate) struct YardRenameButton(pub usize);
 
-/// The rename line's editable text.
+/// The party column's status line — what to do, or what the rename you are in the middle
+/// of expects next.
 #[derive(Component)]
 pub(crate) struct YardRenameText;
+
+/// Marks the class picker's root, so it can be despawned when the picker closes.
+#[derive(Component)]
+pub(crate) struct PartyPickerRoot;
+
+/// Dismiss the class picker without choosing.
+#[derive(Component)]
+pub(crate) struct PartyPickerCancel;
 
 /// One framed card: a portrait over a label, optionally with a second line under it.
 /// Shared by the four party slots and the class palette, so a hero you have and a
@@ -3497,10 +3587,14 @@ fn yard_card(
 /// Spawned rather than drawn into the shared HUD line so the slots and classes are
 /// real buttons — mustering a party is pointing at heroes, not memorising [1]-[4].
 ///
-/// This is the login screen's old party builder, brought into town and given the
-/// thing it never had: the heroes are *yours* here, with names you can change, so
-/// the panel shows portraits, a class's role and kit, and its stat shape — the
-/// reading a player actually wants before committing four slots to a dive.
+/// **THE PARTY IS THE MAIN COLUMN, AND THE ROSTER IS A DIALOG.** The first cut put the
+/// four heroes in the 1/6 nav and the whole class palette in `main`, which had it exactly
+/// backwards: the thing this screen is *about* is the party you are taking down, and it
+/// was the smallest thing on it — four 38px portraits in a sixth of the window — while
+/// ten classes you are not currently choosing between took half. Now `main` holds four
+/// big cards and picking a class is a modal you open by clicking the hero it is for, so
+/// the palette costs nothing until you actually want it. The saved parties move into the
+/// nav, which is what a nav is for everywhere else in this game: a list you scroll.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn party_panel(
     mut commands: Commands,
@@ -3543,7 +3637,6 @@ pub(crate) fn party_panel(
     if !city.party_open {
         return;
     }
-    let pool = fieldable_classes(&unlocks);
     let slots = (unlocks.party_slots.max(1) as usize).min(4);
     let sprite = |key: &str| -> Handle<Image> {
         wa.as_ref().map(|w| w.class_frames(key).idle[0].clone()).unwrap_or_default()
@@ -3560,11 +3653,9 @@ pub(crate) fn party_panel(
     // column's slot is spawned whether or not it has anything in it, so nothing here can
     // shift sideways again.
     //
-    // nav = the party you are building, one card per slot, read top to bottom.
-    // main = the roster you may field.
+    // nav = the parties you have saved, a list you scroll.
+    // main = the party you are taking down, four cards you can actually see.
     // detail = what the class you are looking at IS.
-    // …and the saved parties run along the BOTTOM, under all three: a loadout is a thing
-    // you do to the whole panel rather than to one column of it.
     commands
         .spawn((
             PartyPanelRoot,
@@ -3586,14 +3677,136 @@ pub(crate) fn party_panel(
                 TextFont { font_size: FontSize::Px(30.0), ..default() },
                 TextColor(glass::TITLE),
             ));
-            p.spawn(glass::columns()).with_children(|cols| {
-                // ── NAV: the party itself, vertically. A locked slot is DRAWN rather than
-                // omitted, so the roster you are working toward is legible instead of a
-                // list that stops short.
+            // FIXED HEIGHT, because the detail column describes whatever the cursor is on
+            // and the row was as tall as its tallest column: every hover re-measured the row,
+            // and a vertically-centred row moves EVERY column when it does — including the
+            // cards you are pointing at. Reported as the party bouncing around as you
+            // highlight it. Each column scrolls its own overflow instead.
+            p.spawn(glass::columns_fixed(Val::Vh(76.0))).with_children(|cols| {
+                // ── NAV: the parties you have already mustered. A loadout is a thing you
+                // pick off a list, which is what the nav column is everywhere else.
                 cols.spawn(glass::column(glass::COL_NAV)).with_children(|nav| {
-                    nav.spawn(glass::text("YOUR PARTY", 13.0, glass::DIM));
-                    for i in 0..4 {
-                        if i < slots {
+                    nav.spawn(glass::text("SAVED PARTIES", 13.0, glass::DIM));
+                    if loadouts.list.is_empty() {
+                        nav.spawn(glass::text(
+                            "none yet \u{2014} muster one and save it",
+                            12.0,
+                            Color::srgb(0.45, 0.48, 0.58),
+                        ));
+                    }
+                    for l in &loadouts.list {
+                        nav.spawn((
+                            Button,
+                            LoadoutLoadButton(l.name.clone()),
+                            glass::row_chip(false),
+                        ))
+                        .with_children(|b| {
+                            b.spawn(Node {
+                                flex_direction: FlexDirection::Column,
+                                row_gap: Val::Px(1.0),
+                                ..default()
+                            })
+                            .with_children(|t| {
+                                t.spawn(glass::text(l.name.clone(), 14.0, glass::TEXT));
+                                let comp = l
+                                    .classes
+                                    .iter()
+                                    .map(|c| class_info(c).name)
+                                    .collect::<Vec<_>>()
+                                    .join(" / ");
+                                t.spawn(glass::text(comp, 11.0, glass::DIM));
+                            });
+                        });
+                        nav.spawn(Node {
+                            flex_direction: FlexDirection::Row,
+                            column_gap: Val::Px(6.0),
+                            margin: UiRect::bottom(Val::Px(4.0)),
+                            ..default()
+                        })
+                        .with_children(|row| {
+                            row.spawn((
+                                Button,
+                                LoadoutRenameButton(l.name.clone()),
+                                glass::chip_sized(false, Val::Px(74.0)),
+                            ))
+                            .with_children(|b| {
+                                b.spawn(glass::text("rename", 12.0, Color::srgb(0.78, 0.82, 0.95)));
+                            });
+                            row.spawn((
+                                Button,
+                                LoadoutDeleteButton(l.name.clone()),
+                                glass::chip_sized(false, Val::Px(34.0)),
+                            ))
+                            .with_children(|b| {
+                                b.spawn(glass::text("x", 13.0, Color::srgb(0.9, 0.6, 0.6)));
+                            });
+                        });
+                    }
+                    nav.spawn(glass::divider());
+                    nav.spawn(glass::text("NAME", 12.0, glass::DIM));
+                    // A real FIELD: the focused edge every other typable box in the game
+                    // has, and the caret below blinks in it.
+                    //
+                    // ⚠️ **ITS HEIGHT IS FIXED, AND THAT IS THE WHOLE BUG.** The caret is
+                    // "|" for half a cycle and "" for the other half, so an EMPTY field's
+                    // text node had no glyphs at all every other half-second — it collapsed
+                    // to zero height, the box shut around it, and the whole panel re-flowed
+                    // underneath. Reported as the name box opening and closing in time with
+                    // the cursor. A field is a fixed shape whatever is (or is not) in it.
+                    nav.spawn((
+                        Node {
+                            border_radius: BorderRadius::all(Val::Px(5.0)),
+                            width: Val::Percent(100.0),
+                            height: Val::Px(30.0),
+                            align_items: AlignItems::Center,
+                            padding: UiRect::axes(Val::Px(8.0), Val::Px(0.0)),
+                            border: UiRect::all(Val::Px(1.0)),
+                            ..default()
+                        },
+                        BorderColor::all(glass::EDGE),
+                        BackgroundColor(glass::GLASS_DEEP),
+                    ))
+                    .with_children(|f| {
+                        f.spawn((
+                            Text::new(String::new()),
+                            LoadoutNameText,
+                            TextFont { font_size: FontSize::Px(13.0), ..default() },
+                            TextColor(glass::TEXT),
+                        ));
+                    });
+                    nav.spawn((Button, LoadoutSaveButton, glass::row_chip(false))).with_children(
+                        |b| {
+                            b.spawn(glass::text("Save this party", 13.0, glass::TEXT));
+                        },
+                    );
+                });
+
+                // ── MAIN: the party itself, big enough to read. A locked slot is DRAWN
+                // rather than omitted, so the roster you are working toward is legible
+                // instead of a list that stops short.
+                cols.spawn(glass::column(glass::COL_MAIN)).with_children(|main| {
+                    main.spawn(glass::text("YOUR PARTY", 13.0, glass::DIM));
+                    main.spawn((
+                        Text::new("Click a hero to choose their class.".to_string()),
+                        YardRenameText,
+                        TextFont { font_size: FontSize::Px(12.0), ..default() },
+                        TextColor(glass::DIM),
+                    ));
+                    main.spawn(Node {
+                        flex_direction: FlexDirection::Row,
+                        column_gap: Val::Px(10.0),
+                        row_gap: Val::Px(10.0),
+                        flex_wrap: FlexWrap::Wrap,
+                        justify_content: JustifyContent::Center,
+                        margin: UiRect::top(Val::Px(6.0)),
+                        ..default()
+                    })
+                    .with_children(|row| {
+                        for i in 0..4 {
+                            if i >= slots {
+                                yard_locked_card(row, i);
+                                continue;
+                            }
                             let cls =
                                 session.party.get(i).cloned().unwrap_or_else(|| "explorer".into());
                             let name = hero_names
@@ -3602,75 +3815,51 @@ pub(crate) fn party_panel(
                                 .cloned()
                                 .filter(|n| !n.is_empty())
                                 .unwrap_or_else(|| format!("Hero {}", i + 1));
-                            yard_slot_row(
-                                nav,
-                                sprite(&cls),
-                                class_info(&cls).name,
-                                &name,
-                                i == session.party_cursor,
-                                PartySlotButton(i),
-                                PartySlotSprite(i),
-                                PartySlotLabel(i),
-                                PartySlotHeroName(i),
-                            );
-                        } else {
-                            nav.spawn(glass::row_chip(false)).with_children(|c| {
-                                c.spawn(glass::text(
-                                    format!("{}  locked", i + 1),
-                                    13.0,
-                                    Color::srgb(0.45, 0.48, 0.58),
-                                ));
+                            row.spawn(Node {
+                                flex_direction: FlexDirection::Column,
+                                align_items: AlignItems::Center,
+                                row_gap: Val::Px(5.0),
+                                ..default()
+                            })
+                            .with_children(|cell| {
+                                yard_card(
+                                    cell,
+                                    sprite(&cls),
+                                    &name,
+                                    class_info(&cls).name,
+                                    SLOT_CARD_W,
+                                    PartySlotButton(i),
+                                    PartySlotSprite(i),
+                                    PartySlotHeroName(i),
+                                    PartySlotLabel(i),
+                                );
+                                cell.spawn((
+                                    Button,
+                                    YardRenameButton(i),
+                                    glass::chip_sized(false, Val::Px(SLOT_CARD_W)),
+                                ))
+                                .with_children(|b| {
+                                    b.spawn(glass::text("rename", 12.0, glass::DIM));
+                                });
                             });
                         }
-                    }
-                    nav.spawn((Button, YardRenameButton, glass::row_chip(false))).with_children(
-                        |b| {
-                            b.spawn((
-                                Text::new("Rename this hero"),
-                                YardRenameText,
-                                TextFont { font_size: FontSize::Px(13.0), ..default() },
-                                TextColor(glass::TEXT),
-                            ));
-                        },
-                    );
-                    nav.spawn(glass::text(
-                        format!("{slots} of 4 slots earned"),
-                        12.0,
-                        glass::DIM,
-                    ));
-                });
-
-                // ── MAIN: the roster this account may field.
-                cols.spawn(glass::column(glass::COL_MAIN)).with_children(|main| {
-                    main.spawn(glass::text("CHOOSE A CLASS", 13.0, glass::DIM));
+                    });
                     main.spawn(glass::text(
-                        "Click a hero on the left, then a class here.",
+                        format!("{slots} of 4 slots earned"),
                         12.0,
                         glass::DIM,
                     ));
                     main.spawn(Node {
                         flex_direction: FlexDirection::Row,
-                        column_gap: Val::Px(8.0),
-                        row_gap: Val::Px(8.0),
-                        flex_wrap: FlexWrap::Wrap,
                         justify_content: JustifyContent::Center,
+                        margin: UiRect::top(Val::Px(8.0)),
                         ..default()
                     })
                     .with_children(|row| {
-                        for key in &pool {
-                            let ci = class_info(key);
-                            yard_card(
-                                row,
-                                sprite(key),
-                                ci.name,
-                                "",
-                                104.0,
-                                PartyClassButton(key),
-                                PartyClassSprite(key),
-                                (),
-                                (),
-                            );
-                        }
+                        row.spawn((Button, PartyDoneButton, glass::chip_sized(true, Val::Px(140.0))))
+                            .with_children(|b| {
+                                b.spawn(glass::text("Done", 16.0, glass::TITLE));
+                            });
                     });
                 });
 
@@ -3694,11 +3883,17 @@ pub(crate) fn party_panel(
                         TextFont { font_size: FontSize::Px(24.0), ..default() },
                         TextColor(glass::TITLE),
                     ));
+                    // Three lines of room, held whether the role needs them or not: the
+                    // roles run one to three lines and everything under this — the stat
+                    // bars, the kit — slid up and down with the sentence above them. The
+                    // longest authored role is 85 characters, which is two lines in this
+                    // column, so the third is headroom rather than a clip waiting to happen.
                     d.spawn((
                         Text::new(focus.role.to_string()),
                         YardDetailRole,
                         TextFont { font_size: FontSize::Px(14.0), ..default() },
                         TextColor(Color::srgb(0.78, 0.82, 0.95)),
+                        Node { height: Val::Px(DETAIL_ROLE_LINES * 18.0), ..default() },
                     ));
                     d.spawn(Node {
                         flex_direction: FlexDirection::Column,
@@ -3746,171 +3941,149 @@ pub(crate) fn party_panel(
                     ));
                 });
             });
+        });
+}
 
-            // ── SAVED PARTIES, along the bottom. Same fixed width as the columns above so
-            // the panel is one shape rather than two.
-            p.spawn((
-                Node {
-                    width: Val::Vw(100.0),
-                    flex_shrink: 0.0,
+/// Lines of room the detail column keeps for a class's role, whatever that class's role
+/// actually needs. See the note at its spawn.
+const DETAIL_ROLE_LINES: f32 = 3.0;
+
+/// How wide a hero card is in the party column. Four of them plus their gaps fit inside
+/// half the window at the reference 1280, and `FlexWrap::Wrap` folds them 2x2 below that
+/// rather than crushing the art.
+const SLOT_CARD_W: f32 = 148.0;
+
+/// **THE CLASS PICKER, WHICH IS ONLY ON SCREEN WHILE YOU ARE PICKING.** Its own root and
+/// its own system, keyed off `CityUi::yard_picker`, so the party panel underneath is not
+/// rebuilt to open or close it — rebuilding on a click is what re-measured the whole
+/// screen and moved the thing you had just clicked.
+pub(crate) fn party_picker_panel(
+    mut commands: Commands,
+    city: Res<CityUi>,
+    unlocks: Res<UnlocksRes>,
+    hero_names: Res<AccountHeroNames>,
+    wa: Option<Res<WorldAssets>>,
+    existing: Query<Entity, With<PartyPickerRoot>>,
+    mut shown: Local<Option<usize>>,
+) {
+    // A closed yard has no picker over it, however the yard was closed — the flag is
+    // owned by the panel, not by every exit remembering to clear it.
+    let want = if city.party_open { city.yard_picker } else { None };
+    if want == *shown {
+        return;
+    }
+    *shown = want;
+    for e in &existing {
+        commands.entity(e).despawn();
+    }
+    let Some(slot) = want else { return };
+    let pool = fieldable_classes(&unlocks);
+    let sprite = |key: &str| -> Handle<Image> {
+        wa.as_ref().map(|w| w.class_frames(key).idle[0].clone()).unwrap_or_default()
+    };
+    let hero = hero_names
+        .names
+        .get(slot)
+        .cloned()
+        .filter(|n| !n.is_empty())
+        .unwrap_or_else(|| format!("Hero {}", slot + 1));
+    commands
+        .spawn((
+            PartyPickerRoot,
+            // It covers the nav and the party, and DELIBERATELY NOT the detail column:
+            // the one thing you want while choosing a class is the description of the
+            // class you are pointing at, and a full-screen modal dims exactly that. So the
+            // dialog takes the two columns whose question it is answering and leaves the
+            // answer visible beside it.
+            Node {
+                position_type: PositionType::Absolute,
+                width: Val::Percent(glass::COL_NAV + glass::COL_MAIN),
+                height: Val::Percent(100.0),
+                align_items: AlignItems::Center,
+                justify_content: JustifyContent::Center,
+                padding: UiRect::all(Val::Px(14.0)),
+                ..default()
+            },
+            BackgroundColor(glass::SCRIM),
+            // Over the party panel it is answering a question about, rather than
+            // wherever Bevy happens to order two UI roots.
+            GlobalZIndex(60),
+        ))
+        .with_children(|p| {
+            p.spawn(glass::panel_capped(Val::Percent(100.0), Val::Px(760.0))).with_children(|c| {
+                c.spawn(glass::text(format!("A CLASS FOR {}", hero.to_uppercase()), 20.0, glass::TITLE));
+                c.spawn(glass::text(
+                    "Every class this account has earned. Hover to read one on the right.",
+                    12.0,
+                    glass::DIM,
+                ));
+                c.spawn(Node {
+                    flex_direction: FlexDirection::Row,
+                    column_gap: Val::Px(10.0),
+                    row_gap: Val::Px(10.0),
+                    flex_wrap: FlexWrap::Wrap,
+                    justify_content: JustifyContent::Center,
+                    margin: UiRect::top(Val::Px(8.0)),
+                    ..default()
+                })
+                .with_children(|row| {
+                    for key in &pool {
+                        let ci = class_info(key);
+                        yard_card(
+                            row,
+                            sprite(key),
+                            ci.name,
+                            "",
+                            120.0,
+                            PartyClassButton(key),
+                            PartyClassSprite(key),
+                            (),
+                            (),
+                        );
+                    }
+                });
+                c.spawn(Node {
                     flex_direction: FlexDirection::Row,
                     justify_content: JustifyContent::Center,
-                    padding: UiRect::axes(Val::Px(18.0), Val::Px(0.0)),
+                    margin: UiRect::top(Val::Px(10.0)),
                     ..default()
-                },
-            ))
-            .with_children(|bar| {
-                bar.spawn((
-                    Node {
-                        border_radius: BorderRadius::all(Val::Px(8.0)),
-                        width: Val::Percent(100.0),
-                        flex_direction: FlexDirection::Column,
-                        row_gap: Val::Px(6.0),
-                        max_height: Val::Vh(28.0),
-                        overflow: Overflow::scroll_y(),
-                        padding: UiRect::all(Val::Px(14.0)),
-                        border: UiRect::all(Val::Px(2.0)),
-                        ..default()
-                    },
-                    BackgroundColor(glass::GLASS),
-                    BorderColor::all(glass::EDGE),
-                ))
-                .with_children(|box_| {
-                    box_.spawn(glass::text("SAVED PARTIES", 13.0, glass::DIM));
-                    if loadouts.list.is_empty() {
-                        box_.spawn(glass::text("none yet", 13.0, Color::srgb(0.45, 0.48, 0.58)));
-                    }
-                    for l in &loadouts.list {
-                        box_.spawn(Node {
-                            flex_direction: FlexDirection::Row,
-                            column_gap: Val::Px(6.0),
-                            align_items: AlignItems::Center,
-                            ..default()
-                        })
-                        .with_children(|row| {
-                            row.spawn((Button, LoadoutLoadButton(l.name.clone()), glass::row_chip(false)))
-                                .with_children(|b| {
-                                    let comp = l
-                                        .classes
-                                        .iter()
-                                        .map(|c| class_info(c).name)
-                                        .collect::<Vec<_>>()
-                                        .join(" / ");
-                                    b.spawn(glass::text(
-                                        format!("{}  \u{2014}  {comp}", l.name),
-                                        13.0,
-                                        glass::TEXT,
-                                    ));
-                                });
-                            row.spawn((
-                                Button,
-                                LoadoutRenameButton(l.name.clone()),
-                                glass::chip_sized(false, Val::Px(74.0)),
-                            ))
-                            .with_children(|b| {
-                                b.spawn(glass::text("rename", 12.0, Color::srgb(0.78, 0.82, 0.95)));
-                            });
-                            row.spawn((
-                                Button,
-                                LoadoutDeleteButton(l.name.clone()),
-                                glass::chip_sized(false, Val::Px(34.0)),
-                            ))
-                            .with_children(|b| {
-                                b.spawn(glass::text("x", 13.0, Color::srgb(0.9, 0.6, 0.6)));
-                            });
-                        });
-                    }
-                    box_.spawn(Node {
-                        flex_direction: FlexDirection::Row,
-                        column_gap: Val::Px(8.0),
-                        align_items: AlignItems::Center,
-                        margin: UiRect::top(Val::Px(4.0)),
-                        ..default()
-                    })
-                    .with_children(|row| {
-                        row.spawn(glass::text("Name:", 13.0, glass::DIM));
-                        // A real FIELD: `glass::inset(true)` gives it the focused edge every
-                        // other typable box in the game has, and the caret below blinks in
-                        // it. A bare `Text` node with no caret and no ring is
-                        // indistinguishable from a label, which is what this was.
-                        row.spawn((
-                            Node {
-                                border_radius: BorderRadius::all(Val::Px(5.0)),
-                                flex_grow: 1.0,
-                                padding: UiRect::axes(Val::Px(8.0), Val::Px(5.0)),
-                                border: UiRect::all(Val::Px(1.0)),
-                                ..default()
-                            },
-                            BorderColor::all(glass::EDGE),
-                            BackgroundColor(glass::GLASS_DEEP),
-                        ))
-                        .with_children(|f| {
-                            f.spawn((
-                                Text::new(String::new()),
-                                LoadoutNameText,
-                                TextFont { font_size: FontSize::Px(13.0), ..default() },
-                                TextColor(glass::TEXT),
-                            ));
-                        });
-                        row.spawn((Button, LoadoutSaveButton, glass::chip_sized(false, Val::Px(130.0))))
-                            .with_children(|b| {
-                                b.spawn(glass::text("Save this party", 13.0, glass::TEXT));
-                            });
-                        row.spawn((Button, PartyDoneButton, glass::chip_sized(true, Val::Px(90.0))))
-                            .with_children(|b| {
-                                b.spawn(glass::text("Done", 15.0, glass::TITLE));
-                            });
+                })
+                .with_children(|row| {
+                    row.spawn((
+                        Button,
+                        PartyPickerCancel,
+                        glass::chip_sized(false, Val::Px(140.0)),
+                    ))
+                    .with_children(|b| {
+                        b.spawn(glass::text("Cancel  [Esc]", 13.0, glass::TEXT));
                     });
                 });
             });
         });
 }
 
-/// One row of the nav column: a slot's portrait, its class and the hero's own name, laid
-/// out horizontally so four of them read top-to-bottom in a sixth of the window.
-///
-/// Its own builder rather than [`yard_card`] with a flag: a nav row and a picker card have
-/// opposite axes, and the two have drifted into one function with three booleans in it in
-/// every UI that tried.
-#[allow(clippy::too_many_arguments)]
-fn yard_slot_row(
-    parent: &mut ChildSpawnerCommands,
-    sprite: Handle<Image>,
-    label: &str,
-    hero: &str,
-    selected: bool,
-    tags: impl Bundle,
-    sprite_tag: impl Bundle,
-    label_tag: impl Bundle,
-    sub_tag: impl Bundle,
-) {
+/// A slot the account has not earned yet, drawn at the same size as a hero card so the
+/// party reads as four places rather than as a list that stops short.
+fn yard_locked_card(parent: &mut ChildSpawnerCommands, i: usize) {
     parent
-        .spawn((Button, tags, glass::row_chip(selected)))
-        .with_children(|c| {
-            c.spawn((
-                ImageNode::new(sprite),
-                sprite_tag,
-                Node { width: Val::Px(38.0), height: Val::Px(38.0), ..default() },
-            ));
-            c.spawn(Node {
+        .spawn((
+            Node {
+                border_radius: BorderRadius::all(Val::Px(10.0)),
+                width: Val::Px(SLOT_CARD_W),
+                height: Val::Px(SLOT_CARD_W + 34.0),
                 flex_direction: FlexDirection::Column,
-                row_gap: Val::Px(1.0),
+                align_items: AlignItems::Center,
+                justify_content: JustifyContent::Center,
+                row_gap: Val::Px(4.0),
+                border: UiRect::all(Val::Px(2.0)),
                 ..default()
-            })
-            .with_children(|t| {
-                t.spawn((
-                    Text::new(hero.to_string()),
-                    sub_tag,
-                    TextFont { font_size: FontSize::Px(14.0), ..default() },
-                    TextColor(glass::TEXT),
-                ));
-                t.spawn((
-                    Text::new(label.to_string()),
-                    label_tag,
-                    TextFont { font_size: FontSize::Px(12.0), ..default() },
-                    TextColor(glass::DIM),
-                ));
-            });
+            },
+            BorderColor::all(glass::EDGE_SOFT),
+            BackgroundColor(glass::GLASS_THIN),
+        ))
+        .with_children(|c| {
+            c.spawn(glass::text(format!("Slot {}", i + 1), 15.0, Color::srgb(0.5, 0.54, 0.66)));
+            c.spawn(glass::text("locked", 12.0, Color::srgb(0.45, 0.48, 0.58)));
         });
 }
 
@@ -3920,7 +4093,8 @@ pub(crate) fn party_panel_buttons(
     slots_q: Query<(&Interaction, &PartySlotButton), Changed<Interaction>>,
     class_q: Query<(&Interaction, &PartyClassButton), Changed<Interaction>>,
     done_q: Query<&Interaction, (Changed<Interaction>, With<PartyDoneButton>)>,
-    rename_q: Query<&Interaction, (Changed<Interaction>, With<YardRenameButton>)>,
+    rename_q: Query<(&Interaction, &YardRenameButton), Changed<Interaction>>,
+    cancel_q: Query<&Interaction, (Changed<Interaction>, With<PartyPickerCancel>)>,
     keys: Res<ButtonInput<KeyCode>>,
     unlocks: Res<UnlocksRes>,
     hero_names: Res<AccountHeroNames>,
@@ -3928,18 +4102,27 @@ pub(crate) fn party_panel_buttons(
     mut session: ResMut<Session>,
     mut city: ResMut<CityUi>,
 ) {
-    // Hovering reads, clicking commits. Pointing at a class you are only curious
-    // about should never quietly change who you are taking down.
+    // Hovering reads, CLICKING ASKS: a hero card is the way into the class picker, because
+    // "who is this for" is the question the palette is answering and clicking the hero is
+    // the only gesture that carries the answer with it. The old panel took the class first
+    // and applied it to whichever slot the cursor had been left on, which is how a click on
+    // a class quietly re-dressed a hero you were not looking at.
+    // `MELD_YARD_FOCUS` pins the detail column for a capture, and a pin the cursor can
+    // shove off the moment it crosses a card is not a pin.
+    let pinned = crate::flags::yard_focus_preview_flag().is_some();
     for (i, b) in &slots_q {
         match *i {
             Interaction::Pressed => {
                 session.party_cursor = b.0;
-                if let Some(k) = session.party.get(b.0) {
+                if let Some(k) = session.party.get(b.0).filter(|_| !pinned) {
                     city.yard_focus = k.clone();
+                }
+                if rename.slot.is_none() {
+                    city.yard_picker = Some(b.0);
                 }
             }
             Interaction::Hovered => {
-                if let Some(k) = session.party.get(b.0) {
+                if let Some(k) = session.party.get(b.0).filter(|_| !pinned) {
                     city.yard_focus = k.clone();
                 }
             }
@@ -3947,7 +4130,7 @@ pub(crate) fn party_panel_buttons(
         }
     }
     for (i, b) in &class_q {
-        if *i == Interaction::Hovered {
+        if *i == Interaction::Hovered && !pinned {
             city.yard_focus = b.0.to_string();
         }
     }
@@ -3955,17 +4138,33 @@ pub(crate) fn party_panel_buttons(
         rename.slot = Some(slot);
         rename.buffer = hero_names.names.get(slot).cloned().unwrap_or_default();
     };
-    for i in &rename_q {
+    for (i, b) in &rename_q {
         if *i == Interaction::Pressed && rename.slot.is_none() {
-            start_rename(&mut rename, session.party_cursor);
+            // A rename and the picker want the same click and the same keyboard, so
+            // starting one closes the other.
+            city.yard_picker = None;
+            session.party_cursor = b.0;
+            start_rename(&mut rename, b.0);
         }
+    }
+    for i in &cancel_q {
+        if *i == Interaction::Pressed {
+            city.yard_picker = None;
+        }
+    }
+    // Esc backs out of the picker. Guarded on a rename NOT being open, because Esc there
+    // drops the name you are typing and `yard_rename_input` owns that key.
+    if city.yard_picker.is_some()
+        && rename.slot.is_none()
+        && keys.just_pressed(KeyCode::Escape)
+    {
+        city.yard_picker = None;
     }
     // NO bare [R] shortcut here, deliberately. The yard is the one screen in town with
     // a text field in it, and a letter key that also opens a dialog means a party named
     // "Reapers" can never be typed — the R opened a rename instead, and typed an "r"
     // into the name field on the way. The visible Rename button is the way in; the
     // in-dive party screen keeps its [R], where there is no field to type into.
-    let _ = &keys;
     let slots = (unlocks.party_slots.max(1) as usize).min(4);
     for (i, b) in &class_q {
         if *i != Interaction::Pressed {
@@ -3975,21 +4174,25 @@ pub(crate) fn party_panel_buttons(
             session.party.resize(slots, "explorer".to_string());
         }
         session.party.truncate(slots.max(1));
-        let slot = session.party_cursor.min(session.party.len().saturating_sub(1));
+        // The slot the picker was OPENED for, never a cursor that may have drifted since.
+        let slot = city
+            .yard_picker
+            .unwrap_or(session.party_cursor)
+            .min(session.party.len().saturating_sub(1));
         session.party[slot] = b.0.to_string();
         session.party_chosen = true;
-        // …and MOVE ON. The cursor used to sit where it was, so mustering four heroes was
-        // click-a-slot-then-a-class four times over, and clicking a class without picking a
-        // slot first silently overwrote whichever one the cursor had been left on. Advancing
-        // makes the obvious gesture — pick four classes in a row — do the obvious thing, and
-        // it wraps rather than sticking on the last slot so a second pass re-dresses the
-        // party from the top.
-        session.party_cursor = (slot + 1) % slots.max(1);
-        city.yard_focus = b.0.to_string();
+        session.party_cursor = slot;
+        if !pinned {
+            city.yard_focus = b.0.to_string();
+        }
+        // Answered, so the dialog goes. Leaving it up to pick a second class for the same
+        // hero would make every choice provisional and the last click the one that counts.
+        city.yard_picker = None;
     }
     for i in &done_q {
         if *i == Interaction::Pressed {
             city.party_open = false;
+            city.yard_picker = None;
             session.party_chosen = true;
             city.notice = "Party set.".to_string();
         }
@@ -4006,8 +4209,10 @@ pub(crate) fn loadout_name_input(
     mut city: ResMut<CityUi>,
 ) {
     // Two text fields share one keyboard: while a hero is being renamed the letters
-    // belong to it, or naming a hero would also name the loadout.
-    if !city.party_open || rename.slot.is_some() {
+    // belong to it, or naming a hero would also name the loadout. And while the class
+    // picker is up nothing is being typed at all — letters landing in a field behind a
+    // modal is a name the player never sees themselves write.
+    if !city.party_open || rename.slot.is_some() || city.yard_picker.is_some() {
         return;
     }
     let shift = keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight);
@@ -4043,7 +4248,11 @@ pub(crate) fn loadout_name_caret(
         if rename.slot != Some(tag.0) {
             continue;
         }
-        let want = format!("{}{}", rename.buffer, glass::caret(time.elapsed_secs(), true));
+        // An emptied buffer keeps an ellipsis under the caret: a text node with no glyphs
+        // in it has no HEIGHT either, so the line — and the card around it — collapses and
+        // springs back in time with the blink. Same bug the name field had.
+        let body = if rename.buffer.is_empty() { "\u{2026}" } else { rename.buffer.as_str() };
+        let want = format!("{body}{}", glass::caret(time.elapsed_secs(), true));
         if **t != want {
             **t = want;
         }
@@ -4052,7 +4261,7 @@ pub(crate) fn loadout_name_caret(
     // Focus follows the same rule the keyboard does: while a hero is being renamed the
     // letters belong to it, so this field is not the one being typed into and must not
     // claim a cursor.
-    let focused = city.party_open && rename.slot.is_none();
+    let focused = city.party_open && rename.slot.is_none() && city.yard_picker.is_none();
     let body = if city.loadout_name.is_empty() && !focused {
         "type a name\u{2026}".to_string()
     } else {
@@ -4221,9 +4430,9 @@ pub(crate) fn party_panel_refresh(
     }
     if let Ok(mut t) = rename_text.single_mut() {
         let want = if rename.slot.is_some() {
-            "Enter to keep, Esc to drop".to_string()
+            "Typing a name \u{2014} Enter to keep, Esc to drop".to_string()
         } else {
-            "Rename this hero".to_string()
+            "Click a hero to choose their class.".to_string()
         };
         if **t != want {
             **t = want;
@@ -4457,12 +4666,20 @@ pub(crate) fn render_travel_column(
 /// `overworld::update_mob_nameplates` floats a plate over a mob's head.
 pub(crate) fn render_district_nameplates(
     mut commands: Commands,
+    city: Res<CityUi>,
     cam_q: Query<(&Camera, &GlobalTransform), With<Camera3d>>,
     root_q: Query<Entity, With<DistrictNameplateRoot>>,
     old: Query<Entity, With<DistrictNameplate>>,
 ) {
     for e in &old {
         commands.entity(e).despawn();
+    }
+    // A plate is a label on the WORLD, and a modal panel is not the world: these are their
+    // own UI root, so Bevy drew "The Forge & Alembic" straight through the Drill Yard's nav
+    // column. The travel column already stands down for exactly this — a plate is the same
+    // decision one layer out.
+    if city.party_open || city.any_counter_open() {
+        return;
     }
     let Ok((cam, cam_tf)) = cam_q.single() else { return };
     let Ok(root) = root_q.single() else { return };
