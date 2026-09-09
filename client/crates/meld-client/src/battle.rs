@@ -1500,21 +1500,34 @@ pub(crate) fn held_potions(backpack: &RunBackpack, slot: usize) -> Vec<(String, 
 /// 1-4 jump straight to a hero. In a sub-page ↑/↓ move the highlight, ENTER selects,
 /// ESC backs out. A Psyker's root is a short list, navigated like a sub-page.
 /// Autoplay queues each hero's class default.
+/// Is one of the fight's RESULTS cards up — the tally, or a stat screen it handed off to?
+///
+/// One predicate rather than two checks, because both cards mean the same thing about
+/// input: the fight is over, and nothing behind them may be commanded. The tally alone
+/// was enough while it was the only card drawn here — the level-up screen now plays on
+/// this screen too, and its own footer says `[Space] next hero`, which is precisely the
+/// key `menu_keyboard` reads as ATTACK. So mashing through the stat scroll would queue an
+/// order per hero behind it and pop the command window back up between the two cards.
+pub(crate) fn results_showing(report: &LootReport, lu: &LevelUpQueue) -> bool {
+    report.active || lu.current.is_some() || !lu.pending.is_empty()
+}
+
 pub(crate) fn menu_keyboard(
     keys: Res<ButtonInput<KeyCode>>,
     autoplay: Res<Autoplay>,
     tactics: Res<Tactics>,
     backpack: Res<RunBackpack>,
     report: Res<LootReport>,
+    levelup: Res<LevelUpQueue>,
     roster: Res<crate::PartyRoster>,
     mut menu: ResMut<BattleMenu>,
     mut battle: ResMut<BattleData>,
     mut tutorial_run: ResMut<TutorialRun>,
 ) {
-    // The fight is already won/lost/fled — the victory/loot tally is up, so no
-    // keyboard shortcut should be able to queue another action behind it (see
-    // the matching `show` gate in `rebuild_command_menu`).
-    if report.active {
+    // The fight is already won/lost/fled — a results card is up, so no keyboard
+    // shortcut should be able to queue another action behind it (see the matching
+    // `show` gate in `rebuild_command_menu`).
+    if results_showing(&report, &levelup) {
         return;
     }
     // The Items page offers only what the party is carrying (GR-4).
@@ -1739,16 +1752,18 @@ pub(crate) fn rebuild_command_menu(
     tactics: Res<Tactics>,
     backpack: Res<RunBackpack>,
     report: Res<LootReport>,
+    levelup: Res<LevelUpQueue>,
     mut menu: ResMut<BattleMenu>,
     roster: Res<crate::PartyRoster>,
     existing: Query<Entity, With<CommandWindow>>,
     tutorial_run: Res<TutorialRun>,
 ) {
-    // The fight is over the moment the loot report is up (victory/chest tally) —
-    // hidden here rather than left to decay naturally, since `battle.active` isn't
-    // cleared until the NEXT battle starts and would otherwise keep Attack/Flee
-    // live and clickable on top of the summary.
-    let show = battle.active.is_some() && !report.active;
+    // The fight is over the moment a results card is up — hidden here rather than left
+    // to decay naturally, since `battle.active` isn't cleared until the NEXT battle
+    // starts and would otherwise keep Attack/Flee live and clickable on top of the
+    // summary. Hiding the WINDOW is also what stops `menu_click`: with no rows spawned
+    // there is no `Interaction` to press, so the click path needs no guard of its own.
+    let show = battle.active.is_some() && !results_showing(&report, &levelup);
     let level = menu.level;
     let active_id = battle.active.clone().unwrap_or_default();
     // Include the dynamic row count so re-opening a Target page (same level) rebuilds,
@@ -3915,5 +3930,276 @@ mod watch_banner_tests {
         let battle = BattleData { spectating: true, your_ids: Vec::new(), ..Default::default() };
         assert!(battle.active.is_none(), "a watcher was handed an active hero");
         assert!(battle.your_ids.is_empty());
+    }
+}
+
+// ------------------------------------------------------- the opening card ---
+
+/// How a fight opened, held just long enough to say so.
+///
+/// **AN OPENING IS THE ONE THING A FIGHT DOES BEFORE YOU CAN ACT, SO IT HAS TO BE
+/// ANNOUNCED LIKE ONE.** An ambush costs the party a whole round and a surprise hands
+/// it one — the biggest swing in the game that the player did not choose in the moment —
+/// and the first cut of `CR-15` reported it as a head-height [`Callout`] over hero slot
+/// 0, the same bubble a poison tick uses. That is exactly the wrong loudness: the tell
+/// sat in the corner of the arena, at the one instant the eye is everywhere at once
+/// because the battle screen has just arrived. A pop-up card, centre-frame, over the
+/// beat `[battle] open_grace_ms` already holds still for.
+///
+/// Deliberately NOT a [`glass::scrim`]: the whole purpose of the grace beat is that you
+/// read what is in front of you, and a modal dim over the arena would spend that beat
+/// hiding the formation you are being told to worry about.
+#[derive(Resource, Default)]
+pub(crate) struct BattleOpening {
+    /// `"ambush"` or `"surprise"`; a `Rolled` opening says nothing, because nothing
+    /// happened to the party — everyone simply rolled.
+    pub(crate) kind: Option<&'static str>,
+    pub(crate) age: f32,
+}
+
+impl BattleOpening {
+    /// Raise the card for a `battle.started`'s `opening` word. An unknown word — a
+    /// future arm, or an older server — says nothing rather than guessing.
+    pub(crate) fn raise(&mut self, opening: &str) {
+        self.kind = match opening {
+            "ambush" => Some("ambush"),
+            "surprise" => Some("surprise"),
+            _ => None,
+        };
+        self.age = 0.0;
+    }
+
+    /// The headline, the line under it, and the colour all three are spoken in.
+    ///
+    /// The subtitle is not decoration: it is the only place the game says what the
+    /// opening COST or BOUGHT. "AMBUSHED!" alone is mood.
+    pub(crate) fn card(&self) -> Option<(&'static str, &'static str, Color)> {
+        match self.kind? {
+            "ambush" => Some((
+                "AMBUSHED!",
+                "It hunted you down \u{2014} the creatures move first.",
+                Color::srgb(1.0, 0.36, 0.3),
+            )),
+            "surprise" => Some((
+                "SURPRISE!",
+                "You chose the moment \u{2014} your heroes move first.",
+                Color::srgb(0.62, 0.98, 0.55),
+            )),
+            _ => None,
+        }
+    }
+}
+
+/// Marker for the opening card's root.
+#[derive(Component)]
+pub(crate) struct OpeningCardRoot;
+
+/// Clear the card between fights. Every fight opens SOME way, so a stale `kind` would
+/// re-announce the last fight's ambush over this fight's bell — and the card is raised
+/// from `battle.started`, which arrives before `OnEnter(Screen::Battle)` runs.
+pub(crate) fn reset_battle_opening(mut open: ResMut<BattleOpening>) {
+    open.kind = None;
+    open.age = 0.0;
+}
+
+/// Immediate-mode: the centred AMBUSHED!/SURPRISE! card, punched in at the bell and
+/// faded out over `feel.opening_ttl`.
+///
+/// Rebuilt every frame while it lives, like every other card here — it carries no
+/// button and no state, so there is nothing to preserve across frames, and the punch
+/// (an overshoot on the headline's size, easing back) is then free.
+pub(crate) fn render_opening_card(
+    mut commands: Commands,
+    time: Res<Time>,
+    feel: Res<crate::feel::BattleFeel>,
+    mut open: ResMut<BattleOpening>,
+    existing: Query<Entity, With<OpeningCardRoot>>,
+) {
+    for e in &existing {
+        commands.entity(e).despawn();
+    }
+    let Some((head, sub, col)) = open.card() else { return };
+    let ttl = feel.opening_ttl.max(0.01);
+    open.age += time.delta_secs();
+    if open.age >= ttl {
+        open.kind = None;
+        return;
+    }
+    let t = (open.age / ttl).clamp(0.0, 1.0);
+    // Punch: the headline overshoots its size and eases back over the first fifth of the
+    // card's life, then holds. A card that simply appears at its final size has no beat,
+    // and this is a beat the player is being asked to stop and read.
+    let punch = 1.0 + 0.45 * (1.0 - (t / 0.2).clamp(0.0, 1.0)).powi(2);
+    // …and it fades over the last third rather than blinking out, so the arena comes
+    // back rather than the card being replaced by a hole.
+    let alpha = ((1.0 - t) / 0.34).clamp(0.0, 1.0);
+    let fade = |c: Color| c.with_alpha(alpha);
+    commands
+        .spawn((
+            OpeningCardRoot,
+            // Root UI nodes have no reliable draw order between separate roots, and the
+            // battle HUD's own panels are roots. Above them, below the loot report (100)
+            // — a fight cannot be opening and ending at once, but the ordering should say
+            // which one wins if it ever does.
+            GlobalZIndex(90),
+            Node {
+                position_type: PositionType::Absolute,
+                width: Val::Percent(100.0),
+                // BELOW THE PACK, above the command window — the empty band of ground
+                // between the enemy nameplates and the menu. Measured by rendering it:
+                // at a third of the way down (the first cut) the card sat squarely over
+                // the creatures and their HP bars, hiding the formation the grace beat
+                // exists for you to READ. Which is also why this is not a `glass::scrim`.
+                top: Val::Percent(52.0),
+                align_items: AlignItems::Center,
+                justify_content: JustifyContent::FlexStart,
+                flex_direction: FlexDirection::Column,
+                ..default()
+            },
+        ))
+        .with_children(|root| {
+            root.spawn((
+                Node {
+                    border_radius: BorderRadius::all(Val::Px(10.0)),
+                    flex_direction: FlexDirection::Column,
+                    align_items: AlignItems::Center,
+                    row_gap: Val::Px(6.0),
+                    padding: UiRect::axes(Val::Px(34.0), Val::Px(18.0)),
+                    border: UiRect::all(Val::Px(2.0)),
+                    ..default()
+                },
+                BackgroundColor(fade(Color::srgba(0.05, 0.06, 0.1, 0.82))),
+                BorderColor::all(fade(col)),
+            ))
+            .with_children(|p| {
+                p.spawn((
+                    Text::new(head),
+                    TextFont { font_size: FontSize::Px(38.0 * punch), ..default() },
+                    TextColor(fade(col)),
+                ));
+                p.spawn((
+                    Text::new(sub),
+                    TextFont { font_size: FontSize::Px(15.0), ..default() },
+                    TextColor(fade(Color::srgb(0.88, 0.92, 1.0))),
+                ));
+            });
+        });
+}
+
+#[cfg(test)]
+mod opening_card_tests {
+    use super::*;
+
+    fn card_lines(kind: &str, feel: crate::feel::BattleFeel) -> Vec<String> {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        let mut open = BattleOpening::default();
+        open.raise(kind);
+        app.insert_resource(open);
+        app.insert_resource(feel);
+        app.add_systems(Update, render_opening_card);
+        app.update();
+        let mut q = app.world_mut().query::<&Text>();
+        q.iter(app.world()).map(|t| t.0.clone()).collect()
+    }
+
+    /// Both arms say what happened AND what it cost or bought. A headline on its own is
+    /// mood: the mechanic — you lost a round, you gained one — is the whole news.
+    #[test]
+    fn an_ambush_and_a_surprise_each_say_what_it_means() {
+        for (kind, head, mover) in [
+            ("ambush", "AMBUSHED!", "creatures"),
+            ("surprise", "SURPRISE!", "heroes"),
+        ] {
+            let lines = card_lines(kind, crate::feel::BattleFeel::default());
+            assert!(
+                lines.iter().any(|l| l.contains(head)),
+                "{kind} drew no headline: {lines:?}"
+            );
+            assert!(
+                lines.iter().any(|l| l.contains(mover) && l.contains("first")),
+                "{kind} never said who moves first: {lines:?}"
+            );
+        }
+    }
+
+    /// An ordinary opening draws NOTHING. Every fight opens some way, so a card on the
+    /// rolled case is a card on every fight in the game — which is a card nobody reads,
+    /// and the two that matter go with it.
+    #[test]
+    fn an_ordinary_opening_says_nothing() {
+        for quiet in ["rolled", "", "something_added_later"] {
+            let lines = card_lines(quiet, crate::feel::BattleFeel::default());
+            assert!(lines.is_empty(), "`{quiet}` drew a card: {lines:?}");
+        }
+    }
+
+    /// It clears itself. The card is raised from `battle.started` and torn down by a
+    /// marker despawn on the way out, so a `kind` that outlived its own TTL would sit
+    /// over the whole fight — and `reset_battle_opening` only covers leaving the arena.
+    #[test]
+    fn the_card_does_not_outlive_its_own_welcome() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        let mut open = BattleOpening::default();
+        open.raise("ambush");
+        app.insert_resource(open);
+        // A tenth of a second of life, so a handful of frames is comfortably past it.
+        app.insert_resource(crate::feel::BattleFeel {
+            opening_ttl: 0.1,
+            ..crate::feel::BattleFeel::default()
+        });
+        app.add_systems(Update, render_opening_card);
+        for _ in 0..20 {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            app.update();
+        }
+        assert!(
+            app.world().resource::<BattleOpening>().kind.is_none(),
+            "the opening card was still up long after its TTL"
+        );
+        let mut q = app.world_mut().query::<&OpeningCardRoot>();
+        assert_eq!(q.iter(app.world()).count(), 0, "the card's node outlived its state");
+    }
+
+    /// And a fresh fight is not told about the last one's. `battle.started` raises the
+    /// card BEFORE `OnEnter(Screen::Battle)` runs, so the reset belongs on the way OUT —
+    /// which is what this pins.
+    #[test]
+    fn the_next_fight_does_not_inherit_this_ones_ambush() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        let mut open = BattleOpening::default();
+        open.raise("ambush");
+        open.age = 0.4;
+        app.insert_resource(open);
+        app.add_systems(Update, reset_battle_opening);
+        app.update();
+        let open = app.world().resource::<BattleOpening>();
+        assert!(open.kind.is_none(), "the ambush survived the fight it happened in");
+        assert_eq!(open.age, 0.0, "the next fight's card would start part-way through");
+    }
+
+    /// The pop-up must sit ABOVE the battle HUD and BELOW the tally, or the one card that
+    /// exists to be read at the bell is drawn behind a panel. Bevy gives separate UI roots
+    /// no reliable order, so this is an explicit `GlobalZIndex` and worth pinning: the
+    /// numbers are in two files.
+    #[test]
+    fn the_card_is_ordered_between_the_hud_and_the_tally() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        let mut open = BattleOpening::default();
+        open.raise("surprise");
+        app.insert_resource(open);
+        app.insert_resource(crate::feel::BattleFeel::default());
+        app.add_systems(Update, render_opening_card);
+        app.update();
+        let mut q = app.world_mut().query::<(&OpeningCardRoot, &GlobalZIndex)>();
+        let z = q.iter(app.world()).map(|(_, z)| z.0).next().expect("no card root");
+        assert!(z > 0, "the card is not lifted above the battle HUD's own roots");
+        assert!(
+            z < 100,
+            "the card would cover the loot report, which is drawn at 100 (`overlays.rs`)"
+        );
     }
 }

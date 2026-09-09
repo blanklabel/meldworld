@@ -109,6 +109,7 @@ pub(crate) fn pump_net(
             ResMut<BountyData>,
             ResMut<crate::ShiftTell>,
             ResMut<crate::battle_fx::BattleFx>,
+            ResMut<crate::battle::BattleOpening>,
         ),
     ),
     mut roster: ResMut<PartyRoster>,
@@ -116,7 +117,7 @@ pub(crate) fn pump_net(
     state: Res<State<Screen>>,
     mut next: ResMut<NextState<Screen>>,
 ) {
-    let (world_path, world_frame, terrain, report, perks, hero_names, loadouts, run_gear, world_web, dungeon_scene, vanguard, shop, notice, clock, craft, (explored, station, heat, pops, hunts, bounties, tell, battle_fx)) = &mut world_res;
+    let (world_path, world_frame, terrain, report, perks, hero_names, loadouts, run_gear, world_web, dungeon_scene, vanguard, shop, notice, clock, craft, (explored, station, heat, pops, hunts, bounties, tell, battle_fx, opening_card)) = &mut world_res;
     net.0.poll();
     while let Some(msg) = net.0.try_recv() {
         match msg {
@@ -399,30 +400,18 @@ pub(crate) fn pump_net(
                 battle.queued.clear();
                 battle.spectating = spectating;
                 battle.active = battle.your_ids.first().cloned();
-                // **SAY HOW IT OPENED.** An ambush costs the party a whole round and a
-                // surprise hands it one; both were previously invisible — the gauges simply
-                // started somewhere different and the player was left to infer it. A
-                // watcher is told nothing, because the opening was not theirs.
+                // **SAY HOW IT OPENED, AS A POP-UP.** An ambush costs the party a whole
+                // round and a surprise hands it one; both were previously invisible — the
+                // gauges simply started somewhere different and the player was left to
+                // infer it. A watcher is told nothing, because the opening was not theirs.
                 //
-                // On the first hero rather than the arena's centre: the callout machinery
-                // hangs a bubble over a combatant, and the party is who it is news for.
+                // It was first shipped as a head-height `Callout` over hero slot 0 — the
+                // same bubble a poison tick draws, in the corner of the arena, at the one
+                // moment the eye is everywhere at once because the battle screen has just
+                // arrived. The biggest swing a fight can hand you unasked deserves the
+                // middle of the frame: `BattleOpening` (see `battle.rs`).
                 if !spectating {
-                    if let Some(text) = match opening.as_str() {
-                        "ambush" => Some("AMBUSHED!"),
-                        "surprise" => Some("SURPRISE!"),
-                        _ => None,
-                    } {
-                        if let Some(first) = battle.your_ids.first().cloned() {
-                            hitfx.callouts.retain(|c| c.combatant_id != first);
-                            hitfx.callouts.push(Callout {
-                                combatant_id: first,
-                                text: text.to_string(),
-                                age: 0.0,
-                                ttl: 2.0,
-                                flashing: true,
-                            });
-                        }
-                    }
+                    opening_card.raise(&opening);
                 }
                 reset_menu(&mut menu);
                 if *state.get() != Screen::Battle {

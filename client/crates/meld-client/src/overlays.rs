@@ -641,6 +641,7 @@ pub(crate) fn render_loot_report(
     time: Res<Time>,
     keys: Res<ButtonInput<KeyCode>>,
     mut report: ResMut<LootReport>,
+    mut lu: ResMut<LevelUpQueue>,
     mut next: ResMut<NextState<Screen>>,
     existing: Query<Entity, With<LootReportRoot>>,
     wa: Option<Res<WorldAssets>>,
@@ -655,9 +656,17 @@ pub(crate) fn render_loot_report(
             || keys.just_pressed(KeyCode::Enter);
         if dismissed {
             report.active = false;
-            // Dismissing the results is what leaves the battle screen.
+            // Dismissing the results is what leaves the battle screen — unless the XP
+            // on the card you just read actually LEVELLED somebody, in which case the
+            // gate is handed to the stat screens and they walk you out instead. A fight
+            // reads `tally → LEVEL UP! → the world`, all of it here, rather than dropping
+            // you onto the overworld with the second half still to play over it.
             if std::mem::take(&mut report.gate_return) {
-                next.set(Screen::Overworld);
+                if lu.current.is_some() || !lu.pending.is_empty() {
+                    lu.gate_return = true;
+                } else {
+                    next.set(Screen::Overworld);
+                }
             }
         }
     }
@@ -672,8 +681,11 @@ pub(crate) fn render_loot_report(
             LootReportRoot,
             // Root UI nodes have no reliable stacking order otherwise (Bevy
             // doesn't guarantee draw order between separate UI roots) — pin
-            // this above the level-up screen so a level-up right after a
-            // battle never covers the XP/loot you just got from it.
+            // this above the level-up screen (95) so a level-up right after a
+            // battle never covers the XP/loot you just got from it. The two are
+            // SEQUENCED now (the tally hands the walk-out to the stat screens),
+            // so they should not overlap at all — the ordering stays as the
+            // answer for the frame on which they do.
             GlobalZIndex(100),
             Node {
                 position_type: PositionType::Absolute,
@@ -807,6 +819,7 @@ pub(crate) fn level_up_screen(
     time: Res<Time>,
     keys: Res<ButtonInput<KeyCode>>,
     mut lu: ResMut<LevelUpQueue>,
+    mut next: ResMut<NextState<Screen>>,
     existing: Query<Entity, With<LevelUpRoot>>,
 ) {
     // Pull the next hero when none is on screen.
@@ -819,6 +832,14 @@ pub(crate) fn level_up_screen(
             None => {
                 for e in &existing {
                     commands.entity(e).despawn();
+                }
+                // The queue is empty, so if the loot report handed us the walk back out
+                // of the battle screen (`LootReport::gate_return`), this is where it is
+                // spent. Released HERE — the one point where nothing is on screen and
+                // nothing is waiting — rather than at each of the three places a hero's
+                // card ends, two of which are followed by the NEXT hero's card.
+                if std::mem::take(&mut lu.gate_return) {
+                    next.set(Screen::Overworld);
                 }
                 return;
             }
@@ -869,6 +890,14 @@ pub(crate) fn level_up_screen(
     commands
         .spawn((
             LevelUpRoot,
+            // ⚠️ **A ROOT WITH NO Z IS A ROOT THE BATTLE HUD DRAWS THROUGH.** Bevy
+            // guarantees no order between separate UI roots, and this card is now drawn
+            // on the BATTLE screen — where the enemy nameplates and their HP bars are
+            // their own roots and were rendering straight over the stat block, cutting a
+            // creature's name and health bar through the middle of "HP 52 → 62". On the
+            // overworld it had nothing to collide with, which is why it never carried
+            // one. Under the loot report (100), for the reason recorded there.
+            GlobalZIndex(95),
             glass::scrim(),
         ))
         .with_children(|root| {
@@ -1203,6 +1232,9 @@ mod report_cost_tests {
         app.init_state::<Screen>();
         app.insert_resource(report);
         app.init_resource::<ButtonInput<KeyCode>>();
+        // The card hands the walk out of the battle screen to the stat screens now, so
+        // it reads their queue.
+        app.init_resource::<LevelUpQueue>();
         app.add_systems(Update, render_loot_report);
         app.update();
         let mut q = app.world_mut().query::<&Text>();
@@ -1268,6 +1300,189 @@ mod report_cost_tests {
         assert!(
             !lines.iter().any(|l| l.contains("kit worn")),
             "a fight nobody fell in reported a bill: {lines:?}"
+        );
+    }
+}
+
+/// **A FIGHT FINISHES ON ITS OWN SCREEN.** The tally already drew over the arena; the
+/// stat screens it earned did not — they were registered on Overworld/City/Ended and
+/// explicitly despawned on the way INTO a fight, so a victory read `tally → the world →
+/// LEVEL UP! over a world you are already walking around in`. The gate is handed from
+/// one card to the other, and these hold the hand-off from both ends.
+#[cfg(test)]
+mod the_fight_finishes_on_its_own_screen {
+    use super::*;
+
+    fn hero(name: &str) -> meld_client::net::HeroLevelUpLine {
+        meld_client::net::HeroLevelUpLine {
+            name: name.to_string(),
+            class_key: "explorer".to_string(),
+            level: 4,
+            max_hp: (40, 46),
+            str_: (10, 11),
+            mnd: (8, 8),
+            dex: (9, 10),
+            wll: (7, 8),
+        }
+    }
+
+    fn victory(gate: bool) -> LootReport {
+        LootReport {
+            active: true,
+            title: "VICTORY".to_string(),
+            xp: Some(120),
+            chits: 4,
+            items: vec![],
+            gear: vec![],
+            worn: vec![],
+            // Already past its life, so the first frame dismisses it.
+            elapsed: LOOT_REPORT_DURATION + 1.0,
+            gate_return: gate,
+        }
+    }
+
+    /// An app sitting in `Screen::Battle` with both cards' state loaded. The caller adds
+    /// whichever of the two systems it is asserting about — they are deliberately run
+    /// apart, because each end of the hand-off has to hold on its own.
+    fn arena(report: LootReport, lu: LevelUpQueue) -> App {
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, bevy::state::app::StatesPlugin));
+        app.init_state::<Screen>();
+        app.insert_state(Screen::Battle);
+        app.insert_resource(report);
+        app.insert_resource(lu);
+        app.init_resource::<ButtonInput<KeyCode>>();
+        app
+    }
+
+    /// The tally times out, somebody levelled — so the walk out is handed on rather than
+    /// spent, and we are still in the fight.
+    #[test]
+    fn the_tally_hands_the_walk_out_to_the_stat_screens() {
+        let lu = LevelUpQueue { pending: [hero("Kestrel")].into(), ..default() };
+        let mut app = arena(victory(true), lu);
+        app.add_systems(Update, render_loot_report);
+        app.update();
+        assert!(
+            app.world().resource::<LevelUpQueue>().gate_return,
+            "the tally spent the gate itself and left the level-up to play over the world"
+        );
+        assert_eq!(
+            app.world().resource::<State<Screen>>().get(),
+            &Screen::Battle,
+            "the tally walked out while a stat screen was still queued"
+        );
+    }
+
+    /// And with nothing to level it still walks you out itself — the hand-off must not
+    /// become a way to get stuck on the battle screen after every ordinary win.
+    #[test]
+    fn a_win_that_levelled_nobody_walks_you_out_itself() {
+        let mut app = arena(victory(true), LevelUpQueue::default());
+        app.add_systems(Update, render_loot_report);
+        app.update();
+        app.update(); // let the queued transition apply
+        assert_eq!(
+            app.world().resource::<State<Screen>>().get(),
+            &Screen::Overworld,
+            "an ordinary victory left the player stranded on the battle screen"
+        );
+    }
+
+    /// The other end: the last stat screen draining is what leaves the arena.
+    #[test]
+    fn the_last_stat_screen_is_what_walks_you_out() {
+        let lu = LevelUpQueue { gate_return: true, ..default() };
+        let mut app = arena(victory(false), lu);
+        app.add_systems(Update, level_up_screen);
+        app.update();
+        app.update();
+        assert_eq!(
+            app.world().resource::<State<Screen>>().get(),
+            &Screen::Overworld,
+            "the stat screens took the gate and never spent it"
+        );
+        assert!(
+            !app.world().resource::<LevelUpQueue>().gate_return,
+            "the gate was left armed, so the next drained queue would eject the player again"
+        );
+    }
+
+    /// A level-up reached outside a fight — an XP mote on the road — must not teleport
+    /// anyone: only a gate handed over by a tally moves the screen.
+    #[test]
+    fn a_stat_screen_nobody_gated_moves_nothing() {
+        let mut app = arena(victory(false), LevelUpQueue::default());
+        app.add_systems(Update, level_up_screen);
+        app.update();
+        app.update();
+        assert_eq!(
+            app.world().resource::<State<Screen>>().get(),
+            &Screen::Battle,
+            "an ungated stat screen changed the screen out from under the player"
+        );
+    }
+
+    /// ⚠️ **AND THE COMMAND MENU CAME BACK BETWEEN THE TWO CARDS.** It is hidden while
+    /// the tally is up (`rebuild_command_menu`'s `show`) — and the tally now goes DOWN
+    /// before the stat screens play, so Attack/Flee reappeared under them, clickable. The
+    /// stat screen's own footer reads `[Space] next hero`, and Space is what
+    /// `menu_keyboard` takes as ATTACK: mashing through the scroll would have queued an
+    /// order per hero into a fight that was already over. Both now ask one predicate.
+    #[test]
+    fn nothing_is_commandable_behind_a_results_card() {
+        let quiet = LootReport { active: false, ..victory(false) };
+        assert!(
+            crate::battle::results_showing(
+                &quiet,
+                &LevelUpQueue { pending: [hero("Kestrel")].into(), ..default() }
+            ),
+            "the command menu was live under the stat screen"
+        );
+        assert!(
+            crate::battle::results_showing(&victory(true), &LevelUpQueue::default()),
+            "the tally stopped hiding the menu"
+        );
+        assert!(
+            !crate::battle::results_showing(&quiet, &LevelUpQueue::default()),
+            "a fight with no card up refused to take orders"
+        );
+    }
+
+    /// ⚠️ Drawing it on the battle screen put it among the arena's OTHER UI roots, and
+    /// Bevy orders separate roots arbitrarily — measured by rendering it, the enemy
+    /// nameplates and their HP bars came out straight through the middle of the stat
+    /// block. So the card needs an explicit `GlobalZIndex`, and it has to stay under the
+    /// tally's (100). Nothing else in the client would notice if this went away.
+    #[test]
+    fn the_stat_screen_is_not_drawn_through_by_the_arena() {
+        let mut app = arena(victory(false), LevelUpQueue { pending: [hero("Kestrel")].into(), ..default() });
+        app.add_systems(Update, level_up_screen);
+        app.update();
+        let mut q = app.world_mut().query::<(&LevelUpRoot, &GlobalZIndex)>();
+        let z = q.iter(app.world()).map(|(_, z)| z.0).next().expect("no level-up root");
+        assert!(z > 0, "the stat block sits among the battle HUD's roots with no order");
+        assert!(z < 100, "the stat block would cover the tally, which is drawn at 100");
+    }
+
+    /// And the card actually DRAWS in a fight, which is the half a gate hand-off cannot
+    /// prove: the run condition is what was wrong, and it is what this asserts.
+    #[test]
+    fn the_stat_screen_draws_on_the_battle_screen() {
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, bevy::state::app::StatesPlugin));
+        app.init_state::<Screen>();
+        app.insert_state(Screen::Battle);
+        app.init_resource::<ButtonInput<KeyCode>>();
+        app.init_resource::<crate::UnlocksRes>();
+        app.insert_resource(LevelUpQueue { pending: [hero("Kestrel")].into(), ..default() });
+        app.add_plugins(crate::announce_plugin);
+        app.update();
+        let mut q = app.world_mut().query::<&Text>();
+        let lines: Vec<String> = q.iter(app.world()).map(|t| t.0.clone()).collect();
+        assert!(
+            lines.iter().any(|l| l.contains("Kestrel")),
+            "the level-up earned by a fight did not draw on the fight's own screen: {lines:?}"
         );
     }
 }

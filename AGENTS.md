@@ -374,6 +374,21 @@ is what mustering buys.** Scaling the world to the party is what made depth mean
 time a hero was added, and depth is the only difficulty axis this game has. So the early game
 IS easy, and it balances later because you have to walk further to find anything.
 
+⚠️ **AND THE PARTY-SLOT LADDER HAD TO COME DOWN WITH IT.** `encounter_party_scale` had
+been almost exactly CANCELLING the XP split (per-hero rate 0.95x / 1.00x / 1.10x at two /
+three / four heroes); retiring it made the rate 1/n. So a bar asking for N heroes at level L
+costs **N times** the fights one hero needs — and the old ladder raised the level AND the
+count together, so the two multiplied: `3 heroes @L30` was **384** at-level fights in ONE
+dive (levels are dive-scoped) and `4 heroes @L40` was **844**, against 22 for the first bar.
+Worse, they landed on the wrong side of the wall: the fourth slot arrived at level 30 and
+the fight that WANTS four heroes at level 24 — a ladder handing you the answer after the
+exam, which is the "requires what it grants" trap the retired PG-2 hubs fell into. Lowered
+to **2 @L14 / 3 @L18 / 4 @L20** (74 / 165 / 260 fights), which restores roughly the old cost
+and puts a full party in hand before the wall. **As the hero count goes up, the bar level
+must come down** — `every_hero_bar_lands_before_the_wall_it_exists_for` holds the ceiling,
+and the cost side is documented rather than asserted because `meld-proto` has no
+`balance.toml` and must not grow a second copy of the level curve.
+
 **SO WHEN DO YOU REALLY NEED FOUR HEROES? MEASURED: AROUND d300 / LEVEL 24.**
 `party_size_sweep` plays the real encounter the world generates nearest a ring, at the level
 that depth grants, over FIVE worlds per cell — ungeared, no potions, attack-only, so read
@@ -1638,6 +1653,19 @@ than two booleans because `Surprise | Ambush` is not a state a fight can be in:
   wait. **A pin outranks a hunt** — if the party stopped the thing where it stood, the party
   chose the moment whatever that creature wanted a moment ago.
 
+**AND A FIGHT DOES NOT START SWINGING.** Nothing acts and no gauge moves for
+`[battle] open_grace_ms` (2000) — the beat in which the arena appears, the initiative lands,
+and the player reads what is in front of them. Reported from play as *"creatures now attack
+you as soon as a fight starts"*; the roll sharpened it rather than causing it, since an
+AMBUSH opens on a full gauge and used to resolve on tick 1, before the battle screen had
+finished arriving. ⚠️ It holds **both sides**, so the order the roll decided survives it
+exactly — a grace that paused only the creatures would hand the party the first move for
+free and make an ambush unlosable. ⚠️ And it lives in the ENGINE rather than in the server
+loop, because every driver has to see the pacing the player does: a `qa/` bot or `mcp/`
+harness that skipped it would be measuring a different game. It cost seven existing engine
+tests, which counted ticks from the bell — `Battle::skip_opening` is test-only and
+deliberately private.
+
 ⚠️ **NOTHING IN AN OPENING ARMS THE GAUGE-KNOCK REBUKE.** `staggered` and the
 `gauge_guard_turns` countdown are armed by a gauge being TAKEN; an opening is a gauge being
 GIVEN. An ambushed party is not owed a rebuke and an ambushing creature has not been
@@ -1647,6 +1675,40 @@ interrupted — the same distinction that keeps a naturally-empty gauge from arm
 not exist.** An ambush costs the party a whole round and a surprise hands it one; both were
 invisible until the client shouted them, since the only tell was gauges starting somewhere
 different. A watcher is told nothing — the opening was not theirs.
+
+**AND IT IS A POP-UP, NOT A BUBBLE OVER SOMEBODY'S HEAD.** The first cut of the tell was a
+head-height `Callout` on hero slot 0 — the same machinery a poison tick uses, in the corner
+of the arena, at the one instant the eye is everywhere at once because the battle screen has
+just arrived. That is the wrong LOUDNESS for the biggest swing a fight can hand you unasked:
+`BattleOpening` draws a centred card instead (red ambush, green surprise), and each arm says
+**who moves first** rather than only shouting a word, because "AMBUSHED!" alone is mood.
+Deliberately not a `glass::scrim` and — measured by RENDERING it — deliberately **below the
+pack**: at a third of the way down the card sat squarely over the creatures and their HP
+bars, hiding the formation the grace beat exists for you to read. It lives exactly
+`feel.opening_ttl` (2 s), which is that beat; `MELD_OPENING=ambush|surprise` is the fixture,
+since the static mockup never receives a `battle.started` to raise it.
+
+**A FIGHT ALSO FINISHES ON ITS OWN SCREEN.** The tally drew over the arena and gated the walk
+back out (`LootReport::gate_return`); the LEVEL-UP screens it earned did not — they were
+registered on Overworld/City/Ended and *despawned on the way INTO* a fight, so a victory read
+`tally → the world → LEVEL UP! over a world you are already walking around in`. The gate is
+HANDED from one card to the other (`LevelUpQueue::gate_return`) rather than spent, so the
+sequence is `tally → LEVEL UP! → the world` and all of it happens where the XP was earned.
+The CL-1 **unlock banner deliberately does not come along**: a class unlock is ACCOUNT news
+that merely landed during a fight, and a modal "you may now field a Resonant" over a
+corpse-strewn arena is an interruption rather than a reward.
+⚠️ **AND THE COMMAND MENU CAME BACK BETWEEN THE TWO CARDS.** It is hidden while the tally
+is up, and the tally now goes DOWN before the stat screens play — so Attack/Flee reappeared
+under them, clickable, in a fight that was over. Worse, the stat screen's own footer reads
+`[Space] next hero` and Space is exactly what `menu_keyboard` takes as ATTACK, so mashing
+through the scroll queued an order per hero. `battle::results_showing` is the one predicate
+both the keyboard guard and `rebuild_command_menu`'s `show` ask; hiding the WINDOW is also
+what stops the click path, since with no rows spawned there is no `Interaction` to press.
+⚠️ **A ROOT WITH NO Z IS A ROOT THE BATTLE HUD DRAWS THROUGH.** Bevy orders separate UI roots
+arbitrarily, and the battle HUD's nameplates are roots — moving the stat block into the arena
+put the enemy names and their HP bars straight through the middle of "HP 52 → 62". Both cards
+carry an explicit `GlobalZIndex` (opening 90, level-up 95, tally 100); on the overworld the
+stat block had nothing to collide with, which is why it had never needed one.
 
 **A GAUGE KNOCK COSTS ONE TURN, AND THE BOSS ANSWERS.** Gauge denial was implemented by hand
 at **fourteen** call sites and nothing checked what chaining them did: measured, a party's

@@ -12,6 +12,19 @@
 //!
 //! Triggers are deliberately things a player was going to do anyway, so an unlock
 //! reads as recognition rather than a chore.
+//!
+//! ⚠️ **A BAR WITH MORE HEROES ON IT MUST SIT LOWER, NOT HIGHER.** Encounter XP is a fixed
+//! pool split among the heroes still standing (`CR-14` retired the party scale that used to
+//! cancel that split), so a bar asking for N heroes at a level costs **N times** the fights
+//! one hero would need. The old ladder had the instinct backwards — it raised the LEVEL as
+//! it raised the COUNT, and the two multiplied: `3 heroes @L30` was 384 at-level fights in a
+//! single dive and `4 heroes @L40` was **844**, against 22 for the first bar.
+//!
+//! Worse, they landed on the wrong side of the difficulty wall. `party_size_sweep` measures
+//! a lone hero winning 0/5 at d300 / level 24 where four heroes win 5/5 — so the fight that
+//! WANTS a full party arrived at level 24 and the fourth slot at level 30. A ladder that
+//! hands you the answer after the exam is the same "requires what it grants" trap the
+//! retired PG-2 hubs fell into.
 
 use serde::{Deserialize, Serialize};
 
@@ -160,8 +173,8 @@ pub const UNLOCKS: &[UnlockDef] = &[
         key: "party_slot_3",
         name: "Third party slot",
         kind: UnlockKind::PartySlot(3),
-        trigger: Trigger::HeroesAtLevel { heroes: 2, level: 20 },
-        trigger_text: "Have two heroes at level 20 at the same time.",
+        trigger: Trigger::HeroesAtLevel { heroes: 2, level: 14 },
+        trigger_text: "Have two heroes at level 14 at the same time.",
         banner: "Two veterans make a formation. A third makes it hold.",
         requires: Some("party_slot_2"),
     },
@@ -181,8 +194,8 @@ pub const UNLOCKS: &[UnlockDef] = &[
         key: "party_slot_4",
         name: "Fourth party slot",
         kind: UnlockKind::PartySlot(4),
-        trigger: Trigger::HeroesAtLevel { heroes: 3, level: 30 },
-        trigger_text: "Have three heroes at level 30 at the same time.",
+        trigger: Trigger::HeroesAtLevel { heroes: 3, level: 18 },
+        trigger_text: "Have three heroes at level 18 at the same time.",
         banner: "A full march. Nothing out there is built for four of you.",
         requires: Some("party_slot_3"),
     },
@@ -234,8 +247,8 @@ pub const UNLOCKS: &[UnlockDef] = &[
         // ENDURANCE — equilibrium held over time — so it recruits from people who kept a
         // full party standing far enough out to prove it. Layered like the other
         // `HeroesAtLevel` rows, so one milestone can satisfy this and the slot bars at once.
-        trigger: Trigger::HeroesAtLevel { heroes: 4, level: 40 },
-        trigger_text: "Have four heroes at level 40 at the same time, on the same dive.",
+        trigger: Trigger::HeroesAtLevel { heroes: 4, level: 20 },
+        trigger_text: "Have four heroes at level 20 at the same time, on the same dive.",
         banner: "Four of you, still standing, that far out. The Order of the Iron Hull has \
                  one measure and you met it. Their art is not force but EQUILIBRIUM — take \
                  the blow's momentum, root to the deck, and give it back — and the bell \
@@ -402,6 +415,54 @@ pub fn granted_by(milestone: Milestone, owned: &[String]) -> Vec<&'static Unlock
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **EVERY HERO BAR LANDS AT OR BEFORE THE DEPTH THAT NEEDS IT.**
+    ///
+    /// `party_size_sweep` measures a lone hero winning 0/5 at d300 / **level 24** where four
+    /// heroes win 5/5. So a slot granted past level 24 is granted after the exam — the same
+    /// "requires what it grants" trap the retired PG-2 hubs fell into, where a hub that
+    /// granted a starting level could only be unlocked by a party that had already walked
+    /// there at level 1.
+    ///
+    /// ⚠️ **The cost side is asserted only as an ORDERING, deliberately.** A bar asking for
+    /// N heroes at level L costs N x the fights one hero needs for L, because encounter XP
+    /// is a fixed pool split among the heroes standing (`CR-14`). The old ladder raised the
+    /// level AND the count together and the two multiplied: `3 @L30` was 384 at-level fights
+    /// in ONE dive and `4 @L40` was 844, against 22 for the first bar. Checking that here
+    /// would mean re-deriving `fights_per_level` inside `meld-proto`, which has no
+    /// `balance.toml` and must not grow a second copy of the level curve — so the numbers
+    /// live in the `CR-16` roadmap entry and this holds the shape.
+    #[test]
+    fn every_hero_bar_lands_before_the_wall_it_exists_for() {
+        let mut bars: Vec<(i32, i32)> = UNLOCKS
+            .iter()
+            .filter_map(|u| match u.trigger {
+                Trigger::HeroesAtLevel { heroes, level } => Some((heroes, level)),
+                _ => None,
+            })
+            .collect();
+        bars.sort();
+        bars.dedup();
+        assert!(bars.len() >= 3, "expected several hero bars, found {bars:?}");
+
+        // `party_size_sweep`'s measured wall: a lone hero wins 0/5 at level 24.
+        const WALL_LEVEL: i32 = 24;
+        for &(heroes, level) in &bars {
+            assert!(
+                level <= WALL_LEVEL,
+                "a {heroes}-hero bar sits at level {level}, past the level-{WALL_LEVEL} wall \
+                 it is the answer to — the party arrives after the fight that wanted it"
+            );
+        }
+        // A LADDER: each rung asks for more bodies than the last, so the bars are ordered
+        // by what they demand rather than being four unrelated conditions.
+        for pair in bars.windows(2) {
+            assert!(
+                pair[1].0 > pair[0].0,
+                "two hero bars ask for the same count, so neither is a rung: {bars:?}"
+            );
+        }
+    }
 
     /// The Pacifist is people who were never SEEN, not people who ran. A fled fight was
     /// still a fight taken, and `fights` is incremented when a battle is assembled rather

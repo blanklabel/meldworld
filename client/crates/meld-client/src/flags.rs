@@ -139,6 +139,18 @@ pub(crate) fn battle_fx_flag() -> Option<String> {
     std::env::var("MELD_FX").ok().filter(|s| !s.is_empty())
 }
 
+/// Hold the AMBUSHED!/SURPRISE! opening card up in the battle mockup.
+/// `MELD_OPENING=ambush|surprise`.
+///
+/// Same argument as [`battle_fx_flag`], one beat earlier in the fight: the card lives for
+/// `feel.opening_ttl` (2 s, matching `[battle] open_grace_ms`) and is raised by a
+/// `battle.started` the static mockup never receives, so without this it is unreachable in
+/// a screenshot — and a capture is one frame at an arbitrary moment, so the mock re-raises
+/// it on a cadence just under its own life rather than once at startup.
+pub(crate) fn battle_opening_flag() -> Option<String> {
+    std::env::var("MELD_OPENING").ok().filter(|s| !s.is_empty())
+}
+
 /// Offline mockups for the overworld overlays (`?inventory` / `?levelup`, or
 /// `MELD_INVENTORY` / `MELD_LEVELUP`).
 pub(crate) fn inventory_mockup_flag() -> bool {

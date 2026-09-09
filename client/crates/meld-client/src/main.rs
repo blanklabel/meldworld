@@ -262,6 +262,7 @@ fn main() {
         .init_resource::<CityUi>()
         .init_resource::<LobbyData>()
         .init_resource::<LootReport>()
+        .init_resource::<battle::BattleOpening>()
         .init_resource::<GearHold>()
         .add_systems(
             Startup,
@@ -627,6 +628,12 @@ fn main() {
                 // otherwise be the first thing the next fight drew.
                 despawn::<battle_fx::BattleFxRoot>,
                 battle_fx::reset_battle_fx,
+                // The opening card, for the same reason `reset_battle_fx` exists: the
+                // marker goes with the despawn, but a `kind` still set would re-announce
+                // this fight's ambush over the NEXT fight's bell — `battle.started`
+                // raises it before `OnEnter(Screen::Battle)` runs.
+                despawn::<battle::OpeningCardRoot>,
+                battle::reset_battle_opening,
             ),
         )
         .add_systems(
@@ -667,6 +674,8 @@ fn main() {
                     // The fight's own results screen — drawn here, over the battle
                     // it belongs to, and it is what returns you to the overworld.
                     render_loot_report,
+                    // …and how it OPENED, at the other end of the same fight.
+                    render_opening_card,
                     render_watch_banner,
                     watch_keyboard,
                     mocks::mock_tally_setup,
@@ -686,6 +695,7 @@ fn main() {
                 battle_fx::advance_screen_wash,
                 battle_fx::react_to_conditions,
                 mocks::mock_battle_fx,
+                mocks::mock_battle_opening,
             )
                 .run_if(in_state(Screen::Battle)),
         )
@@ -730,19 +740,36 @@ fn main() {
 /// runs wherever it can be seen, and is torn down on entering a state that does
 /// not draw it. `current` survives that teardown, so a banner interrupted by a
 /// fight is re-shown afterwards rather than swallowed.
+///
+/// ⚠️ **THE TWO NO LONGER SHARE A GUEST LIST, AND THE DIFFERENCE IS WHOSE NEWS IT IS.**
+/// A level-up is the last beat of the FIGHT that earned it, so it plays on the battle
+/// screen — beside the tally, before the walk out ([`LevelUpQueue::gate_return`]). A
+/// class unlock is ACCOUNT news that merely happened to land during a fight, and a modal
+/// "you may now field a Resonant" over a corpse-strewn arena is an interruption rather
+/// than a reward; it waits for the overworld, where a `current` survives the battle's
+/// teardown and is re-shown.
 fn announce_plugin(app: &mut App) {
     app.add_systems(
         Update,
-        (level_up_screen, unlock_banner).run_if(
+        unlock_banner.run_if(
             in_state(Screen::Overworld)
                 .or_else(in_state(Screen::City))
                 .or_else(in_state(Screen::Ended)),
         ),
     )
     .add_systems(
-        OnEnter(Screen::Battle),
-        (despawn::<LevelUpRoot>, despawn::<UnlockBannerRoot>),
+        Update,
+        level_up_screen.run_if(
+            in_state(Screen::Overworld)
+                .or_else(in_state(Screen::City))
+                .or_else(in_state(Screen::Ended))
+                .or_else(in_state(Screen::Battle)),
+        ),
     )
+    // Only the BANNER is torn down on the way into a fight now — the level-up screen
+    // is drawn there, so despawning it here would delete the card on the frame the
+    // fight it belongs to hands it over.
+    .add_systems(OnEnter(Screen::Battle), despawn::<UnlockBannerRoot>)
     .add_systems(
         OnEnter(Screen::Join),
         (despawn::<LevelUpRoot>, despawn::<UnlockBannerRoot>),
@@ -1205,6 +1232,14 @@ struct LevelUpQueue {
     /// When set (offline demo/screenshot), the current hero is held on screen
     /// until [Space] instead of auto-advancing. Off in normal play.
     hold: bool,
+    /// **THE LEVEL-UP IS THE LAST BEAT OF THE FIGHT, SO IT HOLDS THE DOOR.** The loot
+    /// report gates the walk back to the overworld ([`LootReport::gate_return`]) and
+    /// hands that gate to this queue rather than spending it — so a victory plays
+    /// `tally → LEVEL UP! → the world`, all three on the screen the fight happened on.
+    /// Without the hand-off the report's dismissal dropped the party onto the overworld
+    /// and the stat screens played over a world already being walked around in, which
+    /// is exactly the split this pair of cards should not have.
+    gate_return: bool,
 }
 
 /// Marker for the immediate-mode level-up screen root.

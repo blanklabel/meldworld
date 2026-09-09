@@ -978,6 +978,7 @@ pub struct Battle {
     min_damage: i32,
     initiative_max: f64,
     initiative_advantage_rolls: u32,
+    open_grace_ticks: u64,
     paralysis_break_base: f64,
     paralysis_break_per_wll: f64,
     paralysis_break_cap: f64,
@@ -1329,6 +1330,12 @@ impl Battle {
             min_damage: balance.combat_math.min_damage,
             initiative_max: balance.battle.initiative_max,
             initiative_advantage_rolls: balance.battle.initiative_advantage_rolls,
+            // In TICKS, because the engine has no clock — it is handed its own tick and
+            // must stay a pure state machine (no `Instant::now`, ever).
+            open_grace_ticks: balance
+                .battle
+                .open_grace_ms
+                .div_ceil(balance.battle.tick_ms.max(1)),
             paralysis_break_base: balance.affliction.paralysis_break_base,
             paralysis_break_per_wll: balance.affliction.paralysis_break_per_wll,
             paralysis_break_cap: balance.affliction.paralysis_break_cap,
@@ -1523,6 +1530,25 @@ impl Battle {
             return events;
         }
         self.tick_count += 1;
+
+        // **THE BEAT AFTER THE BELL.** Nothing acts and no gauge moves for
+        // `[battle] open_grace_ms` — the moment in which the arena appears, the initiative
+        // lands, and the player reads what is standing in front of them.
+        //
+        // Reported from play: "creatures now attack you as soon as a fight starts". The
+        // roll made it sharper rather than causing it — an AMBUSH opens on a full gauge and
+        // acted on tick 1, before the battle screen had finished arriving.
+        //
+        // ⚠️ It holds BOTH SIDES, so the order the roll decided survives it exactly. A grace
+        // that paused only the creatures would hand the party the first move for free and
+        // make an ambush unlosable — the opening would stop meaning anything.
+        //
+        // ⚠️ And it returns BEFORE `tick_count` is used for anything else, so a telegraph's
+        // `executes_at_tick` and every `timed_status` deadline are unaffected: the fight's
+        // clock simply starts two seconds later, rather than running while nobody may act.
+        if self.tick_count <= self.open_grace_ticks {
+            return events;
+        }
 
         // 1. Fill gauges for living fighters not already awaiting input.
         // A channeling monster's gauge is frozen (the cast IS its turn), and a
@@ -3581,6 +3607,21 @@ impl Battle {
     /// creature a Psyker had pinned, so it picked the moment and moves first. Only the
     /// player side is filled: a surprise that also readied the creature would be no
     /// surprise at all.
+    /// **TEST ONLY: stand at the far side of the opening beat.**
+    ///
+    /// `[battle] open_grace_ms` means `tick()` does nothing for the first two seconds of a
+    /// fight, which is right for a player and wrong for a unit test that wants to assert
+    /// what one tick does. Seven tests were written before the beat existed and counted
+    /// ticks from zero; this is how they say "the fight has started" without each of them
+    /// re-deriving the tick maths.
+    ///
+    /// Deliberately NOT public: a driver that wants to skip the opening is a driver
+    /// measuring a fight the player never has.
+    #[cfg(test)]
+    fn skip_opening(&mut self) {
+        self.tick_count = self.open_grace_ticks;
+    }
+
     /// Set every gauge for the way this fight opened.
     ///
     /// ⚠️ **NOTHING HERE ARMS THE GAUGE-KNOCK REBUKE.** `staggered` and the
@@ -6171,6 +6212,48 @@ mod tests {
         );
     }
 
+    /// **A FIGHT DOES NOT START SWINGING.** Nothing acts and no gauge moves for
+    /// `[battle] open_grace_ms` — reported from play as "creatures now attack you as soon
+    /// as a fight starts". Initiative sharpened it rather than causing it: an AMBUSH opens
+    /// on a full gauge and used to resolve on tick 1, before the battle screen had
+    /// finished arriving.
+    ///
+    /// It holds BOTH sides, so the order the roll decided survives untouched — a grace
+    /// that paused only the creatures would hand the party the first move for free and
+    /// make an ambush unlosable.
+    #[test]
+    fn nothing_swings_in_the_first_beat_of_a_fight() {
+        let b = Balance::load_default().unwrap();
+        let grace = b.battle.open_grace_ms;
+        assert!(grace >= 1000, "a grace of {grace}ms is not a beat anybody can read");
+        let mut battle = Battle::new(
+            "b".into(),
+            EncounterClass::Standard,
+            vec![player("h1", 60)],
+            vec![monster("m1", 900, 1)],
+            &b,
+            7,
+        );
+        // The worst case: the creatures chose the moment and open on a FULL gauge.
+        battle.open(Opening::Ambush);
+        let ticks = grace / b.battle.tick_ms.max(1);
+        for n in 0..ticks {
+            assert!(
+                battle.tick().is_empty(),
+                "something resolved {n} ticks in, inside the {grace}ms opening beat"
+            );
+        }
+        // …and the instant it lapses, the side that won the opening acts.
+        let mut acted = false;
+        for _ in 0..20 {
+            if !battle.tick().is_empty() {
+                acted = true;
+                break;
+            }
+        }
+        assert!(acted, "the grace never lapsed — the fight is frozen, not paced");
+    }
+
     /// **AN AMBUSH AND A SURPRISE ARE MIRRORS, AND NEITHER IS A ROLL.** A side that chose
     /// the moment opens on a full gauge and the other on nothing — an opening that could
     /// be out-rolled is not an ambush.
@@ -6234,6 +6317,7 @@ mod tests {
                 &b,
                 7,
             );
+            bt.skip_opening();
             let i = bt.idx("h1").unwrap();
             for t in tokens {
                 bt.fighters[i].timed_statuses.push(((*t).to_string(), 10_000));
@@ -6602,6 +6686,7 @@ mod tests {
             &b,
             7,
         );
+            battle.skip_opening();
         // Let the fiend take a turn.
         for _ in 0..20 {
             battle.tick();
@@ -6626,6 +6711,7 @@ mod tests {
             &b,
             7,
         );
+            battle.skip_opening();
         let mut fled = false;
         let mut outcome = None;
         for _ in 0..20 {
@@ -6730,6 +6816,7 @@ mod tests {
             &b,
             7,
         );
+            battle.skip_opening();
         // speed 110 / 5200 ≈ 0.0212 per tick → full at tick 48 (~4.7s FF5 cadence).
         let mut ready_tick = None;
         for t in 1..=60 {
@@ -8101,6 +8188,7 @@ mod tests {
             &b,
             7,
         );
+            battle.skip_opening();
         tick_times(&mut battle, 30);
         assert_eq!(player_hp(&battle, "a"), 39, "barrier soaks 10 of the 11 hit");
         assert!(
@@ -8408,6 +8496,9 @@ mod tests {
             &b,
             7,
         );
+        // Past the opening beat first — `[battle] open_grace_ms` means the first two
+        // seconds of a fight resolve nothing, and this counts ticks from the bell.
+        battle.skip_opening();
         tick_times(&mut battle, 55);
         assert_eq!(player_hp(&battle, "a"), 18, "two 11-dmg hits land by tick 55");
         let action = if skill.is_some() {
@@ -8568,6 +8659,7 @@ mod tests {
             &b,
             7,
         );
+            battle.skip_opening();
         // speed 400 / 5200 ≈ 0.077 per tick → full by tick 14 (float accumulation
         // lands tick-13's gauge a hair under 1.0).
         for _ in 0..14 {

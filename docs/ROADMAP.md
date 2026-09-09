@@ -3618,6 +3618,71 @@ budgeted so the creature sim never threatens the single-owner loop or the server
     being TAKEN, and an opening is one being GIVEN.
   - ⚠️ **And it rides `battle.started` as a word**, because both openings were otherwise
     invisible — the only tell was gauges starting somewhere different.
+- [x] **CR-16 — Four bugs from the battle work, and the slot ladder that CR-14 broke.**
+  - **The party-slot bars had to come down.** `encounter_party_scale` had been almost
+    exactly cancelling the XP split (per-hero rate 0.95x / 1.00x / 1.10x); retiring it made
+    it 1/n, so a bar asking for N heroes at level L costs **N x** the fights one hero needs.
+    The old ladder raised level AND count together and they multiplied: `3 @L30` was **384**
+    at-level fights in ONE dive (levels are dive-scoped) and `4 @L40` was **844**, against
+    22 for the first bar. And they landed past the wall — the fourth slot at level 30, the
+    fight that wants four heroes at level 24. Now **2 @L14 / 3 @L18 / 4 @L20** (74 / 165 /
+    260 fights). `every_hero_bar_lands_before_the_wall_it_exists_for` holds the ceiling.
+  - **Characters bounced when idle.** `react_to_conditions` wrote the sprite quad's
+    `Transform`, and `hd2d::place_billboards` writes `translation.y` + `scale` on every
+    `HeroBillboard` — the same entity, unordered, so the scale alternated between 1.6 and
+    ~1.05 frame to frame. The exact night-glow bug AGENTS.md warns about, reintroduced.
+    Scaling the quad about its own grounded centre also un-grounds it, so it was a vertical
+    bob twice over. The swell moved to the actor ROOT: it sits at `y = 0`, nothing else
+    writes its scale, and the body grows UPWARD FROM ITS FEET.
+  - **Dead heroes got level-up screens.** `hero_level_ups` mapped over the whole of
+    `party_classes` and gave every hero the RUN's `old`/`new` — so a hero that fell (and
+    earned nothing, since `award_hero_xp` only pays those standing) still got a card, and a
+    hero behind the party read the leader's statline. It takes `(slot, from, to)` per hero
+    that actually rose now, so a card for a hero that did not is unaskable.
+  - **A fight opened swinging.** `[battle] open_grace_ms` (2000): nothing acts and no gauge
+    moves for the first beat. Holds BOTH sides so the initiative order survives — pausing
+    only the creatures would make an ambush unlosable. In the ENGINE, not the server loop,
+    so `qa/` and `mcp/` see the pacing the player does; it cost seven engine tests that
+    counted ticks from the bell (`Battle::skip_opening`, test-only and private).
+  - **No way out of the co-op lobby.** Escape was handled only in the in-lobby branch, and
+    the code-entry branch early-`return`s — so a player who opened co-op by mistake and had
+    not yet typed a code was stuck. Escape now leaves from both, the LEAVE button shows in
+    both, and the screen says `[ESC] back to the city`.
+- [x] **UX-6 — The fight says how it opened, and finishes on its own screen.**
+  - **The opening is a POP-UP.** `CR-15` shipped the ambush/surprise tell as a head-height
+    `Callout` over hero slot 0 — the same bubble a poison tick draws, in the corner of the
+    arena, at the one instant the eye is everywhere at once because the battle screen has
+    just arrived. An ambush costs the party a whole round and a surprise hands it one, so
+    it gets the middle of the frame: `BattleOpening` + `render_opening_card`, red for an
+    ambush and green for a surprise, over the beat `[battle] open_grace_ms` already holds
+    still for, and each arm says WHO MOVES FIRST rather than only shouting a word.
+    Deliberately not a `glass::scrim`, and — measured by rendering it — deliberately
+    **below the pack**: the first cut sat a third of the way down, squarely over the
+    creatures and their HP bars, hiding the formation the grace beat exists for you to read.
+  - **And the level-up plays where it was earned.** The tally already drew over the arena
+    and gated the walk back out; the stat screens it earned did not — they were registered
+    on Overworld/City/Ended and *despawned on the way INTO* a fight, so a victory read
+    `tally -> the world -> LEVEL UP! over a world you are already walking around in`. The
+    gate is handed from one card to the other (`LevelUpQueue::gate_return`), so a fight
+    reads `tally -> LEVEL UP! -> the world`, all of it on the screen it happened on. The
+    CL-1 unlock banner deliberately does NOT come along: a class unlock is ACCOUNT news
+    that merely landed during a fight, and a modal "you may now field a Resonant" over a
+    corpse-strewn arena is an interruption rather than a reward.
+  - ⚠️ **And the command menu came back between the two cards.** It is hidden while the
+    tally is up, and the tally now goes down before the stat screens play — so Attack/Flee
+    reappeared under them, and the stat screen's own footer reads `[Space] next hero` while
+    Space is what `menu_keyboard` takes as ATTACK. Mashing through the scroll queued an
+    order per hero into a finished fight. `battle::results_showing` is one predicate asked
+    by both the keyboard guard and `rebuild_command_menu`'s `show`.
+  - ⚠️ **A root with no z is a root the battle HUD draws through.** Moving the stat block
+    into the arena put it among the battle HUD's other UI roots, and Bevy orders separate
+    roots arbitrarily — the enemy nameplates and their HP bars came out straight through
+    the middle of "HP 52 -> 62". It carries an explicit `GlobalZIndex` (95) now, under the
+    tally's 100, and a test holds both bounds. On the overworld it had nothing to collide
+    with, which is why it had never needed one.
+  - `MELD_OPENING=ambush|surprise` is the screenshot fixture, on the same argument as
+    `MELD_FX`: the card is raised by a `battle.started` the static mockup never receives,
+    so it was otherwise unreachable in a capture. `feel.opening_ttl` is the one dial.
 - [ ] **CR-3 — Living ecology: diets, needs, and breeding.** Creatures have a
   **diet class — carnivore / omnivore / herbivore** — that drives behavior: they
   eat (hunt prey / graze nodes), sleep (tied to FS-5 day/night), and **breed**,

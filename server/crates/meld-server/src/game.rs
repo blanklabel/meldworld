@@ -1178,6 +1178,22 @@ struct DungeonFight<'a> {
     eff_dist: i64,
 }
 
+/// One player's level-up to announce: the run's headline number moved, and it was ONE
+/// hero that actually rose.
+///
+/// A named record rather than a tuple because the tuple had to carry both — the run's
+/// delta for the banner and the hero's own for the stat card — and nesting them tripped
+/// `clippy::type_complexity`, which was right: `(String, i32, i32, (usize, i32, i32))` does
+/// not say which pair is whose, and mixing them up is exactly the bug this replaced.
+struct Advanced {
+    player: String,
+    run_from: i32,
+    run_to: i32,
+    slot: usize,
+    hero_from: i32,
+    hero_to: i32,
+}
+
 /// Dungeon context carried by a boss-fight [`BattleSlot`] (DG-3b).
 #[derive(Clone)]
 struct DungeonBattle {
@@ -3624,7 +3640,24 @@ impl WorldActor {
     /// classic JRPG "LEVEL UP!" screen. Mirrors the `party_fighters` derivation
     /// (max HP from Wll; the four attributes from `attributes_at`) so the numbers
     /// exactly match the party panel.
-    fn hero_level_ups(&self, pid: &str, old_level: i32, new_level: i32) -> Vec<wr::HeroLevelUp> {
+    /// The stat-gain cards for a level-up, **one per hero that actually gained one**.
+    ///
+    /// ⚠️ **IT USED TO CARD EVERY HERO, AT THE RUN'S LEVEL.** It mapped over the whole of
+    /// `party_classes` and gave each of them the same `old_level`/`new_level` — the RUN's
+    /// headline number, which is `max(hero_levels)`. Two lies at once:
+    ///
+    /// - **A hero that FELL got a level-up screen.** It earned nothing (`award_hero_xp` is
+    ///   only called for heroes still standing), and a card celebrating the hero you just
+    ///   watched go down is the game telling you something plainly untrue. Reported from
+    ///   play as, exactly, "when the characters die they still have level up screens".
+    /// - And a hero **behind** the party read its card off the leader: a hero at level 5 in
+    ///   a party whose best is 12 was shown 11 → 12 and a statline it does not have. Each
+    ///   hero carries its own banked XP and its own bar (`run.party`), so the card has to
+    ///   come from the same place.
+    ///
+    /// `ups` is `(slot, from, to)` per hero that rose, so a card cannot exist for a hero
+    /// that did not — the caller no longer has a way to ask for one.
+    fn hero_level_ups(&self, pid: &str, ups: &[(usize, i32, i32)]) -> Vec<wr::HeroLevelUp> {
         let inst = self;
         let Some(comp) = inst.party_classes.get(pid).cloned() else {
             return Vec::new();
@@ -3645,18 +3678,18 @@ impl WorldActor {
             let max_hp = s.base_hp + grow(wll, s.wll, a.wll_to_hp);
             (max_hp, str_, mnd, dex, wll)
         };
-        comp.iter()
-            .enumerate()
-            .map(|(slot, class)| {
-                let (hp0, st0, mn0, dx0, wl0) = statline(*class, old_level);
-                let (hp1, st1, mn1, dx1, wl1) = statline(*class, new_level);
+        ups.iter()
+            .filter_map(|&(slot, from, to)| comp.get(slot).map(|c| (slot, *c, from, to)))
+            .map(|(slot, class, old_level, new_level)| {
+                let (hp0, st0, mn0, dx0, wl0) = statline(class, old_level);
+                let (hp1, st1, mn1, dx1, wl1) = statline(class, new_level);
                 wr::HeroLevelUp {
                     slot: slot as i32,
                     name: names
                         .get(slot)
                         .cloned()
                         .unwrap_or_else(|| generated_hero_name(pid, slot)),
-                    class_key: meld_run::class_key(*class).to_string(),
+                    class_key: meld_run::class_key(class).to_string(),
                     level: new_level,
                     max_hp_before: hp0,
                     max_hp_after: hp1,
@@ -9314,13 +9347,18 @@ impl WorldActor {
             let balance = self.balance.clone();
             let size = heroes.len().max(1);
             let mut leveled: Option<(i32, i32)> = None;
+            let mut hero_rose: Option<(usize, i32, i32)> = None;
             if let Some(r) = self.run.runs.iter_mut().find(|r| r.player_id == player_id) {
                 let old = r.run_level;
+                // THAT HERO's own level, not the run's: the card is about the hero that
+                // drank, and a hero behind the party used to be shown the leader's numbers.
+                let hero_before = r.hero_level(slot);
                 // A mote is drunk by ONE hero and pays out whole — it is not an
                 // encounter pool, so it is a single share rather than a pre-multiply
                 // that cancels a division.
                 if r.award_hero_xp(slot, 1, size, grant_xp, &balance) > 0 {
                     leveled = Some((old, r.run_level));
+                    hero_rose = Some((slot, hero_before, r.hero_level(slot)));
                 }
             }
             // Advancing lifts what is gripping that hero (never their death).
@@ -9328,7 +9366,8 @@ impl WorldActor {
                 self.cure_on_level_up(player_id, slot);
             }
             if let Some((old, new)) = leveled {
-                let hero_ups = self.hero_level_ups(player_id, old, new);
+                let rose: Vec<(usize, i32, i32)> = hero_rose.into_iter().collect();
+                let hero_ups = self.hero_level_ups(player_id, &rose);
                 out.push(out_msg(
                     player_id,
                     &wr::LevelUp {
@@ -10935,15 +10974,23 @@ impl WorldActor {
             }
         }
         let balance = self.balance.clone();
-        let mut level_ups: Vec<(String, i32, i32)> = Vec::new();
+        let mut level_ups: Vec<Advanced> = Vec::new();
         let mut cured: Vec<(String, usize)> = Vec::new();
         for (pid, hero_slot, size) in owed {
             if let Some(r) = self.run.runs.iter_mut().find(|r| r.player_id == pid) {
                 let old = r.run_level;
+                let hero_before = r.hero_level(hero_slot);
                 // A mote is drunk by ONE hero and is not an encounter, so it pays out
                 // WHOLE: one share, whatever the party size.
                 if r.award_hero_xp(hero_slot, 1, size, xp, &balance) > 0 {
-                    level_ups.push((pid.clone(), old, r.run_level));
+                    level_ups.push(Advanced {
+                        player: pid.clone(),
+                        run_from: old,
+                        run_to: r.run_level,
+                        slot: hero_slot,
+                        hero_from: hero_before,
+                        hero_to: r.hero_level(hero_slot),
+                    });
                     cured.push((pid.clone(), hero_slot));
                 }
             }
@@ -10953,8 +11000,9 @@ impl WorldActor {
             self.cure_on_level_up(&pid, hero_slot);
         }
         let mut out = Vec::new();
-        for (pid, old, new) in level_ups {
-            let heroes = self.hero_level_ups(&pid, old, new);
+        for a in level_ups {
+            let (pid, old, new) = (a.player, a.run_from, a.run_to);
+            let heroes = self.hero_level_ups(&pid, &[(a.slot, a.hero_from, a.hero_to)]);
             out.push(out_msg(
                 &pid,
                 &wr::LevelUp { new_run_level: new, levels_gained: new - old, heroes },
@@ -11172,6 +11220,9 @@ impl WorldActor {
         // (player_id, old_run_level, new_run_level) for anyone who leveled up this
         // victory — drives the classic per-hero stat-gain screen.
         let mut level_ups: Vec<(String, i32, i32)> = Vec::new();
+        // (player, hero slot, from, to) per hero that actually ROSE. The stat-gain cards
+        // are built from this, so a hero that fell — which earns nothing — gets none.
+        let mut hero_rises: Vec<(String, usize, i32, i32)> = Vec::new();
         let balance = self.balance.clone();
         // `self` IS the world now; reborrow it for the world-state block below so
         // the Router-scoped tail (effects, level-up party refresh) can use `self`
@@ -11350,7 +11401,17 @@ impl WorldActor {
                             r.hero_level(slot),
                             &balance,
                         );
+                        let hero_before = r.hero_level(slot);
                         if r.award_hero_xp(slot, standing, size, paid, &balance) > 0 {
+                            // THIS hero's own rise, for its own card. A fallen hero never
+                            // reaches here (the `hp <= 0` skip above), which is what stops
+                            // the game congratulating a corpse.
+                            hero_rises.push((
+                                r.player_id.clone(),
+                                slot,
+                                hero_before,
+                                r.hero_level(slot),
+                            ));
                             cured.push((r.player_id.clone(), slot));
                             if let Some(class) = comp.get(slot) {
                                 class_bests.push((
@@ -11982,7 +12043,12 @@ impl WorldActor {
         // Announce level-ups (classic stat-gain screen) then refresh the party
         // panel for anyone who leveled up (stats changed).
         for (pid, old_level, new_level) in &level_ups {
-            let heroes = self.hero_level_ups(pid, *old_level, *new_level);
+            let rose: Vec<(usize, i32, i32)> = hero_rises
+                .iter()
+                .filter(|(who, _, _, _)| who == pid)
+                .map(|(_, slot, from, to)| (*slot, *from, *to))
+                .collect();
+            let heroes = self.hero_level_ups(pid, &rose);
             out.push(out_msg(
                 pid,
                 &wr::LevelUp {
@@ -12265,22 +12331,41 @@ mod unlock_gate_tests {
         // that would grant slot 2 to a level-1 party.
         assert!(party_slot_bars(&run_at(&[1, 1, 1, 1])).is_empty());
 
-        let run = run_at(&[10, 3, 1, 1]);
-        let bars = party_slot_bars(&run);
-        assert!(bars.contains(&(1, 10)), "{bars:?}");
-        assert!(!bars.iter().any(|(_, l)| *l == 20), "{bars:?}");
+        // ⚠️ **THE BAR LEVELS COME FROM THE REGISTRY, NOT FROM THIS TEST.** They were
+        // written in as 10 / 20 / 30 and `CR-16` lowered them to 10 / 14 / 18 / 20, so the
+        // test failed for asserting the ladder it was built against rather than the one
+        // that ships. A hand-written copy of a table the code reads is the same mistake as
+        // a hand-written list of ability keys.
+        let mut levels: Vec<i32> = meld_proto::unlocks::UNLOCKS
+            .iter()
+            .filter_map(|u| match u.trigger {
+                meld_proto::unlocks::Trigger::HeroesAtLevel { level, .. } => Some(level),
+                _ => None,
+            })
+            .collect();
+        levels.sort_unstable();
+        levels.dedup();
+        let (lowest, deepest) = (levels[0], *levels.last().unwrap());
 
-        // Two at 20 clears the level-10 bar with two heroes AND the 20 bar with two.
-        let run = run_at(&[22, 20, 9, 1]);
+        // ONE hero at the lowest bar clears that bar with a count of one, and nothing
+        // deeper is reported at all.
+        let run = run_at(&[lowest, lowest - 1, 1, 1]);
         let bars = party_slot_bars(&run);
-        assert!(bars.contains(&(2, 20)), "{bars:?}");
-        assert!(bars.contains(&(2, 10)), "{bars:?}");
+        assert!(bars.contains(&(1, lowest)), "{bars:?}");
+        assert!(
+            !bars.iter().any(|(_, l)| *l > lowest),
+            "a bar deeper than {lowest} was reported for one hero at it: {bars:?}"
+        );
 
-        // Three at 30 is the deepest bar, and it clears every shallower one.
-        let run = run_at(&[30, 31, 30, 4]);
+        // A hero at the DEEPEST bar clears every shallower one too, at the same count —
+        // the bars are layered, so one milestone satisfies all of them at once.
+        let run = run_at(&[deepest, deepest + 1, deepest, 1]);
         let bars = party_slot_bars(&run);
-        for want in [(3, 30), (3, 20), (3, 10)] {
-            assert!(bars.contains(&want), "missing {want:?} in {bars:?}");
+        for l in &levels {
+            assert!(
+                bars.contains(&(3, *l)),
+                "three heroes at {deepest} did not clear the {l} bar: {bars:?}"
+            );
         }
     }
 

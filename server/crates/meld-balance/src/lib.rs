@@ -154,6 +154,8 @@ pub struct Battle {
     pub initiative_max: f64,
     /// Rolls kept-best for a fighter with innate dodge — see `[battle]` in balance.
     pub initiative_advantage_rolls: u32,
+    /// The beat after the bell in which nothing acts and no gauge fills.
+    pub open_grace_ms: u64,
     pub flee_base: f64,
     pub flee_penalty_per_tier: f64,
     pub flee_floor: f64,
