@@ -325,6 +325,33 @@ pub fn columns() -> impl Bundle {
     }
 }
 
+/// `columns`, with a HEIGHT that does not depend on what is in the columns.
+///
+/// ⚠️ **THE CONVENTION FIXES THE HORIZONTAL AXIS AND LEFT THE VERTICAL ONE FREE, WHICH IS
+/// THE SAME BUG.** A cascade screen centres its columns row vertically, and the row is as
+/// tall as its tallest column — so a detail column that describes whatever is HOVERED
+/// re-measures the row on every hover, and every column, including the one the cursor is
+/// over, slides up or down. Reported from play on the Drill Yard as *"everyone is kinda
+/// bouncing around as you highlight them"*.
+///
+/// Opt-in rather than the default: a counter with three rows in it would become a
+/// window-height pane of empty glass. Reach for this on any screen whose detail column
+/// changes with the cursor. Pair it with [`column`], which fills the height it is given and
+/// scrolls its own overflow — so nothing outside a column can move when its contents change.
+pub fn columns_fixed(height: Val) -> impl Bundle {
+    Node {
+        width: Val::Vw(100.0),
+        height,
+        flex_shrink: 0.0,
+        flex_direction: FlexDirection::Row,
+        align_items: AlignItems::Stretch,
+        justify_content: JustifyContent::Center,
+        column_gap: Val::Px(14.0),
+        padding: UiRect::axes(Val::Px(18.0), Val::Px(0.0)),
+        ..default()
+    }
+}
+
 /// One column of the convention, as a frosted panel. `frac` is one of the `COL_*` constants.
 pub fn column(frac: f32) -> impl Bundle {
     // Nothing shrinks. A column that can shrink does, the moment its neighbour has more
@@ -345,6 +372,9 @@ pub fn column(frac: f32) -> impl Bundle {
             min_width: min,
             flex_grow: grow,
             flex_shrink: shrink,
+            // Fills a row that HAS a height (`columns_fixed`); against the auto-height row
+            // `columns` gives it, a percentage resolves to auto and this is a no-op.
+            height: Val::Percent(100.0),
             max_height: Val::Vh(92.0),
             overflow: Overflow::scroll_y(),
             flex_direction: FlexDirection::Column,
