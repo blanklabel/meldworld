@@ -110,6 +110,7 @@ pub(crate) fn pump_net(
             ResMut<crate::ShiftTell>,
             ResMut<crate::battle_fx::BattleFx>,
             ResMut<crate::battle::BattleOpening>,
+            ResMut<crate::screens::Descent>,
         ),
     ),
     mut roster: ResMut<PartyRoster>,
@@ -117,7 +118,7 @@ pub(crate) fn pump_net(
     state: Res<State<Screen>>,
     mut next: ResMut<NextState<Screen>>,
 ) {
-    let (world_path, world_frame, terrain, report, perks, hero_names, loadouts, run_gear, world_web, dungeon_scene, vanguard, shop, notice, clock, craft, (explored, station, heat, pops, hunts, bounties, tell, battle_fx, opening_card)) = &mut world_res;
+    let (world_path, world_frame, terrain, report, perks, hero_names, loadouts, run_gear, world_web, dungeon_scene, vanguard, shop, notice, clock, craft, (explored, station, heat, pops, hunts, bounties, tell, battle_fx, opening_card, descent)) = &mut world_res;
     net.0.poll();
     while let Some(msg) = net.0.try_recv() {
         match msg {
@@ -332,9 +333,10 @@ pub(crate) fn pump_net(
                     announce.tutorial_run.step = None;
                 }
             }
-            ServerMsg::LobbyState { code, host, members } => {
+            ServerMsg::LobbyState { code, host, members, seed } => {
                 lobby.in_lobby = true;
                 lobby.code = code;
+                lobby.seed = seed;
                 lobby.my_ready = members
                     .iter()
                     .find(|(id, _, _)| id == &session.player_id)
@@ -350,9 +352,19 @@ pub(crate) fn pump_net(
                 lobby.in_lobby = false;
                 lobby.members.clear();
                 lobby.code.clear();
+                lobby.seed = None;
             }
-            ServerMsg::Snapshot { entities } => {
-                world.entities.clear();
+            ServerMsg::Snapshot { entities, last_input_seq, delta, removed } => {
+                world.last_input_seq = last_input_seq;
+                // A full snapshot replaces the world; a delta upserts what changed and drops
+                // what left. Everything else in the map is still exactly what the server
+                // holds — that is the contract `wm::Snapshot::delta` states.
+                if !delta {
+                    world.entities.clear();
+                }
+                for id in removed {
+                    world.entities.remove(&id);
+                }
                 for e in entities {
                     world.entities.insert(
                         e.id,
@@ -674,6 +686,14 @@ pub(crate) fn pump_net(
                 if announce.tutorial_run.step.is_some() && !announce.tutorial_run.chest_explained {
                     announce.tutorial_run.chest_explained = true;
                     announce.tutorial_run.chest_explain = true;
+                }
+            }
+            ServerMsg::Generating { step, index, total, biome, attempt } => {
+                // Straight onto the descent screen's resource. Kept even if we are no
+                // longer on that screen: the messages are cheap, and dropping them would
+                // mean the readout depended on which frame the screen switch landed in.
+                if crate::flags::descend_stage_flag().is_none() {
+                    **descent = crate::screens::Descent { step, index, total, biome, attempt };
                 }
             }
             ServerMsg::ChannelStarted { fill_ms, method, .. } => {
@@ -1002,6 +1022,33 @@ mod landform_delivery {
     /// Nothing failed. The server-side suite is green because a bridge is *generated*
     /// correctly; the client half was never asserted. So assert the WIRING, by reading this
     /// file — the same trick `the_region_decomposition_matches_the_shader` uses on the WGSL.
+        /// **THE ACK HAS TO REACH THE PREDICTION, or the avatar renders at the server's
+    /// position again and every input costs a round trip.** `Snapshot::last_input_seq`
+    /// is the whole basis of local prediction: the client drops the intents the server
+    /// confirms and replays the rest. If this arm stops storing it, `world.last_input_seq`
+    /// sits at 0 forever, every sent intent looks unacknowledged, and the replay pins
+    /// itself at `PREDICT_MAX_REPLAY` — an avatar permanently running ahead of itself.
+    ///
+    /// Source-read for the same reason as the landform test below: this repo has shipped
+    /// a whole water feature, a `pack:` token and a `boss_kind` that were generated
+    /// correctly and consumed nowhere, and none of their suites noticed.
+    #[test]
+    fn the_movement_ack_reaches_the_client() {
+        let src = include_str!("netglue.rs");
+        let start = src.find("ServerMsg::Snapshot {").expect("the snapshot arm moved");
+        // Just this arm: from its head to the next one, so a mention in a comment or in
+        // another handler cannot satisfy it.
+        let rest = &src[start + 1..];
+        let end = rest.find("ServerMsg::").expect("no following arm");
+        let body = &src[start..start + 1 + end];
+        assert!(
+            body.contains("world.last_input_seq = last_input_seq"),
+            "the snapshot arm no longer stores `last_input_seq` — local movement \
+             prediction has no ack to reconcile against and the overworld goes back to \
+             costing a full round trip per input"
+        );
+    }
+
     #[test]
     fn every_streamed_landform_is_consumed() {
         let src = include_str!("netglue.rs");

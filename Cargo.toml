@@ -80,3 +80,9 @@ opt-level = 3
 
 [workspace.dependencies.meld-server]
 path = "server/crates/meld-server"
+
+# The server's tick is one task, so its cost IS the game's tick budget. Same reasoning as
+# the client workspace: thin LTO and one codegen unit for the release binary.
+[profile.release]
+lto = "thin"
+codegen-units = 1

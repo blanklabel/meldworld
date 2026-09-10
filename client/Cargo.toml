@@ -13,3 +13,11 @@ license = "MIT"
 opt-level = 1
 [profile.dev.package."*"]
 opt-level = 3   # deps (Bevy) optimized even in dev, per Bevy's recommended setup
+
+# THE SHIPPED BINARY IS WHAT THE PLAYER FEELS. Cargo's release default is no LTO and
+# sixteen codegen units per crate, which leaves cross-crate inlining (Bevy's ECS query
+# iteration in particular) on the table. Thin LTO across the graph and one unit for the
+# game crate buy back single-digit-percent frame time for a longer release build.
+[profile.release]
+lto = "thin"
+codegen-units = 1

@@ -77,10 +77,37 @@ qa/                         headless bot framework + Postgres-backed conformance
 ```
 
 The authoritative game loop is [`meld-server/src/game.rs`](server/crates/meld-server/src/game.rs):
-one Tokio task owns all ephemeral state (sessions + the active `MazeInstance`), is fed
+one Tokio task owns all ephemeral state (sessions + every live world), is fed
 `ServerEvent`s over an mpsc channel, advances the ATB on the 100 ms tick, and fans
 authoritative `*.*` messages back per session. **Exactly one task touches the state, so
 there are no locks** (CANON §S).
+
+**THERE ARE MANY WORLDS, AND A WORLD'S NAME IS ITS SEED** (`SC-3`, CANON §W1). `GameState`
+is the **Router** — sessions, lobbies, routing — and `worlds: HashMap<String, WorldActor>`
+is the shard table; a world's key is its seed in decimal, and a guided corridor is the same
+seed in its own namespace (`tutorial:<seed>`) so onboarding and a persistent world can never
+collide on one key. Still ONE task: it ticks N worlds, so the no-locks invariant is untouched.
+⚠️ **An UNNAMED dive is a matchmaking request, not a request for solitude.** `choose_world`
+packs unnamed divers into the fullest world with room; only a NAMED seed shards. Rolling a
+private world per unnamed diver compiles, passes every isolation test, and quietly stops the
+game being multiplayer for everyone who has not been told seeds exist — which is every `qa/`
+bot that meets another one.
+⚠️ **Reach a world through `world_of` / `world_of_mut`, never by picking one out of the
+map.** "The world" stopped being a thing that exists the moment there were two, and a
+handler that grabs an arbitrary entry is a player acting on somebody else's world. The
+routing entry is `Session.world: Option<String>` — it was `in_instance: bool`, which was
+honest with one world and is a routing bug with two, since every world-bound handler would
+have to guess which world the caller meant. It is also what scopes party chat: the `Party`
+channel filtered on `in_instance == in_instance` ("are we both in some run"), so two parties
+in different seeds heard each other.
+⚠️ **Anything that reads the world from a player id needs that player's SESSION to still
+exist.** The `Disconnected` arm removed the session before doing its world work, which was
+free while the world was a field on the Router and silently skipped the abandoned-run
+ephemeral burn once it was not.
+A world **outlives its divers** (§W1) but not forever: an empty one hibernates out of memory
+after `[world_persist] dormant_after_ticks`, because the creature step is the expensive half
+of a tick and does not care whether anybody is watching. ⚠️ Its clock STOPS while dormant —
+the closed-form `advance_to` catch-up is what closes that.
 
 ## How to run
 
@@ -1082,6 +1109,25 @@ the cap) and deep fights are 4.4-creature packs, so a *continuous* expedition re
 (~127 hours). The inn is what makes that a ladder instead of a wall — the session boundary
 was the problem, not the curve's shape.
 
+**A WAIT NOBODY NARRATES READS AS A HANG.** Entering the world is the longest pause in the
+game — measured, **3.4-4.2 s in RELEASE** for the initial `area_count` chain, and up to twelve
+whole re-draws when the guaranteed route does not hold — and the client used to be sent nothing
+at all until `run.started`, so the descent screen could only tick an elapsed clock. It is
+narrated now (`run.generating`, `WG-12`): `Arena::generate_reporting` hands each REAL pass to an
+observer (the maze decided, each section with its own biome, the bend, the route walk, a
+restart) and the screen names the pass, what that pass does, and an **honest** bar driven by the
+section count. ⚠️ **It cannot travel as an ordinary `Outgoing`**: the loop is blocked solid
+through generation, so anything batched into `dispatch` arrives beside `run.started` and says
+nothing. `emit_now` puts it on the session's own writer, which is a SEPARATE task on a
+multi-threaded runtime and therefore flushes while this thread is still generating — the only
+reason a blocking call can be reported live at all. ⚠️ And the callback is the CALLER's I/O:
+`meld-world` stays pure, so the narrated world must be byte-identical to the quiet one
+(`narrating_generation_does_not_change_the_world`), or generation stops being replayable from
+its seed and §W5 persistence goes with it. Absence of these messages is a real case, not a
+failure — one world is built per instance, so a re-dive narrates nothing and a restored world is
+replayed in one un-narrated call; the clock is what covers those. `MELD_DESCEND=<step>` pins one
+pass, because a held screen only ever shows whichever arrived last.
+
 **There is no hotkey for going home.** A Town Portal is an *item*, so spending one is an
 explicit choice on the menu's **Map** column ("Return to town", enabled only while you
 hold one) — the primary way out of a dive belongs somewhere a player can find, not on a
@@ -1266,6 +1312,65 @@ scales with pixels.
 average 29-49, identical configs drifted 24 -> 35 ms back-to-back and produced a 92 ms
 "baseline" that was pure contamination. Prefer a SAME-PROCESS A/B (`LOOK_FILE` toggles flip
 live) over separate runs, and read a suspicious result as the instrument before the code.
+⚠️ **AND A LIGHT-DENSE SCENE OVERFLOWS THE CLUSTER INDEX LIST, WHICH BEVY ONLY LEARNS A FRAME
+LATE.** GPU clustering writes one `u32` per (froxel, light) pair into a single per-view list,
+sized at 65,536 by default, and detects the overflow by reading the GPU's own count BACK — so
+an overflowing scene renders with TRUNCATED light lists ("the scene lighting may have been
+corrupted for a few frames") before the resize lands. Last City is over the line: a `NightLamp`
+per townsperson plus the magitech pylons is ~30 point lights of real range standing in one
+plaza. `ClusterCapacity` ([`main.rs`](client/crates/meld-client/src/main.rs)) sizes the list up
+front, in `Plugin::finish` — the resource does not exist until `PbrPlugin::finish` builds it
+from the `RenderAdapter`, so neither `build` nor a `Startup` system can reach it in time.
+⚠️ **Do not round the capacity up "to be safe":** the whole list is zeroed and re-uploaded
+EVERY frame, per view, so capacity is per-frame bandwidth and not a one-time allocation.
+`MELD_CLUSTER_INDICES=<n>` is how it gets re-measured — set it LOW and the resize warning
+reports `next_power_of_two` of the TRUE demand, since the GPU counts what it needed regardless
+of what the buffer could hold, so one warning from a tiny start answers outright instead of a
+ladder of doublings.
+
+**THE TICK HAS A CLOCK NOW, AND A BENCH.** `MELD_TICK_STATS=1` logs per-phase mean/max every
+five seconds (`meld_server::prof`, `target: meld_tick`); `cargo test --release -p meld-server
+-- --ignored --nocapture tick_budget_at_depth` is the standing benchmark (a d1269 world, one
+walking player, 200 ticks, phase costs, the inner `meld_world::profile` counters, and the
+snapshot's wire size). Every change to the loop gets its before/after from there, not from a
+comment. On this box read means AND maxes with the load average beside them: at load 130 the
+same code drifted 2x run to run, and a 100 ms max is usually the scheduler, not the code.
+
+**A CREATURE NOBODY CAN SEE STEPS AT A WALKING PACE.** `[ai] creature_active_radius` (240) /
+`creature_far_slices` (10): near any avatar a creature steps every tick; further out it steps
+once every ten ticks with the accumulated `dt` and only WANDERS — no skirmish, no player to
+chase. The skirmish grids and the clash index cover only the near set. Measured at d1269
+this took the creature step from 44.8 ms to 3.5 ms a tick. A world with no avatars keeps the
+full rate, so the world-gen tests that step a world still measure what they always did.
+⚠️ Keep the active radius above `interest_radius_chunks × chunk_size` plus the widest perk
+reveal, or something a player can see moves in ten-tick hops.
+
+**THE CLIENT RECEIVES DELTA SNAPSHOTS; THE HARNESSES RECEIVE FULL ONES.** The Bevy client
+sends `movement.snapshot_mode {delta: true}` on `session.authenticated`, after which each
+`world.snapshot` carries only new or changed rows plus `removed` ids (`wm::Snapshot::delta`);
+the first snapshot after any gap — a battle, a dungeon, a connection — is always full. QA
+bots and `mcp/` never ask and parse full snapshots as before. Measured: 70.9 KB → 3.6 KB a
+tick at d1269. A new snapshot consumer that wants deltas has to keep the map itself.
+
+**UI REDRAWS ON CHANGE, NOT ON FRAME.** Thirteen panels tore their node trees down and
+rebuilt them every frame (layout plus glyph shaping, for text that changes ten times a
+second at most). The pattern is `is_changed()` on every input at the top of the system —
+and a resource that is aged every frame has to be touched only when something is live
+(`advance_hit_fx`, `advance_atb_flash`), or its flag is always on. A plate that FOLLOWS
+something (the action HUD, a mob nameplate) keeps a content key and is moved in place;
+`glass::redraw_key` hashes the inputs. Write a `Transform`, `Visibility` or material only
+when the value moved — a `DerefMut` write flags it changed whether or not it did, and every
+flagged transform is re-propagated and re-extracted.
+
+**A GLB INSTANCE KEEPS ITS MODEL FOR LIFE.** Reassigning a `WorldAssetRoot` despawns and
+re-instantiates the hierarchy. The ground-detail pool used to do that per cell crossing, a
+whole row of the window at a time — the "p90 425 ms, worst 3,732 ms" hitches. Deal cells to
+parked instances of the right model instead (`tile_ground_detail`).
+
+**`terrain_height` MUST NOT ALLOCATE.** It runs per entity that moved, per detail cell, per
+grass blade, and per minimap tile; every landform table behind it is an `Arc<Vec<_>>`
+(`shore_data()` is seven refcount bumps). A caller that needs an owned, sorted copy clones
+the `Arc`'s contents explicitly (`(*ridges()).clone()`) so the cost is visible at the site.
 
 ⚠️ **Autoplay takes no onboarding, and that is load-bearing for this loop.** The town
 tour and the "Before You Dive" card are modal, nothing presses their buttons for you, and

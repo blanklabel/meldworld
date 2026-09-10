@@ -1516,6 +1516,32 @@ pub(crate) fn gather_steer(
     }
 }
 
+/// **The local avatar faces where you are STEERING, not where its transform drifted.**
+///
+/// ⚠️ `animate_chars` derives the 8-way facing from frame-to-frame movement over a
+/// 2e-3 threshold, which is the right rule for a REMOTE body — all we know about one is
+/// where it has been. For our own avatar it is guessing at something we are told
+/// directly, and it makes the sprite a sensitive detector of any backwards step the
+/// prediction leaves behind: a few hundredths of a unit of correction, far too small to
+/// read as motion, spins the character round to "point the way you came from" (reported
+/// from play, and the reason the ack-derived `Predict::step` above exists).
+///
+/// Reuses the `locked` facing the battle heroes already use, so there is one facing rule
+/// rather than two. Cleared the moment the stick centres, or the avatar would hold its
+/// last heading through an idle it should be facing the camera for.
+pub(crate) fn face_where_you_steer(
+    steer: Res<Steer>,
+    session: Res<Session>,
+    mut q: Query<(&WorldEntity, &mut CharSprite)>,
+) {
+    for (we, mut cs) in &mut q {
+        if we.0 != session.player_id {
+            continue;
+        }
+        cs.locked = (steer.0 != Vec2::ZERO).then(|| steer.0.normalize());
+    }
+}
+
 /// Send `movement.move_intent` from [`Steer`] at a fixed cadence so walk speed is
 /// frame-rate-independent (device-agnostic — keyboard and touch feed the same
 /// path).
@@ -1524,9 +1550,23 @@ pub(crate) fn emit_move(
     net: NonSend<NetRes>,
     time: Res<Time>,
     mut clock: ResMut<MoveClock>,
+    mut predict: ResMut<Predict>,
 ) {
     if steer.0 == Vec2::ZERO {
         clock.acc = 0.0;
+        // ⚠️ **DO NOT CLEAR THE HISTORY HERE — releasing the key is not a cancellation.**
+        // The first cut did, carrying over a guard that belonged to the mechanism this
+        // replaced: time-based extrapolation held a VELOCITY, which glides forever, so
+        // dropping it the instant `Steer` hit zero was what stopped a stopped player
+        // coasting. Input replay cannot glide — the queue is finite and the acks drain it.
+        //
+        // Clearing it is actively wrong, because the intents in it have been SENT and the
+        // server is still going to apply them. Throwing them away moves the target from
+        // `e + still-in-flight` back to a bare `e` that is ~3 intents (~0.9 units) behind
+        // where the avatar already legitimately is, so the avatar slides BACKWARDS and
+        // then forwards again as `e` catches up. Reported from play as "walking and then
+        // suddenly pulling the world along" — and because `Steer` is zero on every frame
+        // the key is not held, the smallest gap in input fired it.
         return;
     }
     let step = 1.0 / MOVE_INTENT_HZ;
@@ -1534,6 +1574,15 @@ pub(crate) fn emit_move(
     while clock.acc >= step {
         clock.acc -= step;
         net.0.send(ClientCmd::Move { dx: steer.0.x as f64, dy: steer.0.y as f64 });
+        // Recorded EXACTLY as sent — the server uses a sub-unit direction as given
+        // (that is how a web or a chill slows a march), so normalising here would
+        // predict a slowed avatar walking at full speed.
+        predict.seq += 1;
+        let seq = predict.seq;
+        predict.pending.push_back((seq, steer.0));
+        while predict.pending.len() > PREDICT_MAX_REPLAY {
+            predict.pending.pop_front();
+        }
     }
 }
 
@@ -1556,8 +1605,10 @@ pub(crate) fn sync_overworld_sprites(
     mut meshes: ResMut<Assets<Mesh>>,
     mut interp: ResMut<OwInterp>,
     steer: Res<Steer>,
+    mut predict: ResMut<Predict>,
     dungeon: Res<world_render::DungeonSceneRes>,
     mut q: Query<(Entity, &WorldEntity, &mut Transform)>,
+    mut last_epoch: Local<u64>,
 ) {
     let _t = crate::world_render::Spike::new("sync_overworld_sprites");
     let Some(wa) = wa else { return };
@@ -1575,6 +1626,8 @@ pub(crate) fn sync_overworld_sprites(
     // Consumed here rather than held: a correction applies to exactly one frame, and a
     // sticky one would pin the avatar in place the moment the player walked away.
     let snap = world.snap.take();
+    // Read before the mutable borrows below; it is the ack the replay is measured against.
+    let world_last_input_seq = world.last_input_seq;
     let now = time.elapsed_secs();
 
     // Server snapshots arrive on the authoritative 100 ms tick (~10 Hz). When a
@@ -1582,6 +1635,46 @@ pub(crate) fn sync_overworld_sprites(
     // previous), so remote sprites can lerp between the two most recent samples.
     if interp.seen_seq != world.seq {
         interp.seen_seq = world.seq;
+        // ⚠️ **THE ONE CASE THAT MAY ABANDON THE PREDICTION: the ack stopped moving.**
+        // A reconnect rebuilds the net worker and restarts its `input_seq` at 0, so our
+        // queue would hold seqs the server will never acknowledge and the avatar would
+        // sit permanently ahead of itself at the replay cap. Packet loss does the same
+        // thing for a shorter while. Detected rather than assumed — the old guard cleared
+        // on every key release, which threw away intents that were merely in flight.
+        let prev_ack = predict.last_ack;
+        if world_last_input_seq != predict.last_ack {
+            predict.last_ack = world_last_input_seq;
+            predict.stale = 0;
+        } else if !predict.pending.is_empty() {
+            predict.stale = predict.stale.saturating_add(1);
+        }
+        if predict.stale >= PREDICT_STALE_SNAPSHOTS || world_last_input_seq > predict.seq {
+            predict.pending.clear();
+            predict.seq = world_last_input_seq;
+            predict.stale = 0;
+        }
+        // Learn how far ONE intent moves us, straight from the acknowledgement: the
+        // position moved this far while the server applied that many of our intents.
+        // No clock, so no receipt jitter — see `Predict::step`.
+        if let Some(e) = world.entities.get(&session.player_id) {
+            let here = Vec2::new(e.x, e.y);
+            let acked = world_last_input_seq.saturating_sub(prev_ack);
+            if let (Some(prev), true) = (predict.last_pos, acked > 0) {
+                let per = here.distance(prev) / acked as f32;
+                // Only while walking FREELY. A step the world refused is a true zero and
+                // would drag the estimate down, which then under-leads the next open
+                // stretch; the queue drains on its own when blocked, so the lead is
+                // already small there and the constant is what the next free stride wants.
+                if per > predict.step * 0.5 {
+                    predict.step = if predict.step <= 1e-4 {
+                        per
+                    } else {
+                        predict.step + (per - predict.step) * OW_SPEED_EMA
+                    };
+                }
+            }
+            predict.last_pos = Some(here);
+        }
         // The local player's own pace, smoothed, BEFORE the buffer rolls — the sample
         // about to be overwritten is the one this needs. `dt` is clamped to a plausible
         // band of tick intervals so a jittered receipt cannot report a sprint or a stop;
@@ -1591,7 +1684,29 @@ pub(crate) fn sync_overworld_sprites(
         {
             let dt = (now - cur.t).clamp(0.05, 0.30);
             let observed = (e.x - cur.x).hypot(e.y - cur.y) / dt;
-            interp.speed += (observed - interp.speed) * OW_SPEED_EMA;
+            // ⚠️ **STANDING STILL IS NOT EVIDENCE ABOUT HOW FAST YOU WALK.** This folded
+            // in a sample every tick including every idle one, so `speed` decayed to zero
+            // while the player stood there — and since the extrapolation below is SCALED by
+            // it, every walk began with no lead at all and had to spin the estimate back up
+            // over ~6 ticks (~600 ms). ⚠️ **SIZE IT HONESTLY:** `ahead` is `now - cur.t`,
+            // which runs 0..0.1 s between ticks rather than reaching the 0.22 s clamp, so
+            // the lead this restores is ~0.3 units — about **50 ms**, not the clamp's 220.
+            // It is the ONSET that reads badly (no lead at all for the first stride), and
+            // 50 ms is not on its own the half-second reported from play: the rest of that
+            // budget is ~25 ms of send quantisation, ~50 ms of mean tick, and ~62 ms of
+            // this chase's own settle — with NO client-side prediction under any of it.
+            //
+            // The quantity here is "how fast does this avatar WALK", which is a constant of
+            // the character, not a per-moment velocity — so it is only evidence while the
+            // avatar is actually walking. The first real sample is ADOPTED rather than
+            // blended, or the very first walk of a session pays the same ramp.
+            if steer.0 != Vec2::ZERO && observed > 0.01 {
+                if interp.speed <= 0.01 {
+                    interp.speed = observed;
+                } else {
+                    interp.speed += (observed - interp.speed) * OW_SPEED_EMA;
+                }
+            }
         }
         for (id, e) in &world.entities {
             let cur = InterpSample { x: e.x, y: e.y, t: now };
@@ -1622,11 +1737,17 @@ pub(crate) fn sync_overworld_sprites(
     let exempt = |id: &str| id == my_id.as_str() || id == "portal";
     let dist_from_me = |x: f32, y: f32| me_pos.map(|(mx, my)| (x - mx).hypot(y - my));
     let mut seen = HashSet::new();
+    // The height field's version: when it moves (a section streamed in, a Shift re-cut the
+    // ground) every standing thing is re-grounded once, whether or not it walked.
+    let epoch = crate::world_render::terrain_epoch();
+    let ground_moved = *last_epoch != epoch;
+    *last_epoch = epoch;
     for (entity, we, mut tf) in &mut q {
         let Some(e) = world.entities.get(&we.0) else {
             commands.entity(entity).despawn();
             continue;
         };
+        let before_xz = (tf.translation.x, tf.translation.z);
         // Render-unload: drop entities that have fallen far behind (past the fog wall)
         // so render + memory stay bounded as you dive deep. The server keeps tracking
         // and simulating them — this is purely what the client chooses to draw.
@@ -1695,13 +1816,36 @@ pub(crate) fn sync_overworld_sprites(
                     // they actually were before being yanked back. `Steer` is exact and
                     // reaches ZERO the instant the key is released, so the overshoot at the
                     // end of every walk is gone by construction rather than by tuning.
-                    let (tx, ty) = match interp.states.get(&we.0) {
-                        Some((_, cur)) if steer.0 != Vec2::ZERO => {
-                            let ahead = (now - cur.t).clamp(0.0, OW_EXTRAPOLATE_MAX);
-                            let d = steer.0.normalize_or_zero() * (interp.speed * ahead);
-                            (e.x + d.x, e.y + d.y)
+                    // ⚠️ **REPLAY THE INPUTS THE SERVER HAS NOT SEEN, rather than
+                    // guessing from the clock.** The old target was `e` plus a lead of
+                    // `speed x (now - last_receipt)`, which compensates for the tick but
+                    // knows nothing about what is actually in flight — and it could only
+                    // ever be a fraction of a tick behind, so an input still cost a round
+                    // trip before the avatar acknowledged it. The snapshot now says which
+                    // of our intents it contains, so we drop those and re-apply the rest:
+                    // the avatar moves on the frame the key goes down, and the server stays
+                    // authoritative because every prediction is rebased on `e` each tick.
+                    //
+                    // One intent is `speed / MOVE_INTENT_HZ` of travel because the server
+                    // advances the avatar by `speed * sim_dt` PER INTENT and `sim_dt` is
+                    // `1/overworld_sim_hz` = the same 20 Hz this client sends at. `speed`
+                    // is the observed one (which already includes a road's multiplier)
+                    // rather than a constant the client cannot read from `balance.toml`.
+                    let (tx, ty) = {
+                        while predict
+                            .pending
+                            .front()
+                            .is_some_and(|(seq, _)| *seq <= world_last_input_seq)
+                        {
+                            predict.pending.pop_front();
                         }
-                        _ => (e.x, e.y),
+                        let lead: Vec2 = predict
+                            .pending
+                            .iter()
+                            .take(PREDICT_MAX_REPLAY)
+                            .map(|(_, d)| *d * predict.step)
+                            .sum();
+                        (e.x + lead.x, e.y + lead.y)
                     };
                     tf.translation.x += (tx - tf.translation.x) * k;
                     tf.translation.z += (ty - tf.translation.z) * k;
@@ -1730,8 +1874,18 @@ pub(crate) fn sync_overworld_sprites(
         }
         // Ride the rolling ground: discrete terrace level + the continuous heightmap
         // under the just-updated xz. Matches `world_pos` so spawn and per-frame agree.
-        tf.translation.y = e.level as f32 * STEP_HEIGHT
-            + crate::world_render::terrain_height(tf.translation.x, tf.translation.z);
+        //
+        // Only when the feet MOVED (or the ground did): `terrain_height` walks every peak,
+        // range, strait, lobe and bridge in the world, and most of what is on screen is a
+        // tree that has not moved since it was spawned. Per entity per frame that was the
+        // largest CPU cost on the overworld after the snapshot itself.
+        if ground_moved
+            || (tf.translation.x - before_xz.0).abs() > 1e-4
+            || (tf.translation.z - before_xz.1).abs() > 1e-4
+        {
+            tf.translation.y = e.level as f32 * STEP_HEIGHT
+                + crate::world_render::terrain_height(tf.translation.x, tf.translation.z);
+        }
     }
     for (id, e) in &world.entities {
         if seen.contains(id) {
@@ -2661,9 +2815,13 @@ pub(crate) struct NightLamp {
 /// Root UI node that holds the per-mob nameplates (Explorer/Psyker intel).
 #[derive(Component)]
 pub(crate) struct NameplateRoot;
-/// One mob nameplate (rebuilt each frame).
+/// One mob nameplate. `id` is the creature it labels and `key` a hash of what the plate
+/// says; while both hold, the plate is MOVED to follow its creature rather than rebuilt.
 #[derive(Component)]
-pub(crate) struct Nameplate;
+pub(crate) struct Nameplate {
+    id: String,
+    key: u64,
+}
 /// Root UI node for the corner minimap.
 #[derive(Component)]
 pub(crate) struct MinimapRoot;
@@ -2682,12 +2840,20 @@ pub(crate) fn update_minimap(
     mut root_q: Query<(Entity, &mut Node), With<MinimapRoot>>,
     old: Query<Entity, With<MinimapDot>>,
 ) {
+    // Rebuild on change, not on frame: the dots are placed from the snapshot, which lands
+    // ten times a second, and from the map's framing — see `battle::render_enemy_panel`.
+    if !(old.is_empty() || world.is_changed() || perks.is_changed() || view.is_changed()) {
+        return;
+    }
     for e in &old {
         commands.entity(e).despawn();
     }
     let Ok((root, mut node)) = root_q.single_mut() else { return };
     let tier = perks.0.explorer_map;
-    node.display = if tier >= 1 { Display::Flex } else { Display::None };
+    let display = if tier >= 1 { Display::Flex } else { Display::None };
+    if node.display != display {
+        node.display = display;
+    }
     if tier == 0 {
         return;
     }
@@ -2800,20 +2966,32 @@ pub(crate) fn illuminate_players(
     let night = (1.0 - sky.day).clamp(0.0, 1.0);
     // Self-illumination: warm glow keyed off each sprite's own texture colours.
     let ef = night * 1.15;
+    let want = LinearRgba::rgb(ef, ef * 0.9, ef * 0.7);
     for mh in &sprites {
-        if let Some(mut m) = mats.get_mut(&mh.0) {
-            // Only the COLOUR here. Which frame lights up is `animate_chars`' business,
-            // set alongside the base texture so the two can never disagree — read from
-            // here it was a frame stale on whichever frames the scheduler happened to run
-            // this system first, and the hero juddered in the dark.
-            m.emissive = LinearRgba::rgb(ef, ef * 0.9, ef * 0.7);
+        // Only the COLOUR here. Which frame lights up is `animate_chars`' business,
+        // set alongside the base texture so the two can never disagree — read from
+        // here it was a frame stale on whichever frames the scheduler happened to run
+        // this system first, and the hero juddered in the dark.
+        //
+        // Read before write: `get_mut` alone marks the material modified and re-uploads
+        // it every frame, day or night, whether or not the glow moved.
+        if mats.get(&mh.0).is_some_and(|m| m.emissive != want) {
+            if let Some(mut m) = mats.get_mut(&mh.0) {
+                m.emissive = want;
+            }
         }
     }
     // Each hero's lamp, scaled by nightfall and its own strength (the Explorer's is far
     // brighter — its class feature — while the rest stay a soft fill).
     for (mut light, lamp) in &mut lamps {
-        light.intensity = night * lamp.strength;
-        light.shadow_maps_enabled = lamp.strength > 0.0 && night > LAMP_SHADOW_NIGHT;
+        let want = night * lamp.strength;
+        if light.intensity != want {
+            light.intensity = want;
+        }
+        let shadows = lamp.strength > 0.0 && night > LAMP_SHADOW_NIGHT;
+        if light.shadow_maps_enabled != shadows {
+            light.shadow_maps_enabled = shadows;
+        }
     }
 }
 
@@ -2845,15 +3023,14 @@ pub(crate) fn update_mob_nameplates(
     cam_q: WorldCamera,
     root_q: Query<Entity, With<NameplateRoot>>,
     mob_q: Query<(&WorldEntity, &GlobalTransform)>,
-    old: Query<Entity, With<Nameplate>>,
+    mut plates: Query<(Entity, &Nameplate, &mut Node)>,
 ) {
-    // Clear last frame's plates.
-    for e in &old {
-        commands.entity(e).despawn();
-    }
     let intel = perks.0.hunter_intel;
     let threat = perks.0.hunter_threat;
     if !nameplates_wanted(intel, threat, &world) {
+        for (e, _, _) in &plates {
+            commands.entity(e).despawn();
+        }
         return;
     }
     let Some((cam, cam_tf)) = cam_q.iter().next() else {
@@ -2862,7 +3039,21 @@ pub(crate) fn update_mob_nameplates(
     let Ok(root) = root_q.single() else {
         return;
     };
-    commands.entity(root).with_children(|p| {
+    // **A PLATE IS MOVED, NOT REBUILT.** These used to be torn down and respawned every
+    // frame — a node tree with several text runs per creature on screen, re-laid-out and
+    // re-shaped at frame rate for words that change when a creature is hit. Pass one
+    // decides what should be on screen and where; pass two moves the plates that already
+    // say the right thing and drops the rest; pass three spawns what is missing.
+    struct Want<'a> {
+        id: &'a str,
+        at: Vec2,
+        key: u64,
+        ent: &'a OwEntity,
+        marker: &'static str,
+        marker_col: Color,
+    }
+    let mut wanted: Vec<Want> = Vec::new();
+    {
         for (we, gtf) in &mob_q {
             let Some(ent) = world.entities.get(&we.0) else {
                 continue;
@@ -2926,8 +3117,51 @@ pub(crate) fn update_mob_nameplates(
             } else {
                 ("", Color::NONE)
             };
+            // Everything the plate below draws, so an unchanged key means an unchanged plate.
+            let bar = (intel >= 2 || ent.clashing || wounded(ent))
+                .then(|| match (ent.hp, ent.max_hp) {
+                    (Some(hp), Some(max)) if max > 0 => {
+                        Some(((hp as f32 / max as f32).clamp(0.0, 1.0) * 40.0) as u8)
+                    }
+                    _ => None,
+                })
+                .flatten();
+            let key = glass::redraw_key(&(
+                &ent.boss,
+                ent.expects_parties,
+                ent.quarry,
+                ent.held,
+                ent.clashing,
+                marker,
+                intel,
+                ent.mob_level,
+                bar,
+            ));
+            wanted.push(Want { id: we.0.as_str(), at: s, key, ent, marker, marker_col });
+        }
+    }
+    let mut kept: HashSet<&str> = HashSet::new();
+    for (e, plate, mut node) in &mut plates {
+        match wanted.iter().find(|w| w.id == plate.id && w.key == plate.key) {
+            Some(w) => {
+                let (l, t) = (Val::Px(w.at.x - 24.0), Val::Px(w.at.y - 14.0));
+                if node.left != l || node.top != t {
+                    node.left = l;
+                    node.top = t;
+                }
+                kept.insert(w.id);
+            }
+            None => commands.entity(e).despawn(),
+        }
+    }
+    commands.entity(root).with_children(|p| {
+        for w in &wanted {
+            if kept.contains(w.id) {
+                continue;
+            }
+            let (ent, marker, marker_col, s) = (w.ent, w.marker, w.marker_col, w.at);
             p.spawn((
-                Nameplate,
+                Nameplate { id: w.id.to_string(), key: w.key },
                 Node {
                     position_type: PositionType::Absolute,
                     left: Val::Px(s.x - 24.0),
@@ -4689,11 +4923,14 @@ pub(crate) fn station_line(
         return Some(format!("{head}   nothing in your Vault to work on   [E] leave"));
     };
     let ins = meld_proto::enums::Insurance::from_wire(&g.insurance);
+    // Which services this piece can take is the COUNTER's rule, asked rather than
+    // re-stated: the city bench offers the same two on the same tiers.
+    let (rerollable, repairable) = crate::city::bench_services(g);
     let mut keys = Vec::new();
-    if ins != Some(meld_proto::enums::Insurance::Ephemeral) {
+    if rerollable {
         keys.push(format!("[R] reroll ({} stock)", g.reroll_cost));
     }
-    if ins == Some(meld_proto::enums::Insurance::Insured) {
+    if repairable {
         keys.push("[P] repair".to_string());
     }
     if keys.is_empty() {
@@ -5169,9 +5406,12 @@ mod heat_tests {
     }
 }
 
-/// One frame's worth of the over-the-head action panel (rebuilt each frame).
+/// The over-the-head action panel. `key` is a hash of everything drawn inside it: while it
+/// holds, the plate is only MOVED to follow the head, never rebuilt.
 #[derive(Component)]
-pub(crate) struct ActionHud;
+pub(crate) struct ActionHud {
+    key: u64,
+}
 
 /// Ask the bench in reach for its temporary boon — the ONE dispatch, shared by [N] and the
 /// plate's chip.
@@ -5308,20 +5548,20 @@ pub(crate) fn update_action_hud(
     cam_q: WorldCamera,
     root_q: Query<Entity, With<NameplateRoot>>,
     players: Query<(&WorldEntity, &GlobalTransform)>,
-    old: Query<Entity, With<ActionHud>>,
+    mut old: Query<(Entity, &ActionHud, &mut Node)>,
     wa: Option<Res<WorldAssets>>,
     tutorial_run: Res<TutorialRun>,
     roster: Res<PartyRoster>,
 ) {
-    for e in &old {
-        commands.entity(e).despawn();
-    }
-    // Age the floaters and drop the ones that have had their moment.
+    // Age the floaters and drop the ones that have had their moment. Read-only when there
+    // are none, so `pops` is only flagged changed while something is actually in the air.
     let dt = time.delta_secs();
-    for p in pops.items.iter_mut() {
-        p.age += dt;
+    if !pops.items.is_empty() {
+        for p in pops.items.iter_mut() {
+            p.age += dt;
+        }
+        pops.items.retain(|p| p.age < HARVEST_POP_TTL);
     }
-    pops.items.retain(|p| p.age < HARVEST_POP_TTL);
 
     let running = session.channeling && session.channel_fill_ms > 0;
     if running && !*was_channeling {
@@ -5367,7 +5607,11 @@ pub(crate) fn update_action_hud(
         && pops.items.is_empty()
         && conditions.is_empty()
     {
-        return; // nothing to say, so nothing on screen (the [E]-only rule)
+        // Nothing to say, so nothing on screen (the [E]-only rule).
+        for (e, _, _) in &old {
+            commands.entity(e).despawn();
+        }
+        return;
     }
     let Some((cam, cam_tf)) = cam_q.iter().next() else { return };
     let Ok(root) = root_q.single() else { return };
@@ -5377,15 +5621,57 @@ pub(crate) fn update_action_hud(
     let head = me.translation() + Vec3::Y * 2.35;
     let Ok(at) = cam.world_to_viewport(cam_tf, head) else { return };
 
+    let line = if session.channeling {
+        Some("[E] stop".to_string())
+    } else {
+        target.as_ref().map(|t| t.prompt())
+    };
+    let boon_line = boon.as_ref().map(|(_, _, what)| format!("[N] {what}"));
+    // Watching stays on offer even mid-channel: reading the fight over there is
+    // exactly what you might want to do while you finish gathering.
+    let watch_line = watch.map(|what| format!("\u{f0817} [V] {what}"));
+    let pct = if session.channeling { channel_fill_pct(*phase, session.channel_fill_ms) } else { 0.0 };
+    // **THE PLATE FOLLOWS THE HEAD EVERY FRAME AND IS REBUILT ONLY WHEN ITS WORDS CHANGE.**
+    // It used to be torn down and respawned every frame — layout and glyph shaping for a
+    // panel whose text changes a few times a minute. The key holds everything drawn inside
+    // it; the bar's fill and a pop's fade are quantised so they still animate, in steps the
+    // eye does not see, without a rebuild per frame.
+    let key = glass::redraw_key(&(
+        &line,
+        &boon_line,
+        &watch_line,
+        &conditions,
+        highlight,
+        session.channeling,
+        (pct * 0.5) as u8,
+        pops.items
+            .iter()
+            .map(|p| (p.kind.as_str(), p.label(), ((1.0 - p.age / HARVEST_POP_TTL) * 16.0) as u8))
+            .collect::<Vec<_>>(),
+    ));
     const W: f32 = 230.0;
+    let left = Val::Px(at.x - W / 2.0);
+    // Sit above the head, and leave room for however many pops are in the air.
+    let top = Val::Px(at.y - 34.0 - 18.0 * pops.items.len() as f32);
+    if let Ok((_, hud, mut node)) = old.single_mut() {
+        if hud.key == key {
+            if node.left != left || node.top != top {
+                node.left = left;
+                node.top = top;
+            }
+            return;
+        }
+    }
+    for (e, _, _) in &old {
+        commands.entity(e).despawn();
+    }
     commands.entity(root).with_children(|p| {
         p.spawn((
-            ActionHud,
+            ActionHud { key },
             Node {
                 position_type: PositionType::Absolute,
-                left: Val::Px(at.x - W / 2.0),
-                // Sit above the head, and leave room for however many pops are in the air.
-                top: Val::Px(at.y - 34.0 - 18.0 * pops.items.len() as f32),
+                left,
+                top,
                 width: Val::Px(W),
                 flex_direction: FlexDirection::Column,
                 align_items: AlignItems::Center,
@@ -5415,15 +5701,6 @@ pub(crate) fn update_action_hud(
                     ));
                 });
             }
-            let line = if session.channeling {
-                Some("[E] stop".to_string())
-            } else {
-                target.as_ref().map(|t| t.prompt())
-            };
-            let boon_line = boon.as_ref().map(|(_, _, what)| format!("[N] {what}"));
-            // Watching stays on offer even mid-channel: reading the fight over there is
-            // exactly what you might want to do while you finish gathering.
-            let watch_line = watch.map(|what| format!("\u{f0817} [V] {what}"));
             if line.is_none()
                 && boon_line.is_none()
                 && watch_line.is_none()
@@ -5478,7 +5755,6 @@ pub(crate) fn update_action_hud(
                         });
                 }
                 if session.channeling {
-                    let pct = channel_fill_pct(*phase, session.channel_fill_ms);
                     plate
                         .spawn((
                             Node {

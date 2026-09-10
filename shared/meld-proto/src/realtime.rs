@@ -130,6 +130,51 @@ pub mod movement {
     pub struct Snapshot {
         pub server_tick: i64,
         pub entities: Vec<SnapshotEntity>,
+        /// The last `MoveIntent::input_seq` of **this recipient's own** that the server
+        /// had applied when it took this snapshot — so a predicting client can tell which
+        /// of its inputs this position already contains, drop those, and re-apply only
+        /// the ones still in flight.
+        ///
+        /// ⚠️ **THE PROTOCOL ALWAYS HAD THE OTHER THREE QUARTERS OF THIS.** `MoveIntent`
+        /// has carried `input_seq` AND `client_pos` from the start, the avatar has stored
+        /// `last_input_seq`, and `PositionCorrection` reports it — but a correction is
+        /// only sent for an authoritative teleport, so on the ordinary walking path the
+        /// client was never told what the server had seen. It therefore could not predict,
+        /// and rendered its own avatar at the server's position: every input cost a round
+        /// trip, reported from play as the overworld waiting to "hear back".
+        ///
+        /// Per-message rather than per-entity: it describes the SESSION this snapshot is
+        /// addressed to, and putting it on `SnapshotEntity` would repeat one player's
+        /// bookkeeping on every creature in the cull.
+        #[serde(default)]
+        pub last_input_seq: u32,
+        /// **A DELTA, for a session that asked for one** (`SnapshotMode`). When `true`,
+        /// `entities` holds only what changed since this session's previous snapshot — new
+        /// in range, moved, or re-tagged — and `removed` names what left; everything else the
+        /// client already holds is still exactly right. When `false` (the default, and every
+        /// snapshot to a session that never opted in) the message is the complete visible set,
+        /// and a client replaces its world with it.
+        ///
+        /// Why: a full snapshot at 10 Hz re-sent every static tree, rock, chest and node in a
+        /// 128-unit disc — measured at **70.9 KB per tick, 709 KB/s per player** at d1269 — and
+        /// the client re-parsed and re-inserted all of it ten times a second. Almost none of it
+        /// had changed. The first snapshot after any gap (a battle, a dungeon, a fresh
+        /// connection) is always full, so a client can never be left holding a stale world.
+        #[serde(default)]
+        pub delta: bool,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        pub removed: Vec<Id>,
+    }
+
+    /// C2S — ask for [`Snapshot::delta`] snapshots (or back to full ones). The next
+    /// snapshot after this lands is full either way, so the client's world is rebuilt from
+    /// a known baseline before the deltas begin.
+    #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+    pub struct SnapshotMode {
+        pub delta: bool,
+    }
+    impl Message for SnapshotMode {
+        const TYPE: &'static str = "movement.snapshot_mode";
     }
     #[derive(Debug, Clone, Default, Serialize, Deserialize)]
     pub struct SnapshotEntity {
@@ -723,6 +768,16 @@ pub mod run {
         /// corridor every time. The hub offers it but never forces it.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub tutorial: Option<bool>,
+        /// **Which WORLD to dive into** — its seed is its identity (CANON D19/§W1: a
+        /// world is a *player-seeded* shard, and §W5 stores the number rather than the
+        /// map because the baseline is a pure function of it). Absent asks for a fresh
+        /// roll, which is what every dive did when there was exactly one world.
+        ///
+        /// It is a **request, not a fact**: a full world queues rather than auto-forking
+        /// (§W1), and a tutorial dive never joins a named world at all — so the world you
+        /// land in rides back on `Started.world_seed` and the client must display THAT.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub seed: Option<u64>,
     }
     impl Message for EnterMaze {
         const TYPE: &'static str = "run.enter_maze";
@@ -820,7 +875,7 @@ pub mod run {
         /// the client has not been told about is walkable ground drawn over open water.
         #[serde(default)]
         pub straits: Vec<crate::coast::Strait>,
-    /// **The WORLD's seed — its public name** (CANON D19: the overworld is a
+        /// **The WORLD's seed — its public name** (CANON D19: the overworld is a
         /// *player-seeded* World, and §W5 stores this number instead of a map because the
         /// baseline is a pure function of it).
         ///
@@ -879,6 +934,59 @@ pub mod run {
     }
     impl Message for Started {
         const TYPE: &'static str = "run.started";
+    }
+
+    /// S2C — **the world is being drawn, and this is the pass it is on.**
+    ///
+    /// ⚠️ **BEFORE THIS, THE CLIENT WAS SENT NOTHING UNTIL GENERATION FINISHED**, so the
+    /// descent screen could only offer an elapsed clock — which reads as a hang rather than
+    /// as work. And the wait is not short: measured in RELEASE, the initial eight-section
+    /// chain takes **3.4-4.2 s**, and a world whose guaranteed route does not hold is thrown
+    /// away and drawn again from scratch (up to twelve times), which is the one thing that
+    /// can multiply that.
+    ///
+    /// It reaches the player *while the work is happening* because the game loop and each
+    /// session's writer are **separate tasks**: the loop is blocked solid through generation,
+    /// but the writer is polled on another worker and puts these on the socket as they are
+    /// queued. Anything batched into the loop's normal dispatch would arrive with
+    /// `run.started` and say nothing.
+    ///
+    /// **Structured, not a sentence.** The words are presentation and belong to the client;
+    /// `index`/`total` is what makes an HONEST progress bar possible — the thing the old
+    /// screen deliberately refused to draw, because a bar that fills on a timer is a lie
+    /// that gets found out the first time a world takes twice as long.
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct Generating {
+        /// Which pass: `maze` | `section` | `bend` | `route` | `restart`.
+        pub step: String,
+        /// For `section`, which one — 1-based, of `total`. Both `0` when the pass has no
+        /// count of its own, which is how the client knows not to draw a bar.
+        #[serde(default)]
+        pub index: u32,
+        #[serde(default)]
+        pub total: u32,
+        /// The theme of the ground just laid, when the pass has one. Real detail: this is
+        /// the section's own representative biome, so the readout names the country being
+        /// made rather than counting anonymous steps.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub biome: Option<String>,
+        /// Which attempt this is, 1-based. A re-draw is invisible otherwise and looks
+        /// exactly like the first one taking forever.
+        #[serde(default)]
+        pub attempt: u32,
+    }
+    impl Message for Generating {
+        const TYPE: &'static str = "run.generating";
+    }
+    impl Generating {
+        /// Every pass the server can report, and the ONE list both sides read.
+        ///
+        /// ⚠️ A step the client has no words for renders as a bare key — which is this
+        /// repo's oldest failure mode wearing a new hat (`pack:` drove combat for a release
+        /// without reaching the client). The keys live here so the client can be held to
+        /// covering all of them by test, rather than to whatever the server happened to send
+        /// the day someone last looked.
+        pub const STEPS: [&'static str; 5] = ["maze", "section", "bend", "route", "restart"];
     }
 
     /// One of the caller's heroes, for the party/roster panel: persistent name,
@@ -1881,6 +1989,14 @@ pub mod lobby {
     pub struct Create {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub party: Option<Vec<CharacterClass>>,
+        /// **Which WORLD this group is forming up to dive into** — a seed, the world's
+        /// own identity (CANON §W1). Absent rolls a fresh one at `lobby.start`.
+        ///
+        /// It is settled by the HOST at create time rather than at start, because it is
+        /// the one thing a joiner needs to know BEFORE they ready up: which place they
+        /// are agreeing to go to. It rides back on every `lobby.state`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub seed: Option<u64>,
     }
     impl Message for Create {
         const TYPE: &'static str = "lobby.create";
@@ -1935,6 +2051,11 @@ pub mod lobby {
         pub code: String,
         pub host_player_id: Id,
         pub members: Vec<MemberView>,
+        /// The world this group will dive into, if the host named one. `None` means a
+        /// fresh roll at `lobby.start` — the seed is not decided yet, and a lobby that
+        /// showed a number here before one was chosen would be inventing the answer.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub seed: Option<u64>,
     }
     impl Message for State {
         const TYPE: &'static str = "lobby.state";

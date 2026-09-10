@@ -149,18 +149,24 @@ pub(crate) fn spawn_hero_actor(
     let mut cs = CharSprite::new(frames.clone(), mat.clone(), root);
     cs.facing = facing;
     cs.locked = Some(facing); // a battle hero always faces the monsters
-    // …and is DRAWN in three-quarter view, which is not the same statement. Squared up on
-    // the enemy the world→screen lookup lands on `north`, and a line of dead-back
-    // silhouettes is the one screen where telling a Hunter from an Explorer decides what
-    // you press. The pose is turned a notch INWARD so more of each body reads.
+    // …and it is DRAWN facing them too — no pose override. The world→screen lookup
+    // resolves a hero squared up on the enemy line to `north`, its own back, which is what
+    // a party standing in front of you and looking at the fight looks like.
     //
-    // ⚠️ **INWARD IS THE NORTH HALF OF THE COMPASS, NOT THE SOUTH HALF.** `dir_index` takes
-    // `(screen_right, toward_cam)`, so 1/7 (south-east / south-west) are angled toward the
-    // VIEWER — a party posed with those turns to face ITSELF, ignoring the creature it is
-    // fighting. 3/5 (north-east / north-west) are the same inward angle on the far side of
-    // the compass: still turned toward the centre, but converging up-screen on the enemy,
-    // which is where a formation looks.
-    cs.view_dir = Some(if root.x <= 0.0 { 3 } else { 5 });
+    // ⚠️ **THE THREE-QUARTER TURN IS RETIRED, AND ITS ARGUMENT WAS REAL BUT LOST.** It
+    // posed each hero a notch inward (3/5, north-east / north-west) to trade squareness for
+    // legibility: from dead behind, a Hunter and an Explorer are two dark silhouettes, and
+    // the battle screen is the one place telling them apart decides what you press. Played,
+    // it read as the party twisting away from the creature it was fighting — the row no
+    // longer looks like a LINE — and a formation that does not read as a formation costs
+    // more than the silhouettes buy. Legibility is the nameplate's job and the arena's
+    // layout's; it is not worth turning the party off the enemy for.
+    //
+    // Which is also why the override cannot simply be re-pointed: on a joined ally's WEST
+    // or EAST edge the same `root.x` test turned that party away from the centre as well,
+    // so the one rule that has to hold everywhere — you look at what you are fighting — is
+    // exactly the one a fixed screen-space frame cannot state. The world facing already
+    // says it, in every edge's coordinates at once.
     let forward = Vec3::new(facing.x, 0.0, facing.y); // toward the foes
     let quad = if bust { wa.bust_quad.clone() } else { wa.sprite_quad.clone() };
     commands
@@ -206,9 +212,11 @@ pub(crate) fn spawn_hero_actor(
                     radius,
                     // Same reasoning as the avatar's lamp: light that passes through the
                     // things it lights reads as a tint. Four of these are lit at once, so
-                    // this is the expensive one — if the arena ever costs frames at night,
-                    // this flag is the first thing to try, before `LAMP_STRENGTH`.
-                    shadow_maps_enabled: true,
+                    // this is the expensive one — and it cost frames: a shadowed point light
+                    // is SIX render passes over the whole arena (the displaced ground plane
+                    // included), and a night battle carried up to eight of them. Off; the
+                    // sun's cascades are the shadow the scene reads.
+                    shadow_maps_enabled: false,
                     ..default()
                 },
                 // ⚠️ AT HEAD HEIGHT, NOT AT THE WAIST. At 1.6 the lamp sat BELOW the
@@ -380,7 +388,7 @@ pub(crate) fn spawn_enemy_actor(
                         intensity: 0.0,
                         range: LAMP_REACH * 0.6,
                         radius: LAMP_RADIUS,
-                        shadow_maps_enabled: true,
+                        shadow_maps_enabled: false,
                         ..default()
                     },
                     // ⚠️ CLEAR OF ITS OWN BILLBOARD. At `h * 0.6` this sat barely 0.2 units
@@ -412,7 +420,7 @@ pub(crate) fn spawn_enemy_actor(
                     intensity: 0.0,
                     range: LAMP_REACH,
                     radius: LAMP_RADIUS,
-                    shadow_maps_enabled: true,
+                    shadow_maps_enabled: false,
                     ..default()
                 },
                 Mesh3d(wa.sprite_quad.clone()),
@@ -478,7 +486,7 @@ pub(crate) fn spawn_enemy_actor(
                 intensity: 0.0,
                 range: LAMP_REACH,
                 radius: LAMP_RADIUS,
-                shadow_maps_enabled: true,
+                shadow_maps_enabled: false,
                 ..default()
             },
             Mesh3d(wa.sprite_quad.clone()),
@@ -2516,6 +2524,9 @@ pub(crate) fn render_watch_banner(
     battle: Res<BattleData>,
     existing: Query<Entity, With<WatchBanner>>,
 ) {
+    if !battle.is_changed() && (existing.is_empty() == !battle.spectating) {
+        return; // drawn state already matches — see `render_enemy_panel`
+    }
     for e in &existing {
         commands.entity(e).despawn();
     }
@@ -2572,7 +2583,24 @@ pub(crate) fn render_enemy_panel(
     cam_q: Query<(&Camera, &GlobalTransform), With<Camera3d>>,
     actors: Query<(&BattleActor, &GlobalTransform)>,
     existing: Query<Entity, With<BattleScene>>,
+    cam_moved: Query<(), (With<Camera3d>, Changed<GlobalTransform>)>,
+    actors_moved: Query<(), (With<BattleActor>, Changed<GlobalTransform>)>,
 ) {
+    // REBUILD ON CHANGE, NOT ON FRAME. Everything this draws is read from these inputs;
+    // when none of them moved, last frame's nodes are exactly right and tearing them down
+    // re-runs layout and glyph shaping for nothing.
+    if !(existing.is_empty()
+        || battle.is_changed()
+        || hitfx.is_changed()
+        || feel.is_changed()
+        || menu.is_changed()
+        || target.is_changed()
+        || perks.is_changed()
+        || !cam_moved.is_empty()
+        || !actors_moved.is_empty())
+    {
+        return;
+    }
     for e in &existing {
         commands.entity(e).despawn();
     }
@@ -2898,13 +2926,26 @@ pub(crate) fn render_status_icons(
     cam_q: Query<(&Camera, &GlobalTransform), With<Camera3d>>,
     actors: Query<(&BattleActor, &GlobalTransform)>,
     existing: Query<Entity, With<StatusIconLayer>>,
+    cam_moved: Query<(), (With<Camera3d>, Changed<GlobalTransform>)>,
+    actors_moved: Query<(), (With<BattleActor>, Changed<GlobalTransform>)>,
+    mut last_phase: Local<usize>,
 ) {
+    // Which effect shows this instant when a combatant carries several (1.5 s each).
+    let phase = (time.elapsed_secs() / 1.5) as usize;
+    // Rebuild on change, not on frame — see `render_enemy_panel`.
+    if !(existing.is_empty()
+        || battle.is_changed()
+        || phase != *last_phase
+        || !cam_moved.is_empty()
+        || !actors_moved.is_empty())
+    {
+        return;
+    }
+    *last_phase = phase;
     for e in &existing {
         commands.entity(e).despawn();
     }
     let Some((cam, cam_tf)) = cam_q.iter().next() else { return };
-    // Which effect shows this instant when a combatant carries several (1.5 s each).
-    let phase = (time.elapsed_secs() / 1.5) as usize;
     commands
         .spawn((
             StatusIconLayer,
@@ -2996,6 +3037,15 @@ pub(crate) fn render_ally_parties(
     panel: Res<AllyPanel>,
     existing: Query<Entity, With<AllyPartyStrips>>,
 ) {
+    // Rebuild on change, not on frame — see `render_enemy_panel`.
+    if !(existing.is_empty()
+        || battle.is_changed()
+        || hitfx.is_changed()
+        || feel.is_changed()
+        || panel.is_changed())
+    {
+        return;
+    }
     for e in &existing {
         commands.entity(e).despawn();
     }
@@ -3400,6 +3450,16 @@ pub(crate) fn render_party_window(
     flash: Res<AtbFlash>,
     existing: Query<Entity, With<PartyWindow>>,
 ) {
+    // Rebuild on change, not on frame — see `render_enemy_panel`.
+    if !(existing.is_empty()
+        || battle.is_changed()
+        || hitfx.is_changed()
+        || feel.is_changed()
+        || menu.is_changed()
+        || flash.is_changed())
+    {
+        return;
+    }
     for e in &existing {
         commands.entity(e).despawn();
     }
@@ -3451,18 +3511,23 @@ pub(crate) fn advance_atb_flash(
         return;
     }
     let dt = time.delta_secs();
-    // Age existing flashes and drop the expired.
-    flash.age.retain(|_, a| {
-        *a += dt;
-        *a < feel.atb_flash_ttl
-    });
-    // Newly-ready heroes (weren't ready last frame) get a fresh flash.
-    for id in battle.ready.iter() {
-        if !flash.prev.contains(id) {
-            flash.age.insert(id.clone(), 0.0);
-        }
+    // Age existing flashes and drop the expired — touching the resource only when there is
+    // one, so its change flag means "a flash moved" to the party window reading it.
+    if !flash.age.is_empty() {
+        flash.age.retain(|_, a| {
+            *a += dt;
+            *a < feel.atb_flash_ttl
+        });
     }
-    flash.prev = battle.ready.iter().cloned().collect();
+    // Newly-ready heroes (weren't ready last frame) get a fresh flash.
+    if flash.prev != battle.ready {
+        for id in battle.ready.iter() {
+            if !flash.prev.contains(id) {
+                flash.age.insert(id.clone(), 0.0);
+            }
+        }
+        flash.prev = battle.ready.clone();
+    }
 }
 
 /// Whether any allied hero in this battle is an Phoenix Guard (their wire statuses
@@ -3490,6 +3555,11 @@ pub(crate) fn tactics_toggle(
 /// the seeded feedback stays on screen.
 pub(crate) fn advance_hit_fx(time: Res<Time>, feel: Res<BattleFeel>, mut hitfx: ResMut<HitFx>) {
     if battle_mockup_flag() {
+        return;
+    }
+    // Read-only when nothing is live: a `&mut` deref marks the resource changed whether or
+    // not anything moved, and the panels below rebuild when it does.
+    if hitfx.items.is_empty() && hitfx.callouts.is_empty() && hitfx.acts.is_empty() {
         return;
     }
     let dt = time.delta_secs();
@@ -3532,7 +3602,19 @@ pub(crate) fn render_hit_fx(
     cam_q: Query<(&Camera, &GlobalTransform), With<Camera3d>>,
     actors: Query<(&BattleActor, &GlobalTransform)>,
     existing: Query<Entity, With<HitFxRoot>>,
+    cam_moved: Query<(), (With<Camera3d>, Changed<GlobalTransform>)>,
 ) {
+    // Rebuild on change, not on frame — see `render_enemy_panel`. `HitFx` changes every
+    // frame WHILE a number is in the air (it ages), which is exactly when this must redraw.
+    if !(existing.is_empty()
+        || hitfx.is_changed()
+        || battle.is_changed()
+        || feel.is_changed()
+        || tactics.is_changed()
+        || !cam_moved.is_empty())
+    {
+        return;
+    }
     for e in &existing {
         commands.entity(e).despawn();
     }
@@ -4266,51 +4348,37 @@ mod battle_pose_tests {
     use crate::hd2d::{dir_index, DIRS};
     use bevy::prelude::*;
 
-    /// The battle camera sits behind the party and the party is locked facing the
-    /// monsters, so resolving the pose through the world→screen mapping draws every hero
-    /// from BEHIND. This is the arithmetic that does it, held so the reason the override
-    /// exists cannot quietly stop being true.
+    /// A battle hero is LOCKED facing the fight and drawn through the world→screen
+    /// mapping with no pose override, so every edge a party can stand on resolves to the
+    /// pose that looks AT the centre of the arena — your own party from behind, a joined
+    /// ally in profile.
+    ///
+    /// ⚠️ **THIS REPLACES A TEST OF THE RETIRED THREE-QUARTER OVERRIDE**, which asserted a
+    /// pair of literal screen-space indices (3/5) chosen off `root.x`. That is the shape of
+    /// assertion that could not see its own bug: `root.x` is a SOUTH-edge idea, so a joined
+    /// ally on the west or east edge got a pose picked for somebody else's line, and the
+    /// test agreed because it only ever asked about the south. The rule is the heading, and
+    /// the heading is already in the world facing — so this asks the mapping, not a table.
     #[test]
-    fn facing_the_monsters_resolves_to_the_back_of_the_head() {
+    fn every_party_edge_is_drawn_looking_at_the_fight() {
         // Ground-projected camera forward for `Vec3::new(0.0, 8.6, 11.2)` looking at the
         // arena, and the screen-right that goes with it.
         let (fwd, right) = (Vec2::new(0.0, -1.0), Vec2::new(1.0, 0.0));
-        let facing = Vec2::new(0.0, -1.0); // toward the foes
-        let toward_cam = -facing.dot(fwd);
-        let screen_right = facing.dot(right);
-        assert_eq!(
-            DIRS[dir_index(Vec2::new(screen_right, toward_cam))],
-            "north",
-            "a hero squared up on the enemy line is drawn from behind"
-        );
-    }
-
-    /// So the pose is overridden to a three-quarter turned INWARD — and inward has to be
-    /// taken on the NORTH half of the compass, which is the half that faces the enemy.
-    ///
-    /// ⚠️ **THIS TEST ONCE ASSERTED THE BUG.** It required `starts_with("south")`, and the
-    /// south half is the half angled toward the VIEWER: the party posed with 1/7 turned to
-    /// face ITSELF across the arena and ignored the creature it was fighting. Asserting
-    /// "you can see a face" was asserting the wrong property — a battle hero is identified
-    /// by silhouette and kit from behind, and what it must never do is look away from the
-    /// fight. The rule is the HEADING, so that is what this holds.
-    #[test]
-    fn a_battle_hero_faces_the_enemy_and_is_turned_inward() {
-        let pose = |x: f32| if x <= 0.0 { 3usize } else { 5usize };
-        for x in [-2.7f32, -1.0, 0.0, 1.0, 2.7] {
-            let name = DIRS[pose(x)];
-            assert!(
-                name.starts_with("north"),
-                "a hero at x={x} is drawn as `{name}`, which is turned away from the enemy"
+        // The four edges' world facings: your own party (south, looking north) and the
+        // three a joined ally can take, each looking at the centre.
+        for (edge, facing, want) in [
+            ("south", Vec2::new(0.0, -1.0), "north"),
+            ("north", Vec2::new(0.0, 1.0), "south"),
+            ("west", Vec2::new(1.0, 0.0), "east"),
+            ("east", Vec2::new(-1.0, 0.0), "west"),
+        ] {
+            let toward_cam = -facing.dot(fwd);
+            let screen_right = facing.dot(right);
+            assert_eq!(
+                DIRS[dir_index(Vec2::new(screen_right, toward_cam))],
+                want,
+                "a hero on the {edge} edge is drawn turned away from the arena it is facing"
             );
-            assert_ne!(name, "north", "dead-back is the pose the override exists to avoid");
-        }
-        assert_eq!(DIRS[pose(-2.7)], "north-east", "the left of the line turns right");
-        assert_eq!(DIRS[pose(2.7)], "north-west", "the right of the line turns left");
-        // …and the two sides converge rather than diverge: whatever the angle, both look
-        // up-screen, so no pair of heroes can end up face to face.
-        for x in [-2.7f32, 2.7] {
-            assert!(DIRS[pose(x)].starts_with("north"));
         }
     }
 }

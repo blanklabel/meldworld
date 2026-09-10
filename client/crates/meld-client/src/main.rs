@@ -175,6 +175,59 @@ fn fps_on() -> bool {
     std::env::var("MELD_FPS").is_ok_and(|v| v != "0")
 }
 
+/// **THE CLUSTER INDEX LIST IS SIZED UP FRONT, BECAUSE GROWING IT CORRUPTS THE LIGHTING.**
+/// GPU clustering bins every point light into the view's froxels and writes one `u32` per
+/// (cluster, light) pair into a single index list. Bevy sizes that list at
+/// `GPU_CLUSTERING_INITIAL_INDEX_LIST_CAPACITY` (65,536) and only learns it was too small by
+/// reading the GPU's own count back a frame later — so an overflowing scene renders with
+/// *truncated* light lists until the resize lands, which is the "scene lighting may have been
+/// corrupted for a few frames" its warning names. Last City is the scene over the line: the
+/// plaza carries a `NightLamp` per townsperson plus the magitech pylons — ~30 point lights of
+/// real range in one square, and every pair overlapping in a froxel costs an entry each.
+///
+/// ⚠️ **PAID EVERY FRAME, PER VIEW, NOT ONCE.** `prepare_clusters_for_gpu_clustering` zeroes
+/// and re-uploads the WHOLE list each frame, so this is 4 bytes × capacity × views of upload a
+/// frame — over-provisioning "to be safe" buys bandwidth nobody asked for. Size it to the
+/// worst scene we actually ship and re-measure rather than rounding up.
+///
+/// `MELD_CLUSTER_INDICES=<n>` is how you re-measure: set it LOW (16) and boot the scene, and
+/// the resize warning reports `next_power_of_two` of the real demand — the GPU counts what it
+/// needed regardless of what the buffer could hold, so one warning from a tiny start gives the
+/// answer outright instead of a ladder of doublings.
+const CLUSTER_INDEX_LIST_CAPACITY: usize = 131_072;
+
+fn cluster_index_list_capacity() -> usize {
+    std::env::var("MELD_CLUSTER_INDICES")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(CLUSTER_INDEX_LIST_CAPACITY)
+}
+
+/// Applies [`CLUSTER_INDEX_LIST_CAPACITY`] to the resource `PbrPlugin` builds.
+///
+/// It has to be `finish` rather than `build` or a `Startup` system: the resource does not
+/// exist until `PbrPlugin::finish` creates it (it needs the `RenderAdapter` to know whether
+/// this device can cluster on the GPU at all), and plugin `finish` runs in registration order,
+/// so ours lands after `DefaultPlugins`' and before the first frame extracts it. No render
+/// app — the headless test harness — means no resource, and this is a no-op.
+struct ClusterCapacity;
+
+impl Plugin for ClusterCapacity {
+    fn build(&self, _app: &mut App) {}
+
+    fn finish(&self, app: &mut App) {
+        let Some(mut settings) =
+            app.world_mut().get_resource_mut::<bevy::light::cluster::GlobalClusterSettings>()
+        else {
+            return;
+        };
+        // `None` is CPU clustering, which sizes its own lists per view and has no knob here.
+        if let Some(gpu) = settings.gpu_clustering.as_mut() {
+            gpu.initial_index_list_capacity = cluster_index_list_capacity();
+        }
+    }
+}
+
 fn main() {
     raise_open_file_limit();
     // Self-contained build: boot the server in-process (in-memory DB, embedded
@@ -254,6 +307,8 @@ fn main() {
                     ..default()
                 }),
         )
+        // Size the GPU clustering index list before the first frame — see `ClusterCapacity`.
+        .add_plugins(ClusterCapacity)
         .init_state::<Screen>()
         // The biome-blending ground material (see `GroundBiome`).
         // ⚠️ **`MELD_FPS=1` PRINTS FRAME TIME.** Reported from play as "the overworld chugs",
@@ -295,10 +350,12 @@ fn main() {
             started: false,
         })
         .init_resource::<Session>()
+        .init_resource::<screens::Descent>()
         .insert_resource(Sky::opening(&crate::feel::WorldFeel::from_flags()))
         .init_resource::<Ashfall>()
         .init_resource::<DungeonSceneRes>()
         .init_resource::<MoveClock>()
+        .init_resource::<Predict>()
         .init_resource::<LoginFocus>()
         .init_resource::<LoginBg>()
         .init_resource::<BattleMenu>()
@@ -571,6 +628,7 @@ fn main() {
                 overworld_camera_control,
                 gather_steer,
                 emit_move,
+                face_where_you_steer,
                 joystick_visual,
                 touch_action_buttons,
                 (action_hud_tap, action_hud_boon_tap, action_hud_watch_tap),
@@ -922,6 +980,20 @@ struct LobbyData {
     members: Vec<(String, String, bool)>,
     /// The code being typed on the join line (before joining).
     code_input: String,
+    /// **SC-3 — the world being named on the create line**, digits only (a world's
+    /// identity is its seed). Empty rolls a fresh one, which is what creating a lobby
+    /// always did. [Tab] moves between this and the join code, because they are opposite
+    /// actions: a CODE joins somebody else's group, a SEED names the place your own group
+    /// is going.
+    seed_input: String,
+    /// Which of the two fields [Tab] is currently editing.
+    editing_seed: bool,
+    /// The world the lobby is actually forming up to enter, as the SERVER reports it on
+    /// `lobby.state`. Kept apart from `seed_input` on purpose: a joiner never typed a
+    /// seed and still has to be shown which world they are agreeing to go to, and showing
+    /// the host their own input back would be the client displaying what it asked for
+    /// rather than what is true.
+    seed: Option<u64>,
     my_ready: bool,
 }
 
@@ -1089,6 +1161,10 @@ struct Overworld {
     /// Bumped on every snapshot so the render-side interpolation buffer
     /// ([`OwInterp`]) can tell when a fresh snapshot arrived.
     seq: u64,
+    /// The last move intent of OURS the server had applied when it took this snapshot.
+    /// Everything sent after it is still in flight, and is what the local avatar replays
+    /// on top of the authoritative position — see `Predict`.
+    last_input_seq: u32,
 }
 
 /// One captured position sample, stamped with the client-clock time (seconds) it
@@ -1132,11 +1208,6 @@ struct OwInterp {
 /// always interpolate between two *received* samples rather than extrapolating
 /// past the newest one. One 100 ms server tick plus a little slack.
 const OW_INTERP_DELAY: f32 = 0.11;
-
-/// How far the LOCAL player's chase target may be carried past the newest snapshot, in seconds.
-/// Two ticks and a little: enough to bridge an ordinary gap, short enough that a player who
-/// stopped does not keep gliding while the server catches up.
-pub(crate) const OW_EXTRAPOLATE_MAX: f32 = 0.22;
 
 /// The current run's backpack (Town Portals + gathered materials), mirrored from
 /// the server for the overworld HUD.
@@ -2139,6 +2210,12 @@ struct CityUi {
     /// The name being typed for the next loadout save. On `CityUi` rather than the
     /// panel so it survives the panel being rebuilt when the saved list changes.
     loadout_name: String,
+    /// The saved party this field is RENAMING, if any — otherwise the field names the
+    /// next save. One field, two jobs, and which one it is doing has to be state rather
+    /// than a guess: "rename" used to mean "apply whatever happens to be typed here to
+    /// this row", so clicking it on an empty field did nothing a player could see, and
+    /// clicking it after typing renamed a party without ever saying which.
+    loadout_rename: Option<String>,
     /// True while the Drill Yard's party picker is open (PT: choose the team you
     /// take down). Opens by itself the first time an account reaches town without a
     /// party of its own, so nobody dives with the newcomer default by accident.
@@ -2357,6 +2434,63 @@ impl LootReport {
 struct MoveClock {
     acc: f32,
 }
+
+/// **The move intents we have sent that the server has not yet confirmed.**
+///
+/// ⚠️ **THE LOCAL AVATAR USED TO RENDER AT THE SERVER'S POSITION**, chased exponentially,
+/// so pressing a key cost a whole round trip before anything moved: ~25 ms of send
+/// quantisation at [`MOVE_INTENT_HZ`], ~50 ms of mean tick, ~62 ms of the chase's own
+/// settle. Reported from play as the overworld "waiting to send the move and hear back
+/// that it was OK", which is exactly what it was doing.
+///
+/// The protocol had three quarters of the answer already — `MoveIntent` carries
+/// `input_seq`, the avatar stores `last_input_seq` — and the missing quarter was the
+/// snapshot never saying which input it reflected. With that on the wire, the client
+/// keeps what it has sent, drops what the server confirms, and REPLAYS the rest on top
+/// of the authoritative position. The avatar then moves on the frame the key goes down.
+///
+/// ⚠️ **`seq` MIRRORS THE NET WORKER'S OWN COUNTER RATHER THAN BEING TOLD IT.** The worker
+/// stamps `input_seq` at send time and `emit_move` is the only sender in the game (the
+/// `smoke` binary has its own transport), so counting sends here matches exactly. If that
+/// ever gains a second sender, this silently drifts — and the drift renders as an avatar
+/// running permanently ahead of itself.
+#[derive(Resource, Default)]
+struct Predict {
+    seq: u32,
+    pending: std::collections::VecDeque<(u32, Vec2)>,
+    /// The ack from the last snapshot, so a stalled one can be recognised.
+    last_ack: u32,
+    /// Consecutive snapshots that did not move `last_ack` while inputs were outstanding.
+    stale: u8,
+    /// How far ONE acknowledged intent moved the avatar, in world units.
+    ///
+    /// ⚠️ **DERIVED FROM THE ACKS, NEVER FROM A CLOCK.** The replay's lead shrinks by
+    /// `n x step` when a snapshot acknowledges `n` intents, while the authoritative
+    /// position advances by `n x true_step`; those cancel only if the estimate is exact.
+    /// The first cut scaled by `OwInterp::speed`, which is distance over a RECEIPT
+    /// INTERVAL — so network jitter entered the estimate, and an overestimate of a few
+    /// percent left a small BACKWARD step at every snapshot. That is invisible as motion
+    /// and highly visible as facing: `animate_chars` takes the 8-way facing from
+    /// frame-to-frame movement over a 2e-3 threshold, so the avatar turns round and
+    /// "points the way you came from".
+    ///
+    /// Position-delta over intents-acknowledged has no clock in it at all, and is exactly
+    /// the quantity the replay needs.
+    step: f32,
+    /// The authoritative position at the previous ack, to difference against.
+    last_pos: Option<Vec2>,
+}
+
+/// Snapshots the ack may fail to advance before the history is abandoned as desynced.
+/// ~1 s at the 10 Hz snapshot rate. This is the ONLY thing that clears the queue early:
+/// releasing the key must not, because a sent intent is still going to be applied and
+/// dropping it snaps the avatar backwards (see `emit_move`).
+const PREDICT_STALE_SNAPSHOTS: u8 = 10;
+
+/// Most intents that may be replayed at once. A stalled connection must not fling the
+/// avatar across the map: past this the honest thing is to stop predicting and let the
+/// server be right. 8 x (1/20 s) x 6 u/s = 2.4 units, about a third of a stride.
+const PREDICT_MAX_REPLAY: usize = 8;
 
 /// When true, the client self-drives the loop against the real server.
 #[derive(Resource)]
@@ -2809,7 +2943,17 @@ fn hd2d_remote(
     mut commands: Commands,
     mut look: ResMut<hd2d::Look>,
     mut watch: ResMut<hd2d::LookWatch>,
+    time: Res<Time>,
+    mut next_poll: Local<f32>,
 ) {
+    // The file channel is a dev loop, not a frame's work: two `fs::metadata` syscalls a
+    // frame were the price of hot-reloading the look. Polled a few times a second instead —
+    // a screenshot request or a `LOOK_FILE` edit landing a quarter-second late is nothing.
+    let now = time.elapsed_secs();
+    if now < *next_poll {
+        return;
+    }
+    *next_poll = now + 0.25;
     hd2d::reload_look(&mut look, &mut watch);
     hd2d::maybe_screenshot(&mut commands);
 }

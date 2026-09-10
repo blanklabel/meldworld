@@ -98,6 +98,25 @@ enum Backend {
     Mem(Arc<Mutex<Mem>>),
 }
 
+/// Place `(slot, value)` pairs at their own indices, filling gaps with the default.
+///
+/// The one shared answer to "a table keyed by slot is not a list": both hero reads go
+/// through it so they cannot drift apart, and the trailing length is the HIGHEST slot that
+/// has a row rather than the row count — a `Vec` whose length is the population is a `Vec`
+/// whose indices are not slots.
+fn place_by_slot<T: Clone + Default>(rows: Vec<(i16, T)>) -> Vec<T> {
+    let Some(top) = rows.iter().map(|(slot, _)| *slot).filter(|s| *s >= 0).max() else {
+        return Vec::new();
+    };
+    let mut out = vec![T::default(); top as usize + 1];
+    for (slot, v) in rows {
+        if slot >= 0 {
+            out[slot as usize] = v;
+        }
+    }
+    out
+}
+
 impl Db {
     /// Connect to a store. A `memory:`/`memory://…` URL selects the ephemeral
     /// in-memory backend (no Postgres needed — for the QA/demo binary); anything
@@ -1458,15 +1477,30 @@ impl Db {
         }
     }
 
-    /// The player's hero names by slot (0-based), ordered. Empty if never set.
+    /// The player's hero names **indexed by slot** (0-based). Empty if never set.
+    ///
+    /// ⚠️ **INDEXED BY SLOT, NOT PACKED IN SLOT ORDER — the two are only the same while
+    /// every slot has a row.** This read used to be `ORDER BY slot` collected straight into
+    /// a `Vec`, which drops the slot and shifts every name left past any gap: a player with
+    /// rows for slots 1 and 3 got `[b, d]`, so the panel drew `b` on hero 1 and the next
+    /// rename of "hero 2" landed on slot 1 — a rename that overwrites the one before it.
+    /// Register seeds all four slots, which is the only reason this held; it is one
+    /// migration, one older account, or one widened party away from not holding, and the
+    /// failure is silent and looks like the rename being broken rather than the read.
+    ///
+    /// A gap is filled with the empty string, which every caller already treats as "no name
+    /// set" — [`Self::get_hero_rows`] takes the same shape for the same reason.
     pub async fn get_hero_names(&self, player_id: Uuid) -> Result<Vec<String>, DbError> {
-        match &self.backend {
+        let by_slot: Vec<(i16, String)> = match &self.backend {
             Backend::Pg(pool) => {
-                let rows = sqlx::query("SELECT name FROM heroes WHERE player_id = $1 ORDER BY slot")
-                    .bind(player_id)
-                    .fetch_all(pool)
-                    .await?;
-                Ok(rows.iter().map(|r| r.get::<String, _>("name")).collect())
+                let rows =
+                    sqlx::query("SELECT slot, name FROM heroes WHERE player_id = $1 ORDER BY slot")
+                        .bind(player_id)
+                        .fetch_all(pool)
+                        .await?;
+                rows.iter()
+                    .map(|r| (r.get::<i16, _>("slot"), r.get::<String, _>("name")))
+                    .collect()
             }
             Backend::Mem(m) => {
                 let m = m.lock().unwrap();
@@ -1477,9 +1511,10 @@ impl Db {
                     .map(|((_, slot), name)| (*slot, name.clone()))
                     .collect();
                 rows.sort_by_key(|(slot, _)| *slot);
-                Ok(rows.into_iter().map(|(_, name)| name).collect())
+                rows
             }
-        }
+        };
+        Ok(place_by_slot(by_slot))
     }
 
     /// Rename a hero slot (upsert). Names are trimmed/capped by the caller.
@@ -1509,18 +1544,22 @@ impl Db {
     /// The player's hero formation flags by slot (0-based), ordered — `true` = back
     /// row. Aligned with [`Self::get_hero_names`]; unset slots default to `false`.
     pub async fn get_hero_rows(&self, player_id: Uuid) -> Result<Vec<bool>, DbError> {
-        match &self.backend {
+        // Indexed by slot, exactly as `get_hero_names` is and for the same reason: a packed
+        // read puts hero 3's rank on hero 1 the moment a slot has no row.
+        let by_slot: Vec<(i16, bool)> = match &self.backend {
             Backend::Pg(pool) => {
-                let rows =
-                    sqlx::query("SELECT back_row FROM heroes WHERE player_id = $1 ORDER BY slot")
-                        .bind(player_id)
-                        .fetch_all(pool)
-                        .await?;
-                Ok(rows.iter().map(|r| r.get::<bool, _>("back_row")).collect())
+                let rows = sqlx::query(
+                    "SELECT slot, back_row FROM heroes WHERE player_id = $1 ORDER BY slot",
+                )
+                .bind(player_id)
+                .fetch_all(pool)
+                .await?;
+                rows.iter()
+                    .map(|r| (r.get::<i16, _>("slot"), r.get::<bool, _>("back_row")))
+                    .collect()
             }
             Backend::Mem(m) => {
                 let m = m.lock().unwrap();
-                // Same slots as the names (seeded 0..N), each with its back_row flag.
                 let mut slots: Vec<i16> = m
                     .heroes
                     .keys()
@@ -1528,12 +1567,15 @@ impl Db {
                     .map(|(_, slot)| *slot)
                     .collect();
                 slots.sort_unstable();
-                Ok(slots
+                slots
                     .into_iter()
-                    .map(|slot| m.hero_rows.get(&(player_id, slot)).copied().unwrap_or(false))
-                    .collect())
+                    .map(|slot| {
+                        (slot, m.hero_rows.get(&(player_id, slot)).copied().unwrap_or(false))
+                    })
+                    .collect()
             }
-        }
+        };
+        Ok(place_by_slot(by_slot))
     }
 
     /// Set a hero slot's formation rank (`true` = back row). Upsert; the row already
@@ -4470,6 +4512,30 @@ mod tests {
         assert!(bonuses[0].modifiers.iter().any(|(k, m)| k == "FIRE" && *m == 0.75));
     }
 
+    /// **A HERO'S NAME IS FILED UNDER ITS SLOT, AND A GAP MUST NOT SHIFT THE REST.**
+    /// The read was `ORDER BY slot` packed straight into a `Vec`, so any missing row moved
+    /// every later hero one place left — the panel drew the wrong names and the next rename
+    /// landed on the hero before the one you clicked, which reads as "renaming a second
+    /// hero overwrites the first" rather than as a broken read. Register seeds all four
+    /// slots, so the packed version was correct for exactly as long as nothing ever left a
+    /// gap; this asserts the property instead of the coincidence.
+    #[tokio::test]
+    async fn a_hero_name_stays_on_its_own_slot_across_a_gap() {
+        let db = mem().await;
+        let p = db.register("gappy", "pw").await.unwrap().player_id;
+        // Reach past the seeded slots so the table genuinely has a hole in it.
+        db.set_hero_name(p, 7, "Tail").await.unwrap();
+        let names = db.get_hero_names(p).await.unwrap();
+        assert_eq!(names.len(), 8, "the vector is as long as the highest slot, not the row count");
+        assert_eq!(names[7], "Tail", "the name moved off the slot it was filed under");
+        assert!(names[5].is_empty(), "a slot with no row reads as unnamed, not as its neighbour");
+        // And the ranks travel the same way, or hero 8's formation lands on hero 5.
+        db.set_hero_row(p, 7, true).await.unwrap();
+        let rows = db.get_hero_rows(p).await.unwrap();
+        assert!(rows[7], "the back-row flag moved off its own slot");
+        assert!(!rows[5], "an unset slot must not inherit a later hero's rank");
+    }
+
     #[tokio::test]
     async fn hero_rename_and_skill_xp() {
         let db = mem().await;
@@ -5659,6 +5725,41 @@ impl Db {
                 }))
             }
             Backend::Mem(m) => Ok(m.lock().unwrap().worlds.get(world_key).cloned()),
+        }
+    }
+
+    /// **Every hibernated world** (SC-3). The Router reads these at boot and stands each
+    /// one up on the first dive into it, so a world that outlived the process is waiting
+    /// under its own key rather than only the one key somebody thought to ask for.
+    ///
+    /// Ordered by `world_key` so the listing is stable run to run — a browser (SC-9)
+    /// renders this, and a list that reshuffles itself between reads is unusable.
+    pub async fn list_worlds(&self) -> Result<Vec<WorldSave>, DbError> {
+        match &self.backend {
+            Backend::Pg(pool) => {
+                let rows = sqlx::query(
+                    "SELECT world_key, seed, tick_count, shift_generation, sections, delta
+                     FROM worlds ORDER BY world_key",
+                )
+                .fetch_all(pool)
+                .await?;
+                Ok(rows
+                    .into_iter()
+                    .map(|r| WorldSave {
+                        world_key: r.get("world_key"),
+                        seed: r.get("seed"),
+                        tick_count: r.get("tick_count"),
+                        shift_generation: r.get("shift_generation"),
+                        sections: r.get("sections"),
+                        delta: r.get("delta"),
+                    })
+                    .collect())
+            }
+            Backend::Mem(m) => {
+                let mut out: Vec<WorldSave> = m.lock().unwrap().worlds.values().cloned().collect();
+                out.sort_by(|a, b| a.world_key.cmp(&b.world_key));
+                Ok(out)
+            }
         }
     }
 }

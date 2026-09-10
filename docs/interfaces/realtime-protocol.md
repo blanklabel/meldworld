@@ -200,6 +200,7 @@ Shared object shapes referenced by the detail files.
 | C2S | `run.set_formation` | Put a hero in the front or back row | — *undocumented* |
 | C2S | `run.begin_extraction` | Start a `portal` or `town_portal` extraction channel | [run-social.md](realtime-protocol/run-social.md) |
 | C2S | `run.use_item` | Drink a potion on the overworld, out of combat | [run-social.md](realtime-protocol/run-social.md) |
+| S2C | `run.generating` | Which world-generation pass the server is on, live | [run-social.md](realtime-protocol/run-social.md) |
 | S2C | `run.channel_started` | A channel began (harvest / extraction / station) | [run-social.md](realtime-protocol/run-social.md) |
 | S2C | `run.channel_interrupted` | Channel broke before completing, with reason | [run-social.md](realtime-protocol/run-social.md) |
 | S2C | `run.member_result` | A member's run ended: extracted / died / abandoned | [run-social.md](realtime-protocol/run-social.md) |

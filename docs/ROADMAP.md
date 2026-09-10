@@ -284,6 +284,39 @@ Right now the party is fixed at dive time; players can't rearrange or save teams
     because an in-memory account is a brand-new one and one hero beside one class is not a
     size at which a layout can be judged.
 
+- [x] **PT-8 — A rename is click, type, Enter — for a hero and for a saved party.**
+  Reported from play as *"I can't rename more than one hero in a party… once you hit enter
+  it should just save"* and *"rename button for parties doesn't work"*. Three faults on one
+  screen, and the two that were reproducible are the same fault: a rename that does not
+  behave like a rename.
+  - *The saved-party rename was not an edit.* It applied whatever happened to be in the
+    NAME field at the instant you clicked it, so the ordinary gesture — click "rename",
+    then type — did nothing, and its only complaint ("Type the new name first.") went to
+    the town status strip, which the yard's own scrim is drawn over. **A button whose
+    entire response to a click is invisible is a button that does not work.** It arms an
+    edit now (`CityUi::loadout_rename`), prefills the field with the name the party HAS,
+    and **Enter commits** — the same gesture the hero card beside it already used. Esc
+    drops it, the heading says which of its two jobs the field is doing, and the panel owns
+    the edit's lifetime rather than the five places that write `party_open`.
+  - *A rename from TOWN wrote nothing the player could see.* The Drill Yard wrote the local
+    copy and the menu's own `[R]` did not — and a run-less rename is answered with an EMPTY
+    roster, which is exactly when `hero_name_at` falls back to `AccountHeroNames`. So the
+    same action stuck in one place and reverted in the other. One `commit_hero_rename` now,
+    so a third screen offering a rename cannot get half of it.
+  - *And the hero name was filed under the wrong slot on the way back.* `get_hero_names` /
+    `get_hero_rows` read `ORDER BY slot` packed straight into a `Vec`, dropping the slot —
+    so any gap in the `heroes` rows shifts every later hero one place left, and the next
+    rename of "hero 2" lands on slot 1. That is *literally* "renaming a second hero
+    overwrites the first". Register seeds all four slots, which is the only reason it held;
+    it was one migration or one older account away from not holding, and the failure is
+    silent and looks like the button. Both reads are slot-INDEXED now, through one
+    `place_by_slot`.
+  - ⚠️ **The first repro of "can't rename more than one" was the HARNESS**, not the game:
+    `ButtonInput::press` only records `just_pressed` when the key was not already down and
+    the test helper never released, so a second `Enter` in one test fired nothing. It cost
+    an hour of chasing a bug the code did not have. The tests tap (press *and* release);
+    driven through the real window with real clicks, four heroes rename in a row.
+
 - [x] **PT-6 — Your last party is the default, with its gear.** The composition was
   already persisted per slot (`heroes.class_key`) and already seeded back, but the seed
   reads `UnlocksRes` — which arrives over the WEBSOCKET while the hero roster arrives
@@ -2565,6 +2598,40 @@ design for this epic: [`proposals/worldgen-wg.md`](proposals/worldgen-wg.md).
     `fog_end` is 500, so ~80% of those 161,604 vertices sit in pure fog colour. Tightening
     the cascades makes near shadows *sharper* at the same time as cheaper.
 
+  - ✅ **Landed (perf pass, Sep 2026).** Everything below was structural — none of it needed
+    the clock to be trusted:
+    - **The fragment shader's basin loop recomputed the ground per basin.** `inland_water_at`
+      called `terrain_height_wgsl + peak_dome + ridge_wedge` INSIDE its 16-basin loop for a
+      value that does not depend on the basin — ~900 iterations per ground FRAGMENT. Hoisted;
+      the loop is now ~72.
+    - **Two sun cascades ending at the fog** (`hd2d::sun_cascades`), not Bevy's default four
+      to 150 units. Each cascade is a full pass over the 161k-vertex displaced ground.
+    - **Point-light shadow maps off** for the four party lamps, the creature lamp, the two
+      target markers and the plaza monoliths — six render passes each, up to eight of them in
+      a night battle. The two carried lanterns (overworld Explorer, city hero) keep theirs.
+    - **`[profile.release]`**: thin LTO and one codegen unit, in both workspaces. There was no
+      release profile at all.
+    - **`terrain_height` stopped allocating.** Every landform table is an `Arc<Vec<_>>` behind
+      its `RwLock`; a snapshot of the shoreline is seven refcount bumps where it was six `Vec`
+      clones — per entity per frame, and ~31,000 allocations per minimap repaint.
+    - **The ground uniform's windows re-cut only when their inputs move**, the grass shares
+      three materials (225 draw calls → 3), and the billboard yaw, particle visibility, star
+      visibility and hero-glow writes happen only when the value moved, so a standing camera
+      dirties nothing.
+    - **UI redraws on change.** Thirteen immediate-mode panels rebuilt their node trees every
+      frame. The battle, city and overworld panels now gate on `is_changed()` (with
+      `advance_hit_fx`/`advance_atb_flash` touching their resources only when something is
+      live, so the flag means what it says), the action plate keeps a content key and is
+      MOVED to follow the head, and mob nameplates are a per-creature pool moved in place.
+    - **Ground detail instances keep their model for life.** Reassigning a slot's
+      `WorldAssetRoot` re-instantiated a GLB hierarchy; walking crossed a cell every second
+      or two and re-derived a whole row of the 17x17 window at once. Cells are dealt to
+      parked instances of the right model instead — the hitch profile this item recorded
+      ("p90 425 ms, worst 3,732 ms") was this.
+    - **Standing things are not re-grounded every frame.** `sync_overworld_sprites` ran
+      `terrain_height` per entity per frame; it runs only for an entity whose feet moved or
+      when the height field's epoch changed.
+
   **The known cost.** The ground shader runs SEVEN landform loops per fragment (bridges,
   ridges, peaks, basins, rivers, straits, lobes), each iteration doing distance math, over
   most of the screen. `#337` took the worst case from ~106 to ~124 iterations per ground
@@ -2604,11 +2671,26 @@ design for this epic: [`proposals/worldgen-wg.md`](proposals/worldgen-wg.md).
     re-rolls the terrain offset up to twelve times looking for a feasible world. Worth
     measuring what a cold enter actually costs before choosing between caching the generated
     sections and making feasibility structural enough not to need re-rolls.
-  - **Say something while it happens.** A static string is indistinguishable from a hang —
-    which is exactly how the frozen-game-loop bug in `#332` presented, and why it was
-    reported as a WebSocket error. A progress signal on the wire (sections generated /
-    expected) would make both legible.
-  ⚠️ **NOT INVESTIGATED AT ALL.** Recorded from the report; no measurement behind it yet.
+  - [x] **Say something while it happens.** ✅ **DONE.** A static string is indistinguishable
+    from a hang — which is exactly how the frozen-game-loop bug in `#332` presented, and why
+    it was reported as a WebSocket error. `run.generating` is that progress signal:
+    `Arena::generate_reporting` hands each real pass (`maze` / `section i of n` / `bend` /
+    `route` / `restart`, with the section's own biome) to an observer, and the server puts it
+    on the wire *as it happens* — `emit_now`, not the loop's dispatch, because the loop is
+    blocked solid through generation and anything batched would arrive beside `run.started`
+    saying nothing. The descent screen names the pass, one clause on what that pass does, and
+    an **honest** bar driven by the section count rather than a timer. Two guards: the
+    narrated world must be byte-identical to the quiet one (the callback is the caller's I/O
+    and cannot touch a draw), and every step in `Generating::STEPS` must have words on the
+    client.
+  - **MEASURED, which this item said nobody had done:** the initial eight-section chain is
+    **3.4–4.2 s in RELEASE** (seeds 424242 / 1 / 7, on a loaded box), and `generate_with`
+    re-rolls the whole world up to **twelve** times looking for a feasible route — so the
+    worst case is a multiple of that. This is the number the "do not regenerate" half above
+    has to beat.
+  - The first half is still open: a cold enter still regenerates from the seed and still
+    re-rolls for feasibility. What changed is that the wait is now legible, and a re-draw
+    says so instead of looking like the first attempt hanging.
 
 - [ ] **WG-10 — Scatter that makes sense, and nodes that sit somewhere.** 🟡 *Backlog —
   owner's direction, alongside `WG-9`.* Three parts; the status differs sharply between
@@ -5016,6 +5098,52 @@ only the things that can't be class-gated.
     the city avatar and the monoliths all light at night off `illuminate_players` and the
     same `Sky`, which they simply were not carrying.
 
+- [x] **UX-11 — The party faces the fight square-on.** Reported from play as *"I don't
+  know why the characters are 3/4 turning towards the enemies… should just have them face
+  straight ahead"*. `#382` posed each hero a notch inward (3/5, north-east / north-west) to
+  trade squareness for legibility — from dead behind a Hunter and an Explorer are two dark
+  silhouettes, and the battle screen is where telling them apart decides what you press.
+  Played, it read as the party twisting away from the creature it was fighting: the row
+  stopped looking like a LINE, which costs more than the silhouettes buy.
+  - *Shipped:* no pose override at all. A battle hero is already LOCKED facing the fight,
+    and the world→screen lookup resolves that to its own back — so the world facing is the
+    only statement of the rule, and it holds on every edge at once. The retired override
+    was picked off `root.x`, a SOUTH-edge idea, so a joined ally on the west or east edge
+    got a pose chosen for somebody else's line; its test only ever asked about the south
+    and agreed. `every_party_edge_is_drawn_looking_at_the_fight` asks the mapping instead.
+    Hero 1 still faces the camera while it awaits your order (`face_cam`, unchanged).
+
+- [x] **UX-12 — The anvil is clickable, and the bench is a row per service.** Reported
+  from play as *"I can't actually click on anything at the Forge & Alembic counter"*.
+  `craft_view` draws its recipe book and then pushes the anvil and the bench as rows
+  *past* the end of it, while `commit_counter_pick` resolved a picked row by looking its
+  index up in `craft.recipes` — so every one of those rows picked, raised a Confirm
+  button, found nothing, and silently cleared the pick. `[F] forge from <stock>` is the
+  row that earns the **Smithwright** (`CL-1`'s `GearForged` milestone), so an unlock was
+  keyboard-only and looked like a dead button. The bench was worse: one line advertising
+  four keys, pasted in from `bench_line`, which is the FIELD forge's status strip — where
+  there are no rows to tap.
+  - *Shipped:* a row NAMES its own action (`CounterRow::action`) and the counter's commit
+    arm resolves it by name, so a tier that hides `[P] repair` cannot shift what a click
+    on the row above it means — the index arithmetic is never reproduced. `[S]`, `[C]`
+    and the bench cursor are **switches** (`instant`): they spend nothing and another
+    press undoes them, so they act on the press rather than asking for a confirm, while
+    everything that spends keeps it. The bench is now a row per service — the piece, then
+    `[R] reroll` and `[P] repair` when the tier can take them — so repair and reroll are
+    tappable for the first time. `run_craft_action` is the ONE implementation, reached by
+    the key and by the button; the keyboard arms of `city_input` were it, which is why the
+    two halves could disagree about what exists at all.
+    `every_actionable_row_at_the_forge_names_its_own_action` holds the invariant.
+  - *And it took a rule down to one copy on the way out.* `bench_line` had exactly one
+    caller, so replacing it left a dead function — and that was the tell: which services
+    a tier can take was written THREE times (that strip, the new rows, and the overworld
+    station, which builds its own line and had the rule inline). `bench_services` is the
+    one answer both surfaces ask, so a tier added to `Insurance` cannot reach the city
+    bench and miss the field forge.
+  - *Still keyboard-shaped:* the Forge's three nav chips ("Recipes", "Anvil", "Bench") are
+    legends rather than tabs — all three sections are in `main` at once — and
+    `counter_click`'s nav arm is gated on `city.shop_open`, so pressing one does nothing.
+
 - [ ] **UX-1 — Last City minimap & compass (town-only).** A minimap and compass
   **for Last City itself** so players can navigate the hub — locate the districts
   (Vault-Deep, Market, Forge/Alembic, Bounty Board, Drill Yard, Vanguard Wall),
@@ -5187,27 +5315,82 @@ Directly underpins CR-4 (sim budget), MON-2 (persistent camps/instances), and LC
     is empty in a fight, and its reach really bounds) and
     `a_fight_does_not_pay_to_build_a_world_nobody_is_looking_at` (a ratio, not a duration
     — same reason `the_creature_step_stays_linear_in_the_creature_count` is one).
+- [x] **SC-6 — Creatures step at the rate somebody can see them.** `step_creatures` stepped
+  every creature in the world every tick: measured with the new `MELD_TICK_STATS` profiler at
+  d1269 (5,842 creatures, one player) it was **44.8 ms of a 100 ms tick**, and the player
+  could see 128 units of it. Three changes, all in `Arena::step_creatures_with_aggro`:
+  - **Two rates.** A creature within `[ai] creature_active_radius` (240) of ANY avatar steps
+    every tick; everything further out steps once every `[ai] creature_far_slices` (10)
+    ticks with the accumulated `dt` — the same ground covered in one hop — and only
+    WANDERS: no player to chase (none is within its aggro radius, by construction) and no
+    skirmish, because a turf war nobody can see is a bill rather than a living world. A world
+    with nobody in it keeps the full rate, so every world-gen test that steps a world still
+    measures what it always did.
+  - **No strings copied.** Both passes snapshotted every creature's faction and kind into a
+    `Vec<(Position, String, bool, i32, String)>` so one creature could be read while another
+    was moved — ~23,000 heap allocations a tick. They are a read-only DECISION phase over
+    `&self.monsters` and a mutating APPLY phase now, which is what the copy stood in for.
+  - **The skirmish grids index only the near creatures**, and the clash index does too.
+    Both grids were `HashMap<cell, Vec<idx>>` over all 5,842 alive creatures, and together
+    cost 6 ms of the 11 that remained after the first two changes.
+  - **Measured after:** creatures 44.8 → **3.5 ms** mean; the whole tick 77 → **5.5 ms**. The
+    residue is ~2.8 ms in `free()` for the ~700 creatures that step — the shoreline and
+    obstacle tests a candidate step pays — which is the next thing to cut if the budget
+    ever needs it. `meld_world::profile` counts the phases so that cost is read as work.
+- [x] **SC-7 — Delta snapshots: send what changed, not the world.** A full `world.snapshot`
+  re-sent every static tree, rock, chest and node in the interest disc at 10 Hz — **70.9 KB
+  per tick, 709 KB/s per player** at d1269 — and the client re-parsed and re-inserted all of
+  it. `movement.snapshot_mode {delta: true}` (the Bevy client sends it on
+  `session.authenticated`; the QA bots and the MCP harness do not, and keep full snapshots)
+  switches a session to deltas: `WorldActor::snap_baseline` remembers a content stamp per
+  entity per player, and each tick sends only new or changed rows plus `removed` ids. **The
+  first snapshot after any gap — a battle, a dungeon, a connection — is always full**, so a
+  client can never hold a world it was never sent. Client-side the map is upserted rather
+  than rebuilt, and the message parses typed straight from the wire text instead of through
+  a `serde_json::Value` and back. **Measured:** 70.9 → **3.6 KB per tick** (709 → 36 KB/s).
+  - The pre-cull's obstacle scan is off a chunk grid too (`StaticGrid`, rebuilt only when the
+    obstacle list changes): it tested all 109,496 obstacles against the audience every tick
+    for the ~1,000 in reach. Snapshot build 2.0 → **0.78 ms**; the whole tick at d1269 with
+    one player is **4.3 ms** mean, from 77 before this pass.
+- [x] **SC-8 — A clock on the tick.** The loop had no timing of its own; every number in this
+  file about the tick came from a one-off test. `MELD_TICK_STATS=1` logs per-phase mean/max
+  every five seconds (`meld_server::prof`, `target: meld_tick`), and
+  `tick_budget_at_depth` (`cargo test --release -p meld-server -- --ignored --nocapture
+  tick_budget_at_depth`) is the standing benchmark every loop change gets its before/after
+  from: a d1269 world, one walking player, 200 ticks, phase costs and snapshot bytes.
 - [ ] **SC-2 — Sim/IO split (in-process).** The instance task publishes an
   immutable `Arc<WorldSnapshot>` per tick; a worker pool does cull + serialize +
   send in parallel across cores. Decouples sim cadence from snapshot cadence
   (enables sub-stepped projectiles). Single-owner invariant preserved — workers
   only read a frozen copy.
-- [ ] **SC-4 — A LOBBY YOU CAN BROWSE: worlds you can SEE, not codes you have to be
-  told.** Depends on `SC-3` (there is exactly one world until it lands —
-  `const WORLD_KEY = "default"`, whose own comment says multi-world is what varies it).
+- [ ] **SC-9 — A LOBBY YOU CAN BROWSE: worlds you can SEE, not codes you have to be
+  told.** ⚠️ *Renumbered from `SC-4`, which was already taken.* `SC-1`…`SC-4` are
+  [`proposals/server-scaling.md`](proposals/server-scaling.md)'s four levers A–D in
+  order, and the gateway item below is Lever D; this one was added later and collided
+  with it. Two items sharing an ID defeats the point of having stable ones — a branch
+  named for `SC-4` could mean either. (It briefly went to `SC-6`, which `#393` took for
+  creature LOD in the meantime — hence `SC-9`. **Take the next free number in the epic,
+  never the next number after the last one you can see**: five of these were allocated
+  concurrently on different branches.)
+   🟡 *Unblocked:* `SC-3`'s multi-world slice landed, so the two things this item
+  said did not exist now do — **a seed on the wire** (`run.enter_maze { seed }`,
+  `lobby.create { seed }`, echoed back as `Started.world_seed`) and **a reader**
+  (`Db::list_worlds`). What is still missing is the BROWSER: an HTTP listing under
+  `/v1/`, live occupancy per world, and a per-world board. `WORLD_KEY = "default"` is
+  gone — a world's key is its seed.
   Recorded because the co-op that EXISTS reads as a placeholder for this and is easy to
   mistake for a broken version of it. What ships today is a **private code party**: `[C]`
   opens the lobby, `lobby.create` mints a 6-char code, friends `lobby.join` it, the host
   starts a shared dive. There is no discovery, and the mental model people arrive with —
   *a seed is an instance, browse the instances, see who is on each* — is not a half-built
   version of that, it is a different feature. What it wants, none of which exists:
-  - **A seed on the wire.** `lobby.create`, `lobby.join` and `run.enter_maze` carry no
-    seed field at all; the only way to pick a world is `MELD_SEED`, a dev env var read at
-    the server boundary. "Play seed 424242 with me" is currently unsayable.
-  - **A listing.** Nothing under `/v1/` enumerates worlds, so there is no world list to
-    render — local, remote or otherwise — and no occupancy to show. The `worlds` table is
-    already keyed and already stores a seed, so the schema is ready; what is missing is a
-    second key and a reader.
+  - ✅ **A seed on the wire.** Landed with `SC-3`: `run.enter_maze { seed }` and
+    `lobby.create { seed }` name a world, the lobby shows it to every member, and
+    `Started.world_seed` reports the one you actually entered. "Play seed 424242 with me"
+    is sayable — by typing it into the lobby's World field.
+  - 🟡 **A listing.** `Db::list_worlds` reads every hibernated world (the Router already
+    uses it at boot). Still nothing under `/v1/` enumerates them, so there is no list to
+    RENDER — that plus live occupancy is the browser's remaining half.
   - **Occupancy.** Nothing counts players per world. "3 divers on this seed" is the single
     line that makes a browser worth opening rather than a list of numbers.
   - **A per-world board.** The Vanguard Wall shows the GLOBAL seasonal leaderboard
@@ -5238,9 +5421,54 @@ Directly underpins CR-4 (sim budget), MON-2 (persistent camps/instances), and LC
     `set_formation` / `begin_extraction`) from `impl GameState` onto `impl WorldActor`,
     each returning `(Vec<Outgoing>, Vec<WorldEffect>)`; `GameState` is now the **Router**
     (sessions / lobbies / routing) that applies the returned effects. Still one task
-    (single-owner/no-locks invariant intact). **Remaining:** the b1-B boundary (spawn
-    `WorldActor` as its own task so it never calls `GameState` methods), then multi-world
-    + hub handoff + Postgres hibernation, and the two-world isolation QA test.
+    (single-owner/no-locks invariant intact).
+  - 🟢 **MULTI-WORLD LANDED — a world's name is its SEED, and there are many.**
+    `world: Option<WorldActor>` is `worlds: HashMap<String, WorldActor>` keyed by
+    [`WorldActor::key`] (a seed in decimal; a guided corridor is the same seed in its own
+    namespace, `tutorial:<seed>`, so onboarding and a persistent world can never collide
+    on one key). `run.enter_maze { seed }`
+    and `lobby.create { seed }` name one; the world you actually LAND in still rides back
+    on `Started.world_seed`, because a client that displays what it asked for looks
+    identical while being wrong. **Still one task** — it ticks N worlds now, so
+    single-owner/no-locks (CANON §S) survives verbatim.
+    - **The routing entry moved onto the session.** `Session.in_instance: bool` is
+      `Session.world: Option<String>` — the honest shape while there was one world, and a
+      routing bug the moment there are two, since every world-bound handler would have to
+      guess which world the caller meant. `world_of` / `world_of_mut` is the ONE lookup.
+    - ⚠️ **It was a chat leak too.** `chat.say`'s `Party` channel filtered on
+      `s.in_instance == mine` — *are we both in some run* — so two parties in different
+      seeds would have heard each other. It is `s.world == mine` now.
+    - ⚠️ **And a disconnect ordering bug fell out of it.** The `Disconnected` arm removed
+      the session *before* the world work; with the world reachable only through the
+      session, that silently skipped the abandoned-run ephemeral burn and left the leaver
+      enrolled in a world nothing could drop them from. The session now outlives it.
+    - **An empty world hibernates OUT OF MEMORY** (`[world_persist] dormant_after_ticks`).
+      A world outliving its divers is the point (§W1), but "outlives" cannot mean "ticks
+      forever": the creature step is the expensive half of a tick (15.8 ms at d1300) and
+      does not care whether anyone is watching, so N idle deep worlds would cost the
+      budget N times over. Evicted worlds are saved and stood back up on the next dive,
+      through the same `restore` path a server restart uses — `Db::list_worlds` reads them
+      all at boot rather than the one key somebody thought to ask for.
+    - ⚠️ **A full world REFUSES; CANON §W1 says it should QUEUE.** The cap
+      (`[world] max_divers_per_world`) is real and held by test, but there is no queue —
+      a fake one that never dequeues is worse than a clear "pick another seed". That is
+      the honest remaining gap in this slice.
+    - ⚠️ **An UNNAMED dive is a matchmaking request, not a request for solitude.**
+      `choose_world` packs unnamed divers into the FULLEST world with room (packed, not
+      spread — a shared world with people in it is the thing worth having); only a NAMED
+      seed shards, and only a named world refuses when full, because somebody who asked
+      for "anywhere" should be given anywhere. Rolling a private world per unnamed diver
+      compiles, passes every isolation test, and quietly stops the game being multiplayer
+      for everyone who has not been told seeds exist — which is every `qa/` bot that
+      meets another one.
+    - Held by `game::sharding_tests` (8, in CI) and `qa/two_worlds.rs`. Both halves are
+      asserted: two seeds never see each other, AND one seed is one place — the isolation
+      test alone passes perfectly if `seed` is parsed and ignored and every diver gets a
+      private world.
+    **Remaining:** the b1-B boundary (spawn `WorldActor` as its own task so it never calls
+    `GameState` methods), the closed-form dormancy catch-up below (an evicted world's
+    clock currently STOPS until someone dives back in), the admission queue, and hub
+    handoff.
   - 🔴 *Design settled, not built: **a dormant world catches up in CLOSED FORM, never by
     replaying ticks**.* Asked for directly — a world asleep for a while should wake to
     "now", with its Shifts, regrowth, conflicts and (later) fields and raids having
@@ -5279,7 +5507,16 @@ Directly underpins CR-4 (sim budget), MON-2 (persistent camps/instances), and LC
       §W5 persistence stays two integers.
     - *Ecology (food, fields, population diffs) and raids do not exist yet* — Epic E is
       itself gated on this item — so what to build now is the HOOK, not the contents.
-  - 🔴 *And "let the player change the seed in town" needs this item, not a button.* Asked
+  - ✅ *"Let the player change the seed in town" — the multi-world slice above is what
+    answered it.* Recorded here as it was written, because the reasoning is still the
+    reason it could not be a button: a world **outlives its divers** (§W1) and holds
+    player-built structures, so while there was exactly one live world a seed-change
+    button did not reload *your* world, it destroyed *everyone's*. The non-destructive
+    shape named below — `world_key = seed` plus hibernate-and-restore — is exactly what
+    shipped. The seed as a readable NAME had already landed separately
+    (`Started.world_seed` → the menu's Map column); what was missing was making it
+    *choosable*, which `run.enter_maze { seed }` and `lobby.create { seed }` now are.
+  - 🔴 *The original note, for the record.* Asked
     for as "it would cause a game reload"; in today's build it is heavier than that. A world
     **outlives its divers** by design (§W1) and holds player-built structures (BD-2
     buildings, BD-3 anchors, forward towns), and there is exactly one live world

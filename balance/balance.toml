@@ -26,6 +26,12 @@ battle_reentry_grace_ms = 5000   # after winning/losing/fleeing a fight, how lon
                                   # player is immune to being touched into a new one —
                                   # covers the victory/loot summary and gives a fled
                                   # player a real window to walk away [TUNABLE]
+# SC-3 — how many divers one WORLD holds at once. Worlds are capped and scale is MANY
+# worlds (CANON §W1): a world holds unique player structures, so a full one can never be
+# auto-forked the way a stateless instance could. ⚠️ CANON says a full world QUEUES; there
+# is no queue yet, so a full world REFUSES with a "pick another" error. Refusing is the
+# honest placeholder — a fake queue that never dequeues is worse than a clear no.
+max_divers_per_world = 16        # [TUNABLE] — 4 parties, the raid-merge cap
 
 [runs]
 # base_run_level(hub) = round(1 + hub.distance * base_run_level_per_distance)
@@ -1803,7 +1809,7 @@ player_radius = 0.5              # the avatar's collision radius vs obstacles
 # see` measures WETNESS AND DEPTH now rather than channel width, so whatever you try here is
 # judged on water a player can see. [TUNABLE]
 radial_arc_degrees = 300.0
-stream_lookahead = 60.0          # generate new sections this far ahead of the frontier
+stream_lookahead = 60.0          # generate new sections this far ahead of the frontier ⚠️ **RAISING THIS DOES NOT BUY MARGIN AGAINST THE SYNCHRONOUS FALLBACK.** It is tempting to, because `game.rs` generates INLINE when `cursor < reach` and that lands on the 100 ms tick. But a bigger lookahead enlarges the budget and the work per prefetch by the SAME factor, so the ratio is unchanged: measured at cap 72, generation runs ~0.092 s per unit of world against ~0.167 s per unit of walking at `avatar_speed_tiles_per_sec`, i.e. 1.8x whatever this is set to. What it does buy is tolerance for a BURST (one slow prefetch), not for a sustained deficit. To move the ratio, make generation faster or the world thinner (`maze_radial_scale_cap`). ⚠️ The prefetch's `arena.clone()` IS on the tick and was the obvious suspect — measured 2.8 ms at cap 40 and 4.0 ms at 72, so it is not the problem.
 path_climb_chance = 0.6          # chance a section raises a climbable PEAK beside its clear path (0..1). Named for the retired terrace plateau it used to gate; it is the peak roll now. [TUNABLE]
 peak_boss_chance = 0.5           # when the path climbs a summit, chance a gate-boss guards the top instead of a guaranteed treasure chest (0..1)
 summit_min_height = 7.0          # min world terrain height a clear-path crest must reach to earn a summit reward (heightmap #3); filters flat sections
@@ -2015,6 +2021,14 @@ skirmish_aggro_radius = 6.5  # hostile-faction creatures hunt each other within 
 skirmish_attack_range = 1.7  # ... and trade blows once this close (overworld skirmish)
 skirmish_attack_interval = 0.85 # seconds between a creature's overworld blows
 loot_pickup_radius = 1.9     # a player auto-collects ground loot dropped within this range
+# Creature simulation level of detail. A creature within `creature_active_radius` of any
+# avatar steps every tick; everything further out steps once every `creature_far_slices`
+# ticks with the accumulated dt (same ground covered, in one hop, where nobody is looking).
+# Measured at d1269 with one player: 5,842 creatures cost 45 ms of a 100 ms tick before
+# this, and the player could see 128 units. Keep the radius above `interest_radius_chunks
+# × chunk_size` plus the widest perk reveal, so nothing a player can see steps coarsely.
+creature_active_radius = 240.0
+creature_far_slices = 10
 
 # Overworld class perks ("party sense"): each hero class, when present in the
 # party, grants a distinct overworld utility whose tier scales with the shared
@@ -3034,6 +3048,19 @@ save_every_ticks = 600           # once a minute at the shipped tick
 creature_regrow_ticks = 1800     # 3 min at the shipped tick
 node_regrow_ticks = 3000         # 5 min — ore is slower to come back than a fight
 chest_regrow_ticks = 18000       # 30 min: treasure is the one thing farming must not print
+# SC-3 — how long an EMPTY world keeps ticking before it hibernates out of memory.
+#
+# A world outliving its divers is the point (§W1), but "outlives" cannot mean "ticks
+# forever": the creature step is the expensive half of a tick (measured 15.8 ms at d1300)
+# and it does not care whether anybody is watching, so N idle deep worlds would eat the
+# budget N times over. An evicted world is SAVED on the way out and stood back up on the
+# next dive into it.
+#
+# ⚠️ Until the closed-form catch-up lands, an evicted world's clock STOPS: it wakes at the
+# tick it slept at rather than at "now", so Shifts and regrowth it should have had while
+# dormant did not happen. That is the same gap a server restart already has, and it is
+# what `advance_to` closes. Keep this generous until then.
+dormant_after_ticks = 6000       # 10 min empty at the shipped tick
 
 # =============================================================================
 # Player-built structures (CANON D21 / §W3) — one primitive, many functions.

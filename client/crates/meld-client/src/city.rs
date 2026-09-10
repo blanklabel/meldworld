@@ -320,6 +320,7 @@ pub(crate) fn city_hud(
     mut heat: ResMut<crate::overworld::HeatUi>,
     mut pick: ResMut<CounterPick>,
     mut unlocks: ResMut<UnlocksRes>,
+    mut loadouts: ResMut<LoadoutData>,
 ) {
     inv.loaded = false;
     net.0.fetch_inventory();
@@ -359,6 +360,18 @@ pub(crate) fn city_hud(
             }
         }
         unlocks.loaded = true;
+        // …and it seeds the SAVED PARTIES, for the same reason and the same way. The nav
+        // column and every control in it — load, rename, delete — exist only once a party
+        // has been saved, and a save cannot succeed here: the account this flag stands up
+        // is a fiction the CLIENT holds, so the server (which owns a genuinely new account
+        // with one Explorer and one slot) refuses the composition, and the list comes back
+        // empty however many times you press Save. So the whole left third of this screen
+        // was uncapturable, which is exactly the gap the roster stand-up above exists to
+        // close one column over.
+        if loadouts.list.is_empty() {
+            loadouts.list = crate::mocks::saved_parties();
+            loadouts.loaded = true;
+        }
     }
     // Screenshot-only: land with a row already picked, so the detail column's description,
     // amount and commit buttons are on screen without a click to make them appear.
@@ -624,7 +637,7 @@ fn road_mesh(len: f32, width: f32) -> Mesh {
 ///
 /// Everything in this scene used to be placed at a constant `y`, which was survivable only
 /// because the shore stood thirty units past anything authored. It does not now: the bay
-/// reaches the waterfront and the causeway out of town runs over open water, so a constant
+/// reaches the waterfront and the span out of town runs over open water, so a constant
 /// `y` is a dock, a beached wreck and a walking hero hanging in the air over the slope —
 /// the same bug [`crate::world_render::terrain_height`] was written to end for the maze.
 ///
@@ -1307,11 +1320,11 @@ pub(crate) fn city_input(
             return;
         }
         if keys.just_pressed(KeyCode::KeyS) {
-            craft.slot = (craft.slot + 1) % FORGE_SLOTS.len();
+            run_craft_action(&net, &mut craft, &inv, "slot");
             return;
         }
         if keys.just_pressed(KeyCode::KeyC) {
-            craft.catalyze = !craft.catalyze;
+            run_craft_action(&net, &mut craft, &inv, "quench");
             return;
         }
         // Left/right walk the bench; [R] and [P] are the smith's two services on
@@ -1326,67 +1339,16 @@ pub(crate) fn city_input(
             craft.bench = (craft.bench + bench_n - 1) % bench_n;
             return;
         }
-        // Both services go over the REALTIME channel rather than straight to HTTP,
-        // because smithing is a heat now: the server answers with a bar to strike and
-        // grades the blows. The HTTP endpoints stay for API callers.
         if keys.just_pressed(KeyCode::KeyP) {
-            match bench_gear(&craft, &inv) {
-                Some(g) => {
-                    craft.last = format!("heating {}...", g.name);
-                    net.0.send(ClientCmd::SmithRequest {
-                        entity_id: String::new(),
-                        gear_id: g.gear_id.clone(),
-                        service: "repair".into(),
-                        material: String::new(),
-                        recipe: String::new(),
-                    });
-                }
-                None => craft.last = "nothing on the bench".to_string(),
-            }
+            run_craft_action(&net, &mut craft, &inv, "repair");
             return;
         }
         if keys.just_pressed(KeyCode::KeyR) {
-            let piece = bench_gear(&craft, &inv).map(|g| (g.gear_id.clone(), g.name.clone()));
-            match (piece, best_stock(&inv, meld_proto::materials::MaterialClass::Refined)) {
-                (Some((gear_id, name)), Some(material)) => {
-                    craft.last = format!("heating {name}...");
-                    net.0.send(ClientCmd::SmithRequest {
-                        entity_id: String::new(),
-                        gear_id,
-                        service: "reroll".into(),
-                        material,
-                        recipe: String::new(),
-                    });
-                }
-                (None, _) => craft.last = "nothing on the bench".to_string(),
-                (_, None) => {
-                    craft.last = "a reroll needs refined stock - smelt an ore first".to_string();
-                }
-            }
+            run_craft_action(&net, &mut craft, &inv, "reroll");
             return;
         }
         if keys.just_pressed(KeyCode::KeyF) {
-            // The anvil takes REFINED stock, so pick the best the Vault holds rather
-            // than making the player name it; same for the trophy if a quench is armed.
-            match best_stock(&inv, meld_proto::materials::MaterialClass::Refined) {
-                Some(material) => {
-                    let catalyst = craft
-                        .catalyze
-                        .then(|| best_stock(&inv, meld_proto::materials::MaterialClass::Trophy))
-                        .flatten();
-                    if craft.catalyze && catalyst.is_none() {
-                        craft.last = "no trophy in the Vault to quench it in".to_string();
-                    } else {
-                        let slot = FORGE_SLOTS[craft.slot];
-                        craft.last = format!("forging a {slot}...");
-                        net.0.forge(slot.to_string(), material, catalyst);
-                    }
-                }
-                None => {
-                    craft.last =
-                        "the anvil needs refined stock - smelt an ore first".to_string();
-                }
-            }
+            run_craft_action(&net, &mut craft, &inv, "forge");
             return;
         }
     }
@@ -1416,17 +1378,17 @@ pub(crate) fn planar_basis(yaw_deg: f32) -> (Vec2, Vec2) {
 }
 
 /// **How far behind the plaza the avatar may walk** — the far shore of the bay, where the
-/// causeway lands. Past it is the mainland, and the way to the world is the Threshold: a
+/// span lands. Past it is the mainland, and the way to the world is the Threshold: a
 /// dive, not a stroll. Landing the bound exactly on a coast you can SEE is what keeps it
 /// from reading as an invisible wall.
 const CITY_WALK_REACH: f32 = meld_proto::coast::CITY_MAINLAND_BACK;
 
-/// The bound has to clear the shelf by a real stretch of causeway, or the crossing out of
+/// The bound has to clear the shelf by a real stretch of bridge, or the crossing out of
 /// town is scenery you can look at and never set foot on — which is what the 25-unit circle
 /// this replaced made of it. Compile-time: a relationship between constants.
 const _: () = assert!(
     CITY_WALK_REACH
-        > meld_proto::coast::CITY_TIP_REACH + meld_proto::coast::CAUSEWAY_HALF_WIDTH * 2.0
+        > meld_proto::coast::CITY_TIP_REACH + meld_proto::coast::CITY_SPAN_HALF_WIDTH * 2.0
 );
 
 pub(crate) fn city_move(
@@ -1465,17 +1427,19 @@ pub(crate) fn city_move(
     let step = m.normalize() * 9.0 * time.delta_secs();
     let here = Vec2::new(tf.translation.x, tf.translation.z);
     // ⚠️ THE BOUND USED TO BE A 25-UNIT CIRCLE AROUND THE PLAZA, AND A CIRCLE CANNOT HOLD
-    // THIS SHAPE. The town stands on a shelf with a CAUSEWAY leaving it (see
-    // `coast::CAUSEWAY_HALF_WIDTH`), so the walkable ground is a broad disc with a long
+    // THIS SHAPE. The town stands on a shelf with a BRIDGE leaving it (see
+    // `coast::city_bridge`), so the walkable ground is a broad disc with a long
     // narrow arm — a circle either pens you onto the shelf, in which case the crossing out
     // of town is a backdrop you can never set foot on, or it is wide enough to reach the arm
     // and then also lets you walk out over open water either side of it.
     //
     // The land itself is the bound now: you may walk to the water's edge and no further,
     // which is the same rule the overworld collides against — and it funnels you onto the
-    // causeway without a single authored waypoint. SLIDE rather than stop on a refusal (the
+    // bridge without a single authored waypoint. SLIDE rather than stop on a refusal (the
     // axes tried separately, exactly as `Arena::apply_move` does it), or walking into the
-    // shore at an angle sticks you to it instead of running along it.
+    // shore at an angle sticks you to it instead of running along it. `city_sea_depth`
+    // counts the span's deck as land, so the walk bound follows the crossing by
+    // construction rather than by a second copy of where the crossing is.
     let walkable = |p: Vec2| {
         meld_proto::coast::city_sea_depth(p.x, p.y) <= 0.0 && p.y >= -CITY_WALK_REACH
     };
@@ -1505,7 +1469,7 @@ pub(crate) fn city_move(
     tf.translation.x = pos.x;
     tf.translation.z = pos.y;
     // …and stand on it. The bay reaches the waterfront now, so the walk down to the strand
-    // and out along the causeway is a walk over real ground — see `ground_at`.
+    // and out along the bridge is a walk over real ground — see `ground_at`.
     tf.translation.y = ground_at(pos.x, pos.y);
 }
 
@@ -1528,7 +1492,7 @@ pub(crate) fn city_camera(
 ) {
     let Ok(p) = players.single() else { return };
     // `1.0 + y`, the same rule `hd2d_follow` uses on the overworld: the avatar has a real
-    // elevation in town now (the beach falls to the waterline and the causeway crowns above
+    // elevation in town now (the beach falls to the waterline and the bridge deck stands above
     // it), and a camera pinned to y = 1.0 lets the hero sink out of frame as they walk down
     // to the water.
     let target = Vec3::new(p.translation.x, 1.0 + p.translation.y, p.translation.z);
@@ -1593,7 +1557,11 @@ pub(crate) fn render_city(
     mut q_status: Query<&mut Text, With<CityStatusText>>,
 ) {
     if let Ok(mut t) = q_vault.single_mut() {
-        **t = city_vault_text(&inv);
+        // Compare before writing: an unconditional assignment re-shapes the text every frame.
+        let want = city_vault_text(&inv);
+        if **t != want {
+            **t = want;
+        }
     }
     if let Ok(mut t) = q_status.single_mut() {
         let prompt = if !session.status.is_empty() {
@@ -1617,13 +1585,16 @@ pub(crate) fn render_city(
             .live(time.elapsed_secs_f64())
             .map(str::to_string)
             .or_else(|| (!city.notice.is_empty()).then(|| city.notice.clone()));
-        **t = match crate::overworld::heat_line(&heat, time.elapsed_secs_f64()) {
+        let want = match crate::overworld::heat_line(&heat, time.elapsed_secs_f64()) {
             Some(bar) => format!("{bar}\n{prompt}"),
             None => match spoken {
                 Some(line) => format!("{line}\n{prompt}"),
                 None => prompt,
             },
         };
+        if **t != want {
+            **t = want;
+        }
     }
 }
 
@@ -1711,11 +1682,11 @@ mod tests {
         }
     }
 
-    /// The causeway is only a crossing if the player can actually set foot on it — the whole
+    /// The span is only a crossing if the player can actually set foot on it — the whole
     /// reason [`CITY_WALK_REACH`] replaced a 25-unit circle around the plaza, which stopped
     /// short of the shelf's own shoulder and made the bridge out of town scenery.
     #[test]
-    fn the_avatar_can_walk_out_onto_the_causeway() {
+    fn the_avatar_can_walk_out_onto_the_bridge() {
         // (That the bound clears the shelf at all is a fact about constants, so it is
         // asserted at compile time beside `CITY_WALK_REACH`.) Every step of the walk is on
         // land, so the bound is what stops you rather than the water — straight out through
@@ -1910,7 +1881,13 @@ mod tests {
             .insert_resource(LoadoutData::default())
             .add_systems(
                 Update,
-                (party_panel_buttons, yard_rename_input, loadout_name_input, loadout_name_caret),
+                (
+                    party_panel_buttons,
+                    yard_rename_input,
+                    loadout_buttons,
+                    loadout_name_input,
+                    loadout_name_caret,
+                ),
             );
         app
     }
@@ -1919,6 +1896,134 @@ mod tests {
         app.world_mut().resource_mut::<ButtonInput<KeyCode>>().press(key);
         app.update();
         app.world_mut().resource_mut::<ButtonInput<KeyCode>>().clear();
+    }
+
+    /// ⚠️ **PRESS AND RELEASE, WHICH [`press`] ABOVE DOES NOT.** `ButtonInput::press` only
+    /// records `just_pressed` when the key was not ALREADY down, and `clear()` leaves it
+    /// down — so `press(Enter)` twice in one test fires once, and the second commit
+    /// silently never happens. That reproduces as "you can only rename one hero", which is
+    /// a bug in the harness rather than in the game; anything that taps the same key twice
+    /// has to use this.
+    fn tap(app: &mut App, key: KeyCode) {
+        app.world_mut().resource_mut::<ButtonInput<KeyCode>>().press(key);
+        app.update();
+        app.world_mut().resource_mut::<ButtonInput<KeyCode>>().release(key);
+        app.world_mut().resource_mut::<ButtonInput<KeyCode>>().clear();
+        app.update();
+    }
+
+    fn type_name(app: &mut App, text: &str) {
+        for c in text.chars() {
+            let key = match c {
+                'a' => KeyCode::KeyA,
+                'b' => KeyCode::KeyB,
+                'c' => KeyCode::KeyC,
+                'd' => KeyCode::KeyD,
+                _ => unreachable!("extend `type_name` for {c}"),
+            };
+            tap(app, key);
+        }
+    }
+
+    /// **RENAMING TWO HEROES IN A ROW IS ONE GESTURE TWICE**, and each Enter commits the
+    /// hero whose card is open — not the one before it. Reported from play as only the
+    /// first rename sticking.
+    #[test]
+    fn every_hero_can_be_renamed_in_turn() {
+        let mut app = yard_app();
+        app.world_mut().spawn((YardRenameButton(0), Interaction::Pressed));
+        app.update();
+        assert_eq!(app.world().resource::<HeroRename>().slot, Some(0));
+        type_name(&mut app, "a");
+        tap(&mut app, KeyCode::Enter);
+        assert!(
+            app.world().resource::<HeroRename>().slot.is_none(),
+            "Enter has to close the field, or the next click cannot open one"
+        );
+        app.world_mut().spawn((YardRenameButton(1), Interaction::Pressed));
+        app.update();
+        assert_eq!(
+            app.world().resource::<HeroRename>().slot,
+            Some(1),
+            "a committed rename must leave the next hero's rename openable"
+        );
+        type_name(&mut app, "d");
+        tap(&mut app, KeyCode::Enter);
+        let names = &app.world().resource::<AccountHeroNames>().names;
+        assert_eq!(names[0], "Asha", "the first rename was undone by the second");
+        assert_eq!(names[1], "Bexd", "the second rename never landed");
+    }
+
+    /// **A RENAME WRITES THE LOCAL COPY, OR IN TOWN IT WRITES NOTHING THE PLAYER SEES.**
+    /// The server answers a run-less rename with an empty roster, which is exactly when
+    /// `hero_name_at` reads [`AccountHeroNames`] — so a path that only sends the message
+    /// watches the card revert. Held on the shared commit, because the menu's own [R] took
+    /// the other path for as long as both existed.
+    #[test]
+    fn a_rename_lands_locally_so_town_can_see_it() {
+        let net = NetRes(crate::net::start("http://127.0.0.1:1".into()));
+        let mut names = AccountHeroNames {
+            names: vec!["Ash".into(), "Bex".into()],
+            ..Default::default()
+        };
+        commit_hero_rename(&net, &mut names, 1, "  Cy  ");
+        assert_eq!(names.names[1], "Cy", "the name is trimmed and written where town reads it");
+        commit_hero_rename(&net, &mut names, 3, "Dee");
+        assert_eq!(names.names[3], "Dee", "a slot past the end grows the list rather than dropping the rename");
+        assert_eq!(names.names[2], "", "the slot it grew past is unnamed, not a copy of a neighbour");
+        commit_hero_rename(&net, &mut names, 1, "   ");
+        assert_eq!(names.names[1], "Cy", "an empty name is refused, never written as a blank card");
+    }
+
+    /// **"RENAME" OPENS AN EDIT; ENTER COMMITS IT.** It used to apply whatever happened to
+    /// be in the name field at that instant, so the ordinary gesture — click rename, then
+    /// type — did nothing at all, and its only complaint went to the town status strip
+    /// underneath the yard's own scrim.
+    #[test]
+    fn renaming_a_saved_party_is_click_type_enter() {
+        let mut app = yard_app();
+        app.world_mut().resource_mut::<LoadoutData>().list =
+            vec![meld_client::net::LoadoutLine { name: "Reapers".into(), classes: vec!["explorer".into()] }];
+        app.world_mut().spawn((LoadoutRenameButton("Reapers".into()), Interaction::Pressed));
+        app.update();
+        let city = app.world().resource::<CityUi>();
+        assert_eq!(city.loadout_rename.as_deref(), Some("Reapers"), "the click must arm the edit");
+        assert_eq!(city.loadout_name, "Reapers", "the field starts from the name it HAS");
+        type_name(&mut app, "a");
+        assert_eq!(app.world().resource::<CityUi>().loadout_name, "Reapersa");
+        tap(&mut app, KeyCode::Enter);
+        let city = app.world().resource::<CityUi>();
+        assert!(city.loadout_rename.is_none(), "Enter commits and closes the edit");
+        assert!(city.loadout_name.is_empty(), "a committed field does not keep its contents");
+    }
+
+    /// Esc drops the edit and leaves the saved party alone — and, crucially, does NOT then
+    /// fall through to the save arm the way an un-armed Enter would.
+    #[test]
+    fn esc_drops_a_saved_party_rename() {
+        let mut app = yard_app();
+        app.world_mut().resource_mut::<CityUi>().loadout_rename = Some("Reapers".into());
+        app.world_mut().resource_mut::<CityUi>().loadout_name = "Reapersa".into();
+        tap(&mut app, KeyCode::Escape);
+        let city = app.world().resource::<CityUi>();
+        assert!(city.loadout_rename.is_none());
+        assert!(city.loadout_name.is_empty());
+    }
+
+    /// Closing the yard ends the edit, so reopening it does not point the next Enter at a
+    /// party the player is no longer looking at.
+    #[test]
+    fn leaving_the_yard_ends_a_name_edit() {
+        let mut app = yard_app();
+        app.add_systems(Update, party_panel);
+        app.world_mut().resource_mut::<CityUi>().loadout_rename = Some("Reapers".into());
+        app.world_mut().resource_mut::<CityUi>().loadout_name = "Reapersa".into();
+        app.update();
+        app.world_mut().resource_mut::<CityUi>().party_open = false;
+        app.update();
+        let city = app.world().resource::<CityUi>();
+        assert!(city.loadout_rename.is_none(), "the edit outlived the panel that owns it");
+        assert!(city.loadout_name.is_empty());
     }
 
     /// Open the rename the way the yard actually offers it: the button.
@@ -2104,6 +2209,21 @@ pub(crate) struct CounterRow {
     pub(crate) max_qty: i32,
     /// The word on the button that commits it: `"Buy"`, `"Sell"`, `"Forge"`.
     pub(crate) verb: String,
+    /// What this row DOES, named, for a counter whose rows are not all the same kind of
+    /// thing. The Forge's `main` column is a recipe book with the anvil and the bench as
+    /// rows beside it, and a commit path that re-derived their positions would drift the
+    /// moment a row is added or a tier hides one.
+    ///
+    /// That is not hypothetical: it is exactly how the anvil shipped **unclickable**.
+    /// `commit_counter_pick` looked every picked index up in `craft.recipes`, so the four
+    /// rows past the end of the book — including `[F] forge from`, the one row that earns
+    /// the Smithwright — picked, raised a Confirm button, and silently did nothing.
+    pub(crate) action: Option<&'static str>,
+    /// A row that spends nothing and is undone by another press acts ON the press. The
+    /// pick-then-confirm two-step exists so a mis-tap cannot spend chits or materials
+    /// unread; a switch has nothing to read and nothing to spend, so confirming one is
+    /// two clicks for no decision.
+    pub(crate) instant: bool,
 }
 
 impl CounterRow {
@@ -2119,6 +2239,8 @@ impl CounterRow {
             countable: false,
             max_qty: 1,
             verb: "Confirm".into(),
+            action: None,
+            instant: false,
         }
     }
     fn of(mut self, kind: impl Into<String>) -> Self {
@@ -2149,6 +2271,16 @@ impl CounterRow {
     fn committed_by(mut self, verb: &str) -> Self {
         self.verb = verb.into();
         self
+    }
+    /// What committing it runs, for the counter's own commit arm to resolve.
+    fn doing(mut self, action: &'static str) -> Self {
+        self.action = Some(action);
+        self
+    }
+    /// A switch: the same action, run on the press rather than on a confirm.
+    fn flipping(mut self, action: &'static str) -> Self {
+        self.instant = true;
+        self.doing(action)
     }
 }
 
@@ -2689,6 +2821,86 @@ pub(crate) fn best_stock(
         .map(|(_, kind)| kind)
 }
 
+/// Run one of the Forge & Alembic's actions, named by the row that offers it.
+///
+/// ONE implementation, reached by the key AND by the row's Confirm button. It used to be
+/// the keyboard's alone — the `[S]`/`[C]`/`[F]` arms of `city_input` — while the rows those
+/// keys are printed on were spawned as buttons that picked and then committed into
+/// `craft.recipes`, where an index past the book resolves to nothing. So the anvil and the
+/// bench were keyboard-only, silently, and `[F]` is the row that earns the Smithwright.
+///
+/// Every refusal is the SERVER's: this only refuses what it cannot even address (an empty
+/// Vault, no refined stock), and says so on `craft.last` where every other reply lands.
+fn run_craft_action(net: &NetRes, craft: &mut CraftData, inv: &InventoryData, action: &str) {
+    match action {
+        "slot" => craft.slot = (craft.slot + 1) % FORGE_SLOTS.len(),
+        "quench" => craft.catalyze = !craft.catalyze,
+        "bench_next" => {
+            if !inv.gear.is_empty() {
+                craft.bench = (craft.bench + 1) % inv.gear.len();
+            }
+        }
+        "forge" => {
+            // The anvil takes REFINED stock, so pick the best the Vault holds rather
+            // than making the player name it; same for the trophy if a quench is armed.
+            match best_stock(inv, meld_proto::materials::MaterialClass::Refined) {
+                Some(material) => {
+                    let catalyst = craft
+                        .catalyze
+                        .then(|| best_stock(inv, meld_proto::materials::MaterialClass::Trophy))
+                        .flatten();
+                    if craft.catalyze && catalyst.is_none() {
+                        craft.last = "no trophy in the Vault to quench it in".to_string();
+                    } else {
+                        let slot = FORGE_SLOTS[craft.slot];
+                        craft.last = format!("forging a {slot}...");
+                        net.0.forge(slot.to_string(), material, catalyst);
+                    }
+                }
+                None => {
+                    craft.last = "the anvil needs refined stock - smelt an ore first".to_string();
+                }
+            }
+        }
+        // Both services go over the REALTIME channel rather than straight to HTTP,
+        // because smithing is a heat now: the server answers with a bar to strike and
+        // grades the blows. The HTTP endpoints stay for API callers.
+        "repair" => match bench_gear(craft, inv) {
+            Some(g) => {
+                craft.last = format!("heating {}...", g.name);
+                net.0.send(ClientCmd::SmithRequest {
+                    entity_id: String::new(),
+                    gear_id: g.gear_id.clone(),
+                    service: "repair".into(),
+                    material: String::new(),
+                    recipe: String::new(),
+                });
+            }
+            None => craft.last = "nothing on the bench".to_string(),
+        },
+        "reroll" => {
+            let piece = bench_gear(craft, inv).map(|g| (g.gear_id.clone(), g.name.clone()));
+            match (piece, best_stock(inv, meld_proto::materials::MaterialClass::Refined)) {
+                (Some((gear_id, name)), Some(material)) => {
+                    craft.last = format!("heating {name}...");
+                    net.0.send(ClientCmd::SmithRequest {
+                        entity_id: String::new(),
+                        gear_id,
+                        service: "reroll".into(),
+                        material,
+                        recipe: String::new(),
+                    });
+                }
+                (None, _) => craft.last = "nothing on the bench".to_string(),
+                (_, None) => {
+                    craft.last = "a reroll needs refined stock - smelt an ore first".to_string();
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
 /// The Forge & Alembic: the recipe book with the cursor on one row, then the anvil and the
 /// bench as rows of their own. The server owns every gate, so a locked row says the level it
 /// wants and an unaffordable one says what it is missing — before a keypress is spent on it.
@@ -2762,10 +2974,75 @@ pub(crate) fn craft_view(craft: &CraftData, inv: &InventoryData) -> CounterView 
     let stock = best_stock(inv, meld_proto::materials::MaterialClass::Refined);
     let anvil = stock.as_deref().unwrap_or("nothing refined");
     let quench = if craft.catalyze { "on" } else { "off" };
-    v.rows.push(CounterRow::new("S", format!("slot: {}", FORGE_SLOTS[craft.slot])));
-    v.rows.push(CounterRow::new("C", format!("quench: {quench}")));
-    v.rows.push(CounterRow::new("F", format!("forge from {anvil}")).of(anvil));
-    v.rows.push(CounterRow::new("left/right", bench_line(craft, inv).trim().to_string()));
+    v.rows.push(
+        CounterRow::new("S", format!("slot: {}", FORGE_SLOTS[craft.slot])).flipping("slot"),
+    );
+    v.rows.push(CounterRow::new("C", format!("quench: {quench}")).flipping("quench"));
+    v.rows.push(
+        CounterRow::new("F", format!("forge from {anvil}"))
+            .of(anvil)
+            // No magnitudes: the costs are `[forge]` tunables and the client has no
+            // balance.toml, so the server prices it and answers in its own words.
+            .saying(vec![
+                format!("Forge a {} from refined stock.", FORGE_SLOTS[craft.slot]),
+                format!("The anvil would take {anvil}."),
+                "Spends stock and chits; the Forging skill sets the tier.".into(),
+            ])
+            .committed_by("Forge")
+            .doing("forge"),
+    );
+    // The bench is a ROW PER SERVICE, not one line advertising four keys. It read as a
+    // status line because it WAS one, lifted from the field forge's strip — where the
+    // player has no rows to tap — and pasted into a column, which left the smith's two
+    // services reachable by keyboard alone.
+    match bench_gear(craft, inv) {
+        None => v.rows
+            .push(CounterRow::new("left/right", "bench: nothing in the Vault to work on").dim()),
+        Some(g) => {
+            let ins = meld_proto::enums::Insurance::from_wire(&g.insurance);
+            v.rows.push(
+                CounterRow::new(
+                    "left/right",
+                    format!(
+                        "bench: {} T{} {}  ({}/{} dur, {} affix)",
+                        g.name,
+                        g.tier,
+                        ins.map(|i| i.label()).unwrap_or("?"),
+                        g.max_durability,
+                        g.base_max_durability,
+                        g.affixes.len(),
+                    ),
+                )
+                // Keyed by SLOT like every other gear row: the icon table answers for a
+                // kind, and a piece's rolled NAME is not one.
+                .of(g.slot.clone())
+                .flipping("bench_next"),
+            );
+            let (rerollable, repairable) = bench_services(g);
+            if rerollable {
+                v.rows.push(
+                    CounterRow::new("R", format!("reroll ({} stock)", g.reroll_cost))
+                        .saying(vec![
+                            "Another draw on this piece's affixes.".into(),
+                            format!("Spends {} refined stock.", g.reroll_cost),
+                        ])
+                        .committed_by("Reroll")
+                        .doing("reroll"),
+                );
+            }
+            if repairable {
+                v.rows.push(
+                    CounterRow::new("P", "repair".to_string())
+                        .saying(vec!["Buy back the durability a death chewed off.".into()])
+                        .committed_by("Repair")
+                        .doing("repair"),
+                );
+            }
+            if !rerollable && !repairable {
+                v.rows.push(CounterRow::new("", "nothing a smith can do with this").dim());
+            }
+        }
+    }
     // The detail column belongs to whatever the cursor is on: which materials, how many of
     // each are already in the Vault, and what comes out. "1/2 dune_iron" is the whole
     // answer to "why is this row greyed out", and it needs room a status line never had.
@@ -2792,38 +3069,19 @@ pub(crate) fn craft_view(craft: &CraftData, inv: &InventoryData) -> CounterView 
     v
 }
 
-/// The smith's other half: the two things they do to a piece you already own —
-/// another draw on its affixes, and durability bought back. Both need a CHOSEN piece,
-/// so the anvil keeps one on the bench and left/right walk the Vault.
-pub(crate) fn bench_line(craft: &CraftData, inv: &InventoryData) -> String {
-    let Some(g) = bench_gear(craft, inv) else {
-        return "  BENCH  nothing in the Vault to work on\n".to_string();
-    };
-    // Only advertise the service the piece can actually take: repair buys back the
-    // max durability a death chewed off, which only INSURED gear ever loses, and a
-    // reroll on ephemeral gear would burn with it on the walk home. Offering a key
-    // that is certain to be refused is worse than not offering it.
+/// Which of the smith's two services a piece can actually take, as `(reroll, repair)`.
+///
+/// ONE answer, asked by the city counter's rows and by the field forge's strip. Repair
+/// buys back the max durability a death chewed off, which only INSURED gear ever loses,
+/// and a reroll on ephemeral gear would burn with it on the walk home — so a key certain
+/// to be refused is worse than no key at all. The rule had drifted into three copies (the
+/// counter's old status line, its rows, and the overworld station), so a tier added to
+/// `Insurance` would have had to be remembered at each of them.
+pub(crate) fn bench_services(g: &GearLine) -> (bool, bool) {
     let ins = meld_proto::enums::Insurance::from_wire(&g.insurance);
-    let mut keys = Vec::new();
-    if ins != Some(meld_proto::enums::Insurance::Ephemeral) {
-        keys.push(format!("[R] reroll ({} stock)", g.reroll_cost));
-    }
-    if ins == Some(meld_proto::enums::Insurance::Insured) {
-        keys.push("[P] repair".to_string());
-    }
-    let offer = if keys.is_empty() {
-        "nothing a smith can do with this".to_string()
-    } else {
-        keys.join("   ")
-    };
-    format!(
-        "  BENCH  <-/-> {} T{} {}  ({}/{} dur, {} affix)   {offer}\n",
-        g.name,
-        g.tier,
-        ins.map(|i| i.label()).unwrap_or("?"),
-        g.max_durability,
-        g.base_max_durability,
-        g.affixes.len()
+    (
+        ins != Some(meld_proto::enums::Insurance::Ephemeral),
+        ins == Some(meld_proto::enums::Insurance::Insured),
     )
 }
 
@@ -3265,18 +3523,97 @@ mod shop_tests {
         assert_eq!(bench_gear(&craft, &inv).unwrap().name, "Worn Warblade");
     }
 
+    /// EVERY row the Forge draws past its recipe book has to name what it does, because
+    /// the commit path resolves an action by NAME rather than by counting rows. Which is
+    /// the bug this test exists for: the anvil and the bench were drawn as buttons while
+    /// `commit_counter_pick` looked every picked index up in `craft.recipes`, so `[S]`,
+    /// `[C]`, `[F]` and the bench all picked, raised a Confirm button and did nothing —
+    /// leaving the one row that earns the Smithwright reachable by keyboard alone.
+    ///
+    /// A dimmed row is exempt: it is telling you why there is nothing to press.
+    #[test]
+    fn every_actionable_row_at_the_forge_names_its_own_action() {
+        let craft = CraftData {
+            loaded: true,
+            recipes: vec![recipe("Bloom Salve", 1, true, &[("bloom_herb", 2)])],
+            ..Default::default()
+        };
+        for gear in [vec![], vec![bench_piece("g1", "Worn Warblade", 6, 10)]] {
+            let inv = InventoryData {
+                gear,
+                materials: vec![("peat_ingot".to_string(), 9)],
+                ..Default::default()
+            };
+            let view = craft_view(&craft, &inv);
+            for (i, r) in view.rows.iter().enumerate().skip(craft.recipes.len()) {
+                assert!(
+                    r.action.is_some() || !r.enabled,
+                    "row {i} ({:?}) is pressable and resolves to nothing",
+                    r.label
+                );
+            }
+        }
+    }
+
+    /// The anvil's two switches and the bench cursor act ON the press: they spend nothing
+    /// and another press undoes them, so the pick-then-confirm step that protects a
+    /// purchase would just be a second click. Everything that SPENDS keeps the confirm.
+    #[test]
+    fn the_anvil_flips_on_the_press_and_forges_on_a_confirm() {
+        let craft = CraftData {
+            loaded: true,
+            recipes: vec![recipe("Bloom Salve", 1, true, &[("bloom_herb", 2)])],
+            ..Default::default()
+        };
+        let inv = InventoryData {
+            gear: vec![
+                bench_piece("g1", "Worn Warblade", 6, 10),
+                bench_piece("g2", "Issued Cuirass", 10, 10),
+            ],
+            materials: vec![("peat_ingot".to_string(), 9)],
+            ..Default::default()
+        };
+        let by_key = |key: &str| -> CounterRow {
+            craft_view(&craft, &inv)
+                .rows
+                .into_iter()
+                .find(|r| r.key == key)
+                .unwrap_or_else(|| panic!("the forge has no [{key}] row"))
+        };
+        for key in ["S", "C", "left/right"] {
+            assert!(by_key(key).instant, "[{key}] is a switch and should not want a confirm");
+        }
+        for (key, verb) in [("F", "Forge"), ("R", "Reroll"), ("P", "Repair")] {
+            let row = by_key(key);
+            assert!(!row.instant, "[{key}] spends something and must be confirmed");
+            assert_eq!(row.verb, verb, "[{key}] commits under the wrong word");
+        }
+
+        // And the switches really do move the state the view is built from.
+        let net = NetRes(crate::net::start("http://127.0.0.1:1".into()));
+        let mut craft = craft;
+        run_craft_action(&net, &mut craft, &inv, "slot");
+        assert_eq!(craft.slot, 1, "[S] did not cycle the slot the anvil would make");
+        run_craft_action(&net, &mut craft, &inv, "quench");
+        assert!(craft.catalyze, "[C] did not arm the quench");
+        run_craft_action(&net, &mut craft, &inv, "bench_next");
+        assert_eq!(bench_gear(&craft, &inv).unwrap().name, "Issued Cuirass");
+    }
+
     // A smith's two services do not apply to every tier, and a key that is certain to
     // be refused is worse than no key at all. Repair buys back max durability, which
     // only INSURED gear ever loses; a reroll on ephemeral gear would burn with it on
-    // the walk home.
+    // the walk home. Asked of the ROWS, because the rows are what a player presses —
+    // the strip this used to read is the field forge's, one scene over.
     #[test]
     fn the_bench_offers_only_the_service_the_tier_can_take() {
         let craft = CraftData { loaded: true, recipes: vec![], ..Default::default() };
+        let rows = |inv: &InventoryData| -> String { craft_view(&craft, inv).flat() };
         let mut inv = InventoryData {
             gear: vec![bench_piece_of("insured", 2, "g", "Wearing Blade", 8, 12)],
             ..Default::default()
         };
-        let insured = bench_line(&craft, &inv);
+        let insured = rows(&inv);
         assert!(insured.contains("Insured"), "{insured}");
         assert!(insured.contains("[R] reroll (7 stock)"), "{insured}");
         assert!(insured.contains("[P] repair"), "{insured}");
@@ -3284,16 +3621,25 @@ mod shop_tests {
         // Standard never degrades, so there is nothing to mend — but it is yours, so
         // it is worth re-drawing.
         inv.gear = vec![bench_piece_of("standard", 0, "g", "Issued Blade", 20, 20)];
-        let standard = bench_line(&craft, &inv);
+        let standard = rows(&inv);
         assert!(standard.contains("[R] reroll (3 stock)"), "{standard}");
         assert!(!standard.contains("[P] repair"), "{standard}");
 
         // Ephemeral burns on the walk home: neither service is worth a chit.
         inv.gear = vec![bench_piece_of("ephemeral", 4, "g", "Cinderglass Edge", 30, 30)];
-        let ephemeral = bench_line(&craft, &inv);
+        let ephemeral = rows(&inv);
         assert!(!ephemeral.contains("[R] reroll"), "{ephemeral}");
         assert!(!ephemeral.contains("[P] repair"), "{ephemeral}");
         assert!(ephemeral.contains("nothing a smith can do"), "{ephemeral}");
+
+        // And the one rule both surfaces ask, directly: the field forge builds its own
+        // strip and must offer the same two services on the same tiers.
+        for (insurance, want) in
+            [("insured", (true, true)), ("standard", (true, false)), ("ephemeral", (false, false))]
+        {
+            let g = bench_piece_of(insurance, 1, "g", "Blade", 4, 8);
+            assert_eq!(bench_services(&g), want, "{insurance} offers the wrong services");
+        }
     }
 
     #[test]
@@ -3534,6 +3880,11 @@ pub(crate) struct YardRenameButton(pub usize);
 #[derive(Component)]
 pub(crate) struct YardRenameText;
 
+/// The heading over the name field, which says whether the field is naming the next SAVE
+/// or renaming a party you already have.
+#[derive(Component)]
+pub(crate) struct LoadoutNameLabel;
+
 /// Marks the class picker's root, so it can be despawned when the picker closes.
 #[derive(Component)]
 pub(crate) struct PartyPickerRoot;
@@ -3611,7 +3962,7 @@ fn yard_card(
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn party_panel(
     mut commands: Commands,
-    city: Res<CityUi>,
+    mut city: ResMut<CityUi>,
     unlocks: Res<UnlocksRes>,
     session: Res<Session>,
     hero_names: Res<AccountHeroNames>,
@@ -3641,6 +3992,14 @@ pub(crate) fn party_panel(
     let sig = (loadouts.list.len(), unlocks.owned.len(), unlocks.party_slots as i64 ^ names);
     if city.party_open == *was_open && (!city.party_open || sig == *shown) {
         return;
+    }
+    // Opening or closing the yard ends any name edit in progress, HERE rather than at the
+    // five places that write `party_open`: the panel owns the field, so a new way in or out
+    // of the yard cannot leave a rename armed at a party the player is no longer looking
+    // at. Same rule the picker's own panel states one system down.
+    if city.party_open != *was_open {
+        city.loadout_rename = None;
+        city.loadout_name.clear();
     }
     *was_open = city.party_open;
     *shown = sig;
@@ -3756,7 +4115,14 @@ pub(crate) fn party_panel(
                         });
                     }
                     nav.spawn(glass::divider());
-                    nav.spawn(glass::text("NAME", 12.0, glass::DIM));
+                    // The field does two jobs and has to say which one, or "rename" and
+                    // "Save this party" are two buttons pointed at one anonymous box.
+                    nav.spawn((
+                        Text::new("NAME"),
+                        LoadoutNameLabel,
+                        TextFont { font_size: FontSize::Px(12.0), ..default() },
+                        TextColor(glass::DIM),
+                    ));
                     // A real FIELD: the focused edge every other typable box in the game
                     // has, and the caret below blinks in it.
                     //
@@ -4218,7 +4584,10 @@ pub(crate) fn party_panel_buttons(
 /// rest of the time — the panel is the one place in town that swallows letter keys.
 pub(crate) fn loadout_name_input(
     keys: Res<ButtonInput<KeyCode>>,
+    net: NonSend<NetRes>,
     rename: Res<HeroRename>,
+    session: Res<Session>,
+    loadouts: Res<LoadoutData>,
     mut city: ResMut<CityUi>,
 ) {
     // Two text fields share one keyboard: while a hero is being renamed the letters
@@ -4226,6 +4595,53 @@ pub(crate) fn loadout_name_input(
     // picker is up nothing is being typed at all — letters landing in a field behind a
     // modal is a name the player never sees themselves write.
     if !city.party_open || rename.slot.is_some() || city.yard_picker.is_some() {
+        return;
+    }
+    // ENTER COMMITS, because a field you can type into and cannot submit is a field that
+    // reads as broken — the same complaint the hero card answered with its own Enter. Which
+    // of the two things it commits is `loadout_rename`: editing an existing party's name,
+    // or naming the next save. One answer, in the one place that holds the state, rather
+    // than each button guessing what the field currently means.
+    if keys.just_pressed(KeyCode::Enter) {
+        let typed = city.loadout_name.trim().to_string();
+        match city.loadout_rename.take() {
+            Some(from) if typed.is_empty() || typed == from => {
+                // Nothing asked for. Drop the edit rather than sending a no-op the server
+                // would refuse — and say so, since the field visibly closing is the only
+                // other thing the player sees.
+                city.loadout_name.clear();
+                city.notice = format!("\"{from}\" keeps its name.");
+            }
+            Some(from) => {
+                city.loadout_name.clear();
+                net.0.rename_loadout(from.clone(), typed.clone());
+                city.notice = format!("Renamed \"{from}\" to \"{typed}\".");
+            }
+            None => {
+                // The typed name if there is one, else the next free "Party N" — an empty
+                // field should still save something rather than refuse.
+                let name = if typed.is_empty() {
+                    let mut n = 1;
+                    while loadouts.list.iter().any(|l| l.name == format!("Party {n}")) {
+                        n += 1;
+                    }
+                    format!("Party {n}")
+                } else {
+                    typed
+                };
+                city.loadout_name.clear();
+                net.0.save_loadout(name.clone(), session.party.clone());
+                city.notice = format!("Saved as \"{name}\".");
+            }
+        }
+        return;
+    }
+    // Esc drops a rename edit and leaves the saved party alone. It cannot reach the class
+    // picker from here (that arm is guarded above on the picker being shut), and the hero
+    // rename owns Esc while ITS field is open, so the three never contend for the key.
+    if keys.just_pressed(KeyCode::Escape) && city.loadout_rename.is_some() {
+        city.loadout_rename = None;
+        city.loadout_name.clear();
         return;
     }
     let shift = keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight);
@@ -4252,9 +4668,22 @@ pub(crate) fn loadout_name_caret(
     time: Res<Time>,
     city: Res<CityUi>,
     rename: Res<HeroRename>,
-    mut q: Query<&mut Text, (With<LoadoutNameText>, Without<PartySlotHeroName>)>,
-    mut hero_q: Query<(&PartySlotHeroName, &mut Text), Without<LoadoutNameText>>,
+    mut q: Query<&mut Text, (With<LoadoutNameText>, Without<PartySlotHeroName>, Without<LoadoutNameLabel>)>,
+    mut hero_q: Query<(&PartySlotHeroName, &mut Text), (Without<LoadoutNameText>, Without<LoadoutNameLabel>)>,
+    mut label_q: Query<&mut Text, (With<LoadoutNameLabel>, Without<LoadoutNameText>, Without<PartySlotHeroName>)>,
 ) {
+    // What the field is FOR, above the field. A rename edit and a fresh save look
+    // identical otherwise — same box, same caret — and the difference is which party the
+    // next Enter changes.
+    if let Ok(mut t) = label_q.single_mut() {
+        let want = match &city.loadout_rename {
+            Some(from) => format!("RENAMING \"{from}\"\nEnter to keep, Esc to drop"),
+            None => "NAME\nEnter saves this party".to_string(),
+        };
+        if **t != want {
+            **t = want;
+        }
+    }
     // The hero card being renamed shows the buffer you are typing INTO IT, rather than a
     // field elsewhere on the screen collecting letters for it.
     for (tag, mut t) in &mut hero_q {
@@ -4333,29 +4762,34 @@ pub(crate) fn loadout_buttons(
     }
     for (i, b) in &del_q {
         if *i == Interaction::Pressed {
+            // A rename edit open on the row that just went has nothing left to land on,
+            // and leaving it armed would point the next Enter at a party that is gone.
+            if city.loadout_rename.as_deref() == Some(b.0.as_str()) {
+                city.loadout_rename = None;
+                city.loadout_name.clear();
+            }
             net.0.delete_loadout(b.0.clone());
             city.notice = format!("Deleted \"{}\".", b.0);
         }
     }
-    // RENAME takes the name field's contents and leaves the saved composition alone. It
-    // refuses an empty field rather than inventing a "Party N" the way Save does: an
-    // unnamed save is still a save, but an unnamed rename is a request with no content.
+    // ⚠️ **RENAME OPENS AN EDIT; IT DOES NOT SUBMIT ONE.** It used to take whatever
+    // happened to be in the name field and apply it on the spot, which made the button
+    // read as broken in the ordinary case: you click "rename", the field is empty, and the
+    // only thing that happens is a line of text in the TOWN STATUS STRIP — which the yard's
+    // own scrim is drawn over. A button whose entire response to a click is invisible is a
+    // button that does not work, whatever the code did.
+    //
+    // So it is the same gesture the hero beside it uses: click, the field fills with the
+    // name it HAS and takes the cursor, type, Enter. `loadout_name_input` commits it —
+    // one place that knows whether this field is naming a new save or editing an old one,
+    // because "what does Enter do here" cannot be answered twice.
     for (i, b) in &ren_q {
         if *i != Interaction::Pressed {
             continue;
         }
-        let to = city.loadout_name.trim().to_string();
-        if to.is_empty() {
-            city.notice = "Type the new name first.".to_string();
-            continue;
-        }
-        if to == b.0 {
-            city.notice = format!("\"{to}\" is already its name.");
-            continue;
-        }
-        city.loadout_name.clear();
-        net.0.rename_loadout(b.0.clone(), to.clone());
-        city.notice = format!("Renamed \"{}\" to \"{to}\".", b.0);
+        city.loadout_rename = Some(b.0.clone());
+        city.loadout_name = b.0.clone();
+        city.notice.clear();
     }
     for i in &save_q {
         if *i != Interaction::Pressed {
@@ -4374,6 +4808,7 @@ pub(crate) fn loadout_buttons(
             typed
         };
         city.loadout_name.clear();
+        city.loadout_rename = None;
         net.0.save_loadout(name.clone(), session.party.clone());
         city.notice = format!("Saved as \"{name}\".");
     }
@@ -4508,6 +4943,36 @@ pub(crate) fn party_panel_refresh(
     }
 }
 
+/// Send a hero rename **and write the local copy**, for every screen that offers one.
+///
+/// ⚠️ **THE LOCAL WRITE IS NOT AN OPTIMISATION; IN TOWN IT IS THE ONLY THING THAT LANDS.**
+/// A rename with no run behind it is answered with an EMPTY roster — there is no party to
+/// describe yet — and `hero_name_at` falls back to [`AccountHeroNames`] exactly then, so a
+/// path that only sends the message watches the card snap straight back to the old name.
+/// The Drill Yard did this and the menu's own [R] did not, which is why the same action
+/// stuck in one place and did nothing in the other. One function, so a third screen that
+/// offers a rename cannot get half of it.
+///
+/// The server applies the same trim and the same 24-character cap, so the copy written here
+/// and the one stored agree. An empty name is refused rather than sent, since the server
+/// rejects it and a blank card is not what the player asked for.
+pub(crate) fn commit_hero_rename(
+    net: &NetRes,
+    hero_names: &mut AccountHeroNames,
+    slot: usize,
+    buffer: &str,
+) {
+    let name: String = buffer.trim().chars().take(24).collect();
+    if name.is_empty() {
+        return;
+    }
+    if hero_names.names.len() <= slot {
+        hero_names.names.resize(slot + 1, String::new());
+    }
+    hero_names.names[slot] = name.clone();
+    net.0.send(ClientCmd::RenameHero { slot: slot as i32, name });
+}
+
 /// Type a hero's name in the Drill Yard. Reuses the same [`HeroRename`] buffer and
 /// the same `run.rename_hero` message the in-dive party screen uses, so a name set
 /// here and a name set there are one thing.
@@ -4528,20 +4993,7 @@ pub(crate) fn yard_rename_input(
         return;
     }
     if keys.just_pressed(KeyCode::Enter) {
-        let name = rename.buffer.trim().to_string();
-        if !name.is_empty() {
-            // Write the local copy too. Renaming from town has no run behind it, so
-            // the server persists the name and answers with an EMPTY roster — there
-            // is no party to describe yet — and the card would snap back to the old
-            // name the moment the edit buffer cleared. The server applies the same
-            // trim and the same 24-character cap this buffer does, so the optimistic
-            // copy and the stored one agree.
-            if hero_names.names.len() <= slot {
-                hero_names.names.resize(slot + 1, String::new());
-            }
-            hero_names.names[slot] = name.clone();
-            net.0.send(ClientCmd::RenameHero { slot: slot as i32, name });
-        }
+        commit_hero_rename(&net, &mut hero_names, slot, &rename.buffer);
         rename.slot = None;
         rename.buffer.clear();
         return;
@@ -4599,6 +5051,10 @@ pub(crate) fn render_travel_column(
     old: Query<Entity, With<TravelColumn>>,
     root_q: Query<Entity, With<CityRoot>>,
 ) {
+    // Rebuild on change, not on frame — see `battle::render_enemy_panel`.
+    if !(old.is_empty() || city.is_changed() || session.is_changed() || tutorial.is_changed()) {
+        return;
+    }
     for e in &old {
         commands.entity(e).despawn();
     }
@@ -4683,7 +5139,13 @@ pub(crate) fn render_district_nameplates(
     cam_q: Query<(&Camera, &GlobalTransform), With<Camera3d>>,
     root_q: Query<Entity, With<DistrictNameplateRoot>>,
     old: Query<Entity, With<DistrictNameplate>>,
+    cam_moved: Query<(), (With<Camera3d>, Changed<GlobalTransform>)>,
 ) {
+    // Rebuild on change, not on frame — see `battle::render_enemy_panel`. The plates are
+    // projected, so the camera moving is a change.
+    if !(old.is_empty() || city.is_changed() || !cam_moved.is_empty()) {
+        return;
+    }
     for e in &old {
         commands.entity(e).despawn();
     }
@@ -4928,6 +5390,21 @@ pub(crate) fn render_counter_panel(
     old: Query<Entity, With<CounterPanel>>,
     root_q: Query<Entity, With<CityRoot>>,
 ) {
+    // Rebuild on change, not on frame — see `battle::render_enemy_panel`.
+    if !(old.is_empty()
+        || city.is_changed()
+        || session.is_changed()
+        || inv.is_changed()
+        || shop.is_changed()
+        || shop_selling.is_changed()
+        || craft.is_changed()
+        || board.is_changed()
+        || hunts.is_changed()
+        || bounties.is_changed()
+        || pick.is_changed())
+    {
+        return;
+    }
     for e in &old {
         commands.entity(e).despawn();
     }
@@ -5192,6 +5669,21 @@ pub(crate) fn counter_click(
         if *interaction != Interaction::Pressed {
             continue;
         }
+        // A SWITCH is the exception: the anvil's slot, its quench and which piece is on the
+        // bench cost nothing and are undone by another press, so confirming one would be two
+        // clicks for no decision.
+        if city.craft_open {
+            let flip = craft_view(&craft, &inv)
+                .rows
+                .get(btn.0)
+                .filter(|r| r.instant)
+                .and_then(|r| r.action);
+            if let Some(action) = flip {
+                run_craft_action(&net, &mut craft, &inv, action);
+                pick.clear();
+                return;
+            }
+        }
         // A row PICKS. Every counter used to act on the press — buying, selling and forging
         // all fired on the tap — so nothing could tell you what a thing did before you owned
         // it, and a mis-tap spent chits or materials with no way back. The detail column
@@ -5253,6 +5745,16 @@ fn commit_counter_pick(
                 net.0.craft(r.recipe.clone());
                 craft.last = format!("working {}...", r.name);
             }
+            pick.clear();
+            return;
+        }
+        // Past the book stand the anvil and the bench, and each of those rows NAMES what
+        // it does — a tier that hides `[P] repair` must not shift what a click on the row
+        // above it means. This arm used to be the recipe lookup alone, so every one of
+        // them picked, raised a Confirm button and then quietly cleared the pick.
+        let action = craft_view(craft, inv).rows.get(idx).and_then(|r| r.action);
+        if let Some(action) = action {
+            run_craft_action(net, craft, inv, action);
         }
         pick.clear();
         return;

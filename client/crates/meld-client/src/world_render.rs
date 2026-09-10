@@ -26,36 +26,119 @@ use meld_client::hd2d::{self, CharacterFrames};
 
 use super::*;
 
-/// The sliding ground plane's size + tessellation. The plane follows the player so
-/// there's always ground underfoot, and its vertices are displaced into hills by
-/// `terrain_height`. Bevy's `Plane3d` emits `subdivisions + 2` vertices per side, so
-/// the vertex spacing is `size / (subdivisions + 1)`.
+/// The sliding ground's extent. The ground follows the player so there is always ground
+/// underfoot, and its vertices are displaced into hills by `terrain_height`.
 pub(crate) const GROUND_SIZE: f32 = 2000.0;
-pub(crate) const GROUND_SUBDIVISIONS: u32 = 400;
-/// World distance between adjacent ground vertices — the lattice the follow snaps to
-/// (see [`follow_world_ground`]) so the tessellation stops swimming under the hills.
-/// `MELD_GROUND_SUB=<n>` overrides [`GROUND_SUBDIVISIONS`] — the A/B for whether the frame
-/// is bound by the ground's VERTEX stage.
+
+/// `MELD_GROUND_SUB=<n>` builds the RETIRED uniform plane at `n` subdivisions instead of
+/// [`GROUND_LOD`]'s rings — the in-build A/B for what the ground's vertex stage costs.
 ///
-/// The plane is one mesh of `(n + 2)^2` vertices, and every vertex runs `total_height`
-/// FIVE times (once to displace, four more for `terrain_normal`'s finite differences),
-/// each walking every landform loop. Nothing about that cost scales with pixels — which
-/// is why `MELD_WIN` cannot see it, and why halving `n` (quartering the vertices) is the
-/// only instrument that can.
+/// The uniform plane shipped at 400, i.e. `(400 + 2)^2` = **161,604** vertices at a ~5-unit
+/// lattice over all 2000 units, each running `total_height` FIVE times (once to displace,
+/// four more for `terrain_normal`'s finite differences) over every landform loop. None of
+/// that scales with pixels, which is why `MELD_WIN` cannot see it and why the vertex count
+/// is the only instrument that can.
 ///
-/// ⚠️ **MEASUREMENT ONLY — it desyncs [`GROUND_CELL`].** The plane snaps its slide to a
-/// whole `GROUND_CELL`, and that constant is derived from `GROUND_SUBDIVISIONS`, not from
-/// this — so an overridden mesh snaps on the wrong lattice and the ground visibly swims.
-/// That costs nothing in frame time (which is what this exists to measure) but it is not a
-/// knob to ship a value through: lowering the real density means lowering the CONST.
-pub(crate) fn ground_subdivisions() -> u32 {
-    std::env::var("MELD_GROUND_SUB")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(GROUND_SUBDIVISIONS)
+/// ⚠️ **The uniform arm snaps on the wrong lattice** — the follow snaps to
+/// [`GROUND_SNAP`], the rings' coarsest cell, so a uniform mesh at some other spacing
+/// visibly swims as it slides. That costs nothing in frame time, which is what this
+/// exists to measure, but it is not a value to ship through.
+pub(crate) fn uniform_ground_subdivisions() -> Option<u32> {
+    std::env::var("MELD_GROUND_SUB").ok().and_then(|v| v.parse().ok())
 }
 
-pub(crate) const GROUND_CELL: f32 = GROUND_SIZE / (GROUND_SUBDIVISIONS as f32 + 1.0);
+/// **THE GROUND IS LOD RINGS, BECAUSE FOUR FIFTHS OF A UNIFORM PLANE IS PURE FOG.**
+///
+/// `(cell, half_extent)` outward from the camera. The plane is 2000 units across and
+/// `Look::fog_end` is **500** — past which every fragment is flat fog colour — so a
+/// uniform ~5-unit lattice spent roughly **80% of its 161,604 vertices** displacing and
+/// normal-solving terrain that cannot be seen. Nothing about that scales with pixels,
+/// which is why `MELD_WIN` could not see it, and #383 measured the other end of it:
+/// 15.5x fewer ground vertices moved frame time **-74%** once `MELD_VSYNC=0` stopped the
+/// refresh interval reporting every A/B as "no change".
+///
+/// Each `half_extent` is a whole multiple of the NEXT level's cell, so ring boundaries
+/// land on shared lattice positions and the levels tile without overlap:
+/// 160/10, 320/20, 640/40 are all 16. Quads: 4096 + 3072 + 3072 + 1476 = **11,716**
+/// against 160,801 — about **12x fewer** vertex-shader invocations, each of which runs
+/// `total_height` five times over every landform loop.
+///
+/// ⚠️ **A T-JUNCTION IS THE PRICE, and it is paid where nobody looks.** The fine side of
+/// each boundary carries a vertex the coarse side interpolates across, so the surface can
+/// gap by the curvature over one coarse cell. On the ~350-unit hill wavelength that is
+/// ~0.04 units at the first seam (cell 10) and ~0.6 at the last (cell 40) — and the last
+/// seam sits at 640 units, well past `fog_end`. Sharper relief (`peak_dome`,
+/// `ridge_wedge`) can exceed that, so if a seam ever shows, the fix is a skirt at the
+/// boundary rather than a finer outer ring.
+const GROUND_LOD: [(f32, f32); 4] = [(5.0, 160.0), (10.0, 320.0), (20.0, 640.0), (40.0, 1000.0)];
+
+/// The lattice the ground snaps its slide to — the COARSEST cell, so every level stays
+/// world-aligned at once. Snapping to the finest would leave the outer rings' vertices
+/// sliding across the fixed heightfield, which is the shimmer `follow_world_ground` snaps
+/// to avoid; a multiple of 40 is also a multiple of 20, 10 and 5, so one snap serves all.
+pub(crate) const GROUND_SNAP: f32 = 40.0;
+
+/// Build the ring mesh described by [`GROUND_LOD`].
+///
+/// Each level lays a full lattice and then indexes only the annulus outside the previous
+/// level's extent. The interior vertices are left in the buffer unreferenced on purpose:
+/// a vertex no index names is never shaded, so skipping them costs a little memory and
+/// saves the bookkeeping of a remap.
+pub(crate) fn ground_lod_mesh() -> Mesh {
+    use bevy::asset::RenderAssetUsages;
+    use bevy::mesh::{Indices, PrimitiveTopology};
+
+    let mut positions: Vec<[f32; 3]> = Vec::new();
+    let mut normals: Vec<[f32; 3]> = Vec::new();
+    let mut uvs: Vec<[f32; 2]> = Vec::new();
+    let mut indices: Vec<u32> = Vec::new();
+    let mut inner = 0.0f32;
+
+    for (cell, half) in GROUND_LOD {
+        let n = (2.0 * half / cell).round() as i32;
+        let base = positions.len() as u32;
+        let row = (n + 1) as u32;
+        for iz in 0..=n {
+            for ix in 0..=n {
+                let x = -half + ix as f32 * cell;
+                let z = -half + iz as f32 * cell;
+                positions.push([x, 0.0, z]);
+                // The shader replaces both from `total_height` / `terrain_normal`; these
+                // are only what the mesh must carry to be a valid PBR mesh.
+                normals.push([0.0, 1.0, 0.0]);
+                uvs.push([x, z]);
+            }
+        }
+        for iz in 0..n {
+            for ix in 0..n {
+                let x0 = -half + ix as f32 * cell;
+                let z0 = -half + iz as f32 * cell;
+                // Skip the hole this level's inner neighbour already covers.
+                if inner > 0.0
+                    && x0 >= -inner
+                    && x0 + cell <= inner
+                    && z0 >= -inner
+                    && z0 + cell <= inner
+                {
+                    continue;
+                }
+                let a = base + iz as u32 * row + ix as u32;
+                let (b, c, d) = (a + 1, a + 1 + row, a + row);
+                // Wound so both faces point +Y: with x right and z forward, (a, d, c)
+                // and (a, c, b) cross to a positive Y. The obvious order is upside down.
+                indices.extend_from_slice(&[a, d, c, a, c, b]);
+            }
+        }
+        inner = half;
+    }
+
+    let mut mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default());
+    mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs);
+    mesh.insert_indices(Indices::U32(indices));
+    mesh
+}
 
 /// Uniform for [`GroundBiome`] — the ACTUAL per-section biome rings, so the ground
 /// matches each section's real biome (radius ring) instead of fixed distance bands.
@@ -1182,12 +1265,13 @@ pub(crate) fn setup(
         // every direction the player roams. SUBDIVIDED into a fine grid so the ground
         // shader's vertex displacement (`terrain_height`) reads as smooth rolling hills
         // rather than a tilted quad — ~5-unit cells over the hill wavelength (~350u).
-        Mesh3d(meshes.add(
-            Plane3d::default()
-                .mesh()
-                .size(GROUND_SIZE, GROUND_SIZE)
-                .subdivisions(ground_subdivisions()),
-        )),
+        // LOD RINGS by default; `MELD_GROUND_SUB=<n>` still builds the old UNIFORM plane
+        // so the two can be A/B'd in the same build — which is how #383's -74% was found
+        // and how any further claim about the ground's cost should be checked.
+        Mesh3d(meshes.add(match uniform_ground_subdivisions() {
+            Some(n) => Plane3d::default().mesh().size(GROUND_SIZE, GROUND_SIZE).subdivisions(n).into(),
+            None => ground_lod_mesh(),
+        })),
         MeshMaterial3d(ground_mat.clone()),
         Transform::default(),
     ));
@@ -1639,6 +1723,8 @@ pub(crate) fn setup(
         let h = w * (0.28 + rnd() * 0.12);
         commands.spawn((
             Cloud { world: off, y },
+            hd2d::NoShadowEver,
+            NotShadowCaster,
             Mesh3d(puff.clone()),
             MeshMaterial3d(cloud_mat.clone()),
             Transform::from_xyz(off.x, y, off.y).with_scale(Vec3::new(w, h, 1.0)),
@@ -1652,6 +1738,8 @@ pub(crate) fn setup(
         let sz = 34.0 + rnd() * 46.0;
         commands.spawn((
             Cloud { world: off, y: 0.28 },
+            hd2d::NoShadowEver,
+            NotShadowCaster,
             CloudShadow,
             Mesh3d(puff.clone()),
             MeshMaterial3d(cloud_shadow_mat.clone()),
@@ -1752,6 +1840,8 @@ pub(crate) fn setup(
     });
     commands.spawn((
         RainCloud { off: Vec2::new(-22.0, -6.0) },
+        hd2d::NoShadowEver,
+        NotShadowCaster,
         Mesh3d(puff.clone()),
         MeshMaterial3d(rain_cloud_mat),
         Transform::from_xyz(0.0, RAIN_CLOUD_Y, 0.0).with_scale(Vec3::new(78.0, 34.0, 1.0)),
@@ -1781,6 +1871,8 @@ pub(crate) fn setup(
         let off = Vec3::new(ang.cos() * r, rnd() * RAIN_FALL_TOP, ang.sin() * r);
         commands.spawn((
             RainDrop { off },
+            hd2d::NoShadowEver,
+            NotShadowCaster,
             Mesh3d(drop_mesh.clone()),
             MeshMaterial3d(drop_mat.clone()),
             Transform::from_translation(off),
@@ -1819,11 +1911,12 @@ pub(crate) fn setup(
         let sz = 0.34 + rnd() * 0.40;
         commands.spawn((
             Snowflake { off, phase: rnd() * std::f32::consts::TAU },
+            hd2d::NoShadowEver,
+            NotShadowCaster,
             Mesh3d(flake_mesh.clone()),
             MeshMaterial3d(flake_mat.clone()),
             Transform::from_translation(off).with_scale(Vec3::splat(sz)),
             hd2d::Billboard,
-            NotShadowCaster,
             Visibility::Hidden,
         ));
     }
@@ -1855,22 +1948,26 @@ pub(crate) fn setup(
         )
     })
     .collect();
-    let placeholder = detail_scenes[0].0.clone();
-    commands.insert_resource(DetailKit { scenes: detail_scenes });
-    for gz in -DETAIL_K..=DETAIL_K {
-        for gx in -DETAIL_K..=DETAIL_K {
-            commands.spawn((
-                GroundDetail {
-                    slot: IVec2::new(gx, gz),
-                    last: IVec2::splat(i32::MIN),
-                    epoch: u64::MAX,
-                },
-                WorldAssetRoot(placeholder.clone()),
-                Transform::default(),
-                Visibility::Hidden,
-            ));
-        }
+    // **AN INSTANCE KEEPS ITS MODEL FOR LIFE.** The pool used to map each slot to one
+    // world cell and swap the slot's `WorldAssetRoot` to whatever that cell rolled — and a
+    // reassigned root makes Bevy despawn the old GLB hierarchy and instantiate a new one.
+    // Walking crosses a 4-unit cell every second or two, and each crossing re-derived a
+    // whole row of the 17x17 window: dozens of scene instantiations in one frame, which is
+    // exactly the hitch profile measured ("p90 425 ms, worst 3,732 ms"). Now each instance
+    // is spawned ONCE with a fixed model, and `tile_ground_detail` hands cells to free
+    // instances of the model the cell rolled. Moving a transform is free; a scene is not.
+    let variants = detail_scenes.len();
+    let total = ((2 * DETAIL_K + 1) * (2 * DETAIL_K + 1)) as usize;
+    for i in 0..total {
+        let variant = i % variants;
+        commands.spawn((
+            GroundDetail { variant, cell: None, epoch: u64::MAX },
+            WorldAssetRoot(detail_scenes[variant].0.clone()),
+            Transform::default(),
+            Visibility::Hidden,
+        ));
     }
+    commands.insert_resource(DetailKit { scenes: detail_scenes });
 
     // ── Atmosphere motes (client-only) ──────────────────────────────────────
     // Drifting dust/pollen: soft billboarded discs anchored around the camera so
@@ -1905,6 +2002,8 @@ pub(crate) fn setup(
                 speed: 0.2 + rnd() * 0.5,
                 seed: (i as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ 0xF17E,
             },
+            hd2d::NoShadowEver,
+            NotShadowCaster,
             Mesh3d(mote_mesh.clone()),
             MeshMaterial3d(mote_mat.clone()),
             Transform::from_translation(Vec3::new(pos.x, 1.0, pos.y))
@@ -1944,6 +2043,8 @@ pub(crate) fn setup(
         let off = Vec3::new((rnd() - 0.5) * 64.0, rnd() * ASH_FALL_TOP, (rnd() - 0.5) * 48.0);
         commands.spawn((
             AshFleck { off, sway: rnd() * std::f32::consts::TAU, fall: 3.2 + rnd() * 3.6 },
+            hd2d::NoShadowEver,
+            NotShadowCaster,
             Mesh3d(ash_mesh.clone()),
             MeshMaterial3d(ash_mat.clone()),
             Transform::from_translation(off).with_scale(Vec3::splat(0.6 + rnd() * 1.1)),
@@ -2086,10 +2187,12 @@ pub(crate) fn terrain_epoch() -> u64 {
 /// prop only re-derives (and swaps scene) when it actually moves to a new cell.
 #[derive(Component)]
 pub(crate) struct GroundDetail {
-    slot: IVec2,
-    last: IVec2,
-    /// The epoch this slot's height was computed against. Differing from [`terrain_epoch`]
-    /// means the ground moved under it and it must be re-derived even in the same cell.
+    /// Which model this instance IS, for life — an index into `DetailKit::scenes`.
+    variant: usize,
+    /// The world cell it is standing in, or `None` while it is parked (hidden, free).
+    cell: Option<IVec2>,
+    /// The epoch this instance's height was computed against. Differing from
+    /// [`terrain_epoch`] means the ground moved under it and it must be re-derived.
     epoch: u64,
 }
 
@@ -2098,7 +2201,7 @@ impl GroundDetail {
     /// can be hidden.
     #[cfg(test)]
     pub(crate) fn for_test() -> Self {
-        Self { slot: IVec2::ZERO, last: IVec2::ZERO, epoch: u64::MAX }
+        Self { variant: 0, cell: None, epoch: u64::MAX }
     }
 }
 
@@ -2464,56 +2567,100 @@ pub(crate) fn tile_ground_detail(
     kit: Option<Res<DetailKit>>,
     state: Res<State<Screen>>,
     frame: Res<crate::WorldFrame>,
-    mut q: Query<
-        (&mut GroundDetail, &mut Transform, &mut Visibility, &mut WorldAssetRoot),
-        Without<Camera3d>,
-    >,
+    mut q: Query<(&mut GroundDetail, &mut Transform, &mut Visibility), Without<Camera3d>>,
+    mut last: Local<Option<(IVec2, u64)>>,
 ) {
     let _t = Spike::new("tile_ground_detail");
 
     let (Ok(cam), Some(kit)) = (cam_q.single(), kit) else { return };
     let focus = ground_focus(cam);
-    // Height comes from `terrain_height`, which applies the `terrain_amp` flatten AND the
-    // sea dip itself — a prop on a beach has to ride the ramp down, and a prop on the
-    // City's flat plaza has to stay level. Multiplying by an amp out here (which this used
-    // to do) cannot express both.
     let cc = IVec2::new(
         (focus.x / DETAIL_CELL).floor() as i32,
         (focus.z / DETAIL_CELL).floor() as i32,
     );
-    // The height field's version, so a slot re-derives when the ground under it changes as
-    // well as when the player walks it into a new cell.
+    // The height field's version, so a prop re-derives when the ground under it changes as
+    // well as when the player walks the window onto new cells.
     let epoch = terrain_epoch();
-    for (mut d, mut tf, mut vis, mut root) in &mut q {
-        let cell = cc + d.slot;
-        if cell == d.last && d.epoch == epoch {
-            continue; // same world cell AND the same ground — nothing to re-derive
+    if *last == Some((cc, epoch)) {
+        return; // same window, same ground — nothing to hand out or take back
+    }
+    *last = Some((cc, epoch));
+
+    // What the window wants: every cell in it that rolls a prop, with the model it rolled
+    // and where it stands. Position, model, yaw and scale all derive from the cell, so a
+    // spot always looks identical however the instances behind it are dealt.
+    let variants = kit.scenes.len().max(1);
+    let mut wanted: Vec<(IVec2, usize, Vec3, f32, f32)> = Vec::new();
+    for gz in -DETAIL_K..=DETAIL_K {
+        for gx in -DETAIL_K..=DETAIL_K {
+            let cell = cc + IVec2::new(gx, gz);
+            let h = detail_hash(cell);
+            // Density gate: only ~45% of cells carry detail, so it scatters instead of
+            // reading as a rigid grid.
+            if (h & 0xff) as f32 / 255.0 > 0.45 {
+                continue;
+            }
+            let variant = ((h >> 8) as usize) % variants;
+            let base = kit.scenes[variant].1;
+            let jx = ((h >> 16) & 0xffff) as f32 / 65535.0;
+            let jz = ((h >> 32) & 0xffff) as f32 / 65535.0;
+            let yaw = ((h >> 24) & 0xff) as f32 / 255.0 * std::f32::consts::TAU;
+            let sc = base * (0.7 + ((h >> 48) & 0xff) as f32 / 255.0 * 0.7);
+            let (wx, wz) = ((cell.x as f32 + jx) * DETAIL_CELL, (cell.y as f32 + jz) * DETAIL_CELL);
+            // Nothing grows on the sea.
+            if nothing_grows_here(&frame, state.get(), wx, wz) {
+                continue;
+            }
+            // Height comes from `terrain_height`, which applies the `terrain_amp` flatten
+            // AND the sea dip itself — a prop on a beach has to ride the ramp down, and a
+            // prop on the City's flat plaza has to stay level. Multiplying by an amp out
+            // here (which this used to do) cannot express both.
+            wanted.push((cell, variant, Vec3::new(wx, terrain_height(wx, wz), wz), yaw, sc));
         }
-        d.last = cell;
+    }
+    // Take back every instance whose cell left the window (or whose ground moved), keep
+    // the ones still standing where they should, then deal the newly wanted cells to
+    // parked instances of the right model. An instance never changes model, so nothing
+    // here instantiates a scene.
+    let mut still: Vec<bool> = vec![false; wanted.len()];
+    for (mut d, _, mut vis) in &mut q {
+        let Some(cell) = d.cell else { continue };
+        let keep = d.epoch == epoch
+            && wanted.iter().position(|w| w.0 == cell && w.1 == d.variant).map(|i| {
+                still[i] = true;
+            })
+            .is_some();
+        if !keep {
+            d.cell = None;
+            if *vis != Visibility::Hidden {
+                *vis = Visibility::Hidden;
+            }
+        }
+    }
+    let mut free_pos = 0usize;
+    let mut instances: Vec<(Mut<GroundDetail>, Mut<Transform>, Mut<Visibility>)> =
+        q.iter_mut().filter(|(d, _, _)| d.cell.is_none()).collect();
+    for (i, w) in wanted.iter().enumerate() {
+        if still[i] {
+            continue;
+        }
+        // The first parked instance of this model. Linear, over a pool of a few hundred.
+        let Some(k) = instances[free_pos..]
+            .iter()
+            .position(|(d, _, _)| d.variant == w.1)
+            .map(|k| k + free_pos)
+        else {
+            continue; // the pool ran out of this model — that cell stays bare this pass
+        };
+        instances.swap(free_pos, k);
+        let (d, tf, vis) = &mut instances[free_pos];
+        free_pos += 1;
+        d.cell = Some(w.0);
         d.epoch = epoch;
-        let h = detail_hash(cell);
-        // Density gate: only ~45% of cells carry detail, so it scatters instead of
-        // reading as a rigid grid.
-        if (h & 0xff) as f32 / 255.0 > 0.45 {
-            *vis = Visibility::Hidden;
-            continue;
-        }
-        let (scene, base) = &kit.scenes[((h >> 8) as usize) % kit.scenes.len()];
-        root.0 = scene.clone();
-        let jx = ((h >> 16) & 0xffff) as f32 / 65535.0;
-        let jz = ((h >> 32) & 0xffff) as f32 / 65535.0;
-        let yaw = ((h >> 24) & 0xff) as f32 / 255.0 * std::f32::consts::TAU;
-        let sc = base * (0.7 + ((h >> 48) & 0xff) as f32 / 255.0 * 0.7);
-        let (wx, wz) = ((cell.x as f32 + jx) * DETAIL_CELL, (cell.y as f32 + jz) * DETAIL_CELL);
-        // Nothing grows on the sea.
-        if nothing_grows_here(&frame, state.get(), wx, wz) {
-            *vis = Visibility::Hidden;
-            continue;
-        }
-        tf.translation = Vec3::new(wx, terrain_height(wx, wz), wz);
-        tf.rotation = Quat::from_rotation_y(yaw);
-        tf.scale = Vec3::splat(sc);
-        *vis = Visibility::Inherited;
+        tf.translation = w.2;
+        tf.rotation = Quat::from_rotation_y(w.3);
+        tf.scale = Vec3::splat(w.4);
+        **vis = Visibility::Inherited;
     }
 }
 
@@ -2536,8 +2683,8 @@ pub(crate) fn follow_world_ground(
     // Snapping to a whole number of `GROUND_CELL`s pins the lattice to the same world
     // positions every frame, so the surface holds still while the player glides over it.
     for mut tf in &mut ground_q {
-        tf.translation.x = (focus.x / GROUND_CELL).round() * GROUND_CELL;
-        tf.translation.z = (focus.z / GROUND_CELL).round() * GROUND_CELL;
+        tf.translation.x = (focus.x / GROUND_SNAP).round() * GROUND_SNAP;
+        tf.translation.z = (focus.z / GROUND_SNAP).round() * GROUND_SNAP;
     }
 }
 
@@ -2571,7 +2718,8 @@ pub(crate) fn terrain_offset() -> (f32, f32) {
 /// height]`, summed onto the ground so each renders + you climb it. Set on `run.started`
 /// and appended per streamed section. A `RwLock` read is cheap + uncontended (only the
 /// main thread touches it), and `terrain_height` is called on the render thread.
-static PEAKS: std::sync::RwLock<Vec<[f32; 4]>> = std::sync::RwLock::new(Vec::new());
+static PEAKS: std::sync::LazyLock<std::sync::RwLock<std::sync::Arc<Vec<[f32; 4]>>>> =
+    std::sync::LazyLock::new(|| std::sync::RwLock::new(std::sync::Arc::new(Vec::new())));
 
 /// The peaks that came with `run.started` — the initial chain's, which no section message
 /// ever re-sends. Held apart from the streamed ones so rebuilding the set after a retile
@@ -2591,7 +2739,7 @@ pub(crate) fn set_peaks(peaks: Vec<[f32; 4]>) {
         *b = peaks.clone();
     }
     if let Ok(mut p) = PEAKS.write() {
-        *p = peaks;
+        *p = std::sync::Arc::new(peaks);
     }
     // The height field moved: re-ground the scenery standing on it.
     bump_terrain_epoch();
@@ -2611,13 +2759,13 @@ pub(crate) fn set_section_peaks(index: u32, peaks: &[[f32; 4]]) {
     by_section.insert(index, peaks.to_vec());
     let streamed: Vec<[f32; 4]> = by_section.values().flatten().copied().collect();
     if let (Ok(mut p), Ok(base)) = (PEAKS.write(), BASE_PEAKS.read()) {
-        *p = base.iter().copied().chain(streamed).collect();
+        *p = std::sync::Arc::new(base.iter().copied().chain(streamed).collect());
     }
     // The height field moved: re-ground the scenery standing on it.
     bump_terrain_epoch();
 }
 /// A snapshot of the current peaks (for the ground shader uniform).
-pub(crate) fn peaks_snapshot() -> Vec<[f32; 4]> {
+pub(crate) fn peaks_snapshot() -> std::sync::Arc<Vec<[f32; 4]>> {
     PEAKS.read().map(|p| p.clone()).unwrap_or_default()
 }
 
@@ -2631,8 +2779,8 @@ pub(crate) fn peaks_snapshot() -> Vec<[f32; 4]> {
 /// so the server re-sends each retiled section's straits UNCHANGED. If it ever stops, this
 /// store drops a sea the server is still colliding against, and the ring redraws as walkable
 /// ground over open water.
-static STRAITS: std::sync::RwLock<Vec<meld_proto::coast::Strait>> =
-    std::sync::RwLock::new(Vec::new());
+static STRAITS: std::sync::LazyLock<std::sync::RwLock<std::sync::Arc<Vec<meld_proto::coast::Strait>>>> =
+    std::sync::LazyLock::new(|| std::sync::RwLock::new(std::sync::Arc::new(Vec::new())));
 static BASE_STRAITS: std::sync::RwLock<Vec<meld_proto::coast::Strait>> =
     std::sync::RwLock::new(Vec::new());
 static SECTION_STRAITS: std::sync::RwLock<
@@ -2648,7 +2796,7 @@ pub(crate) fn set_straits(straits: Vec<meld_proto::coast::Strait>) {
         *b = straits.clone();
     }
     if let Ok(mut s) = STRAITS.write() {
-        *s = straits;
+        *s = std::sync::Arc::new(straits);
     }
     // The height field moved: re-ground the scenery standing on it.
     bump_terrain_epoch();
@@ -2664,7 +2812,7 @@ pub(crate) fn set_section_straits(index: u32, straits: &[meld_proto::coast::Stra
     by_section.insert(index, straits.to_vec());
     let streamed: Vec<meld_proto::coast::Strait> = by_section.values().flatten().copied().collect();
     if let (Ok(mut s), Ok(base)) = (STRAITS.write(), BASE_STRAITS.read()) {
-        *s = base.iter().copied().chain(streamed).collect();
+        *s = std::sync::Arc::new(base.iter().copied().chain(streamed).collect());
     }
     // The height field moved: re-ground the scenery standing on it.
     bump_terrain_epoch();
@@ -2672,7 +2820,7 @@ pub(crate) fn set_section_straits(index: u32, straits: &[meld_proto::coast::Stra
 
 /// A snapshot of the current straits — for the ground shader uniform, for
 /// [`terrain_height`], and for the prop cull that keeps scenery out of the water.
-pub(crate) fn straits_snapshot() -> Vec<meld_proto::coast::Strait> {
+pub(crate) fn straits_snapshot() -> std::sync::Arc<Vec<meld_proto::coast::Strait>> {
     STRAITS.read().map(|s| s.clone()).unwrap_or_default()
 }
 
@@ -2680,8 +2828,8 @@ pub(crate) fn straits_snapshot() -> Vec<meld_proto::coast::Strait> {
 /// ([`meld_proto::coast::Lobe`] — one list for both, since they are one primitive differing
 /// only in which side of the waterline the disc adds to). Kept exactly as `STRAITS` is,
 /// base/per-section split included, so a retile replaces a section's own.
-static LOBES: std::sync::RwLock<Vec<meld_proto::coast::Lobe>> =
-    std::sync::RwLock::new(Vec::new());
+static LOBES: std::sync::LazyLock<std::sync::RwLock<std::sync::Arc<Vec<meld_proto::coast::Lobe>>>> =
+    std::sync::LazyLock::new(|| std::sync::RwLock::new(std::sync::Arc::new(Vec::new())));
 static BASE_LOBES: std::sync::RwLock<Vec<meld_proto::coast::Lobe>> =
     std::sync::RwLock::new(Vec::new());
 static SECTION_LOBES: std::sync::RwLock<
@@ -2697,7 +2845,7 @@ pub(crate) fn set_lobes(lobes: Vec<meld_proto::coast::Lobe>) {
         *b = lobes.clone();
     }
     if let Ok(mut l) = LOBES.write() {
-        *l = lobes;
+        *l = std::sync::Arc::new(lobes);
     }
     // The height field moved: re-ground the scenery standing on it.
     bump_terrain_epoch();
@@ -2712,7 +2860,7 @@ pub(crate) fn set_section_lobes(index: u32, lobes: &[meld_proto::coast::Lobe]) {
     by_section.insert(index, lobes.to_vec());
     let streamed: Vec<meld_proto::coast::Lobe> = by_section.values().flatten().copied().collect();
     if let (Ok(mut l), Ok(base)) = (LOBES.write(), BASE_LOBES.read()) {
-        *l = base.iter().copied().chain(streamed).collect();
+        *l = std::sync::Arc::new(base.iter().copied().chain(streamed).collect());
     }
     // The height field moved: re-ground the scenery standing on it.
     bump_terrain_epoch();
@@ -2720,10 +2868,10 @@ pub(crate) fn set_section_lobes(index: u32, lobes: &[meld_proto::coast::Lobe]) {
 
 /// Inland water: standing bodies and the chains of flowing ones. Same base/per-section
 /// split as everything else the coastline is made of.
-static BASINS: std::sync::RwLock<Vec<meld_proto::coast::Basin>> =
-    std::sync::RwLock::new(Vec::new());
-static RIVERS: std::sync::RwLock<Vec<meld_proto::coast::RiverNode>> =
-    std::sync::RwLock::new(Vec::new());
+static BASINS: std::sync::LazyLock<std::sync::RwLock<std::sync::Arc<Vec<meld_proto::coast::Basin>>>> =
+    std::sync::LazyLock::new(|| std::sync::RwLock::new(std::sync::Arc::new(Vec::new())));
+static RIVERS: std::sync::LazyLock<std::sync::RwLock<std::sync::Arc<Vec<meld_proto::coast::RiverNode>>>> =
+    std::sync::LazyLock::new(|| std::sync::RwLock::new(std::sync::Arc::new(Vec::new())));
 static BASE_WATER: std::sync::RwLock<(Vec<meld_proto::coast::Basin>, Vec<meld_proto::coast::RiverNode>)> =
     std::sync::RwLock::new((Vec::new(), Vec::new()));
 #[allow(clippy::type_complexity)]
@@ -2743,10 +2891,10 @@ pub(crate) fn set_water(
         *b = (basins.clone(), rivers.clone());
     }
     if let Ok(mut x) = BASINS.write() {
-        *x = basins;
+        *x = std::sync::Arc::new(basins);
     }
     if let Ok(mut x) = RIVERS.write() {
-        *x = rivers;
+        *x = std::sync::Arc::new(rivers);
     }
     // The height field moved: re-ground the scenery standing on it.
     bump_terrain_epoch();
@@ -2777,10 +2925,10 @@ pub(crate) fn set_section_water(
     }
     if let Ok(base) = BASE_WATER.read() {
         if let Ok(mut x) = BASINS.write() {
-            *x = base.0.iter().copied().chain(sb).collect();
+            *x = std::sync::Arc::new(base.0.iter().copied().chain(sb).collect());
         }
         if let Ok(mut x) = RIVERS.write() {
-            *x = base.1.iter().copied().chain(sr).collect();
+            *x = std::sync::Arc::new(base.1.iter().copied().chain(sr).collect());
         }
     }
     // The height field moved: re-ground the scenery standing on it.
@@ -2796,12 +2944,12 @@ pub(crate) fn set_section_water(
 /// exists to answer "where am I".
 pub(crate) struct ShoreData {
     pub(crate) terrain_off: (f32, f32),
-    pub(crate) peaks: Vec<[f32; 4]>,
-    pub(crate) straits: Vec<meld_proto::coast::Strait>,
-    pub(crate) lobes: Vec<meld_proto::coast::Lobe>,
-    pub(crate) basins: Vec<meld_proto::coast::Basin>,
-    pub(crate) rivers: Vec<meld_proto::coast::RiverNode>,
-    pub(crate) bridges: Vec<meld_proto::coast::Bridge>,
+    pub(crate) peaks: std::sync::Arc<Vec<[f32; 4]>>,
+    pub(crate) straits: std::sync::Arc<Vec<meld_proto::coast::Strait>>,
+    pub(crate) lobes: std::sync::Arc<Vec<meld_proto::coast::Lobe>>,
+    pub(crate) basins: std::sync::Arc<Vec<meld_proto::coast::Basin>>,
+    pub(crate) rivers: std::sync::Arc<Vec<meld_proto::coast::RiverNode>>,
+    pub(crate) bridges: std::sync::Arc<Vec<meld_proto::coast::Bridge>>,
 }
 
 impl ShoreData {
@@ -2825,6 +2973,11 @@ impl ShoreData {
 }
 
 /// A snapshot of the whole shoreline.
+///
+/// Seven reference-count bumps, no copies. This is called per entity per frame from
+/// `terrain_height` and per TILE by the minimap's repaint, and it used to clone six `Vec`s
+/// every time — measured, ~24 heap allocations per `terrain_height` and ~31,000 for one
+/// minimap repaint.
 pub(crate) fn shore_data() -> ShoreData {
     ShoreData {
         terrain_off: terrain_offset(),
@@ -2894,7 +3047,8 @@ fn ground_coast() -> (f32, bool, f32) {
 }
 
 /// **LAST CITY's SPIT, as the ground shader's `city` uniform** — every term
-/// [`meld_proto::coast::city_sea_depth`] reads, in the order the shader reads them.
+/// [`meld_proto::coast::city_bay_depth`] reads, in the order the shader reads them, and
+/// `w` as the flag that says which scene this is.
 ///
 /// ⚠️ IT WAS TWO OF THE FOUR, AND THE CITY DREW AS A PLANK FLOATING ON THE OCEAN. The
 /// shader carried the flank and the tip and not `CITY_MAINLAND_BACK` — the term that gives
@@ -2905,16 +3059,27 @@ fn ground_coast() -> (f32, bool, f32) {
 /// on painting open sea seven units below it, so the whole scene read as a straight-edged
 /// tongue of grass afloat with no coast at either end.
 ///
-/// One function rather than four constants at the call site, so a term added to
-/// `city_sea_depth` cannot reach placement and miss drawing again —
+/// One function rather than three constants at the call site, so a term added to
+/// `city_bay_depth` cannot reach placement and miss drawing again —
 /// `the_shaders_city_spit_is_the_coasts_city_spit` reconstructs the shader's own arithmetic
 /// from this and holds it against the field itself.
+///
+/// ⚠️ **THE CROSSING IS NOT IN HERE ANY MORE, AND THAT IS THE POINT.** `w` used to be the
+/// causeway's half-width — a LAND term, which at 24 units across is narrower than twice
+/// `BEACH_BLEND` and so drew as a bar of wet sand with its crown below sea level. It is a
+/// [`meld_proto::coast::city_bridge`] now and rides `params.bridges` like every other span
+/// in the game, which is what gets it a flagstone deck and parapets for free. The bay is
+/// left whole underneath it — a deck that dug its own channel would have nothing to cross.
 pub(crate) fn city_sea_uniform() -> Vec4 {
     Vec4::new(
         meld_proto::coast::CITY_SHORE_HALF_WIDTH,
         meld_proto::coast::CITY_TIP_REACH,
         meld_proto::coast::CITY_MAINLAND_BACK,
-        meld_proto::coast::CAUSEWAY_HALF_WIDTH,
+        // The scene flag itself: `city.x > 0` is what both shaders branch on, and `w` is
+        // what the fragment stage asks to hold the town's ground and its sea FIXED (see
+        // `rg_biome_at`'s caller). A live component rather than pad, so the mirror test's
+        // "every component is read" rule still means something.
+        1.0,
     )
 }
 
@@ -2929,10 +3094,23 @@ pub(crate) fn city_sea_uniform() -> Vec4 {
 /// NOWHERE NEAR ITS OWN WATER. With the shore pulled in to the town's actual footprint the
 /// beach reaches the waterfront, so a constant `y` is a dock and a beached wreck hanging in
 /// the air over the slope — the same bug [`terrain_height`] was written to end for the
-/// overworld. Every city placement asks this instead, and [`terrain_height`] delegates to it
-/// so the two cannot answer differently.
+/// overworld. Every city placement asks this instead, and [`terrain_height`] reaches the
+/// same answer from the same two parts — [`city_bay_height`] through [`ground_no_bridge`],
+/// plus the town's own span through [`deck_over`] — so the two cannot answer differently.
 pub(crate) fn city_ground_height(x: f32, z: f32) -> f32 {
-    meld_proto::terrain::with_sea(0.0, meld_proto::coast::city_sea_depth(x, z), 0.0, -SEA_DEPTH)
+    deck_over(x, z, &[meld_proto::coast::city_bridge()], &city_bay_height)
+}
+
+/// The city's ground WITHOUT its span over it — the shelf, its beach, and the bay beyond.
+/// [`city_ground_height`] is this plus the deck, exactly as [`terrain_height`] is
+/// [`ground_no_bridge`] plus the deck; both go through [`deck_over`], so the crossing in
+/// town and every crossing in the maze cannot end up two different shapes.
+///
+/// ⚠️ It reads `city_bay_depth`, NOT `city_sea_depth`: the span counts as land in the
+/// latter (that is what makes the walk bound follow the deck), and folding it in here would
+/// fill the bay in under the bridge — which is the sandbar this change exists to end.
+fn city_bay_height(x: f32, z: f32) -> f32 {
+    meld_proto::terrain::with_sea(0.0, meld_proto::coast::city_bay_depth(x, z), 0.0, -SEA_DEPTH)
 }
 
 /// **The ground surface at `(x, z)`** — what everything in the world stands on.
@@ -2957,18 +3135,33 @@ pub(crate) fn terrain_height(x: f32, z: f32) -> f32 {
     // The endpoints are sampled through `ground_no_bridge`, NOT this function: the ends lie
     // inside the span by construction, so asking `terrain_height` there would be asking the
     // deck about its own height.
-    let spans = bridges();
-    if let Some((i, s, parapet, w)) = meld_proto::terrain::bridge_span_at(x, z, &spans) {
-        let b = spans[i];
-        let a = ground_no_bridge(b[0], b[1]);
-        let c = ground_no_bridge(b[2], b[3]);
-        let level = (a + (c - a) * s).max(-SEA_DEPTH + meld_proto::terrain::BRIDGE_DECK_RISE);
-        let lifted = level + parapet * meld_proto::terrain::BRIDGE_PARAPET_RISE;
-        // Ramped into the bank over the abutment, so the join is continuous rather than a rim.
-        let natural = ground_no_bridge(x, z);
-        return natural + (lifted - natural) * w;
-    }
-    ground_no_bridge(x, z)
+    deck_over(x, z, &bridges(), &ground_no_bridge)
+}
+
+/// **The ground at `(x, z)` with whatever span is overhead standing on it** — `natural`
+/// plus the deck, or `natural` where no span reaches.
+///
+/// One function because there are two grounds that carry bridges (the maze's and Last
+/// City's) and the arithmetic is mirrored a third time in WGSL (`total_height`). Three
+/// copies of "how high is a deck" is how a bridge ends up a different shape in the scene
+/// it is drawn in than in the one it is walked on.
+fn deck_over(
+    x: f32,
+    z: f32,
+    spans: &[meld_proto::coast::Bridge],
+    natural: &dyn Fn(f32, f32) -> f32,
+) -> f32 {
+    let Some((i, s, parapet, w)) = meld_proto::terrain::bridge_span_at(x, z, spans) else {
+        return natural(x, z);
+    };
+    let b = spans[i];
+    let a = natural(b[0], b[1]);
+    let c = natural(b[2], b[3]);
+    let level = (a + (c - a) * s).max(-SEA_DEPTH + meld_proto::terrain::BRIDGE_DECK_RISE);
+    let lifted = level + parapet * meld_proto::terrain::BRIDGE_PARAPET_RISE;
+    // Ramped into the bank over the abutment, so the join is continuous rather than a rim.
+    let here = natural(x, z);
+    here + (lifted - here) * w
 }
 
 /// The ground WITHOUT any bridge over it — land, peaks and ranges, folded into the sea.
@@ -2992,7 +3185,7 @@ fn ground_no_bridge(x: f32, z: f32) -> f32 {
     // publishes the flatten publishes the city flag), which is what makes the delegation
     // exact rather than approximate.
     if city {
-        return city_ground_height(x, z);
+        return city_bay_height(x, z);
     }
     let sea = if arc_half > 0.0 {
         // …including the STRAITS (WG-7). This function places every prop, tree, building,
@@ -3112,6 +3305,7 @@ pub(crate) fn update_ground_biome_rings(
     dungeon: Res<DungeonSceneRes>,
     ground_q: Query<&MeshMaterial3d<GroundMat>, With<WorldGround>>,
     mut mats: ResMut<Assets<GroundMat>>,
+    mut last_window: Local<Option<(u64, u64, i32, i32, u8, bool, bool)>>,
 ) {
     let Ok(handle) = ground_q.single() else { return };
     let Some(mut mat) = mats.get_mut(&handle.0) else { return };
@@ -3179,6 +3373,25 @@ pub(crate) fn update_ground_biome_rings(
         .get(&session.player_id)
         .map(|e| (e.x, e.y))
         .unwrap_or((0.0, 0.0));
+    // **THE WINDOWS BELOW ARE RE-CUT ONLY WHEN THEIR INPUTS MOVE.** Everything above this
+    // line animates (the swell's clock, the Shift's tell) and is cheap; everything below sorts
+    // and re-packs every landform table nearest-first — ~10 allocations and four sorts a
+    // frame, in every state, for windows that change when the height field does or when the
+    // player has walked far enough for "nearest" to mean something else. A cell of 8 units is
+    // well inside every slot count's slack.
+    let key = (
+        terrain_epoch(),
+        region_epoch(),
+        (px / 8.0).floor() as i32,
+        (pz / 8.0).floor() as i32,
+        state.get().clone() as u8,
+        frame.have,
+        dungeon.active,
+    );
+    if *last_window == Some(key) {
+        return;
+    }
+    *last_window = Some(key);
 
     // ⚠️ **A DISTANCE CULL OF THE LANDFORM UPLOADS WAS TRIED HERE AND TAKEN BACK OUT — DO
     // NOT RE-ADD IT WITHOUT A MEASUREMENT FIRST.**
@@ -3219,7 +3432,7 @@ pub(crate) fn update_ground_biome_rings(
     // when the same bug was found in the ranges; the peaks were missed **because they were
     // written before the pattern existed**, and left alone when the ranges were corrected.
     // `every_windowed_landform_is_sorted_nearest_first` is why they cannot be missed again.
-    let mut peaks = peaks_snapshot();
+    let mut peaks = (*peaks_snapshot()).clone();
     peaks.sort_by(|a, b| {
         let d = |q: &[f32; 4]| (q[0] - px).hypot(q[1] - pz) - q[2];
         d(a).total_cmp(&d(b))
@@ -3246,7 +3459,7 @@ pub(crate) fn update_ground_biome_rings(
     let near_first = |s: &[f32; 6]| {
         meld_proto::coast::dist_to_segment_pub(px, pz, s[0], s[1], s[2], s[3])
     };
-    let mut rg = ridges();
+    let mut rg = (*ridges()).clone();
     rg.sort_by(|a, b| near_first(a).total_cmp(&near_first(b)));
     let rn = rg.len().min(RIDGE_SLOTS / 2);
     for (i, slot) in mat.extension.params.ridges.iter_mut().enumerate() {
@@ -3264,7 +3477,7 @@ pub(crate) fn update_ground_biome_rings(
     let span_near_first = |s: &[f32; 5]| {
         meld_proto::coast::dist_to_segment_pub(px, pz, s[0], s[1], s[2], s[3])
     };
-    let mut bg = bridges();
+    let mut bg = (*bridges()).clone();
     // ⚠️ **NOR ARE BRIDGES CULLED.** A bridge is *forced LAND* spanning water, which puts it
     // in the same category as the straits and lobes rather than with the ridges: culling one
     // does not flatten a span, it drowns it. There are at most `MAX_BRIDGES` (8) of them
@@ -3287,7 +3500,7 @@ pub(crate) fn update_ground_biome_rings(
     // peaks above: the world streams outward without bound, so the only straits that can be
     // on screen are the ones near the player's own ring, and a flat truncation would drop
     // the coast you are standing on in favour of one back at the hub.
-    let mut near: Vec<meld_proto::coast::Strait> = straits_snapshot();
+    let mut near: Vec<meld_proto::coast::Strait> = (*straits_snapshot()).clone();
     // ⚠️ **STRAITS ARE NEVER CULLED, AND THAT IS NOT AN OVERSIGHT.** A strait does not ADD
     // something to the ground the way a peak or a ridge does — it is the WG-7 continent
     // definition, the rule that says where land is at all. Culling one does not drop
@@ -3310,7 +3523,7 @@ pub(crate) fn update_ground_biome_rings(
     mat.extension.params.strait_count = near.len() as u32;
     // …and the coast's lobes, windowed the same way and for the same reason.
     let mut near_lobes: Vec<meld_proto::coast::Lobe> =
-        LOBES.read().map(|l| l.clone()).unwrap_or_default();
+        LOBES.read().map(|l| (**l).clone()).unwrap_or_default();
     // ⚠️ **NOR ARE LOBES CULLED** — a lobe is a BAY or an ISLE, so like the straits above it
     // decides land from water rather than decorating either. See the note on the straits:
     // dropping these is what painted the whole world the sea's own light blue.
@@ -3332,7 +3545,7 @@ pub(crate) fn update_ground_biome_rings(
     // head to a downstream node and draw water across open country. They are taken as a
     // contiguous run around the player's own ring instead.
     let water = shore_data();
-    let mut near_basins = water.basins.clone();
+    let mut near_basins = (*water.basins).clone();
     near_basins.sort_by(|a, b| {
         let da = (a[0].hypot(a[1]) - pr).abs();
         let db = (b[0].hypot(b[1]) - pr).abs();
@@ -3416,8 +3629,8 @@ static REGIONS: std::sync::RwLock<Option<meld_proto::regions::Regions>> =
 /// **THIS WORLD'S BRIDGES** — spans of forced land carrying the trail across a strait. Held
 /// beside the ranges for the same reason: a per-world landform table the ground shader draws
 /// and [`terrain_height`] stands entities on.
-static BRIDGES: std::sync::RwLock<Vec<meld_proto::coast::Bridge>> =
-    std::sync::RwLock::new(Vec::new());
+static BRIDGES: std::sync::LazyLock<std::sync::RwLock<std::sync::Arc<Vec<meld_proto::coast::Bridge>>>> =
+    std::sync::LazyLock::new(|| std::sync::RwLock::new(std::sync::Arc::new(Vec::new())));
 
 /// The bridges that came with `run.started` — the initial chain's, which no section message
 /// re-sends. Held apart from the streamed ones exactly as `BASE_RIDGES` is.
@@ -3438,7 +3651,7 @@ pub(crate) fn set_bridges(b: Vec<meld_proto::coast::Bridge>) {
         by_section.clear();
     }
     if let Ok(mut all) = BRIDGES.write() {
-        *all = b;
+        *all = std::sync::Arc::new(b);
     }
     // The height field moved: re-ground the scenery standing on it.
     bump_terrain_epoch();
@@ -3466,7 +3679,7 @@ pub(crate) fn set_section_bridges(index: u32, bridges: &[meld_proto::coast::Brid
     let streamed: Vec<meld_proto::coast::Bridge> =
         by_section.values().flatten().copied().collect();
     if let (Ok(mut b), Ok(base)) = (BRIDGES.write(), BASE_BRIDGES.read()) {
-        *b = base.iter().copied().chain(streamed).collect();
+        *b = std::sync::Arc::new(base.iter().copied().chain(streamed).collect());
     }
     // The height field moved: re-ground the scenery standing on it.
     bump_terrain_epoch();
@@ -3486,14 +3699,49 @@ pub(crate) fn set_section_bridges(index: u32, bridges: &[meld_proto::coast::Brid
 /// ⚠️ ONLY WHERE THERE IS A FAN. `bridge_surface` does not consult the coastline, so in
 /// corridor mode (no arc, no sea anywhere) an unconditional approach would raise a deck over
 /// open ground near the hub of every tutorial and every test world.
-pub(crate) fn bridges() -> Vec<meld_proto::coast::Bridge> {
+pub(crate) fn bridges() -> std::sync::Arc<Vec<meld_proto::coast::Bridge>> {
     let streamed = BRIDGES.read().map(|b| b.clone()).unwrap_or_default();
     let (arc_half, city, _) = ground_coast();
-    if arc_half <= 0.0 || city {
-        return streamed;
+    // The composed list is rebuilt only when its inputs move: the streamed table (by
+    // pointer — a new `Arc` per write) or which scene we are in. `terrain_height` asks for
+    // this once per call, per entity, per frame.
+    let mode: u8 = if city { 1 } else if arc_half > 0.0 { 2 } else { 0 };
+    if let Ok(cache) = BRIDGES_VIEW.read() {
+        if let Some((src, m, view)) = cache.as_ref() {
+            if *m == mode && std::sync::Arc::ptr_eq(src, &streamed) {
+                return view.clone();
+            }
+        }
+    }
+    let view = std::sync::Arc::new(compose_bridges(&streamed, mode));
+    if let Ok(mut cache) = BRIDGES_VIEW.write() {
+        *cache = Some((streamed, mode, view.clone()));
+    }
+    view
+}
+
+#[allow(clippy::type_complexity)]
+static BRIDGES_VIEW: std::sync::RwLock<
+    Option<(std::sync::Arc<Vec<meld_proto::coast::Bridge>>, u8, std::sync::Arc<Vec<meld_proto::coast::Bridge>>)>,
+> = std::sync::RwLock::new(None);
+
+fn compose_bridges(streamed: &[meld_proto::coast::Bridge], mode: u8) -> Vec<meld_proto::coast::Bridge> {
+    let city = mode == 1;
+    // ⚠️ **LAST CITY HAS EXACTLY ONE SPAN, AND IT IS NOT THE WORLD'S.** The city is its own
+    // scene in its own coordinates, so a world bridge that happens to lie near the origin
+    // would raise a deck across the plaza — the same coordinate-frame trap the city's
+    // shoreline already had to be handed its own copy of. Its crossing rides this list for
+    // the reason the western approach does: being in it is what makes a span a raised DECK
+    // (`terrain_height` stands everything on it, the shader paints it) rather than a strip
+    // of ground where the sea is not.
+    if city {
+        return vec![meld_proto::coast::city_bridge()];
+    }
+    if mode == 0 {
+        return streamed.to_vec();
     }
     let mut v = vec![western_approach()];
-    v.extend(streamed);
+    v.extend_from_slice(streamed);
     v
 }
 
@@ -3512,8 +3760,8 @@ pub(crate) fn western_approach() -> meld_proto::coast::Bridge {
 /// **THIS WORLD'S RANGES.** Held beside the peaks because it is the same kind of thing: a
 /// per-world landform table the server hands down and both the ground shader and
 /// [`terrain_height`] read, so an entity stands on the mountain rather than inside it.
-static RIDGES: std::sync::RwLock<Vec<meld_proto::terrain::Ridge>> =
-    std::sync::RwLock::new(Vec::new());
+static RIDGES: std::sync::LazyLock<std::sync::RwLock<std::sync::Arc<Vec<meld_proto::terrain::Ridge>>>> =
+    std::sync::LazyLock::new(|| std::sync::RwLock::new(std::sync::Arc::new(Vec::new())));
 
 /// Replace this world's ranges (call on `run.started`).
 pub(crate) fn set_ridges(r: Vec<meld_proto::terrain::Ridge>) {
@@ -3524,7 +3772,7 @@ pub(crate) fn set_ridges(r: Vec<meld_proto::terrain::Ridge>) {
         by_section.clear();
     }
     if let Ok(mut all) = RIDGES.write() {
-        *all = r;
+        *all = std::sync::Arc::new(r);
     }
     // The height field moved: re-ground the scenery standing on it.
     bump_terrain_epoch();
@@ -3555,14 +3803,14 @@ pub(crate) fn set_section_ridges(index: u32, ridges: &[meld_proto::terrain::Ridg
     let streamed: Vec<meld_proto::terrain::Ridge> =
         by_section.values().flatten().copied().collect();
     if let (Ok(mut r), Ok(base)) = (RIDGES.write(), BASE_RIDGES.read()) {
-        *r = base.iter().copied().chain(streamed).collect();
+        *r = std::sync::Arc::new(base.iter().copied().chain(streamed).collect());
     }
     // The height field moved: re-ground the scenery standing on it.
     bump_terrain_epoch();
 }
 
 /// This world's ranges.
-pub(crate) fn ridges() -> Vec<meld_proto::terrain::Ridge> {
+pub(crate) fn ridges() -> std::sync::Arc<Vec<meld_proto::terrain::Ridge>> {
     RIDGES.read().map(|r| r.clone()).unwrap_or_default()
 }
 
@@ -3618,8 +3866,19 @@ pub(crate) fn regions() -> meld_proto::regions::Regions {
 /// The one place a client-side coordinate becomes a theme, so grass placement, the minimap
 /// and the HUD label cannot disagree with the floor they are drawn on.
 pub(crate) fn biome_at_world(x: f32, z: f32) -> &'static str {
+    // ⚠️ **LAST CITY IS ALWAYS THE SAME PLACE.** The town is the one ground in the game
+    // that must not move — a Meld repaints the world's cells and the city is what you come
+    // home TO — and its coordinates are its own scene's, not the world's. `REGIONS`
+    // outlives the run that set it, though, so from the second screen of every session
+    // this answered the world's grid at city coordinates: the grass, the minimap and the
+    // HUD label all took whatever biome the origin happened to land in, and the ground
+    // shader (which asks its own copy of this) painted the plaza and the bay to match.
+    // The scene decides, exactly as it does for the shoreline — same flag, same authority.
+    if ground_coast().1 {
+        return "forest";
+    }
     let rg = regions();
-    // No world yet (menus, city): the decomposition is inert and everything reads forest.
+    // No world yet (menus): the decomposition is inert and everything reads forest.
     // A FORCED biome still answers, so `MELD_BIOME` colours those screens too.
     if rg.grid.ring_step <= 0.0 && rg.force < 0 {
         return "forest";
@@ -3706,8 +3965,11 @@ pub(crate) fn drive_ashfall(
     let focus = cam_q.single().map(ground_focus).unwrap_or(Vec3::ZERO);
     let t = time.elapsed_secs();
     let show = ash.intensity > 0.02;
+    let vis = if show { Visibility::Inherited } else { Visibility::Hidden };
     for (mut f, mut tf, mut v) in &mut flecks {
-        *v = if show { Visibility::Inherited } else { Visibility::Hidden };
+        if *v != vis {
+            *v = vis;
+        }
         if !show {
             continue;
         }
@@ -4243,7 +4505,9 @@ pub(crate) fn apply_sky(
         Visibility::Hidden
     };
     for mut v in &mut stars {
-        *v = star_vis;
+        if *v != star_vis {
+            *v = star_vis;
+        }
     }
 
     if let Some(sm) = skymats {
@@ -4333,8 +4597,11 @@ pub(crate) fn drive_snow(
     // A storm drives it harder and slants it further; fair weather is a gentle fall.
     let hard = 0.45 + sky.weather * 0.55;
     let slant = (0.6 + sky.wind * 2.4) * hard;
+    let vis = if snowing { Visibility::Inherited } else { Visibility::Hidden };
     for (mut f, mut tf, mut v) in &mut flakes {
-        *v = if snowing { Visibility::Inherited } else { Visibility::Hidden };
+        if *v != vis {
+            *v = vis;
+        }
         if !snowing {
             continue;
         }
@@ -4387,6 +4654,12 @@ pub(crate) fn drive_rain(
     // over the play area. Capture its ground position for the drops below.
     let mut ground = Vec2::new(cam.x, cam.z);
     for (mut rc, mut t, mut v) in &mut cloud_q {
+        if *v != vis {
+            *v = vis;
+        }
+        if !raining {
+            continue;
+        }
         rc.off.x += CLOUD_WIND * dt;
         // Keep the cloud in a tight band over the play area so its shower passes over
         // the player as it drifts (rather than wandering off to the horizon).
@@ -4396,7 +4669,6 @@ pub(crate) fn drive_rain(
         }
         t.translation = Vec3::new(cam.x + rc.off.x, RAIN_CLOUD_Y, cam.z + rc.off.y);
         ground = Vec2::new(t.translation.x, t.translation.z);
-        *v = vis;
     }
     // A super storm soaks the WHOLE area: anchor the drops on the player and spread
     // them wide, instead of the tight patch under the drifting cloud.
@@ -4406,7 +4678,9 @@ pub(crate) fn drive_rain(
         (ground, 1.0)
     };
     for (mut d, mut t, mut v) in &mut rain_q {
-        *v = vis;
+        if *v != vis {
+            *v = vis;
+        }
         if raining {
             d.off.y -= 55.0 * dt; // fall
             if d.off.y < 0.0 {
@@ -4462,6 +4736,91 @@ pub(crate) fn boss_band_tint(band: u8) -> Color {
 mod ground_uniform_tests {
     use super::*;
     use bevy::render::render_resource::ShaderType;
+
+    /// ⚠️ **THE SCENE FLAGS ARE PROCESS-WIDE, AND CARGO RUNS TESTS IN PARALLEL.**
+    /// `set_ground_coast` and `set_regions` write the statics every reader below asks —
+    /// which world, which scene — so two tests standing in different scenes at once make
+    /// each other's answers wrong (`bridges()` in particular hands back the City's span or
+    /// the maze's depending on a flag the *other* test just set). Every test that moves
+    /// them takes this first, and puts them back when it is done.
+    static SCENE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Take [`SCENE`] even if a previous test panicked while holding it — a poisoned lock
+    /// would otherwise turn one real failure into a cascade of unrelated ones.
+    fn scene_lock() -> std::sync::MutexGuard<'static, ()> {
+        SCENE.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// **THE RINGS MUST TILE THE PLANE EXACTLY — no gap, no double-covered band.**
+    ///
+    /// The whole saving rests on each level indexing only the annulus outside the last,
+    /// and that arithmetic is a hole test on a quad's own corners. Get it wrong one way
+    /// and a band of ground is missing (a hole you can see the sky through); wrong the
+    /// other and it is drawn twice, which costs exactly what this change exists to save
+    /// and z-fights. Summing the areas catches both: overlap overshoots, a gap
+    /// undershoots, and only an exact tiling hits `GROUND_SIZE^2`.
+    #[test]
+    fn the_ground_rings_tile_the_plane_exactly() {
+        let mut area = 0.0f64;
+        let mut inner = 0.0f32;
+        let mut quads = 0usize;
+        for (cell, half) in GROUND_LOD {
+            let n = (2.0 * half / cell).round() as i32;
+            assert!(
+                ((2.0 * half / cell) - n as f32).abs() < 1e-3,
+                "level (cell {cell}, half {half}) is not a whole number of cells"
+            );
+            for iz in 0..n {
+                for ix in 0..n {
+                    let x0 = -half + ix as f32 * cell;
+                    let z0 = -half + iz as f32 * cell;
+                    if inner > 0.0
+                        && x0 >= -inner
+                        && x0 + cell <= inner
+                        && z0 >= -inner
+                        && z0 + cell <= inner
+                    {
+                        continue;
+                    }
+                    area += (cell as f64) * (cell as f64);
+                    quads += 1;
+                }
+            }
+            inner = half;
+        }
+        let want = (GROUND_SIZE as f64) * (GROUND_SIZE as f64);
+        assert!(
+            (area - want).abs() < 1.0,
+            "the rings cover {area} u² of a {want} u² plane — they gap or overlap"
+        );
+        // The saving itself, so a future edit cannot quietly hand the cost back.
+        assert_eq!(quads, 11_716, "quad count moved; the retired uniform plane was 160,801");
+    }
+
+    /// **EVERY TRIANGLE FACES +Y.** The obvious corner order is upside down in Bevy's
+    /// right-handed, Y-up space, and a back-facing ground is invisible from above while
+    /// still costing every one of the vertex evaluations this change exists to remove.
+    #[test]
+    fn the_ground_rings_all_face_upward() {
+        let mesh = ground_lod_mesh();
+        let Some(bevy::mesh::VertexAttributeValues::Float32x3(pos)) =
+            mesh.attribute(Mesh::ATTRIBUTE_POSITION)
+        else {
+            panic!("positions missing")
+        };
+        let Some(bevy::mesh::Indices::U32(idx)) = mesh.indices() else { panic!("indices missing") };
+        assert!(!idx.is_empty(), "no triangles at all");
+        for t in idx.as_chunks::<3>().0 {
+            let (a, b, c) = (pos[t[0] as usize], pos[t[1] as usize], pos[t[2] as usize]);
+            let (u, v) = (
+                [b[0] - a[0], b[1] - a[1], b[2] - a[2]],
+                [c[0] - a[0], c[1] - a[1], c[2] - a[2]],
+            );
+            // y component of u x v
+            let ny = u[2] * v[0] - u[0] * v[2];
+            assert!(ny > 0.0, "a ground triangle is wound face-down (ny {ny})");
+        }
+    }
 
     /// **EVERY WINDOWED LANDFORM MUST BE SORTED NEAREST-FIRST, NOT TRUNCATED.**
     ///
@@ -4654,6 +5013,7 @@ mod ground_uniform_tests {
     /// nothing called it.
     #[test]
     fn the_approach_reaches_every_side_that_draws_it() {
+        let _scene = scene_lock();
         let a = western_approach();
         let (x1, x2, hw) = (a[0], a[2], a[4]);
         assert!(hw > 0.0, "the span has no width: {a:?}");
@@ -4822,11 +5182,14 @@ mod ground_uniform_tests {
             for zi in -60..=60 {
                 let (x, z) = (xi as f32 / 60.0 * reach, zi as f32 / 60.0 * reach);
                 // `sea_depth_at`'s city branch, transcribed:
-                //   min(min(max(|x| - .x, |z| - .y), max(|x| - .w, z - .y)), z + .z)
+                //   min(max(|x| - .x, |z| - .y), z + .z)
                 let shelf = (x.abs() - spit.x).max(z.abs() - spit.y);
-                let causeway = (x.abs() - spit.w).max(z - spit.y);
-                let shader = shelf.min(causeway).min(z + spit.z);
-                let field = meld_proto::coast::city_sea_depth(x, z);
+                let shader = shelf.min(z + spit.z);
+                // …against the BAY, not `city_sea_depth`: the crossing is a `Bridge` and a
+                // bridge is deliberately absent from what either side DRAWS the sea by, so
+                // the water runs on under its parapets. `the_town_span_is_the_one_the_shader_draws`
+                // is what holds the deck's own two sides together.
+                let field = meld_proto::coast::city_bay_depth(x, z);
                 assert!(
                     (shader - field).abs() < 1e-3,
                     "at ({x}, {z}) the ground shader says {shader} and `city_sea_depth` says \
@@ -4838,22 +5201,139 @@ mod ground_uniform_tests {
         assert!(checked > 10_000, "the sweep covered almost nothing ({checked} points)");
 
         // …and the transcription above is only evidence if the shaders really do read all
-        // four components. The mainland term is the one that went missing once already, and
-        // a shader that never mentions a component agrees with nothing.
+        // three components. The mainland term is the one that went missing once already,
+        // and a shader that never mentions a component agrees with nothing.
         for (name, src) in [
             ("ground_biome", include_str!("../assets/shaders/ground_biome.wgsl")),
             ("ground_prepass", include_str!("../assets/shaders/ground_prepass.wgsl")),
         ] {
             let a = src.find("if (params.city.x > 0.0) {").expect("the city branch");
             let branch = &src[a..a + src[a..].find("\n    }").expect("the branch closes")];
-            for term in ["params.city.x", "params.city.y", "params.city.z", "params.city.w"] {
+            for term in ["params.city.x", "params.city.y", "params.city.z"] {
                 assert!(
                     branch.contains(term),
                     "`{name}.wgsl`'s city coast never reads `{term}` — it is drawing a \
                      shoreline with one of the spit's edges missing"
                 );
             }
+            assert!(
+                !branch.contains("params.city.w"),
+                "`{name}.wgsl` still has the causeway as a LAND term in its city coast — \
+                 the bay has to run on under the bridge or there is nothing to cross"
+            );
         }
+
+        // `w` is the SCENE FLAG, and its one job is holding the town's ground and its sea
+        // fixed. A component nobody reads is a component that goes stale — this one carries
+        // "Last City is always the same place", which is the whole of `BD-…`'s complaint.
+        let src = include_str!("../assets/shaders/ground_biome.wgsl");
+        assert!(
+            src.contains("params.city.w > 0.0"),
+            "the fragment stage never asks whether it is in the City — the plaza and the \
+             bay are painted with whatever biome the last dive's decomposition says"
+        );
+    }
+
+    /// **THE TOWN IS THE ONE GROUND THAT NEVER CHANGES.** A dive hands the client a
+    /// decomposition that outlives it, so this is the regression: come home from a mire
+    /// and the plaza is a bog, come home from a tundra and the bay draws with the ice tile
+    /// (which does not even swell). Held on the resolver every surface in town reads —
+    /// the grass scatter, the minimap, the HUD label, and the ground shader through its
+    /// own copy of the same rule.
+    #[test]
+    fn last_city_is_always_the_same_place() {
+        let _scene = scene_lock();
+        // A world as hostile to this as one can be: every cell forced to the mire, and a
+        // Shift having repainted the origin's own cell to ashfall on top of it.
+        let mut rg = meld_proto::regions::Regions {
+            grid: meld_proto::regions::Grid {
+                arc_half: 2.6, ring_step: 250.0, cell_width: 250.0, warp: 0.4, seed: 424_242,
+            },
+            force: meld_proto::regions::biome_index("mire").expect("mire") as i32,
+            ..Default::default()
+        };
+        rg.repaints.set(
+            meld_proto::regions::Cell::from_key(rg.grid.cell_at(0.0, 0.0).key()),
+            meld_proto::regions::biome_index("ashfall").expect("ashfall"),
+        );
+        set_regions(rg);
+
+        set_ground_coast(2.6, false, 1.0);
+        assert_ne!(
+            biome_at_world(0.0, 0.0), "forest",
+            "the fixture is not actually forcing a biome, so the City proves nothing"
+        );
+        set_ground_coast(2.6, true, 0.0);
+        for (x, z) in [
+            (0.0, 0.0),
+            (meld_proto::coast::CITY_SHORE_HALF_WIDTH, 0.0),
+            (0.0, -meld_proto::coast::CITY_MAINLAND_BACK),
+            (0.0, meld_proto::coast::CITY_TIP_REACH + 40.0),
+        ] {
+            assert_eq!(
+                biome_at_world(x, z), "forest",
+                "Last City took the world's biome at ({x}, {z}) — the plaza moves with the \
+                 last dive, and its ocean with it"
+            );
+        }
+        set_ground_coast(0.0, false, 1.0);
+        *REGIONS.write().unwrap() = None;
+    }
+
+    /// **THE WAY OUT OF TOWN IS A BRIDGE ON BOTH SIDES OF THE WIRE.** The deck is drawn by
+    /// the shader off `params.bridges` and walked on through `terrain_height`, and both
+    /// read `bridges()` — so this holds the one thing that could still disagree: that the
+    /// city's list is the CITY's span and nothing else. A world bridge near the origin
+    /// would otherwise raise a deck across the plaza, which is the coordinate-frame trap
+    /// the city's shoreline already needed its own copy of.
+    #[test]
+    fn the_town_span_is_the_one_the_shader_draws() {
+        let _scene = scene_lock();
+        let city = meld_proto::coast::city_bridge();
+        set_ground_coast(0.6, true, 0.0);
+        assert_eq!(*bridges(), vec![city], "the City is carrying somebody else's bridges");
+
+        // The deck stands ABOVE the bay it crosses. This is the whole regression: as a
+        // causeway the crossing was 24 units wide against a 28-unit beach, so every point
+        // of it was inside its own ramp, its crown sat BELOW sea level, and the way out of
+        // town was a bar of wet sand. Two claims, because they are two different ones —
+        // the deck never dips toward the water anywhere along the span (the ends included,
+        // where it grows out of the bank and legitimately meets it), and out over the OPEN
+        // bay it is a storey clear of the water rather than skimming it.
+        let (mut sampled, mut worst) = (0, f32::MAX);
+        let (mut z, end) = (city[1] - 1.0, city[3] + 1.0);
+        let open_bay = -(meld_proto::coast::CITY_MAINLAND_BACK - 2.0)
+            ..=-(meld_proto::coast::CITY_TIP_REACH + 2.0);
+        while z >= end {
+            let deck = city_ground_height(0.0, z);
+            worst = worst.min(deck);
+            if open_bay.contains(&z) {
+                let bay = city_bay_height(0.0, z);
+                assert!(
+                    bay < -SEA_DEPTH + 1.0,
+                    "at z = {z} the bay ({bay}) is not open water — the span is on a sandbar"
+                );
+                assert!(
+                    deck > bay + 5.0,
+                    "at z = {z} the deck ({deck}) is skimming the bay ({bay})"
+                );
+                sampled += 1;
+            }
+            z -= 0.5;
+        }
+        assert!(sampled > 100, "the sweep covered almost nothing ({sampled} points)");
+        assert!(worst > -SEA_DEPTH + 2.0, "the deck dips to {worst}, all but into the water");
+
+        // …and the parapets are stone standing proud of it, or it reads as a pale stripe on
+        // the sea rather than as a bridge.
+        let mid = (city[1] + city[3]) * 0.5;
+        let rail = city_ground_height(meld_proto::coast::CITY_SPAN_HALF_WIDTH - 0.4, mid);
+        assert!(
+            rail > city_ground_height(0.0, mid) + 1.0,
+            "the deck has no parapets: rail {rail} against a roadway {}",
+            city_ground_height(0.0, mid)
+        );
+        set_ground_coast(0.0, false, 1.0);
     }
 
     /// `coast::BASIN_SHORE_SLOPE` is written as a literal in both shaders, because a WGSL
