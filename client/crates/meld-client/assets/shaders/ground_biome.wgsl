@@ -478,8 +478,8 @@ fn sea_depth_at(wxz: vec2<f32>) -> f32 {
     // LAST CITY IS THE SAME SEA, DRAWN BY THE SAME SHADER. The city is its own scene in
     // its own coordinates and cannot use the world's radial fan (that shoreline, expressed
     // in city space, runs straight through the plaza), so it hands its OWN spit down:
-    // `city` is (shore half-width, shelf reach, mainland back, causeway half-width), nonzero
-    // only in the City — see `world_render::city_sea_uniform`.
+    // `city` is (shore half-width, shelf reach, mainland back, 1 = this is the City),
+    // nonzero only in the City — see `world_render::city_sea_uniform`.
     //
     // It used to be three hand-placed water planes instead, sitting a hair ABOVE the lawn
     // because the flat plaza had nothing to dip into — the exact "two hand-placed
@@ -493,16 +493,23 @@ fn sea_depth_at(wxz: vec2<f32>) -> f32 {
     // `city_sea_depth` grew its MAINLAND term to fix exactly that and the drawing side never
     // got it, so the shader painted open sea over ground the game was standing things on.
     //
-    // Land is the SHELF, the CAUSEWAY out of town, or the MAINLAND that causeway reaches, so
-    // the sea is however far you are from the nearest of the three — `min`, as the ocean's
-    // own branch below takes the min of its fan, spit and neck, and a `min` of signed
-    // distances is what keeps the field CONTINUOUS so every smoothstep over it still gets a
-    // beach instead of a step. MUST match `coast::city_sea_depth` term for term.
+    // Land is the SHELF the town stands on or the MAINLAND across the bay from it, so the
+    // sea is however far you are from the nearer of the two — `min`, as the ocean's own
+    // branch below takes the min of its fan, spit and neck, and a `min` of signed distances
+    // is what keeps the field CONTINUOUS so every smoothstep over it still gets a beach
+    // instead of a step. MUST match `coast::city_bay_depth` term for term.
+    //
+    // ⚠️ THE CROSSING IS DELIBERATELY NOT A TERM HERE. It used to be a third one — a
+    // causeway, LAND — and at 24 units across it was narrower than twice `BEACH_BLEND`, so
+    // every point of it sat inside its own beach ramp and the way out of town drew as a bar
+    // of wet sand whose crown was below sea level. It is a `coast::city_bridge` now, riding
+    // `params.bridges` like every span in the maze: the bay runs on underneath it and
+    // `total_height` raises the deck out of it. The sea a bridge crosses has to still be
+    // there, which is why `sea_depth_at` never consults the spans.
     if (params.city.x > 0.0) {
         let past_shelf = max(abs(wxz.x) - params.city.x, abs(wxz.y) - params.city.y);
-        let past_causeway = max(abs(wxz.x) - params.city.w, wxz.y - params.city.y);
         let past_mainland = wxz.y + params.city.z;
-        return min(min(past_shelf, past_causeway), past_mainland);
+        return min(past_shelf, past_mainland);
     }
     let arc_half = params.coast.x;
     if (arc_half <= 0.0) { return -1000.0; }          // corridor mode: no gap, no sea
@@ -1181,8 +1188,18 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     // Hoisted: the SEA needs the biome it borders too, to pick its tile (ice off a tundra
     // shore, bog off a mire one), and it is otherwise scoped to the branch below.
     var here_biome: i32 = 0;
-    if (params.region.y <= 0.0) {
-        // No world (menus / city): plain forest floor.
+    // ⚠️ **LAST CITY IS ALWAYS THE SAME PLACE, AND ITS WATER IS ALWAYS THE OCEAN.** The
+    // town is the one surface in the game that must not move: a Meld repaints the world's
+    // cells, and coming home to a plaza that has become a bog is the opposite of what home
+    // is for. This branch used to read "no world (menus / city)" and be TRUE of the city by
+    // accident — the decomposition is inert until `run.started` — but `REGIONS` is a
+    // per-client static that outlives the dive that set it, so from the second screen of
+    // every session the city asked the WORLD's grid what biome its own coordinates were.
+    // The answer moved with the seed, with `MELD_BIOME`, and with every Shift: the lawn
+    // went to ash and the bay drew with the mire's bog tile or the tundra's ice, which does
+    // not even swell. The city's own scene flag decides it now, not the absence of a world.
+    if (params.region.y <= 0.0 || params.city.w > 0.0) {
+        // No world (menus), or the City: plain forest floor and open blue sea.
         blended = biome_color(0, uv);
     } else {
         here_biome = rg_tex_of(rg_biome_at(in.world_position.xz));
