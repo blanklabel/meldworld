@@ -553,6 +553,7 @@ fn main() {
                 overworld_camera_control,
                 gather_steer,
                 emit_move,
+                face_where_you_steer,
                 joystick_visual,
                 touch_action_buttons,
                 (action_hud_tap, action_hud_boon_tap, action_hud_watch_tap),
@@ -2366,6 +2367,23 @@ struct Predict {
     last_ack: u32,
     /// Consecutive snapshots that did not move `last_ack` while inputs were outstanding.
     stale: u8,
+    /// How far ONE acknowledged intent moved the avatar, in world units.
+    ///
+    /// ⚠️ **DERIVED FROM THE ACKS, NEVER FROM A CLOCK.** The replay's lead shrinks by
+    /// `n x step` when a snapshot acknowledges `n` intents, while the authoritative
+    /// position advances by `n x true_step`; those cancel only if the estimate is exact.
+    /// The first cut scaled by `OwInterp::speed`, which is distance over a RECEIPT
+    /// INTERVAL — so network jitter entered the estimate, and an overestimate of a few
+    /// percent left a small BACKWARD step at every snapshot. That is invisible as motion
+    /// and highly visible as facing: `animate_chars` takes the 8-way facing from
+    /// frame-to-frame movement over a 2e-3 threshold, so the avatar turns round and
+    /// "points the way you came from".
+    ///
+    /// Position-delta over intents-acknowledged has no clock in it at all, and is exactly
+    /// the quantity the replay needs.
+    step: f32,
+    /// The authoritative position at the previous ack, to difference against.
+    last_pos: Option<Vec2>,
 }
 
 /// Snapshots the ack may fail to advance before the history is abandoned as desynced.

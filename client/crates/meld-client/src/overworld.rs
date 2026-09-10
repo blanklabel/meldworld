@@ -1516,6 +1516,32 @@ pub(crate) fn gather_steer(
     }
 }
 
+/// **The local avatar faces where you are STEERING, not where its transform drifted.**
+///
+/// ⚠️ `animate_chars` derives the 8-way facing from frame-to-frame movement over a
+/// 2e-3 threshold, which is the right rule for a REMOTE body — all we know about one is
+/// where it has been. For our own avatar it is guessing at something we are told
+/// directly, and it makes the sprite a sensitive detector of any backwards step the
+/// prediction leaves behind: a few hundredths of a unit of correction, far too small to
+/// read as motion, spins the character round to "point the way you came from" (reported
+/// from play, and the reason the ack-derived `Predict::step` above exists).
+///
+/// Reuses the `locked` facing the battle heroes already use, so there is one facing rule
+/// rather than two. Cleared the moment the stick centres, or the avatar would hold its
+/// last heading through an idle it should be facing the camera for.
+pub(crate) fn face_where_you_steer(
+    steer: Res<Steer>,
+    session: Res<Session>,
+    mut q: Query<(&WorldEntity, &mut CharSprite)>,
+) {
+    for (we, mut cs) in &mut q {
+        if we.0 != session.player_id {
+            continue;
+        }
+        cs.locked = (steer.0 != Vec2::ZERO).then(|| steer.0.normalize());
+    }
+}
+
 /// Send `movement.move_intent` from [`Steer`] at a fixed cadence so walk speed is
 /// frame-rate-independent (device-agnostic — keyboard and touch feed the same
 /// path).
@@ -1615,6 +1641,7 @@ pub(crate) fn sync_overworld_sprites(
         // sit permanently ahead of itself at the replay cap. Packet loss does the same
         // thing for a shorter while. Detected rather than assumed — the old guard cleared
         // on every key release, which threw away intents that were merely in flight.
+        let prev_ack = predict.last_ack;
         if world_last_input_seq != predict.last_ack {
             predict.last_ack = world_last_input_seq;
             predict.stale = 0;
@@ -1625,6 +1652,28 @@ pub(crate) fn sync_overworld_sprites(
             predict.pending.clear();
             predict.seq = world_last_input_seq;
             predict.stale = 0;
+        }
+        // Learn how far ONE intent moves us, straight from the acknowledgement: the
+        // position moved this far while the server applied that many of our intents.
+        // No clock, so no receipt jitter — see `Predict::step`.
+        if let Some(e) = world.entities.get(&session.player_id) {
+            let here = Vec2::new(e.x, e.y);
+            let acked = world_last_input_seq.saturating_sub(prev_ack);
+            if let (Some(prev), true) = (predict.last_pos, acked > 0) {
+                let per = here.distance(prev) / acked as f32;
+                // Only while walking FREELY. A step the world refused is a true zero and
+                // would drag the estimate down, which then under-leads the next open
+                // stretch; the queue drains on its own when blocked, so the lead is
+                // already small there and the constant is what the next free stride wants.
+                if per > predict.step * 0.5 {
+                    predict.step = if predict.step <= 1e-4 {
+                        per
+                    } else {
+                        predict.step + (per - predict.step) * OW_SPEED_EMA
+                    };
+                }
+            }
+            predict.last_pos = Some(here);
         }
         // The local player's own pace, smoothed, BEFORE the buffer rolls — the sample
         // about to be overwritten is the one this needs. `dt` is clamped to a plausible
@@ -1790,12 +1839,11 @@ pub(crate) fn sync_overworld_sprites(
                         {
                             predict.pending.pop_front();
                         }
-                        let per = interp.speed / MOVE_INTENT_HZ;
                         let lead: Vec2 = predict
                             .pending
                             .iter()
                             .take(PREDICT_MAX_REPLAY)
-                            .map(|(_, d)| *d * per)
+                            .map(|(_, d)| *d * predict.step)
                             .sum();
                         (e.x + lead.x, e.y + lead.y)
                     };
