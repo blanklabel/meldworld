@@ -2839,11 +2839,17 @@ impl WorldActor {
                     .map(|(_, e)| e.clone())
                     .collect(),
             };
+            // Tell this session which of ITS OWN inputs this position already contains,
+            // so the client can drop those and re-apply only what is still in flight.
+            // Read per recipient: the field describes the addressee, not the world.
+            let last_input_seq =
+                self.arena.avatar(&r.player_id).map(|a| a.last_input_seq).unwrap_or(0);
             out.push(out_msg(
                 &r.player_id,
                 &wm::Snapshot {
                     server_tick,
                     entities: culled,
+                    last_input_seq,
                 },
             ));
         }
@@ -3439,7 +3445,8 @@ impl WorldActor {
                     })
             });
         }
-        out_msg(pid, &wm::Snapshot { server_tick, entities })
+        let last_input_seq = self.arena.avatar(pid).map(|a| a.last_input_seq).unwrap_or(0);
+        out_msg(pid, &wm::Snapshot { server_tick, entities, last_input_seq })
     }
 
     /// The caller's hero roster (name/class/level/attributes) for the party panel.

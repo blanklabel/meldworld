@@ -130,6 +130,24 @@ pub mod movement {
     pub struct Snapshot {
         pub server_tick: i64,
         pub entities: Vec<SnapshotEntity>,
+        /// The last `MoveIntent::input_seq` of **this recipient's own** that the server
+        /// had applied when it took this snapshot — so a predicting client can tell which
+        /// of its inputs this position already contains, drop those, and re-apply only
+        /// the ones still in flight.
+        ///
+        /// ⚠️ **THE PROTOCOL ALWAYS HAD THE OTHER THREE QUARTERS OF THIS.** `MoveIntent`
+        /// has carried `input_seq` AND `client_pos` from the start, the avatar has stored
+        /// `last_input_seq`, and `PositionCorrection` reports it — but a correction is
+        /// only sent for an authoritative teleport, so on the ordinary walking path the
+        /// client was never told what the server had seen. It therefore could not predict,
+        /// and rendered its own avatar at the server's position: every input cost a round
+        /// trip, reported from play as the overworld waiting to "hear back".
+        ///
+        /// Per-message rather than per-entity: it describes the SESSION this snapshot is
+        /// addressed to, and putting it on `SnapshotEntity` would repeat one player's
+        /// bookkeeping on every creature in the cull.
+        #[serde(default)]
+        pub last_input_seq: u32,
     }
     #[derive(Debug, Clone, Default, Serialize, Deserialize)]
     pub struct SnapshotEntity {

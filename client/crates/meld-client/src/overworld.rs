@@ -1524,9 +1524,18 @@ pub(crate) fn emit_move(
     net: NonSend<NetRes>,
     time: Res<Time>,
     mut clock: ResMut<MoveClock>,
+    mut predict: ResMut<Predict>,
 ) {
     if steer.0 == Vec2::ZERO {
         clock.acc = 0.0;
+        // ⚠️ **NOT STEERING MEANS NOTHING OF OURS IS IN FLIGHT.** Draining here rather
+        // than waiting for the acks to arrive does two jobs: it removes the overshoot at
+        // the end of every walk by construction (the same reason the old extrapolation
+        // keyed off `Steer`), and it is the resync if `seq` ever parts company with the
+        // net worker's counter — a reconnect rebuilds the worker and restarts its
+        // `input_seq` at 0, and without this the avatar would sit permanently ahead of
+        // itself by the replay cap.
+        predict.pending.clear();
         return;
     }
     let step = 1.0 / MOVE_INTENT_HZ;
@@ -1534,6 +1543,15 @@ pub(crate) fn emit_move(
     while clock.acc >= step {
         clock.acc -= step;
         net.0.send(ClientCmd::Move { dx: steer.0.x as f64, dy: steer.0.y as f64 });
+        // Recorded EXACTLY as sent — the server uses a sub-unit direction as given
+        // (that is how a web or a chill slows a march), so normalising here would
+        // predict a slowed avatar walking at full speed.
+        predict.seq += 1;
+        let seq = predict.seq;
+        predict.pending.push_back((seq, steer.0));
+        while predict.pending.len() > PREDICT_MAX_REPLAY {
+            predict.pending.pop_front();
+        }
     }
 }
 
@@ -1556,6 +1574,7 @@ pub(crate) fn sync_overworld_sprites(
     mut meshes: ResMut<Assets<Mesh>>,
     mut interp: ResMut<OwInterp>,
     steer: Res<Steer>,
+    mut predict: ResMut<Predict>,
     dungeon: Res<world_render::DungeonSceneRes>,
     mut q: Query<(Entity, &WorldEntity, &mut Transform)>,
 ) {
@@ -1575,6 +1594,8 @@ pub(crate) fn sync_overworld_sprites(
     // Consumed here rather than held: a correction applies to exactly one frame, and a
     // sticky one would pin the avatar in place the moment the player walked away.
     let snap = world.snap.take();
+    // Read before the mutable borrows below; it is the ack the replay is measured against.
+    let world_last_input_seq = world.last_input_seq;
     let now = time.elapsed_secs();
 
     // Server snapshots arrive on the authoritative 100 ms tick (~10 Hz). When a
@@ -1717,13 +1738,37 @@ pub(crate) fn sync_overworld_sprites(
                     // they actually were before being yanked back. `Steer` is exact and
                     // reaches ZERO the instant the key is released, so the overshoot at the
                     // end of every walk is gone by construction rather than by tuning.
-                    let (tx, ty) = match interp.states.get(&we.0) {
-                        Some((_, cur)) if steer.0 != Vec2::ZERO => {
-                            let ahead = (now - cur.t).clamp(0.0, OW_EXTRAPOLATE_MAX);
-                            let d = steer.0.normalize_or_zero() * (interp.speed * ahead);
-                            (e.x + d.x, e.y + d.y)
+                    // ⚠️ **REPLAY THE INPUTS THE SERVER HAS NOT SEEN, rather than
+                    // guessing from the clock.** The old target was `e` plus a lead of
+                    // `speed x (now - last_receipt)`, which compensates for the tick but
+                    // knows nothing about what is actually in flight — and it could only
+                    // ever be a fraction of a tick behind, so an input still cost a round
+                    // trip before the avatar acknowledged it. The snapshot now says which
+                    // of our intents it contains, so we drop those and re-apply the rest:
+                    // the avatar moves on the frame the key goes down, and the server stays
+                    // authoritative because every prediction is rebased on `e` each tick.
+                    //
+                    // One intent is `speed / MOVE_INTENT_HZ` of travel because the server
+                    // advances the avatar by `speed * sim_dt` PER INTENT and `sim_dt` is
+                    // `1/overworld_sim_hz` = the same 20 Hz this client sends at. `speed`
+                    // is the observed one (which already includes a road's multiplier)
+                    // rather than a constant the client cannot read from `balance.toml`.
+                    let (tx, ty) = {
+                        while predict
+                            .pending
+                            .front()
+                            .is_some_and(|(seq, _)| *seq <= world_last_input_seq)
+                        {
+                            predict.pending.pop_front();
                         }
-                        _ => (e.x, e.y),
+                        let per = interp.speed / MOVE_INTENT_HZ;
+                        let lead: Vec2 = predict
+                            .pending
+                            .iter()
+                            .take(PREDICT_MAX_REPLAY)
+                            .map(|(_, d)| *d * per)
+                            .sum();
+                        (e.x + lead.x, e.y + lead.y)
                     };
                     tf.translation.x += (tx - tf.translation.x) * k;
                     tf.translation.z += (ty - tf.translation.z) * k;

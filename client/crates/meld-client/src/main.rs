@@ -226,6 +226,7 @@ fn main() {
         .init_resource::<Ashfall>()
         .init_resource::<DungeonSceneRes>()
         .init_resource::<MoveClock>()
+        .init_resource::<Predict>()
         .init_resource::<LoginFocus>()
         .init_resource::<LoginBg>()
         .init_resource::<BattleMenu>()
@@ -1008,6 +1009,10 @@ struct Overworld {
     /// Bumped on every snapshot so the render-side interpolation buffer
     /// ([`OwInterp`]) can tell when a fresh snapshot arrived.
     seq: u64,
+    /// The last move intent of OURS the server had applied when it took this snapshot.
+    /// Everything sent after it is still in flight, and is what the local avatar replays
+    /// on top of the authoritative position — see `Predict`.
+    last_input_seq: u32,
 }
 
 /// One captured position sample, stamped with the client-clock time (seconds) it
@@ -1051,11 +1056,6 @@ struct OwInterp {
 /// always interpolate between two *received* samples rather than extrapolating
 /// past the newest one. One 100 ms server tick plus a little slack.
 const OW_INTERP_DELAY: f32 = 0.11;
-
-/// How far the LOCAL player's chase target may be carried past the newest snapshot, in seconds.
-/// Two ticks and a little: enough to bridge an ordinary gap, short enough that a player who
-/// stopped does not keep gliding while the server catches up.
-pub(crate) const OW_EXTRAPOLATE_MAX: f32 = 0.22;
 
 /// The current run's backpack (Town Portals + gathered materials), mirrored from
 /// the server for the overworld HUD.
@@ -2276,6 +2276,36 @@ impl LootReport {
 struct MoveClock {
     acc: f32,
 }
+
+/// **The move intents we have sent that the server has not yet confirmed.**
+///
+/// ⚠️ **THE LOCAL AVATAR USED TO RENDER AT THE SERVER'S POSITION**, chased exponentially,
+/// so pressing a key cost a whole round trip before anything moved: ~25 ms of send
+/// quantisation at [`MOVE_INTENT_HZ`], ~50 ms of mean tick, ~62 ms of the chase's own
+/// settle. Reported from play as the overworld "waiting to send the move and hear back
+/// that it was OK", which is exactly what it was doing.
+///
+/// The protocol had three quarters of the answer already — `MoveIntent` carries
+/// `input_seq`, the avatar stores `last_input_seq` — and the missing quarter was the
+/// snapshot never saying which input it reflected. With that on the wire, the client
+/// keeps what it has sent, drops what the server confirms, and REPLAYS the rest on top
+/// of the authoritative position. The avatar then moves on the frame the key goes down.
+///
+/// ⚠️ **`seq` MIRRORS THE NET WORKER'S OWN COUNTER RATHER THAN BEING TOLD IT.** The worker
+/// stamps `input_seq` at send time and `emit_move` is the only sender in the game (the
+/// `smoke` binary has its own transport), so counting sends here matches exactly. If that
+/// ever gains a second sender, this silently drifts — and the drift renders as an avatar
+/// running permanently ahead of itself.
+#[derive(Resource, Default)]
+struct Predict {
+    seq: u32,
+    pending: std::collections::VecDeque<(u32, Vec2)>,
+}
+
+/// Most intents that may be replayed at once. A stalled connection must not fling the
+/// avatar across the map: past this the honest thing is to stop predicting and let the
+/// server be right. 8 x (1/20 s) x 6 u/s = 2.4 units, about a third of a stride.
+const PREDICT_MAX_REPLAY: usize = 8;
 
 /// When true, the client self-drives the loop against the real server.
 #[derive(Resource)]

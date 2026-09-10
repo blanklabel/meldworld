@@ -1803,7 +1803,7 @@ player_radius = 0.5              # the avatar's collision radius vs obstacles
 # see` measures WETNESS AND DEPTH now rather than channel width, so whatever you try here is
 # judged on water a player can see. [TUNABLE]
 radial_arc_degrees = 300.0
-stream_lookahead = 60.0          # generate new sections this far ahead of the frontier
+stream_lookahead = 60.0          # generate new sections this far ahead of the frontier ⚠️ **RAISING THIS DOES NOT BUY MARGIN AGAINST THE SYNCHRONOUS FALLBACK.** It is tempting to, because `game.rs` generates INLINE when `cursor < reach` and that lands on the 100 ms tick. But a bigger lookahead enlarges the budget and the work per prefetch by the SAME factor, so the ratio is unchanged: measured at cap 72, generation runs ~0.092 s per unit of world against ~0.167 s per unit of walking at `avatar_speed_tiles_per_sec`, i.e. 1.8x whatever this is set to. What it does buy is tolerance for a BURST (one slow prefetch), not for a sustained deficit. To move the ratio, make generation faster or the world thinner (`maze_radial_scale_cap`). ⚠️ The prefetch's `arena.clone()` IS on the tick and was the obvious suspect — measured 2.8 ms at cap 40 and 4.0 ms at 72, so it is not the problem.
 path_climb_chance = 0.6          # chance a section raises a climbable PEAK beside its clear path (0..1). Named for the retired terrace plateau it used to gate; it is the peak roll now. [TUNABLE]
 peak_boss_chance = 0.5           # when the path climbs a summit, chance a gate-boss guards the top instead of a guaranteed treasure chest (0..1)
 summit_min_height = 7.0          # min world terrain height a clear-path crest must reach to earn a summit reward (heightmap #3); filters flat sections
