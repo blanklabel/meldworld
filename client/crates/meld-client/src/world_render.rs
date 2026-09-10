@@ -2818,7 +2818,8 @@ fn ground_coast() -> (f32, bool, f32) {
 }
 
 /// **LAST CITY's SPIT, as the ground shader's `city` uniform** — every term
-/// [`meld_proto::coast::city_sea_depth`] reads, in the order the shader reads them.
+/// [`meld_proto::coast::city_bay_depth`] reads, in the order the shader reads them, and
+/// `w` as the flag that says which scene this is.
 ///
 /// ⚠️ IT WAS TWO OF THE FOUR, AND THE CITY DREW AS A PLANK FLOATING ON THE OCEAN. The
 /// shader carried the flank and the tip and not `CITY_MAINLAND_BACK` — the term that gives
@@ -2829,16 +2830,27 @@ fn ground_coast() -> (f32, bool, f32) {
 /// on painting open sea seven units below it, so the whole scene read as a straight-edged
 /// tongue of grass afloat with no coast at either end.
 ///
-/// One function rather than four constants at the call site, so a term added to
-/// `city_sea_depth` cannot reach placement and miss drawing again —
+/// One function rather than three constants at the call site, so a term added to
+/// `city_bay_depth` cannot reach placement and miss drawing again —
 /// `the_shaders_city_spit_is_the_coasts_city_spit` reconstructs the shader's own arithmetic
 /// from this and holds it against the field itself.
+///
+/// ⚠️ **THE CROSSING IS NOT IN HERE ANY MORE, AND THAT IS THE POINT.** `w` used to be the
+/// causeway's half-width — a LAND term, which at 24 units across is narrower than twice
+/// `BEACH_BLEND` and so drew as a bar of wet sand with its crown below sea level. It is a
+/// [`meld_proto::coast::city_bridge`] now and rides `params.bridges` like every other span
+/// in the game, which is what gets it a flagstone deck and parapets for free. The bay is
+/// left whole underneath it — a deck that dug its own channel would have nothing to cross.
 pub(crate) fn city_sea_uniform() -> Vec4 {
     Vec4::new(
         meld_proto::coast::CITY_SHORE_HALF_WIDTH,
         meld_proto::coast::CITY_TIP_REACH,
         meld_proto::coast::CITY_MAINLAND_BACK,
-        meld_proto::coast::CAUSEWAY_HALF_WIDTH,
+        // The scene flag itself: `city.x > 0` is what both shaders branch on, and `w` is
+        // what the fragment stage asks to hold the town's ground and its sea FIXED (see
+        // `rg_biome_at`'s caller). A live component rather than pad, so the mirror test's
+        // "every component is read" rule still means something.
+        1.0,
     )
 }
 
@@ -2853,10 +2865,23 @@ pub(crate) fn city_sea_uniform() -> Vec4 {
 /// NOWHERE NEAR ITS OWN WATER. With the shore pulled in to the town's actual footprint the
 /// beach reaches the waterfront, so a constant `y` is a dock and a beached wreck hanging in
 /// the air over the slope — the same bug [`terrain_height`] was written to end for the
-/// overworld. Every city placement asks this instead, and [`terrain_height`] delegates to it
-/// so the two cannot answer differently.
+/// overworld. Every city placement asks this instead, and [`terrain_height`] reaches the
+/// same answer from the same two parts — [`city_bay_height`] through [`ground_no_bridge`],
+/// plus the town's own span through [`deck_over`] — so the two cannot answer differently.
 pub(crate) fn city_ground_height(x: f32, z: f32) -> f32 {
-    meld_proto::terrain::with_sea(0.0, meld_proto::coast::city_sea_depth(x, z), 0.0, -SEA_DEPTH)
+    deck_over(x, z, &[meld_proto::coast::city_bridge()], &city_bay_height)
+}
+
+/// The city's ground WITHOUT its span over it — the shelf, its beach, and the bay beyond.
+/// [`city_ground_height`] is this plus the deck, exactly as [`terrain_height`] is
+/// [`ground_no_bridge`] plus the deck; both go through [`deck_over`], so the crossing in
+/// town and every crossing in the maze cannot end up two different shapes.
+///
+/// ⚠️ It reads `city_bay_depth`, NOT `city_sea_depth`: the span counts as land in the
+/// latter (that is what makes the walk bound follow the deck), and folding it in here would
+/// fill the bay in under the bridge — which is the sandbar this change exists to end.
+fn city_bay_height(x: f32, z: f32) -> f32 {
+    meld_proto::terrain::with_sea(0.0, meld_proto::coast::city_bay_depth(x, z), 0.0, -SEA_DEPTH)
 }
 
 /// **The ground surface at `(x, z)`** — what everything in the world stands on.
@@ -2881,18 +2906,33 @@ pub(crate) fn terrain_height(x: f32, z: f32) -> f32 {
     // The endpoints are sampled through `ground_no_bridge`, NOT this function: the ends lie
     // inside the span by construction, so asking `terrain_height` there would be asking the
     // deck about its own height.
-    let spans = bridges();
-    if let Some((i, s, parapet, w)) = meld_proto::terrain::bridge_span_at(x, z, &spans) {
-        let b = spans[i];
-        let a = ground_no_bridge(b[0], b[1]);
-        let c = ground_no_bridge(b[2], b[3]);
-        let level = (a + (c - a) * s).max(-SEA_DEPTH + meld_proto::terrain::BRIDGE_DECK_RISE);
-        let lifted = level + parapet * meld_proto::terrain::BRIDGE_PARAPET_RISE;
-        // Ramped into the bank over the abutment, so the join is continuous rather than a rim.
-        let natural = ground_no_bridge(x, z);
-        return natural + (lifted - natural) * w;
-    }
-    ground_no_bridge(x, z)
+    deck_over(x, z, &bridges(), &ground_no_bridge)
+}
+
+/// **The ground at `(x, z)` with whatever span is overhead standing on it** — `natural`
+/// plus the deck, or `natural` where no span reaches.
+///
+/// One function because there are two grounds that carry bridges (the maze's and Last
+/// City's) and the arithmetic is mirrored a third time in WGSL (`total_height`). Three
+/// copies of "how high is a deck" is how a bridge ends up a different shape in the scene
+/// it is drawn in than in the one it is walked on.
+fn deck_over(
+    x: f32,
+    z: f32,
+    spans: &[meld_proto::coast::Bridge],
+    natural: &dyn Fn(f32, f32) -> f32,
+) -> f32 {
+    let Some((i, s, parapet, w)) = meld_proto::terrain::bridge_span_at(x, z, spans) else {
+        return natural(x, z);
+    };
+    let b = spans[i];
+    let a = natural(b[0], b[1]);
+    let c = natural(b[2], b[3]);
+    let level = (a + (c - a) * s).max(-SEA_DEPTH + meld_proto::terrain::BRIDGE_DECK_RISE);
+    let lifted = level + parapet * meld_proto::terrain::BRIDGE_PARAPET_RISE;
+    // Ramped into the bank over the abutment, so the join is continuous rather than a rim.
+    let here = natural(x, z);
+    here + (lifted - here) * w
 }
 
 /// The ground WITHOUT any bridge over it — land, peaks and ranges, folded into the sea.
@@ -2916,7 +2956,7 @@ fn ground_no_bridge(x: f32, z: f32) -> f32 {
     // publishes the flatten publishes the city flag), which is what makes the delegation
     // exact rather than approximate.
     if city {
-        return city_ground_height(x, z);
+        return city_bay_height(x, z);
     }
     let sea = if arc_half > 0.0 {
         // …including the STRAITS (WG-7). This function places every prop, tree, building,
@@ -3371,7 +3411,17 @@ pub(crate) fn set_section_bridges(index: u32, bridges: &[meld_proto::coast::Brid
 pub(crate) fn bridges() -> Vec<meld_proto::coast::Bridge> {
     let streamed = BRIDGES.read().map(|b| b.clone()).unwrap_or_default();
     let (arc_half, city, _) = ground_coast();
-    if arc_half <= 0.0 || city {
+    // ⚠️ **LAST CITY HAS EXACTLY ONE SPAN, AND IT IS NOT THE WORLD'S.** The city is its own
+    // scene in its own coordinates, so a world bridge that happens to lie near the origin
+    // would raise a deck across the plaza — the same coordinate-frame trap the city's
+    // shoreline already had to be handed its own copy of. Its crossing rides this list for
+    // the reason the western approach does: being in it is what makes a span a raised DECK
+    // (`terrain_height` stands everything on it, the shader paints it) rather than a strip
+    // of ground where the sea is not.
+    if city {
+        return vec![meld_proto::coast::city_bridge()];
+    }
+    if arc_half <= 0.0 {
         return streamed;
     }
     let mut v = vec![western_approach()];
@@ -3500,8 +3550,19 @@ pub(crate) fn regions() -> meld_proto::regions::Regions {
 /// The one place a client-side coordinate becomes a theme, so grass placement, the minimap
 /// and the HUD label cannot disagree with the floor they are drawn on.
 pub(crate) fn biome_at_world(x: f32, z: f32) -> &'static str {
+    // ⚠️ **LAST CITY IS ALWAYS THE SAME PLACE.** The town is the one ground in the game
+    // that must not move — a Meld repaints the world's cells and the city is what you come
+    // home TO — and its coordinates are its own scene's, not the world's. `REGIONS`
+    // outlives the run that set it, though, so from the second screen of every session
+    // this answered the world's grid at city coordinates: the grass, the minimap and the
+    // HUD label all took whatever biome the origin happened to land in, and the ground
+    // shader (which asks its own copy of this) painted the plaza and the bay to match.
+    // The scene decides, exactly as it does for the shoreline — same flag, same authority.
+    if ground_coast().1 {
+        return "forest";
+    }
     let rg = regions();
-    // No world yet (menus, city): the decomposition is inert and everything reads forest.
+    // No world yet (menus): the decomposition is inert and everything reads forest.
     // A FORCED biome still answers, so `MELD_BIOME` colours those screens too.
     if rg.grid.ring_step <= 0.0 && rg.force < 0 {
         return "forest";
@@ -4345,6 +4406,20 @@ mod ground_uniform_tests {
     use super::*;
     use bevy::render::render_resource::ShaderType;
 
+    /// ⚠️ **THE SCENE FLAGS ARE PROCESS-WIDE, AND CARGO RUNS TESTS IN PARALLEL.**
+    /// `set_ground_coast` and `set_regions` write the statics every reader below asks —
+    /// which world, which scene — so two tests standing in different scenes at once make
+    /// each other's answers wrong (`bridges()` in particular hands back the City's span or
+    /// the maze's depending on a flag the *other* test just set). Every test that moves
+    /// them takes this first, and puts them back when it is done.
+    static SCENE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Take [`SCENE`] even if a previous test panicked while holding it — a poisoned lock
+    /// would otherwise turn one real failure into a cascade of unrelated ones.
+    fn scene_lock() -> std::sync::MutexGuard<'static, ()> {
+        SCENE.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     /// **EVERY WINDOWED LANDFORM MUST BE SORTED NEAREST-FIRST, NOT TRUNCATED.**
     ///
     /// Each landform rides a fixed-size uniform array while the world streams outward without
@@ -4536,6 +4611,7 @@ mod ground_uniform_tests {
     /// nothing called it.
     #[test]
     fn the_approach_reaches_every_side_that_draws_it() {
+        let _scene = scene_lock();
         let a = western_approach();
         let (x1, x2, hw) = (a[0], a[2], a[4]);
         assert!(hw > 0.0, "the span has no width: {a:?}");
@@ -4704,11 +4780,14 @@ mod ground_uniform_tests {
             for zi in -60..=60 {
                 let (x, z) = (xi as f32 / 60.0 * reach, zi as f32 / 60.0 * reach);
                 // `sea_depth_at`'s city branch, transcribed:
-                //   min(min(max(|x| - .x, |z| - .y), max(|x| - .w, z - .y)), z + .z)
+                //   min(max(|x| - .x, |z| - .y), z + .z)
                 let shelf = (x.abs() - spit.x).max(z.abs() - spit.y);
-                let causeway = (x.abs() - spit.w).max(z - spit.y);
-                let shader = shelf.min(causeway).min(z + spit.z);
-                let field = meld_proto::coast::city_sea_depth(x, z);
+                let shader = shelf.min(z + spit.z);
+                // …against the BAY, not `city_sea_depth`: the crossing is a `Bridge` and a
+                // bridge is deliberately absent from what either side DRAWS the sea by, so
+                // the water runs on under its parapets. `the_town_span_is_the_one_the_shader_draws`
+                // is what holds the deck's own two sides together.
+                let field = meld_proto::coast::city_bay_depth(x, z);
                 assert!(
                     (shader - field).abs() < 1e-3,
                     "at ({x}, {z}) the ground shader says {shader} and `city_sea_depth` says \
@@ -4720,22 +4799,139 @@ mod ground_uniform_tests {
         assert!(checked > 10_000, "the sweep covered almost nothing ({checked} points)");
 
         // …and the transcription above is only evidence if the shaders really do read all
-        // four components. The mainland term is the one that went missing once already, and
-        // a shader that never mentions a component agrees with nothing.
+        // three components. The mainland term is the one that went missing once already,
+        // and a shader that never mentions a component agrees with nothing.
         for (name, src) in [
             ("ground_biome", include_str!("../assets/shaders/ground_biome.wgsl")),
             ("ground_prepass", include_str!("../assets/shaders/ground_prepass.wgsl")),
         ] {
             let a = src.find("if (params.city.x > 0.0) {").expect("the city branch");
             let branch = &src[a..a + src[a..].find("\n    }").expect("the branch closes")];
-            for term in ["params.city.x", "params.city.y", "params.city.z", "params.city.w"] {
+            for term in ["params.city.x", "params.city.y", "params.city.z"] {
                 assert!(
                     branch.contains(term),
                     "`{name}.wgsl`'s city coast never reads `{term}` — it is drawing a \
                      shoreline with one of the spit's edges missing"
                 );
             }
+            assert!(
+                !branch.contains("params.city.w"),
+                "`{name}.wgsl` still has the causeway as a LAND term in its city coast — \
+                 the bay has to run on under the bridge or there is nothing to cross"
+            );
         }
+
+        // `w` is the SCENE FLAG, and its one job is holding the town's ground and its sea
+        // fixed. A component nobody reads is a component that goes stale — this one carries
+        // "Last City is always the same place", which is the whole of `BD-…`'s complaint.
+        let src = include_str!("../assets/shaders/ground_biome.wgsl");
+        assert!(
+            src.contains("params.city.w > 0.0"),
+            "the fragment stage never asks whether it is in the City — the plaza and the \
+             bay are painted with whatever biome the last dive's decomposition says"
+        );
+    }
+
+    /// **THE TOWN IS THE ONE GROUND THAT NEVER CHANGES.** A dive hands the client a
+    /// decomposition that outlives it, so this is the regression: come home from a mire
+    /// and the plaza is a bog, come home from a tundra and the bay draws with the ice tile
+    /// (which does not even swell). Held on the resolver every surface in town reads —
+    /// the grass scatter, the minimap, the HUD label, and the ground shader through its
+    /// own copy of the same rule.
+    #[test]
+    fn last_city_is_always_the_same_place() {
+        let _scene = scene_lock();
+        // A world as hostile to this as one can be: every cell forced to the mire, and a
+        // Shift having repainted the origin's own cell to ashfall on top of it.
+        let mut rg = meld_proto::regions::Regions {
+            grid: meld_proto::regions::Grid {
+                arc_half: 2.6, ring_step: 250.0, cell_width: 250.0, warp: 0.4, seed: 424_242,
+            },
+            force: meld_proto::regions::biome_index("mire").expect("mire") as i32,
+            ..Default::default()
+        };
+        rg.repaints.set(
+            meld_proto::regions::Cell::from_key(rg.grid.cell_at(0.0, 0.0).key()),
+            meld_proto::regions::biome_index("ashfall").expect("ashfall"),
+        );
+        set_regions(rg);
+
+        set_ground_coast(2.6, false, 1.0);
+        assert_ne!(
+            biome_at_world(0.0, 0.0), "forest",
+            "the fixture is not actually forcing a biome, so the City proves nothing"
+        );
+        set_ground_coast(2.6, true, 0.0);
+        for (x, z) in [
+            (0.0, 0.0),
+            (meld_proto::coast::CITY_SHORE_HALF_WIDTH, 0.0),
+            (0.0, -meld_proto::coast::CITY_MAINLAND_BACK),
+            (0.0, meld_proto::coast::CITY_TIP_REACH + 40.0),
+        ] {
+            assert_eq!(
+                biome_at_world(x, z), "forest",
+                "Last City took the world's biome at ({x}, {z}) — the plaza moves with the \
+                 last dive, and its ocean with it"
+            );
+        }
+        set_ground_coast(0.0, false, 1.0);
+        *REGIONS.write().unwrap() = None;
+    }
+
+    /// **THE WAY OUT OF TOWN IS A BRIDGE ON BOTH SIDES OF THE WIRE.** The deck is drawn by
+    /// the shader off `params.bridges` and walked on through `terrain_height`, and both
+    /// read `bridges()` — so this holds the one thing that could still disagree: that the
+    /// city's list is the CITY's span and nothing else. A world bridge near the origin
+    /// would otherwise raise a deck across the plaza, which is the coordinate-frame trap
+    /// the city's shoreline already needed its own copy of.
+    #[test]
+    fn the_town_span_is_the_one_the_shader_draws() {
+        let _scene = scene_lock();
+        let city = meld_proto::coast::city_bridge();
+        set_ground_coast(0.6, true, 0.0);
+        assert_eq!(bridges(), vec![city], "the City is carrying somebody else's bridges");
+
+        // The deck stands ABOVE the bay it crosses. This is the whole regression: as a
+        // causeway the crossing was 24 units wide against a 28-unit beach, so every point
+        // of it was inside its own ramp, its crown sat BELOW sea level, and the way out of
+        // town was a bar of wet sand. Two claims, because they are two different ones —
+        // the deck never dips toward the water anywhere along the span (the ends included,
+        // where it grows out of the bank and legitimately meets it), and out over the OPEN
+        // bay it is a storey clear of the water rather than skimming it.
+        let (mut sampled, mut worst) = (0, f32::MAX);
+        let (mut z, end) = (city[1] - 1.0, city[3] + 1.0);
+        let open_bay = -(meld_proto::coast::CITY_MAINLAND_BACK - 2.0)
+            ..=-(meld_proto::coast::CITY_TIP_REACH + 2.0);
+        while z >= end {
+            let deck = city_ground_height(0.0, z);
+            worst = worst.min(deck);
+            if open_bay.contains(&z) {
+                let bay = city_bay_height(0.0, z);
+                assert!(
+                    bay < -SEA_DEPTH + 1.0,
+                    "at z = {z} the bay ({bay}) is not open water — the span is on a sandbar"
+                );
+                assert!(
+                    deck > bay + 5.0,
+                    "at z = {z} the deck ({deck}) is skimming the bay ({bay})"
+                );
+                sampled += 1;
+            }
+            z -= 0.5;
+        }
+        assert!(sampled > 100, "the sweep covered almost nothing ({sampled} points)");
+        assert!(worst > -SEA_DEPTH + 2.0, "the deck dips to {worst}, all but into the water");
+
+        // …and the parapets are stone standing proud of it, or it reads as a pale stripe on
+        // the sea rather than as a bridge.
+        let mid = (city[1] + city[3]) * 0.5;
+        let rail = city_ground_height(meld_proto::coast::CITY_SPAN_HALF_WIDTH - 0.4, mid);
+        assert!(
+            rail > city_ground_height(0.0, mid) + 1.0,
+            "the deck has no parapets: rail {rail} against a roadway {}",
+            city_ground_height(0.0, mid)
+        );
+        set_ground_coast(0.0, false, 1.0);
     }
 
     /// `coast::BASIN_SHORE_SLOPE` is written as a literal in both shaders, because a WGSL

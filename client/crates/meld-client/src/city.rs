@@ -637,7 +637,7 @@ fn road_mesh(len: f32, width: f32) -> Mesh {
 ///
 /// Everything in this scene used to be placed at a constant `y`, which was survivable only
 /// because the shore stood thirty units past anything authored. It does not now: the bay
-/// reaches the waterfront and the causeway out of town runs over open water, so a constant
+/// reaches the waterfront and the span out of town runs over open water, so a constant
 /// `y` is a dock, a beached wreck and a walking hero hanging in the air over the slope —
 /// the same bug [`crate::world_render::terrain_height`] was written to end for the maze.
 ///
@@ -1421,17 +1421,17 @@ pub(crate) fn planar_basis(yaw_deg: f32) -> (Vec2, Vec2) {
 }
 
 /// **How far behind the plaza the avatar may walk** — the far shore of the bay, where the
-/// causeway lands. Past it is the mainland, and the way to the world is the Threshold: a
+/// span lands. Past it is the mainland, and the way to the world is the Threshold: a
 /// dive, not a stroll. Landing the bound exactly on a coast you can SEE is what keeps it
 /// from reading as an invisible wall.
 const CITY_WALK_REACH: f32 = meld_proto::coast::CITY_MAINLAND_BACK;
 
-/// The bound has to clear the shelf by a real stretch of causeway, or the crossing out of
+/// The bound has to clear the shelf by a real stretch of bridge, or the crossing out of
 /// town is scenery you can look at and never set foot on — which is what the 25-unit circle
 /// this replaced made of it. Compile-time: a relationship between constants.
 const _: () = assert!(
     CITY_WALK_REACH
-        > meld_proto::coast::CITY_TIP_REACH + meld_proto::coast::CAUSEWAY_HALF_WIDTH * 2.0
+        > meld_proto::coast::CITY_TIP_REACH + meld_proto::coast::CITY_SPAN_HALF_WIDTH * 2.0
 );
 
 pub(crate) fn city_move(
@@ -1470,17 +1470,19 @@ pub(crate) fn city_move(
     let step = m.normalize() * 9.0 * time.delta_secs();
     let here = Vec2::new(tf.translation.x, tf.translation.z);
     // ⚠️ THE BOUND USED TO BE A 25-UNIT CIRCLE AROUND THE PLAZA, AND A CIRCLE CANNOT HOLD
-    // THIS SHAPE. The town stands on a shelf with a CAUSEWAY leaving it (see
-    // `coast::CAUSEWAY_HALF_WIDTH`), so the walkable ground is a broad disc with a long
+    // THIS SHAPE. The town stands on a shelf with a BRIDGE leaving it (see
+    // `coast::city_bridge`), so the walkable ground is a broad disc with a long
     // narrow arm — a circle either pens you onto the shelf, in which case the crossing out
     // of town is a backdrop you can never set foot on, or it is wide enough to reach the arm
     // and then also lets you walk out over open water either side of it.
     //
     // The land itself is the bound now: you may walk to the water's edge and no further,
     // which is the same rule the overworld collides against — and it funnels you onto the
-    // causeway without a single authored waypoint. SLIDE rather than stop on a refusal (the
+    // bridge without a single authored waypoint. SLIDE rather than stop on a refusal (the
     // axes tried separately, exactly as `Arena::apply_move` does it), or walking into the
-    // shore at an angle sticks you to it instead of running along it.
+    // shore at an angle sticks you to it instead of running along it. `city_sea_depth`
+    // counts the span's deck as land, so the walk bound follows the crossing by
+    // construction rather than by a second copy of where the crossing is.
     let walkable = |p: Vec2| {
         meld_proto::coast::city_sea_depth(p.x, p.y) <= 0.0 && p.y >= -CITY_WALK_REACH
     };
@@ -1510,7 +1512,7 @@ pub(crate) fn city_move(
     tf.translation.x = pos.x;
     tf.translation.z = pos.y;
     // …and stand on it. The bay reaches the waterfront now, so the walk down to the strand
-    // and out along the causeway is a walk over real ground — see `ground_at`.
+    // and out along the bridge is a walk over real ground — see `ground_at`.
     tf.translation.y = ground_at(pos.x, pos.y);
 }
 
@@ -1533,7 +1535,7 @@ pub(crate) fn city_camera(
 ) {
     let Ok(p) = players.single() else { return };
     // `1.0 + y`, the same rule `hd2d_follow` uses on the overworld: the avatar has a real
-    // elevation in town now (the beach falls to the waterline and the causeway crowns above
+    // elevation in town now (the beach falls to the waterline and the bridge deck stands above
     // it), and a camera pinned to y = 1.0 lets the hero sink out of frame as they walk down
     // to the water.
     let target = Vec3::new(p.translation.x, 1.0 + p.translation.y, p.translation.z);
@@ -1711,11 +1713,11 @@ mod tests {
         }
     }
 
-    /// The causeway is only a crossing if the player can actually set foot on it — the whole
+    /// The span is only a crossing if the player can actually set foot on it — the whole
     /// reason [`CITY_WALK_REACH`] replaced a 25-unit circle around the plaza, which stopped
     /// short of the shelf's own shoulder and made the bridge out of town scenery.
     #[test]
-    fn the_avatar_can_walk_out_onto_the_causeway() {
+    fn the_avatar_can_walk_out_onto_the_bridge() {
         // (That the bound clears the shelf at all is a fact about constants, so it is
         // asserted at compile time beside `CITY_WALK_REACH`.) Every step of the walk is on
         // land, so the bound is what stops you rather than the water — straight out through

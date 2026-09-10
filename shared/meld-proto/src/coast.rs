@@ -114,7 +114,7 @@ pub const APPROACH_HALF_WIDTH: f32 = 9.0;
 
 /// How far the span overlaps the land at each end. **Both ends overlap on purpose**: bounding
 /// a crossing exactly at the seam it joins puts a knife-edge of shoreline across the one
-/// place it has to JOIN, which is the same lesson [`city_sea_depth`]'s causeway learned — a
+/// place it has to JOIN, which is the same lesson [`city_bridge`] is built on at both ends — a
 /// bridge you cannot walk onto is a wall.
 const APPROACH_OVERLAP: f32 = 6.0;
 
@@ -157,12 +157,12 @@ pub const CITY_SHORE_HALF_WIDTH: f32 = 30.0;
 
 /// How far from the plaza the city's own ground reaches along z, in its own scene — the
 /// spit's tip ahead (`+z`, out to sea) and its landward shoulder behind (`-z`), where the
-/// [causeway](CAUSEWAY_HALF_WIDTH) takes over. One number for both, because the shelf a
+/// [span](city_bridge) takes over. One number for both, because the shelf a
 /// city is built on is the shelf: an authored front and back would be two numbers nobody
 /// could tell apart on screen.
 pub const CITY_TIP_REACH: f32 = 34.0;
 
-/// How far BEHIND the plaza the causeway meets the mainland, in the city's own scene. Past
+/// How far BEHIND the plaza the span meets the mainland, in the city's own scene. Past
 /// this the flanks are dry land again, because a spit joins a coast somewhere.
 ///
 /// ⚠️ WITHOUT THIS TERM THE CITY HAD A RIBBON OF GRASS RUNNING TO INFINITY. The first
@@ -171,13 +171,13 @@ pub const CITY_TIP_REACH: f32 = 34.0;
 /// city. Don saw it immediately: "there is a weird stretch of land behind it… it goes off
 /// forever as a small straight grass line." A spit needs a back edge as much as a tip.
 ///
-/// It is far enough back that the causeway is a CROSSING and not a kerb: from the plaza the
+/// It is far enough back that the span is a CROSSING and not a kerb: from the plaza the
 /// forward view is town, then a bay, then a narrow bridge running out over it to a coast on
 /// the far side. That is the whole point of the constant being this and not 68.
 pub const CITY_MAINLAND_BACK: f32 = 110.0;
 
-/// **Half-width of the causeway out of Last City**, in the city's own scene — the city's
-/// twin of [`APPROACH_HALF_WIDTH`], and for the same reason.
+/// **Half-width of the span out of Last City**, in the city's own scene — the city's twin
+/// of [`APPROACH_HALF_WIDTH`], and for the same reason.
 ///
 /// The module header's claim that *"the neck is the only way in or out of the city on foot:
 /// the Threshold stops being a UI affordance and becomes a geographic fact"* was true of the
@@ -185,13 +185,46 @@ pub const CITY_MAINLAND_BACK: f32 = 110.0;
 /// straight up to the plaza. Now the ground pinches just past the Threshold's arch and runs
 /// out over the water to the far coast, so leaving town is crossing a bridge — matching the
 /// span the world puts on the other side of the same gate.
-pub const CAUSEWAY_HALF_WIDTH: f32 = 12.0;
+///
+/// ⚠️ **IT WAS A CAUSEWAY, AND A CAUSEWAY THIS NARROW IS A SANDBAR.** The crossing used to be
+/// a LAND term in [`city_sea_depth`] — a 24-unit strip of ground reaching back to the
+/// mainland — and 24 is under twice [`crate::terrain::BEACH_BLEND`], so the whole thing was
+/// beach: the ground ramped from the sea floor at either edge to a crown 0.4 units *below*
+/// sea level. The way out of town was a submerged ridge of pale sand, which is what
+/// *"the land bridge should be a stone bridge"* was reporting. It is a [`Bridge`] now
+/// ([`city_bridge`]) — the same primitive the world's own [approach](approach_bridge) uses,
+/// so it is a flagstone deck with parapets standing above open water and it needed no
+/// drawing code of its own.
+pub const CITY_SPAN_HALF_WIDTH: f32 = 12.0;
 
-/// The causeway has to BE a causeway: narrow against the shelf it leaves, and long enough
+/// The crossing has to BE a crossing: narrow against the shelf it leaves, and long enough
 /// that crossing it reads as a crossing. Compile-time, like the neck/border relationship —
 /// a build where the "bridge" is as wide as the town ships a kerb.
-const _: () = assert!(CAUSEWAY_HALF_WIDTH * 2.0 < CITY_SHORE_HALF_WIDTH);
-const _: () = assert!(CITY_MAINLAND_BACK - CITY_TIP_REACH > CAUSEWAY_HALF_WIDTH * 4.0);
+const _: () = assert!(CITY_SPAN_HALF_WIDTH * 2.0 < CITY_SHORE_HALF_WIDTH);
+const _: () = assert!(CITY_MAINLAND_BACK - CITY_TIP_REACH > CITY_SPAN_HALF_WIDTH * 4.0);
+
+/// **THE ONE SPAN OUT OF LAST CITY** — the bay crossing that leaves the plaza's shelf and
+/// lands on the mainland behind it.
+///
+/// One function, for the reason [`approach_bridge`] is one: the same five numbers have to
+/// reach [`city_sea_depth`] (so the deck is LAND and the walk bound follows it), the
+/// client's bridge table (so the deck RISES and everything on it stands on the deck) and
+/// the ground shaders' uniform (so it is DRAWN as flagstone with parapets).
+///
+/// Both ends reach a [`crate::terrain::BEACH_BLEND`] INTO the land they join — that is the
+/// point at which the ground has finished climbing out of its own beach ramp, so the deck
+/// takes the height of real land at each end rather than of the strand, and the join is
+/// flat. Bounding it at the seam instead is the knife-edge [`APPROACH_OVERLAP`] documents
+/// one scene over: a bridge you cannot walk onto is a wall.
+pub fn city_bridge() -> Bridge {
+    [
+        0.0,
+        -(CITY_TIP_REACH - crate::terrain::BEACH_BLEND),
+        0.0,
+        -(CITY_MAINLAND_BACK + crate::terrain::BEACH_BLEND),
+        CITY_SPAN_HALF_WIDTH,
+    ]
+}
 
 /// Is world position `(x, z)` open sea? `arc_half_rad` is half the world's fan
 /// (`radial_arc_degrees.to_radians() * 0.5`) — passed in rather than baked, so the server
@@ -366,26 +399,33 @@ pub fn sea_depth(x: f32, z: f32, arc_half_rad: f32) -> f32 {
 /// city cannot grow a second hand-placed shoreline — which is exactly what it had, three
 /// water planes laid a hair above the lawn, quietly missing every fix the world's sea got.
 pub fn city_sea_depth(x: f32, z: f32) -> f32 {
-    // Land is the SHELF the city stands on, OR the CAUSEWAY that leaves it, OR the MAINLAND
-    // that causeway reaches — so the sea is however far you are from the nearest of the
-    // three. `min`, exactly as the world's [`sea_depth`] takes the min of its fan, spit and
-    // neck. A `min` of signed distances is also what keeps this CONTINUOUS: an
-    // `if z < back { return land }` would jump across that line, and every smoothstep over
-    // the field would collapse into a step there — the same cliff-instead-of-beach bug this
-    // module already shipped once.
-    //
-    // The causeway is the RIBBON THIS FUNCTION'S FIRST DRAFT SHIPPED BY ACCIDENT, at the
-    // neck's width instead of the shore's: `max(|x| - w, z - tip)` is land for every z
-    // behind the city, which as a full-width shelf was the "small straight grass line…
-    // going off forever" and as a 24-unit strip with a coast at the end of it is a bridge.
-    // Its far end is deliberately left unbounded — past `CITY_MAINLAND_BACK` the mainland is
-    // land anyway, so bounding it there would only put a knife-edge of shoreline across the
-    // one place the crossing has to JOIN. Same at the near end, where it runs the full
-    // length of the shelf rather than stopping at its shoulder.
+    // A BRIDGE BEATS EVERY WATER TERM, and it is applied last for exactly that reason —
+    // the same composition, in the same order, as [`Shore::sea`]. Only where it is
+    // NEGATIVE: outside its own capsule a span's clearance is a distance like any other,
+    // and letting that win would make the bay shallower near the crossing.
+    let d = city_bay_depth(x, z);
+    let span = bridge_clearance(x, z, &[city_bridge()]);
+    if span < 0.0 { d.min(span) } else { d }
+}
+
+/// **The city's bare bay** — its shelf and the mainland behind, with no crossing over it.
+///
+/// This is the field the GROUND is shaped by: the beach ramp down to the waterline and the
+/// dip to the sea floor beyond it. [`city_sea_depth`] is this plus the span, which is the
+/// same split the world keeps between what it DRAWS (the shader's `sea_depth_at`, no
+/// bridges: water runs on under the parapets) and what it STANDS ON ([`Shore::sea`], where
+/// a bridge is land). Both ground shaders mirror THIS one term for term — a deck that dug
+/// its own channel out of the bay would have nothing left to be a bridge over.
+pub fn city_bay_depth(x: f32, z: f32) -> f32 {
+    // Land is the SHELF the city stands on, OR the MAINLAND across the bay from it — so the
+    // sea is however far you are from the nearer of the two. `min`, exactly as the world's
+    // [`sea_depth`] takes the min of its fan, spit and neck. A `min` of signed distances is
+    // also what keeps this CONTINUOUS: an `if z < back { return land }` would jump across
+    // that line, and every smoothstep over the field would collapse into a step there — the
+    // same cliff-instead-of-beach bug this module already shipped once.
     let past_shelf = (x.abs() - CITY_SHORE_HALF_WIDTH).max(z.abs() - CITY_TIP_REACH);
-    let past_causeway = (x.abs() - CAUSEWAY_HALF_WIDTH).max(z - CITY_TIP_REACH);
     let past_mainland = z + CITY_MAINLAND_BACK;
-    past_shelf.min(past_causeway).min(past_mainland)
+    past_shelf.min(past_mainland)
 }
 
 /// Is `(x, z)` walkable ground as far as the *coast* is concerned? The inverse of
@@ -1086,13 +1126,17 @@ mod tests {
             for zi in -60..=60 {
                 let (x, z) = (xi as f32 * 2.7, zi as f32 * 2.7);
                 let depth = city_sea_depth(x, z);
-                // The rule stated independently of the depth field: the shelf, the causeway
+                // The rule stated independently of the depth field: the shelf, the SPAN
                 // across the bay, or the mainland on the far side — anywhere else is sea.
+                // The span as a rectangle rather than a capsule: both of its rounded caps
+                // sit wholly inside the land they reach into (that is what the overlap in
+                // `city_bridge` is for), so the two describe the same set here.
+                let b = city_bridge();
                 let on_shelf =
                     x.abs() <= CITY_SHORE_HALF_WIDTH && z.abs() <= CITY_TIP_REACH;
-                let on_causeway = x.abs() <= CAUSEWAY_HALF_WIDTH && z <= CITY_TIP_REACH;
+                let on_span = x.abs() <= CITY_SPAN_HALF_WIDTH && (b[3]..=b[1]).contains(&z);
                 let on_mainland = z <= -CITY_MAINLAND_BACK;
-                let sea = !(on_shelf || on_causeway || on_mainland);
+                let sea = !(on_shelf || on_span || on_mainland);
                 if depth.abs() > 1e-3 {
                     assert_eq!(depth > 0.0, sea, "({x}, {z}) disagrees about the city's coast");
                 }
@@ -1118,9 +1162,10 @@ mod tests {
 
     /// **LEAVING TOWN IS CROSSING A BRIDGE, AND A BRIDGE HAS TO BE CONNECTED AND NARROW.**
     ///
-    /// The city's field is three overlapping shapes, and the two properties that make it a
-    /// causeway rather than either of the things it has already been — a full-width mainland
-    /// running up to the plaza, or a ribbon of grass to infinity — are exactly these:
+    /// The city's field is a shelf, a bay and a span, and the two properties that make it a
+    /// crossing rather than any of the things it has already been — a full-width mainland
+    /// running up to the plaza, a ribbon of grass to infinity, or a submerged bar of sand —
+    /// are exactly these:
     ///
     ///   * the walk from the fountain to the mainland is dry the WHOLE way (a crossing you
     ///     cannot cross is a wall, and the first draft of this pinched to a knife-edge of
@@ -1147,7 +1192,7 @@ mod tests {
                 -CITY_MAINLAND_BACK + blend..=-CITY_TIP_REACH - blend;
             if over_the_bay.contains(&z) {
                 steps += 1;
-                let w = CAUSEWAY_HALF_WIDTH + 4.0;
+                let w = CITY_SPAN_HALF_WIDTH + 4.0;
                 if city_sea_depth(w, z) > 0.0 && city_sea_depth(-w, z) > 0.0 {
                     flanked += 1;
                 }
@@ -1155,11 +1200,35 @@ mod tests {
             z -= 0.5;
         }
         assert!(steps > 60, "the crossing is only {steps} strides long — that is a kerb");
-        assert_eq!(flanked, steps, "the causeway is not over water for its whole run");
+        assert_eq!(flanked, steps, "the crossing is not over water for its whole run");
+
+        // ⚠️ **AND IT IS A DECK OVER WATER, NOT A BAR OF SAND.** The crossing used to be a
+        // land term in the depth field, and at `2 × CITY_SPAN_HALF_WIDTH` = 24 units it was
+        // narrower than twice `BEACH_BLEND` — so every point of it was inside its own beach
+        // ramp and its crown sat BELOW sea level. Both halves of the fix are stated here:
+        // the bay runs on underneath (so there is something to be a bridge over) and the
+        // span is a real `Bridge` (so the deck rises out of it with parapets).
+        let mut z = -(CITY_TIP_REACH + 1.0);
+        while z >= -(CITY_MAINLAND_BACK - 1.0) {
+            assert!(
+                city_bay_depth(0.0, z) > 0.0,
+                "the bay is not water at z = {z} — the span has nothing to cross"
+            );
+            let span = crate::terrain::bridge_span_at(0.0, z, &[city_bridge()]);
+            assert!(span.is_some(), "no deck over the bay at z = {z}");
+            z -= 0.5;
+        }
+        // The parapets are on the OUTSIDE of the deck and the middle is walkable.
+        let mid = (city_bridge()[1] + city_bridge()[3]) * 0.5;
+        let rail = |x: f32| crate::terrain::bridge_span_at(x, mid, &[city_bridge()])
+            .map(|(_, _, parapet, _)| parapet)
+            .unwrap_or(0.0);
+        assert!(rail(0.0) <= 0.0, "the middle of the deck is a parapet");
+        assert!(rail(CITY_SPAN_HALF_WIDTH - 0.5) > 0.0, "the deck has no parapets");
         // And the town end is the WIDE end: the shelf has to be broad enough that the
         // plaza does not read as part of the bridge.
         assert!(
-            city_sea_depth(CAUSEWAY_HALF_WIDTH + 6.0, 0.0) < 0.0,
+            city_sea_depth(CITY_SPAN_HALF_WIDTH + 6.0, 0.0) < 0.0,
             "the plaza is no wider than the causeway leaving it"
         );
     }
