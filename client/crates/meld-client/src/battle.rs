@@ -23,6 +23,24 @@ pub(crate) fn reset_menu(menu: &mut BattleMenu) {
     menu.rows.clear();
 }
 
+/// **THE KEY YOU WALKED IN ON IS NOT A COMMAND.** Reported from play: walk into a creature
+/// holding a direction and the first hero immediately acts on it — south FLEES the fight,
+/// east DEFENDS — before you have looked at the screen.
+///
+/// It is the d-pad root doing exactly what it says (`ArrowDown` is Flee, `ArrowRight` is
+/// Defend) sharing its keys with the overworld's movement. The fix is not to move the
+/// bindings — the d-pad is the point of a martial's root menu — it is to require a FRESH
+/// press: `reset_all` drops the held/just-pressed state carried across the transition, and
+/// because Bevy only re-presses on an actual key-down event, a key still physically held
+/// stays silent until it is released and pressed again.
+///
+/// Deliberately NOT a timer. A grace period either eats a fast player's real first command
+/// or lets a slow walk-in through, depending on how long you make it; "let go and press it
+/// again" is unambiguous at any speed.
+pub(crate) fn swallow_the_key_you_walked_in_on(mut keys: ResMut<ButtonInput<KeyCode>>) {
+    keys.reset_all();
+}
+
 /// On entering a battle, open the command window on the root page and clear any
 /// enemy target left over from a previous fight. (The static `MELD_BATTLE` mock
 /// preseeds a target to show the reticle in a screenshot, so leave that one alone.)

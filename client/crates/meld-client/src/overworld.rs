@@ -2768,6 +2768,9 @@ pub(crate) fn update_explorer_lamp(
     let night = (1.0 - sky.day).clamp(0.0, 1.0);
     for mut light in &mut q {
         light.intensity = glow * night;
+        // A dark lamp still paid for six shadow faces a frame — see `LAMP_SHADOW_NIGHT`.
+        // Before the perk is earned `glow` is zero, so this lamp never lights at all.
+        light.shadow_maps_enabled = glow > 0.0 && night > LAMP_SHADOW_NIGHT;
         // Widened by a third, the same third the battle party's lamps got
         // (`battle::LAMP_REACH`) — this is the one a player actually walks around inside,
         // so the two had to move together or "the light reaches further" would be true in
@@ -2810,8 +2813,23 @@ pub(crate) fn illuminate_players(
     // brighter — its class feature — while the rest stay a soft fill).
     for (mut light, lamp) in &mut lamps {
         light.intensity = night * lamp.strength;
+        light.shadow_maps_enabled = lamp.strength > 0.0 && night > LAMP_SHADOW_NIGHT;
     }
 }
+
+/// **A LAMP CASTS A SHADOW ONLY WHILE IT IS ACTUALLY LIT.** Every carried light — the
+/// Explorer's lamp, the hero's town lamp, the battle party's four, a boss's and a leader's —
+/// spawns at intensity 0 and is brightened with nightfall, but `shadow_maps_enabled` was a
+/// constant `true`. A shadow-mapped point light is six full scene passes a frame whatever
+/// its intensity, so by day, and before the Explorer's perk is earned, every one of them was
+/// rendering six cube faces of shadow for a light giving off nothing. Measured in town, the
+/// shadow passes were the bulk of a ~107 ms CPU-bound frame (see the monoliths in `city.rs`).
+///
+/// Gated on the same `night` factor that drives the intensity, so the shadow and the light
+/// arrive together — the night-time trees-throw-shadows look `#351` shipped and play
+/// confirmed is untouched. The threshold keeps a dusk lamp at a tenth of its strength from
+/// paying full price for a shadow nobody can see yet.
+const LAMP_SHADOW_NIGHT: f32 = 0.1;
 
 /// Explorer/Psyker intel: float a nameplate over each overworld mob — its level
 /// (Explorer tier ≥1), an HP bar (tier ≥2), and a Psyker threat marker for

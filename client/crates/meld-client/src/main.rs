@@ -94,16 +94,80 @@ fn win_size() -> Option<(u32, u32)> {
 
 /// The window mode at launch: borderless-fullscreen, which is big and readable.
 ///
-/// `MELD_WINDOWED=1` forces a normal windowed mode instead — a workaround for
-/// `MonitorSelection::Current` failing to resolve a monitor on some Windows setups
-/// ("Can't select current monitor on window creation"), which produces a window that
-/// opens but never renders anything: a black screen that looks exactly like a hang.
+/// `MELD_WINDOWED=1` forces a normal resizable window instead — handy for testing beside
+/// other windows, and for captures.
+///
+/// ⚠️ It was added believing the `Can't select current monitor on window creation` warning
+/// caused a window that never rendered. **It does not.** That warning fires on every launch
+/// on Windows and is harmless: borderless-fullscreen renders fine with it on Vulkan. The
+/// black screen it was blamed for was the DX12 backend compiling shaders with FXC — see the
+/// Windows note in AGENTS.md's "How to run".
 fn default_window_mode() -> bevy::window::WindowMode {
     if std::env::var("MELD_WINDOWED").is_ok_and(|v| v != "0") {
         bevy::window::WindowMode::Windowed
     } else {
         bevy::window::WindowMode::BorderlessFullscreen(bevy::window::MonitorSelection::Current)
     }
+}
+
+/// **RESIZING THE WINDOW MUST NOT KILL THE GAME.** Reported from play as the whole app
+/// exiting mid-session; the log is a DX12 swapchain failure, not anything the game drew:
+///
+/// ```text
+/// wgpu_hal::dx12: ResizeBuffers failed: The application made a call that is invalid.
+/// wgpu_core::device::resource: surface configuration failed: window is in use
+/// bevy_render::error_handler: Quitting the application due to Validation RenderError
+/// ```
+///
+/// Bevy's DEFAULT `RenderErrorHandler` quits on ANY `RenderError`, and its own source calls
+/// that "overzealous… requires more extensive use of the non-fatal error handling pattern in
+/// upstream wgpu". A surface reconfiguration that loses a race with the window manager is
+/// exactly the transient case that policy is too blunt for: the next frame reconfigures the
+/// surface and carries on.
+///
+/// ⚠️ **NARROW ON PURPOSE, AND BUDGETED.** Bevy warns that ignoring an error whose cause is
+/// unaddressed re-hits it every frame and can strobe the screen — a real hazard, not a
+/// style note. So this ignores ONLY surface/swapchain validation errors, only
+/// `SURFACE_ERROR_BUDGET` of them in a row, and then stops rendering rather than flashing.
+/// Every other error — device lost, out of memory, a validation error we actually caused —
+/// keeps Bevy's behaviour exactly, including the `AppExit::error()`.
+///
+/// It matches on the DESCRIPTION because `ErrorType::Validation` alone is far too broad: it
+/// is the same type the earlier Vulkan out-of-VRAM cascade arrived as, and that one SHOULD
+/// bring the app down rather than spin.
+const SURFACE_ERROR_BUDGET: u32 = 60;
+static SURFACE_ERRORS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+fn render_error_policy(
+    error: &bevy::render::error_handler::RenderError,
+    main_world: &mut bevy::ecs::world::World,
+    _render_world: &mut bevy::ecs::world::World,
+) -> bevy::render::error_handler::RenderErrorPolicy {
+    use bevy::render::error_handler::{ErrorType, RenderErrorPolicy};
+    use std::sync::atomic::Ordering;
+
+    let what = error.description.to_ascii_lowercase();
+    let is_surface = matches!(error.ty, ErrorType::Validation)
+        && (what.contains("surface")
+            || what.contains("swapchain")
+            || what.contains("resizebuffers")
+            || what.contains("window is in use"));
+    if is_surface {
+        let seen = SURFACE_ERRORS.fetch_add(1, Ordering::Relaxed);
+        if seen < SURFACE_ERROR_BUDGET {
+            return RenderErrorPolicy::Ignore;
+        }
+        // The resize never settled. Hold the app open — the player can still quit, and the
+        // session's run is still on the server — but stop drawing rather than strobe.
+        bevy::log::error!(
+            "surface has failed {SURFACE_ERROR_BUDGET} frames running; stopping rendering"
+        );
+        return RenderErrorPolicy::StopRendering;
+    }
+    SURFACE_ERRORS.store(0, Ordering::Relaxed);
+    bevy::log::error!("Quitting the application due to {:?} RenderError", error.ty);
+    main_world.write_message(bevy::app::AppExit::error());
+    RenderErrorPolicy::StopRendering
 }
 
 /// Frame-time logging, on only when `MELD_FPS` is set — see the call site.
@@ -297,6 +361,8 @@ fn main() {
         .init_resource::<EndInfo>()
         .init_resource::<CityUi>()
         .init_resource::<LobbyData>()
+        // A window resize must not exit the game — see `render_error_policy`.
+        .insert_resource(bevy::render::error_handler::RenderErrorHandler(render_error_policy))
         .init_resource::<LootReport>()
         .init_resource::<battle::BattleOpening>()
         .init_resource::<GearHold>()
@@ -645,7 +711,13 @@ fn main() {
         // Battle
         .add_systems(
             OnEnter(Screen::Battle),
-            (clear_overworld_sprites, hide_field_decor, despawn::<PartyFollower>, enter_battle),
+            (
+                clear_overworld_sprites,
+                hide_field_decor,
+                despawn::<PartyFollower>,
+                enter_battle,
+                swallow_the_key_you_walked_in_on,
+            ),
         )
         .add_systems(
             OnExit(Screen::Battle),

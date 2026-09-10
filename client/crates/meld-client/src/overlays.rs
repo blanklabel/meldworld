@@ -1178,7 +1178,7 @@ pub(crate) fn unlock_banner(
         .class_key
         .as_ref()
         .zip(wa.as_ref())
-        .map(|(k, w)| w.class_frames(k).idle[0].clone());
+        .map(|(k, w)| w.class_portrait(k));
     let title = match u.kind.as_str() {
         "party_slot" => "*  PARTY SLOT UNLOCKED  *".to_string(),
         _ => "*  CLASS UNLOCKED  *".to_string(),
@@ -1186,7 +1186,27 @@ pub(crate) fn unlock_banner(
     commands
         .spawn((
             UnlockBannerRoot,
-            glass::scrim(),
+            // ⚠️ **THE HAUL AND THE UNLOCK ARRIVE TOGETHER, AND BOTH USED TO SIT DEAD
+            // CENTRE.** `glass::scrim()` centres its child, and the extraction tally
+            // (`OverlayRoot`) is a scrim too — so killing the elite that unlocks the Hunter
+            // and walking home drew the unlock panel straight over the tally, with the two
+            // texts interleaved and neither readable. Reported from play.
+            //
+            // The unlock sits LOW and the tally keeps the middle, so the pair reads top to
+            // bottom: what you carried out, then what it earned you. Anchored rather than
+            // conditional on the tally being up — a banner whose position depends on what
+            // else happens to be on screen is one that jumps, and this one is dismissed with
+            // [Space] while the tally is still rolling off behind it.
+            Node {
+                position_type: PositionType::Absolute,
+                width: Val::Percent(100.0),
+                height: Val::Percent(100.0),
+                align_items: AlignItems::Center,
+                justify_content: JustifyContent::FlexEnd,
+                padding: UiRect::bottom(Val::Percent(8.0)),
+                ..default()
+            },
+            BackgroundColor(glass::SCRIM),
         ))
         .with_children(|root| {
             root.spawn(glass::panel_row(Val::Px(560.0)))

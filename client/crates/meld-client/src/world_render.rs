@@ -578,6 +578,46 @@ fn boss_clips(key: &str) -> &'static [(&'static str, usize, bool)] {
     }
 }
 
+/// Per-class hero sprites (PixelLab v3, 8-directional): idle rotations + a `walk` clip plus
+/// battle `attack` and one clip per special ability, loaded into `CharacterFrames::clips`
+/// and played in battle via `CharSprite::action`.
+fn class_clips(class: &str) -> &'static [(&'static str, usize)] {
+    match class {
+        "shifter" => &[
+            ("walk", 8), ("attack", 8), ("backstab", 8), ("flicker", 8), ("ransack", 8),
+        ],
+        // The Explorer's own kit has no bespoke ABILITY art yet, so its abilities
+        // fall back to the attack clip; the martial animations moved with the kit to
+        // the Hunter.
+        "explorer" => &[("walk", 8), ("attack", 8)],
+        "hunter" => &[
+            ("walk", 8), ("attack", 8), ("power_strike", 8), ("second_wind", 8),
+            ("snare", 8), ("frenzy", 8),
+        ],
+        "psyker" => &[
+            ("walk", 8), ("attack", 8), ("gravity_well", 8), ("kinetic_aegis", 8),
+            ("mind_spike", 8), ("temporal_anchor", 8),
+        ],
+        "resonant" => &[
+            ("walk", 8), ("attack", 8), ("transfuse", 8), ("regen_boon", 8), ("ward", 8),
+        ],
+        "phoenix_guard" => &[
+            ("walk", 8), ("attack", 8), ("silvered_strike", 8), ("rite_of_rest", 8),
+            ("holy_censure", 8), ("purging_light", 8),
+        ],
+        // The four newest orders have idle rotations, a walk cycle and a battle
+        // attack, and nothing else yet — their abilities fall through to the attack.
+        // Declare only what is ON DISK: a clip named here with no frames beside it is
+        // 64 asset-loader errors a launch, which is exactly what the Explorer shipped
+        // the moment it stopped being a copy of the Hunter's folder and lost the five
+        // martial clips it had been borrowing.
+        "smithwright" | "keeper" | "iron_hull" | "rift_knight" => {
+            &[("walk", 8), ("attack", 8)]
+        }
+        _ => &[("walk", 8)],
+    }
+}
+
 /// Townsfolk clips. Eighteen of the twenty-three never fight, so only the armed ones
 /// have an attack — `load_creature_clips` is told which clips exist rather than assuming.
 fn npc_clips(key: &str) -> &'static [(&'static str, usize, bool)] {
@@ -799,6 +839,21 @@ pub(crate) struct WorldAssets {
     /// `characters/<class>/`), keyed by `CharacterClass` wire key ("explorer", "psyker",
     /// "resonant", "shifter", "phoenix_guard"). Look up via [`Self::class_frames`], which
     /// falls back to the Explorer for any unknown key.
+    /// ⚠️ **EAGER, AND A LAZY VERSION WAS TRIED AND REVERTED — DO NOT REDO IT NAIVELY.**
+    /// All eight sets at startup is ~327 MB of uncompressed RGBA8, so deferring them looks
+    /// like the same win the creatures and bosses gave. It is not, for two reasons found in
+    /// play:
+    ///
+    /// 1. **The saving is not there.** The Drill Yard's class palette shows EVERY class, so
+    ///    opening the party screen asks for all eight anyway — which is the first thing a
+    ///    player does in town.
+    /// 2. **The lookup is on a UI path, not a spawn path.** A lazy map cannot hand out
+    ///    borrows, so `class_frames` had to return an owned clone — ~400 handle clones, a
+    ///    `HashMap` and eight `Vec`s per call — on panels that rebuild whenever a hover
+    ///    changes. Reported from play as the town becoming "very chuggy".
+    ///
+    /// A future attempt has to solve the borrow problem (an arena/`Arc<CharacterFrames>`, so
+    /// a hit is a pointer copy) AND find a screen that does not want the whole roster.
     pub(crate) class_chars: HashMap<String, CharacterFrames>,
     /// Boss/elite encounter sprites (PixelLab, `bosses/<key>/`), keyed by boss id
     /// (`gloamhound`, `ironmaw`, …). Each has `walk` + `attack` + its ability clips
@@ -978,6 +1033,12 @@ impl WorldAssets {
             .get(class)
             .or_else(|| self.class_chars.get("explorer"))
             .expect("explorer class sprite always loaded")
+    }
+
+    /// A class's standing portrait — the ONE frame every menu, roster row and party card
+    /// wants. A borrow away from the map, so asking for it costs a single handle clone.
+    pub(crate) fn class_portrait(&self, class: &str) -> Handle<Image> {
+        self.class_frames(class).idle[0].clone()
     }
 }
 
@@ -1328,48 +1389,11 @@ pub(crate) fn setup(
     .map(|(k, v)| (k.to_string(), v))
     .collect();
 
-    // Per-class hero sprites (PixelLab v3, 8-directional): idle rotations + a `walk`
-    // clip plus battle `attack` and one clip per special ability, loaded into
-    // `CharacterFrames::clips` and played in battle via `CharSprite::action`.
-    fn class_clips(class: &str) -> &'static [(&'static str, usize)] {
-        match class {
-            "shifter" => &[
-                ("walk", 8), ("attack", 8), ("backstab", 8), ("flicker", 8), ("ransack", 8),
-            ],
-            // The Explorer's own kit has no bespoke ABILITY art yet, so its abilities
-            // fall back to the attack clip; the martial animations moved with the kit to
-            // the Hunter.
-            "explorer" => &[("walk", 8), ("attack", 8)],
-            "hunter" => &[
-                ("walk", 8), ("attack", 8), ("power_strike", 8), ("second_wind", 8),
-                ("snare", 8), ("frenzy", 8),
-            ],
-            "psyker" => &[
-                ("walk", 8), ("attack", 8), ("gravity_well", 8), ("kinetic_aegis", 8),
-                ("mind_spike", 8), ("temporal_anchor", 8),
-            ],
-            "resonant" => &[
-                ("walk", 8), ("attack", 8), ("transfuse", 8), ("regen_boon", 8), ("ward", 8),
-            ],
-            "phoenix_guard" => &[
-                ("walk", 8), ("attack", 8), ("silvered_strike", 8), ("rite_of_rest", 8),
-                ("holy_censure", 8), ("purging_light", 8),
-            ],
-            // The four newest orders have idle rotations, a walk cycle and a battle
-            // attack, and nothing else yet — their abilities fall through to the attack.
-            // Declare only what is ON DISK: a clip named here with no frames beside it is
-            // 64 asset-loader errors a launch, which is exactly what the Explorer shipped
-            // the moment it stopped being a copy of the Hunter's folder and lost the five
-            // martial clips it had been borrowing.
-            "smithwright" | "keeper" | "iron_hull" | "rift_knight" => {
-                &[("walk", 8), ("attack", 8)]
-            }
-            _ => &[("walk", 8)],
-        }
-    }
     // Every class the client can muster, off the client's own roster — a hand-written
     // list here is a class whose art silently never loads, and the Smithwright and the
     // Keeper spent a release wearing the Explorer's coat because of exactly that.
+    // EAGER on purpose; see `WorldAssets::class_chars` for why a lazy version was tried
+    // and taken back out.
     let class_chars: HashMap<String, CharacterFrames> = crate::screens::CLASS_INFO
         .iter()
         .map(|c| c.key)
@@ -3086,7 +3110,6 @@ pub(crate) fn update_ground_biome_rings(
     clock: Res<Time>,
     frame: Res<crate::WorldFrame>,
     dungeon: Res<DungeonSceneRes>,
-    look: Res<hd2d::Look>,
     ground_q: Query<&MeshMaterial3d<GroundMat>, With<WorldGround>>,
     mut mats: ResMut<Assets<GroundMat>>,
 ) {
@@ -3157,53 +3180,30 @@ pub(crate) fn update_ground_biome_rings(
         .map(|e| (e.x, e.y))
         .unwrap_or((0.0, 0.0));
 
-    // ⚠️ **THE SLOT COUNTS ARE A CEILING, NOT A BUDGET — CULL TO WHAT IS VISIBLE FIRST
-    // (`WG-11`).** Every window below sorts nearest-first and then truncates to its SLOT
-    // count, so a mire uploads all sixteen basins when only the near handful can be on
-    // screen. The shader pays for the count, not for what it draws: `ground_biome.wgsl`
-    // loops every uploaded landform for EVERY GROUND FRAGMENT, so a slot filled with
-    // something behind the fog wall costs a full iteration across most of the screen and
-    // draws nothing at all.
+    // ⚠️ **A DISTANCE CULL OF THE LANDFORM UPLOADS WAS TRIED HERE AND TAKEN BACK OUT — DO
+    // NOT RE-ADD IT WITHOUT A MEASUREMENT FIRST.**
     //
-    // Everything past `fog_end` is pure fog colour (see `hd2d::Look::fog_end`), so a
-    // landform out there cannot be seen — and for a ridge it is stronger than that:
-    // `terrain::ridge_height` returns zero past `half_width`, so one culled here
-    // contributes *nothing* rather than merely nothing visible.
+    // The idea is `WG-11`'s own and still sound on paper: these windows sort nearest-first
+    // and then truncate to the SLOT count, so the shader pays a per-fragment iteration for
+    // landforms sitting behind the fog wall. Dropping those first should be free speed.
     //
-    // Measured from the player, whose position centres every window — but the CAMERA is
-    // what the fog is measured from, and it sits `cam_dist` back. The far edge of what a
-    // player can see is therefore `fog_end + cam_dist` from the player, and using
-    // `fog_end` alone would cull a band the camera can still see over their shoulder.
+    // In the hand it cost two total-loss regressions and bought nothing measurable:
     //
-    // `None` when the fog is OFF: with no fog wall the distance is genuinely visible, and
-    // culling to it would pop landforms in and out at 500 units. A debug toggle must not
-    // silently change what the world IS.
+    // 1. Culling straits/lobes/bridges rendered the world as OPEN SEA. Those three do not
+    //    add to the ground, they decide whether there IS ground — and truncation had never
+    //    exposed the difference, because all three fit inside their slot counts, so the
+    //    window has never once dropped one. A distance cull drops the whole set at a stroke.
+    // 2. Culling only the additive four (peaks, ridges, basins, rivers) drowned the world
+    //    AGAIN on the next play. A peak or a range is what lifts ground above sea level, so
+    //    removing one does not merely flatten that ground — it can submerge it.
     //
-    // ⚠️⚠️ **ONLY LANDFORMS THAT ADD TO THE GROUND MAY BE CULLED — NEVER ONES THAT DECIDE
-    // LAND FROM WATER.** This is the line the first cut of `WG-11` walked straight over, and
-    // the failure is total rather than subtle: the world renders as open sea in the water's
-    // own light blue, with nothing to stand on and nowhere to go.
+    // And the speed it was supposed to buy was never demonstrated: the one comparison that
+    // suggested a win turned out to be contention on a loaded box, the same way this item
+    // already records a "92 ms uncapped baseline" being pure contamination.
     //
-    // - **Cullable** (peaks, ridges, basins, rivers): each ADDS height or water at a place.
-    //   Drop one and that ground is merely flatter or drier — and past the fog wall, unseen.
-    // - **Never cullable** (straits, lobes, bridges): each DECIDES whether there is land at
-    //   all. Drop one and the land itself is gone.
-    //
-    // The trap is that TRUNCATION never exposed the difference. Each of those three fits
-    // inside its slot count in every world built so far, so the window has never once
-    // dropped one — while a distance cull can drop the entire set at a stroke, the moment
-    // the player stands further than the fog wall from all of them.
-    // `MELD_LANDFORM_CULL=0` turns the cull OFF, which is the whole point: this is a change
-    // to how many iterations the ground costs, and `WG-11`'s standing rule is that a number
-    // taken without an A/B on the same build is not evidence. Cross-session comparison is
-    // what produced (and then retracted) a "92 ms baseline" that was contention on a busy
-    // box. Flip this, same build, same spot, `MELD_VSYNC=0`.
-    let cull_off = std::env::var("MELD_LANDFORM_CULL").is_ok_and(|v| v == "0");
-    let cull_far: Option<f32> =
-        (!cull_off && look.fog_on).then(|| look.fog_end + look.cam_dist);
-    // Distance from the player to the nearest point of a disc-shaped landform
-    // (`[cx, cz, radius, _]`) — negative inside it.
-    let disc_near = |q: &[f32; 4]| (q[0] - px).hypot(q[1] - pz) - q[2];
+    // The real end state is the one `WG-11` names: move the landform tables to a STORAGE
+    // BUFFER, which removes the slot counts entirely and with them the whole class of bug —
+    // rather than trying to guess from a distance which of them the ground still needs.
 
     // THE AUTHORED PEAKS — **nearest-first**, for exactly the reason the ranges below are.
     //
@@ -3220,10 +3220,10 @@ pub(crate) fn update_ground_biome_rings(
     // written before the pattern existed**, and left alone when the ranges were corrected.
     // `every_windowed_landform_is_sorted_nearest_first` is why they cannot be missed again.
     let mut peaks = peaks_snapshot();
-    if let Some(far) = cull_far {
-        peaks.retain(|q| disc_near(q) <= far);
-    }
-    peaks.sort_by(|a, b| disc_near(a).total_cmp(&disc_near(b)));
+    peaks.sort_by(|a, b| {
+        let d = |q: &[f32; 4]| (q[0] - px).hypot(q[1] - pz) - q[2];
+        d(a).total_cmp(&d(b))
+    });
     let n = peaks.len().min(PEAK_SLOTS);
     for (i, slot) in mat.extension.params.peaks.iter_mut().enumerate() {
         *slot = if i < n {
@@ -3247,11 +3247,6 @@ pub(crate) fn update_ground_biome_rings(
         meld_proto::coast::dist_to_segment_pub(px, pz, s[0], s[1], s[2], s[3])
     };
     let mut rg = ridges();
-    // A ridge is a capsule: `half_width` (`r[4]`) past the segment its height is already
-    // zero, so this cull drops only ranges that contribute nothing to any visible fragment.
-    if let Some(far) = cull_far {
-        rg.retain(|r| near_first(r) - r[4] <= far);
-    }
     rg.sort_by(|a, b| near_first(a).total_cmp(&near_first(b)));
     let rn = rg.len().min(RIDGE_SLOTS / 2);
     for (i, slot) in mat.extension.params.ridges.iter_mut().enumerate() {
@@ -3338,12 +3333,6 @@ pub(crate) fn update_ground_biome_rings(
     // contiguous run around the player's own ring instead.
     let water = shore_data();
     let mut near_basins = water.basins.clone();
-    // `[cx, cz, radius, level]` — a disc, culled by true distance to its rim for the same
-    // reason as the lobes. The radius is a BOUND on how far the water may spread, so this
-    // is conservative: a basin is never wider than the disc this test keeps.
-    if let Some(far) = cull_far {
-        near_basins.retain(|b| disc_near(b) <= far);
-    }
     near_basins.sort_by(|a, b| {
         let da = (a[0].hypot(a[1]) - pr).abs();
         let db = (b[0].hypot(b[1]) - pr).abs();
@@ -3375,22 +3364,7 @@ pub(crate) fn update_ground_biome_rings(
             .unwrap_or(0);
         mid.saturating_sub(RIVER_SLOTS / 2).min(nodes.len() - RIVER_SLOTS)
     };
-    let mut window = &nodes[start..(start + RIVER_SLOTS).min(nodes.len())];
-    // ⚠️ **A RIVER CULLS FROM THE ENDS ONLY — dropping a node from the MIDDLE would join
-    // its neighbours and draw a channel across whatever lies between them.** The window is
-    // already centred on the node nearest the player, so the ones past the fog wall are at
-    // its ends; trimming there keeps the run contiguous and the chain honest. A node is
-    // `[x, z, half_width, chain_start]`, so `disc_near` reads it as a disc for free, and
-    // the loop below still forces the surviving first node to start a chain.
-    if let Some(far) = cull_far {
-        window = match (
-            window.iter().position(|n| disc_near(n) <= far),
-            window.iter().rposition(|n| disc_near(n) <= far),
-        ) {
-            (Some(first), Some(last)) => &window[first..=last],
-            _ => &window[..0],
-        };
-    }
+    let window = &nodes[start..(start + RIVER_SLOTS).min(nodes.len())];
     for (i, slot) in mat.extension.params.rivers.iter_mut().enumerate() {
         *slot = match window.get(i) {
             // The first node of a window always starts a chain: the segment joining it to
