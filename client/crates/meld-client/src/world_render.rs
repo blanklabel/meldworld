@@ -25,36 +25,119 @@ use meld_client::hd2d::{self, CharacterFrames};
 
 use super::*;
 
-/// The sliding ground plane's size + tessellation. The plane follows the player so
-/// there's always ground underfoot, and its vertices are displaced into hills by
-/// `terrain_height`. Bevy's `Plane3d` emits `subdivisions + 2` vertices per side, so
-/// the vertex spacing is `size / (subdivisions + 1)`.
+/// The sliding ground's extent. The ground follows the player so there is always ground
+/// underfoot, and its vertices are displaced into hills by `terrain_height`.
 pub(crate) const GROUND_SIZE: f32 = 2000.0;
-pub(crate) const GROUND_SUBDIVISIONS: u32 = 400;
-/// World distance between adjacent ground vertices — the lattice the follow snaps to
-/// (see [`follow_world_ground`]) so the tessellation stops swimming under the hills.
-/// `MELD_GROUND_SUB=<n>` overrides [`GROUND_SUBDIVISIONS`] — the A/B for whether the frame
-/// is bound by the ground's VERTEX stage.
+
+/// `MELD_GROUND_SUB=<n>` builds the RETIRED uniform plane at `n` subdivisions instead of
+/// [`GROUND_LOD`]'s rings — the in-build A/B for what the ground's vertex stage costs.
 ///
-/// The plane is one mesh of `(n + 2)^2` vertices, and every vertex runs `total_height`
-/// FIVE times (once to displace, four more for `terrain_normal`'s finite differences),
-/// each walking every landform loop. Nothing about that cost scales with pixels — which
-/// is why `MELD_WIN` cannot see it, and why halving `n` (quartering the vertices) is the
-/// only instrument that can.
+/// The uniform plane shipped at 400, i.e. `(400 + 2)^2` = **161,604** vertices at a ~5-unit
+/// lattice over all 2000 units, each running `total_height` FIVE times (once to displace,
+/// four more for `terrain_normal`'s finite differences) over every landform loop. None of
+/// that scales with pixels, which is why `MELD_WIN` cannot see it and why the vertex count
+/// is the only instrument that can.
 ///
-/// ⚠️ **MEASUREMENT ONLY — it desyncs [`GROUND_CELL`].** The plane snaps its slide to a
-/// whole `GROUND_CELL`, and that constant is derived from `GROUND_SUBDIVISIONS`, not from
-/// this — so an overridden mesh snaps on the wrong lattice and the ground visibly swims.
-/// That costs nothing in frame time (which is what this exists to measure) but it is not a
-/// knob to ship a value through: lowering the real density means lowering the CONST.
-pub(crate) fn ground_subdivisions() -> u32 {
-    std::env::var("MELD_GROUND_SUB")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(GROUND_SUBDIVISIONS)
+/// ⚠️ **The uniform arm snaps on the wrong lattice** — the follow snaps to
+/// [`GROUND_SNAP`], the rings' coarsest cell, so a uniform mesh at some other spacing
+/// visibly swims as it slides. That costs nothing in frame time, which is what this
+/// exists to measure, but it is not a value to ship through.
+pub(crate) fn uniform_ground_subdivisions() -> Option<u32> {
+    std::env::var("MELD_GROUND_SUB").ok().and_then(|v| v.parse().ok())
 }
 
-pub(crate) const GROUND_CELL: f32 = GROUND_SIZE / (GROUND_SUBDIVISIONS as f32 + 1.0);
+/// **THE GROUND IS LOD RINGS, BECAUSE FOUR FIFTHS OF A UNIFORM PLANE IS PURE FOG.**
+///
+/// `(cell, half_extent)` outward from the camera. The plane is 2000 units across and
+/// `Look::fog_end` is **500** — past which every fragment is flat fog colour — so a
+/// uniform ~5-unit lattice spent roughly **80% of its 161,604 vertices** displacing and
+/// normal-solving terrain that cannot be seen. Nothing about that scales with pixels,
+/// which is why `MELD_WIN` could not see it, and #383 measured the other end of it:
+/// 15.5x fewer ground vertices moved frame time **-74%** once `MELD_VSYNC=0` stopped the
+/// refresh interval reporting every A/B as "no change".
+///
+/// Each `half_extent` is a whole multiple of the NEXT level's cell, so ring boundaries
+/// land on shared lattice positions and the levels tile without overlap:
+/// 160/10, 320/20, 640/40 are all 16. Quads: 4096 + 3072 + 3072 + 1476 = **11,716**
+/// against 160,801 — about **12x fewer** vertex-shader invocations, each of which runs
+/// `total_height` five times over every landform loop.
+///
+/// ⚠️ **A T-JUNCTION IS THE PRICE, and it is paid where nobody looks.** The fine side of
+/// each boundary carries a vertex the coarse side interpolates across, so the surface can
+/// gap by the curvature over one coarse cell. On the ~350-unit hill wavelength that is
+/// ~0.04 units at the first seam (cell 10) and ~0.6 at the last (cell 40) — and the last
+/// seam sits at 640 units, well past `fog_end`. Sharper relief (`peak_dome`,
+/// `ridge_wedge`) can exceed that, so if a seam ever shows, the fix is a skirt at the
+/// boundary rather than a finer outer ring.
+const GROUND_LOD: [(f32, f32); 4] = [(5.0, 160.0), (10.0, 320.0), (20.0, 640.0), (40.0, 1000.0)];
+
+/// The lattice the ground snaps its slide to — the COARSEST cell, so every level stays
+/// world-aligned at once. Snapping to the finest would leave the outer rings' vertices
+/// sliding across the fixed heightfield, which is the shimmer `follow_world_ground` snaps
+/// to avoid; a multiple of 40 is also a multiple of 20, 10 and 5, so one snap serves all.
+pub(crate) const GROUND_SNAP: f32 = 40.0;
+
+/// Build the ring mesh described by [`GROUND_LOD`].
+///
+/// Each level lays a full lattice and then indexes only the annulus outside the previous
+/// level's extent. The interior vertices are left in the buffer unreferenced on purpose:
+/// a vertex no index names is never shaded, so skipping them costs a little memory and
+/// saves the bookkeeping of a remap.
+pub(crate) fn ground_lod_mesh() -> Mesh {
+    use bevy::asset::RenderAssetUsages;
+    use bevy::mesh::{Indices, PrimitiveTopology};
+
+    let mut positions: Vec<[f32; 3]> = Vec::new();
+    let mut normals: Vec<[f32; 3]> = Vec::new();
+    let mut uvs: Vec<[f32; 2]> = Vec::new();
+    let mut indices: Vec<u32> = Vec::new();
+    let mut inner = 0.0f32;
+
+    for (cell, half) in GROUND_LOD {
+        let n = (2.0 * half / cell).round() as i32;
+        let base = positions.len() as u32;
+        let row = (n + 1) as u32;
+        for iz in 0..=n {
+            for ix in 0..=n {
+                let x = -half + ix as f32 * cell;
+                let z = -half + iz as f32 * cell;
+                positions.push([x, 0.0, z]);
+                // The shader replaces both from `total_height` / `terrain_normal`; these
+                // are only what the mesh must carry to be a valid PBR mesh.
+                normals.push([0.0, 1.0, 0.0]);
+                uvs.push([x, z]);
+            }
+        }
+        for iz in 0..n {
+            for ix in 0..n {
+                let x0 = -half + ix as f32 * cell;
+                let z0 = -half + iz as f32 * cell;
+                // Skip the hole this level's inner neighbour already covers.
+                if inner > 0.0
+                    && x0 >= -inner
+                    && x0 + cell <= inner
+                    && z0 >= -inner
+                    && z0 + cell <= inner
+                {
+                    continue;
+                }
+                let a = base + iz as u32 * row + ix as u32;
+                let (b, c, d) = (a + 1, a + 1 + row, a + row);
+                // Wound so both faces point +Y: with x right and z forward, (a, d, c)
+                // and (a, c, b) cross to a positive Y. The obvious order is upside down.
+                indices.extend_from_slice(&[a, d, c, a, c, b]);
+            }
+        }
+        inner = half;
+    }
+
+    let mut mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default());
+    mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs);
+    mesh.insert_indices(Indices::U32(indices));
+    mesh
+}
 
 /// Uniform for [`GroundBiome`] — the ACTUAL per-section biome rings, so the ground
 /// matches each section's real biome (radius ring) instead of fixed distance bands.
@@ -1001,12 +1084,13 @@ pub(crate) fn setup(
         // every direction the player roams. SUBDIVIDED into a fine grid so the ground
         // shader's vertex displacement (`terrain_height`) reads as smooth rolling hills
         // rather than a tilted quad — ~5-unit cells over the hill wavelength (~350u).
-        Mesh3d(meshes.add(
-            Plane3d::default()
-                .mesh()
-                .size(GROUND_SIZE, GROUND_SIZE)
-                .subdivisions(ground_subdivisions()),
-        )),
+        // LOD RINGS by default; `MELD_GROUND_SUB=<n>` still builds the old UNIFORM plane
+        // so the two can be A/B'd in the same build — which is how #383's -74% was found
+        // and how any further claim about the ground's cost should be checked.
+        Mesh3d(meshes.add(match uniform_ground_subdivisions() {
+            Some(n) => Plane3d::default().mesh().size(GROUND_SIZE, GROUND_SIZE).subdivisions(n).into(),
+            None => ground_lod_mesh(),
+        })),
         MeshMaterial3d(ground_mat.clone()),
         Transform::default(),
     ));
@@ -2523,8 +2607,8 @@ pub(crate) fn follow_world_ground(
     // Snapping to a whole number of `GROUND_CELL`s pins the lattice to the same world
     // positions every frame, so the surface holds still while the player glides over it.
     for mut tf in &mut ground_q {
-        tf.translation.x = (focus.x / GROUND_CELL).round() * GROUND_CELL;
-        tf.translation.z = (focus.z / GROUND_CELL).round() * GROUND_CELL;
+        tf.translation.x = (focus.x / GROUND_SNAP).round() * GROUND_SNAP;
+        tf.translation.z = (focus.z / GROUND_SNAP).round() * GROUND_SNAP;
     }
 }
 
@@ -4547,6 +4631,77 @@ mod ground_uniform_tests {
     /// would otherwise turn one real failure into a cascade of unrelated ones.
     fn scene_lock() -> std::sync::MutexGuard<'static, ()> {
         SCENE.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// **THE RINGS MUST TILE THE PLANE EXACTLY — no gap, no double-covered band.**
+    ///
+    /// The whole saving rests on each level indexing only the annulus outside the last,
+    /// and that arithmetic is a hole test on a quad's own corners. Get it wrong one way
+    /// and a band of ground is missing (a hole you can see the sky through); wrong the
+    /// other and it is drawn twice, which costs exactly what this change exists to save
+    /// and z-fights. Summing the areas catches both: overlap overshoots, a gap
+    /// undershoots, and only an exact tiling hits `GROUND_SIZE^2`.
+    #[test]
+    fn the_ground_rings_tile_the_plane_exactly() {
+        let mut area = 0.0f64;
+        let mut inner = 0.0f32;
+        let mut quads = 0usize;
+        for (cell, half) in GROUND_LOD {
+            let n = (2.0 * half / cell).round() as i32;
+            assert!(
+                ((2.0 * half / cell) - n as f32).abs() < 1e-3,
+                "level (cell {cell}, half {half}) is not a whole number of cells"
+            );
+            for iz in 0..n {
+                for ix in 0..n {
+                    let x0 = -half + ix as f32 * cell;
+                    let z0 = -half + iz as f32 * cell;
+                    if inner > 0.0
+                        && x0 >= -inner
+                        && x0 + cell <= inner
+                        && z0 >= -inner
+                        && z0 + cell <= inner
+                    {
+                        continue;
+                    }
+                    area += (cell as f64) * (cell as f64);
+                    quads += 1;
+                }
+            }
+            inner = half;
+        }
+        let want = (GROUND_SIZE as f64) * (GROUND_SIZE as f64);
+        assert!(
+            (area - want).abs() < 1.0,
+            "the rings cover {area} u² of a {want} u² plane — they gap or overlap"
+        );
+        // The saving itself, so a future edit cannot quietly hand the cost back.
+        assert_eq!(quads, 11_716, "quad count moved; the retired uniform plane was 160,801");
+    }
+
+    /// **EVERY TRIANGLE FACES +Y.** The obvious corner order is upside down in Bevy's
+    /// right-handed, Y-up space, and a back-facing ground is invisible from above while
+    /// still costing every one of the vertex evaluations this change exists to remove.
+    #[test]
+    fn the_ground_rings_all_face_upward() {
+        let mesh = ground_lod_mesh();
+        let Some(bevy::mesh::VertexAttributeValues::Float32x3(pos)) =
+            mesh.attribute(Mesh::ATTRIBUTE_POSITION)
+        else {
+            panic!("positions missing")
+        };
+        let Some(bevy::mesh::Indices::U32(idx)) = mesh.indices() else { panic!("indices missing") };
+        assert!(!idx.is_empty(), "no triangles at all");
+        for t in idx.as_chunks::<3>().0 {
+            let (a, b, c) = (pos[t[0] as usize], pos[t[1] as usize], pos[t[2] as usize]);
+            let (u, v) = (
+                [b[0] - a[0], b[1] - a[1], b[2] - a[2]],
+                [c[0] - a[0], c[1] - a[1], c[2] - a[2]],
+            );
+            // y component of u x v
+            let ny = u[2] * v[0] - u[0] * v[2];
+            assert!(ny > 0.0, "a ground triangle is wound face-down (ny {ny})");
+        }
     }
 
     /// **EVERY WINDOWED LANDFORM MUST BE SORTED NEAREST-FIRST, NOT TRUNCATED.**
