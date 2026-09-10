@@ -11437,11 +11437,32 @@ impl WorldActor {
                     .opened
                     .iter()
                     .map(|(pid, o)| {
-                        let ended_hp: i32 =
-                            hero_hp_snapshot.get(pid).map(|v| v.iter().sum()).unwrap_or(o.hp);
+                        // ⚠️ **FLAWLESS IS COUNTED, NOT INFERRED FROM THE END STATE.** It
+                        // used to compare the party's HP at the bell against its HP at the
+                        // end, which is a NET figure: every point healed back hid a point
+                        // taken, so a potion, a mender's row, a Regen boon or the
+                        // Resonant's innate `mender_regen` turned a fight that drew blood
+                        // into an untouched one — and a party that ended a fight above the
+                        // wounds it walked in with collected the bonus on the way out. The
+                        // engine now counts the loss where it happens
+                        // (`combatant_damage_taken`), the same way `falls` is counted for
+                        // the durability tax and for the same reason.
+                        //
+                        // NO COMBATANTS, NO BONUS. A party we cannot see the hits for is
+                        // not a party we watched take none, so this fails closed.
+                        let hurt: Option<i32> = inst.battles[bidx]
+                            .player_combatants
+                            .get(pid)
+                            .map(|cids| {
+                                cids.iter()
+                                    .map(|c| {
+                                        inst.battles[bidx].battle.combatant_damage_taken(c)
+                                    })
+                                    .sum()
+                            });
                         let mut mult = 1.0;
                         let mut lines = Vec::new();
-                        if o.hp > 0 && ended_hp >= o.hp {
+                        if o.hp > 0 && hurt == Some(0) {
                             mult += balance.runs.xp_bonus_flawless;
                             lines.push(wb::XpBonus {
                                 label: "FLAWLESS".to_string(),

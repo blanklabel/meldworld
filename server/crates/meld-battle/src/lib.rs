@@ -279,6 +279,21 @@ pub struct Fighter {
     /// FLEE also clears `alive` without anybody dying, which is the other thing an
     /// end-state read gets wrong.
     falls: u32,
+    /// Points of HP this fighter has actually LOST in this battle, accumulated at the
+    /// same one damage point `falls` is counted at.
+    ///
+    /// ⚠️ **FLAWLESS IS "TOOK NO DAMAGE", AND AN END-STATE READ CANNOT SEE THAT.** The
+    /// bonus (`xp_bonus_flawless`, "not a single point of party HP lost") was decided by
+    /// comparing the party's HP at the bell against its HP at the end — a NET figure, so
+    /// every point healed back hid a point taken. A potion, a mender's row, a Regen boon
+    /// or the Resonant's innate `mender_regen` all made a fight that drew blood pay out
+    /// as untouched. Counted here, healing cannot erase it.
+    ///
+    /// Barrier absorption deliberately does NOT count: it is temp HP, no point of HP is
+    /// lost, and a party that soaked a blow on a shield did keep the promise the bonus
+    /// names. This is the same lesson as `falls` directly above — count it where it
+    /// happens, never infer it from where the fight stopped.
+    damage_taken: i32,
     /// Cached `build_wire_statuses()` output + a signature of the fields it reads,
     /// so the periodic gauge_update (every 100 ms) reuses the list and rebuilds it
     /// only when a status actually changes — instead of reallocating ~10 strings
@@ -391,6 +406,7 @@ impl Fighter {
             ready_tick: 0,
             alive: hp > 0,
             falls: 0,
+            damage_taken: 0,
             statuses_cache: Vec::new(),
             statuses_sig: 0,
             statuses_cached: false,
@@ -1487,6 +1503,16 @@ impl Battle {
             .iter()
             .find(|f| f.combatant_id == combatant_id)
             .map_or(0, |f| f.falls)
+    }
+
+    /// Points of HP a combatant actually LOST in this battle — what FLAWLESS asks about.
+    /// Zero for a fighter that was never hurt, and healing cannot walk it back. See
+    /// [`Fighter::damage_taken`] for why the end state cannot answer this.
+    pub fn combatant_damage_taken(&self, combatant_id: &str) -> i32 {
+        self.fighters
+            .iter()
+            .find(|f| f.combatant_id == combatant_id)
+            .map_or(0, |f| f.damage_taken)
     }
 
     pub fn combatant_hp(&self, combatant_id: &str) -> Option<i32> {
@@ -5863,6 +5889,10 @@ impl Battle {
         t.barrier -= absorbed;
         let hp_loss = (dmg - absorbed).max(0);
         t.hp = (t.hp - hp_loss).max(0);
+        // The points the FLAWLESS bonus asks about, counted where they are lost — see
+        // `Fighter::damage_taken`. Every hit in the game passes through here, so this is
+        // the only place that has to count, exactly as with `falls` below.
+        t.damage_taken += hp_loss;
         let dead = t.hp == 0;
         if dead {
             t.alive = false;
@@ -6753,6 +6783,44 @@ mod tests {
             2,
             "a hero raised and killed again fell TWICE — which an end-of-fight `hp == 0` \
              read cannot see, and which is exactly what the durability tax charges for"
+        );
+    }
+
+    /// FLAWLESS is "not a single point of party HP lost", and the END STATE cannot answer
+    /// that question — which is the bug this counter exists to close. A party that was hurt
+    /// and healed back to the number it walked in on collected the bonus, so a potion, a
+    /// mender's row, a Regen boon or the Resonant's innate `mender_regen` all quietly paid
+    /// for the damage they undid. Same lesson as `falls` directly above: count it where it
+    /// happens, never infer it from where the fight stopped.
+    #[test]
+    fn healing_back_up_does_not_un_take_a_hit() {
+        let b = balance();
+        let mut battle = Battle::new(
+            "b1".into(),
+            EncounterClass::Standard,
+            vec![player("a", 1)],
+            vec![monster("m", 1000, 1)],
+            &b,
+            7,
+        );
+        let opened_hp = battle.combatant_hp("a").expect("the hero is in this fight");
+        assert_eq!(battle.combatant_damage_taken("a"), 0, "nobody has been hurt yet");
+        let _ = battle.apply_damage(0, 5);
+        assert_eq!(battle.combatant_damage_taken("a"), 5, "five points came off");
+        // Mended all the way back to the HP it started the fight on. The opening/closing
+        // comparison now reads IDENTICAL numbers and calls the fight untouched.
+        let _ = battle.apply_heal(0, 5);
+        assert_eq!(
+            battle.combatant_hp("a"),
+            Some(opened_hp),
+            "the end state is back where it began, which is the reading that was wrong"
+        );
+        assert_eq!(
+            battle.combatant_damage_taken("a"),
+            5,
+            "healing cannot un-take a hit — a party that bled and was mended is NOT \
+             flawless, and comparing opening HP against closing HP could not tell the two \
+             apart"
         );
     }
 
