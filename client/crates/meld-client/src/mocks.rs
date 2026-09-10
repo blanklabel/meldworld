@@ -15,6 +15,30 @@ pub(crate) fn party_classes() -> impl Iterator<Item = &'static str> {
     crate::screens::CLASS_INFO.iter().map(|c| c.key)
 }
 
+/// Two saved parties for `MELD_YARD`, so the Drill Yard's nav column — and the load,
+/// rename and delete controls that only exist on a saved row — can be captured at all.
+///
+/// Client-side, like the roster stand-up that calls it: a save genuinely cannot succeed
+/// under this flag, because the account it fakes is the client's fiction and the server
+/// holds a brand-new one that refuses the composition.
+pub(crate) fn saved_parties() -> Vec<meld_client::net::LoadoutLine> {
+    vec![
+        meld_client::net::LoadoutLine {
+            name: "Reapers".into(),
+            classes: vec![
+                "explorer".into(),
+                "hunter".into(),
+                "resonant".into(),
+                "psyker".into(),
+            ],
+        },
+        meld_client::net::LoadoutLine {
+            name: "The Long Shift".into(),
+            classes: vec!["smithwright".into(), "keeper".into(), "explorer".into()],
+        },
+    ]
+}
+
 /// Pre-fill the party builder from flags: `?party=` (whole party) wins, else
 /// `?class=` sets the lead (slot 0). Both default to the diverse starting party.
 pub(crate) fn apply_class_flag(mut session: ResMut<Session>) {

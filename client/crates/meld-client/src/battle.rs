@@ -131,18 +131,24 @@ pub(crate) fn spawn_hero_actor(
     let mut cs = CharSprite::new(frames.clone(), mat.clone(), root);
     cs.facing = facing;
     cs.locked = Some(facing); // a battle hero always faces the monsters
-    // …and is DRAWN in three-quarter view, which is not the same statement. Squared up on
-    // the enemy the world→screen lookup lands on `north`, and a line of dead-back
-    // silhouettes is the one screen where telling a Hunter from an Explorer decides what
-    // you press. The pose is turned a notch INWARD so more of each body reads.
+    // …and it is DRAWN facing them too — no pose override. The world→screen lookup
+    // resolves a hero squared up on the enemy line to `north`, its own back, which is what
+    // a party standing in front of you and looking at the fight looks like.
     //
-    // ⚠️ **INWARD IS THE NORTH HALF OF THE COMPASS, NOT THE SOUTH HALF.** `dir_index` takes
-    // `(screen_right, toward_cam)`, so 1/7 (south-east / south-west) are angled toward the
-    // VIEWER — a party posed with those turns to face ITSELF, ignoring the creature it is
-    // fighting. 3/5 (north-east / north-west) are the same inward angle on the far side of
-    // the compass: still turned toward the centre, but converging up-screen on the enemy,
-    // which is where a formation looks.
-    cs.view_dir = Some(if root.x <= 0.0 { 3 } else { 5 });
+    // ⚠️ **THE THREE-QUARTER TURN IS RETIRED, AND ITS ARGUMENT WAS REAL BUT LOST.** It
+    // posed each hero a notch inward (3/5, north-east / north-west) to trade squareness for
+    // legibility: from dead behind, a Hunter and an Explorer are two dark silhouettes, and
+    // the battle screen is the one place telling them apart decides what you press. Played,
+    // it read as the party twisting away from the creature it was fighting — the row no
+    // longer looks like a LINE — and a formation that does not read as a formation costs
+    // more than the silhouettes buy. Legibility is the nameplate's job and the arena's
+    // layout's; it is not worth turning the party off the enemy for.
+    //
+    // Which is also why the override cannot simply be re-pointed: on a joined ally's WEST
+    // or EAST edge the same `root.x` test turned that party away from the centre as well,
+    // so the one rule that has to hold everywhere — you look at what you are fighting — is
+    // exactly the one a fixed screen-space frame cannot state. The world facing already
+    // says it, in every edge's coordinates at once.
     let forward = Vec3::new(facing.x, 0.0, facing.y); // toward the foes
     let quad = if bust { wa.bust_quad.clone() } else { wa.sprite_quad.clone() };
     commands
@@ -4248,51 +4254,37 @@ mod battle_pose_tests {
     use crate::hd2d::{dir_index, DIRS};
     use bevy::prelude::*;
 
-    /// The battle camera sits behind the party and the party is locked facing the
-    /// monsters, so resolving the pose through the world→screen mapping draws every hero
-    /// from BEHIND. This is the arithmetic that does it, held so the reason the override
-    /// exists cannot quietly stop being true.
+    /// A battle hero is LOCKED facing the fight and drawn through the world→screen
+    /// mapping with no pose override, so every edge a party can stand on resolves to the
+    /// pose that looks AT the centre of the arena — your own party from behind, a joined
+    /// ally in profile.
+    ///
+    /// ⚠️ **THIS REPLACES A TEST OF THE RETIRED THREE-QUARTER OVERRIDE**, which asserted a
+    /// pair of literal screen-space indices (3/5) chosen off `root.x`. That is the shape of
+    /// assertion that could not see its own bug: `root.x` is a SOUTH-edge idea, so a joined
+    /// ally on the west or east edge got a pose picked for somebody else's line, and the
+    /// test agreed because it only ever asked about the south. The rule is the heading, and
+    /// the heading is already in the world facing — so this asks the mapping, not a table.
     #[test]
-    fn facing_the_monsters_resolves_to_the_back_of_the_head() {
+    fn every_party_edge_is_drawn_looking_at_the_fight() {
         // Ground-projected camera forward for `Vec3::new(0.0, 8.6, 11.2)` looking at the
         // arena, and the screen-right that goes with it.
         let (fwd, right) = (Vec2::new(0.0, -1.0), Vec2::new(1.0, 0.0));
-        let facing = Vec2::new(0.0, -1.0); // toward the foes
-        let toward_cam = -facing.dot(fwd);
-        let screen_right = facing.dot(right);
-        assert_eq!(
-            DIRS[dir_index(Vec2::new(screen_right, toward_cam))],
-            "north",
-            "a hero squared up on the enemy line is drawn from behind"
-        );
-    }
-
-    /// So the pose is overridden to a three-quarter turned INWARD — and inward has to be
-    /// taken on the NORTH half of the compass, which is the half that faces the enemy.
-    ///
-    /// ⚠️ **THIS TEST ONCE ASSERTED THE BUG.** It required `starts_with("south")`, and the
-    /// south half is the half angled toward the VIEWER: the party posed with 1/7 turned to
-    /// face ITSELF across the arena and ignored the creature it was fighting. Asserting
-    /// "you can see a face" was asserting the wrong property — a battle hero is identified
-    /// by silhouette and kit from behind, and what it must never do is look away from the
-    /// fight. The rule is the HEADING, so that is what this holds.
-    #[test]
-    fn a_battle_hero_faces_the_enemy_and_is_turned_inward() {
-        let pose = |x: f32| if x <= 0.0 { 3usize } else { 5usize };
-        for x in [-2.7f32, -1.0, 0.0, 1.0, 2.7] {
-            let name = DIRS[pose(x)];
-            assert!(
-                name.starts_with("north"),
-                "a hero at x={x} is drawn as `{name}`, which is turned away from the enemy"
+        // The four edges' world facings: your own party (south, looking north) and the
+        // three a joined ally can take, each looking at the centre.
+        for (edge, facing, want) in [
+            ("south", Vec2::new(0.0, -1.0), "north"),
+            ("north", Vec2::new(0.0, 1.0), "south"),
+            ("west", Vec2::new(1.0, 0.0), "east"),
+            ("east", Vec2::new(-1.0, 0.0), "west"),
+        ] {
+            let toward_cam = -facing.dot(fwd);
+            let screen_right = facing.dot(right);
+            assert_eq!(
+                DIRS[dir_index(Vec2::new(screen_right, toward_cam))],
+                want,
+                "a hero on the {edge} edge is drawn turned away from the arena it is facing"
             );
-            assert_ne!(name, "north", "dead-back is the pose the override exists to avoid");
-        }
-        assert_eq!(DIRS[pose(-2.7)], "north-east", "the left of the line turns right");
-        assert_eq!(DIRS[pose(2.7)], "north-west", "the right of the line turns left");
-        // …and the two sides converge rather than diverge: whatever the angle, both look
-        // up-screen, so no pair of heroes can end up face to face.
-        for x in [-2.7f32, 2.7] {
-            assert!(DIRS[pose(x)].starts_with("north"));
         }
     }
 }

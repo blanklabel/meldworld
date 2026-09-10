@@ -24,6 +24,7 @@ pub(crate) fn overlay_input(
     mut cursor: ResMut<OverlayCursor>,
     roster: Res<PartyRoster>,
     mut rename: ResMut<HeroRename>,
+    mut hero_names: ResMut<AccountHeroNames>,
     state: Res<State<Screen>>,
 ) {
     // While renaming a hero on the party screen, capture text and swallow the
@@ -43,10 +44,9 @@ pub(crate) fn overlay_input(
             return;
         }
         if keys.just_pressed(KeyCode::Enter) {
-            let name = rename.buffer.trim().to_string();
-            if !name.is_empty() {
-                net.0.send(ClientCmd::RenameHero { slot: slot as i32, name });
-            }
+            // The same commit the Drill Yard uses — including the local write, which is
+            // what makes a rename from TOWN visible at all (see `commit_hero_rename`).
+            crate::city::commit_hero_rename(&net, &mut hero_names, slot, &rename.buffer);
             rename.slot = None;
             rename.buffer.clear();
             return;
