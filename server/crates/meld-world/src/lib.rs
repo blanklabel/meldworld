@@ -1924,6 +1924,16 @@ pub struct MonsterSpawn {
     /// facing off frame-to-frame movement (`hd2d::animate_chars`), the sprites spun on
     /// the spot as well.
     wander_to: Option<Position>,
+    /// Which way this creature is currently going ROUND something: +1 left, -1 right,
+    /// 0 for "not steering". ⚠️ **A MEMORYLESS FAN OSCILLATES IN COVER.** The steer that
+    /// replaced the per-axis slide re-picks from scratch every tick and always tries the
+    /// same side first, which gets a body round a LONE tree and traps it in a thicket:
+    /// deflecting off trunk A walks it into trunk B, and deflecting off B points it back
+    /// at A. The creature MOVES the whole time, so `!moved` never fires and the leg never
+    /// re-rolls — motion without progress, which is exactly what the excursion measures as
+    /// standing still. Committing to a side turns that bounce into tracing the thicket's
+    /// own boundary, which is what an animal does and what gets it out.
+    veer: i8,
     /// Seconds left to pursue [`Self::wander_to`] before giving up and picking another.
     /// A creature can be walked into a rock by its own destination (the mover slides
     /// per-axis and then stops), so a leg is time-bounded as well as arrival-bounded —
@@ -2002,6 +2012,7 @@ impl MonsterSpawn {
             skirmish_cd: 0.0,
             regen_accum: 0.0,
             wander_to: None,
+            veer: 0,
             wander_left: 0.0,
             wander_wait: 0.0,
             rng: seed | 1,
@@ -9344,25 +9355,51 @@ impl Arena {
                     }
                     (px, py.max(-lateral).min(lateral))
                 };
+                // ⚠️ **AND THE FAN HAS TO REMEMBER WHICH WAY IT WENT.** The first cut tried
+                // `0, ±40, ±75, ±110` fresh every tick, always the same side first. That gets a
+                // body round a LONE tree and oscillates in COVER: deflect off trunk A into
+                // trunk B, deflect off B back toward A. The creature moves the whole time — so
+                // `!moved` never fires, the leg never re-rolls, and it walks hard while going
+                // nowhere, which is precisely what an excursion measurement reports as stuck.
+                //
+                // So a deflection COMMITS (`veer`), and the committed side is tried at every
+                // width before the other side is tried at any. A creature that started going
+                // left round a thicket will take a 110° left before it takes a 40° right, which
+                // traces the thicket's boundary instead of bouncing along its inside.
                 let mut moved = false;
-                // 0, ±40°, ±75°, ±110° — past a right angle it is going round the back of the
-                // obstacle, which is what gets a body out of a pocket.
-                for off in [0.0f64, 0.7, -0.7, 1.31, -1.31, 1.92, -1.92] {
-                    let (c, sn) = (off.cos(), off.sin());
-                    let (hx, hy) = (dx * c - dy * sn, dx * sn + dy * c);
-                    let (px, py) = if off == 0.0 { (nx, ny) } else { settle(hx, hy) };
-                    if free(px, py) {
-                        m.position = Position::new(px, py);
-                        moved = true;
-                        break;
+                if free(nx, ny) {
+                    // Straight on, and the memory clears: whatever it was going round, it is
+                    // past. Without this a creature commits once and circles for the dive.
+                    m.position = Position::new(nx, ny);
+                    m.veer = 0;
+                    moved = true;
+                } else {
+                    let order: [i8; 2] = if m.veer < 0 { [-1, 1] } else { [1, -1] };
+                    'steer: for side in order {
+                        // 40°, 75°, 110° — past a right angle it is going round the BACK of the
+                        // obstacle, which is what gets a body out of a pocket.
+                        for width in [0.7f64, 1.31, 1.92] {
+                            let off = width * f64::from(side);
+                            let (c, sn) = (off.cos(), off.sin());
+                            let (hx, hy) = (dx * c - dy * sn, dx * sn + dy * c);
+                            let (px, py) = settle(hx, hy);
+                            if free(px, py) {
+                                m.position = Position::new(px, py);
+                                m.veer = side;
+                                moved = true;
+                                break 'steer;
+                            }
+                        }
                     }
                 }
                 // Boxed in on every heading: re-roll the destination NOW rather than pushing at
                 // the same wall until the leg times out. It costs one draw and it is the whole
                 // difference between a creature that is briefly stuck and one that is stuck for
-                // the dive.
+                // the dive. The veer goes with it — the new leg is a new situation, and a stale
+                // commitment would steer the creature round an obstacle it is no longer facing.
                 if !moved {
                     m.wander_to = None;
+                    m.veer = 0;
                 }
             }
         }
