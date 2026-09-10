@@ -5662,6 +5662,19 @@ pub enum BountyClaim {
 #[derive(Debug, Clone, PartialEq)]
 pub struct WorldSave {
     pub world_key: String,
+    /// **WHEN THIS WORLD WENT TO SLEEP**, in epoch milliseconds — the one and only place
+    /// wall-clock enters the world (`SC-3`).
+    ///
+    /// CANON §W2 forbids scheduling anything against wall-clock, and this does not break
+    /// that: it is converted to a TARGET TICK at the world boundary, exactly the way
+    /// `MELD_*` reads are confined there, and everything inside stays a pure function of
+    /// `(seed, tick)`. Without it a world has no way to know how long it slept, so it
+    /// wakes at the tick it slept at and the Shifts, regrowth and weather it should have
+    /// had simply did not happen.
+    ///
+    /// Written by the DB rather than the caller (`updated_at` is `now()` in the same
+    /// statement), so it cannot disagree with the row it describes.
+    pub updated_at_ms: i64,
     pub seed: i64,
     /// The world clock. The Shift schedule is a pure function of `(seed, generation)`
     /// driven by this, so restoring it resumes the weather mid-window.
@@ -5698,7 +5711,16 @@ impl Db {
                 .await?;
             }
             Backend::Mem(m) => {
-                m.lock().unwrap().worlds.insert(w.world_key.clone(), w.clone());
+                // The in-memory backend has no `now()` of its own, so it stamps the save
+                // the way Postgres does — otherwise a `memory://` world would always wake
+                // believing no time had passed, and the catch-up path would be untestable
+                // in exactly the build (`play-solo`, the MCP harness) used to test it.
+                let mut w = w.clone();
+                w.updated_at_ms = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis() as i64)
+                    .unwrap_or(0);
+                m.lock().unwrap().worlds.insert(w.world_key.clone(), w);
             }
         }
         Ok(())
@@ -5709,7 +5731,8 @@ impl Db {
         match &self.backend {
             Backend::Pg(pool) => {
                 let row = sqlx::query(
-                    "SELECT seed, tick_count, shift_generation, sections, delta
+                    "SELECT seed, tick_count, shift_generation, sections, delta,
+                            EXTRACT(EPOCH FROM updated_at) * 1000 AS updated_at_ms
                      FROM worlds WHERE world_key = $1",
                 )
                 .bind(world_key)
@@ -5717,6 +5740,7 @@ impl Db {
                 .await?;
                 Ok(row.map(|r| WorldSave {
                     world_key: world_key.to_string(),
+                    updated_at_ms: r.get::<f64, _>("updated_at_ms") as i64,
                     seed: r.get("seed"),
                     tick_count: r.get("tick_count"),
                     shift_generation: r.get("shift_generation"),
@@ -5738,7 +5762,8 @@ impl Db {
         match &self.backend {
             Backend::Pg(pool) => {
                 let rows = sqlx::query(
-                    "SELECT world_key, seed, tick_count, shift_generation, sections, delta
+                    "SELECT world_key, seed, tick_count, shift_generation, sections, delta,
+                            EXTRACT(EPOCH FROM updated_at) * 1000 AS updated_at_ms
                      FROM worlds ORDER BY world_key",
                 )
                 .fetch_all(pool)
@@ -5747,6 +5772,7 @@ impl Db {
                     .into_iter()
                     .map(|r| WorldSave {
                         world_key: r.get("world_key"),
+                        updated_at_ms: r.get::<f64, _>("updated_at_ms") as i64,
                         seed: r.get("seed"),
                         tick_count: r.get("tick_count"),
                         shift_generation: r.get("shift_generation"),

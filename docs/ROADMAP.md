@@ -3253,12 +3253,20 @@ Make time in the field a living, dangerous place worth screenshotting.
   modifiers, elemental interactions) and be **biome-appropriate** — deserts should
   rarely rain; each biome gets its own weather table. Seeded + server-authoritative
   so it's fair. New `[worldgen]`/`[weather]` tunables.
-  - ⚠️ **There IS rain, and it is none of this.** `SL-4` tuned a **client-side** storm
-    cycle (`world_render::advance_sky`, magnitudes in `WorldFeel`) — it is a *look*, so it
-    lives client-side on `BattleFeel`'s precedent: not seeded, not on the wire, not
-    per-biome, and with no mechanical effect whatsoever. Two clients in the same world can
-    disagree about whether it is raining. This item is the whole of the mechanical half,
-    and it starts by moving the clock server-side (`FS-5`).
+  - 🟡 **The SHARED half landed with `FS-5`; the MECHANICAL half is what is left.** The
+    storm cycle was client-side, unseeded and not per-biome, so two clients in one world
+    could disagree about whether it was raining. It is now derived from `(seed, tick)` by
+    both sides through [`meld_proto::sky`](../shared/meld-proto/src/sky.rs), and it is
+    **biome-appropriate**: `[weather] rain_chance` is a per-biome chance that a given
+    cycle's storm actually wets that biome, so a desert spends nearly all its storms windy
+    and dry (0.05) where a mire is soaked (0.90).
+    - ⚠️ **The CADENCE is global and only the precipitation is local**, which is the whole
+      trick. Per-biome phase lengths would put each biome on its own calendar — the sky
+      would jump as you walked across a boundary, and a party spread over two cells would
+      be back to disagreeing about the time, which is the bug this system exists to fix.
+    - **Still to build:** the mechanical effects — visibility, movement, encounter and
+      harvest modifiers, elemental interactions — plus the rest of a per-biome weather
+      *table* (today a biome varies only in how often it rains, not in what falls).
 - [ ] **FS-3 — Richer environmental effects (and they emit light).** Expand ambient
   HD-2D life like the **night fireflies**, and make such effects **light sources**
   (the fireflies should actually emit light), plus more per-biome/per-time-of-day
@@ -3399,14 +3407,34 @@ Make time in the field a living, dangerous place worth screenshotting.
     placements now go through `become_boss` — writing `boss_kind` directly had left
     every gate boss wearing its host's LINEAGE, which is the bug `become_boss` exists
     to prevent.
-- [ ] **FS-5 — Day/night cycle as a first-class system.** ⚠️ *The sun already rises —
-  client-side only.* `advance_sky` runs a 10-minute day per client with stars, a moon fill
-  and a wind/rain phase machine; nothing about it is seeded, authoritative or on the wire,
-  so it cannot yet gate anything. This item is the **clock**, and everything below waits on
-  it. A seeded, server-authoritative time-of-day clock that other systems read: it drives the fireflies
-  and night lighting (FS-3), gates creature sleep/activity (CR-3), and modulates
-  weather and encounter tables (FS-2). One source of truth for "what time is it in
-  this instance," on the wire so every client agrees.
+- [x] **FS-5 — Day/night cycle as a first-class system.** ⚠️ *Was: the sun already rises,
+  client-side only.* `advance_sky` accumulated wall-clock into a 10-minute day per client
+  and ran its own storm machine seeded off nothing — so two people standing on the same
+  patch of ground could disagree about whether it was night and whether it was raining,
+  and nothing could be *gated* on the time of day because there was no such fact.
+  - **The clock is the world's tick counter**, which already exists and is already what
+    CANON §W2 insists everything be scheduled against ("never wall-clock"). The Shift is
+    scheduled that way for the same reason, and it buys the same two properties here: a
+    world replays identically from `(seed, tick)`, and a world that slept wakes at the
+    right hour **by construction** rather than by anyone remembering to advance a clock.
+  - **[`meld_proto::sky`](../shared/meld-proto/src/sky.rs) is the one registry both sides
+    read** — time of day, the four-phase cycle, super-storm severity and per-biome
+    precipitation, all pure functions of `(seed, tick)`. Its magnitudes ride `run.started`
+    for the same reason `regions`' do (the client has no `balance.toml`), including
+    `tick_ms`: every duration in the struct is in ticks, so the struct says how long one
+    is rather than letting the client guess the server's cadence and drift by design.
+  - **Nothing about the sky is sent per frame.** The server restates the tick every
+    `[weather] sky_sync_ticks`; the client runs its own estimate forward and derives
+    everything locally. A 60 Hz sky on the wire would be absurd, and a sky the server
+    interpolated *for* the client would be a second clock able to disagree with the first.
+    The correction is a SNAP, not a nudge — both sides hold the same integer.
+  - **What stays a look stays client-side.** How fast a given client eases the trees into
+    a gust is smoothing, not a fact, and stays on `WorldFeel` with the rest of the look —
+    the same line `BattleFeel` draws. So does `MELD_WORLD_FEEL="sky_t=…"`, which still
+    pins a night for a screenshot when there is no world clock to read.
+  - ⚠️ **Weather still has NO mechanical effect** — no visibility, movement, harvest or
+    elemental modifier. That is the rest of `FS-2`. What landed is the shared,
+    authoritative sky those rules have to hang off.
 - [ ] **FS-6 — Biome hazards: let the field itself hurt you.** The overworld cannot
   currently damage anyone — all damage lives in the ATB battle — which is why
   [`lore/biomes.md`](lore/biomes.md)'s 27 biomes are unbuildable: nearly every one is
@@ -5466,11 +5494,42 @@ Directly underpins CR-4 (sim budget), MON-2 (persistent camps/instances), and LC
       test alone passes perfectly if `seed` is parsed and ignored and every diver gets a
       private world.
     **Remaining:** the b1-B boundary (spawn `WorldActor` as its own task so it never calls
-    `GameState` methods), the closed-form dormancy catch-up below (an evicted world's
-    clock currently STOPS until someone dives back in), the admission queue, and hub
-    handoff.
-  - 🔴 *Design settled, not built: **a dormant world catches up in CLOSED FORM, never by
-    replaying ticks**.* Asked for directly — a world asleep for a while should wake to
+    `GameState` methods), the admission queue, and hub handoff. *(The dormancy catch-up
+    below has since landed, so an evicted world no longer wakes with a stopped clock.)*
+  - ✅ **BUILT — a dormant world catches up in CLOSED FORM, never by replaying ticks.**
+    `WorldActor::advance_to(target)`, called the moment a world is stood back up (off
+    disk, or after `dormant_after_ticks` evicted it). Measured: a simulated DAY of
+    dormancy catches up in ~3 s, against the ~3.8 h replaying it would cost — held by
+    `a_dormant_world_wakes_up_at_now` as a ratio-of-absurdity bound rather than a
+    benchmark, since the box is shared.
+    - **Wall-clock enters at exactly ONE place** — `WorldSave.updated_at_ms` (stamped by
+      Postgres's own `now()` in the same statement, so it cannot disagree with the row)
+      turned into a target tick at the world boundary. Everything past that line is a
+      pure function of `(seed, tick)` again, so CANON §W2 survives and §W5 persistence
+      stays two integers and a small delta.
+    - **Only the Shift iterates**, and it must: `shift_region` picks least-recently-
+      disturbed half the time, so order is history. Regrowth is `regrow(target)` in ONE
+      call (it partitions on `now - felled_tick`, so it was already tick-absolute), and
+      creature mending is rate × elapsed and saturating.
+    - ⚠️ **`max_catchup_shifts` caps the REPLAY, never the SCHEDULE.** The generation
+      counter advances over every Shift that landed — it is a pure function of the seed
+      and must not desynchronise because of how much work we chose to do — and only the
+      last N are applied, since an older Shift's re-scatter is largely overwritten by the
+      newer ones on top of it. Held by
+      `capping_the_replay_does_not_desynchronise_the_schedule`.
+    - ⚠️ **The Force blast has nobody to hit, and that is load-bearing.** A live Shift
+      damages the heroes standing in it; a dormant world has no divers *by definition* —
+      that is why it is dormant — so that half is a no-op rather than something
+      `advance_to` reimplements. **If a world ever sleeps with players in it, this is the
+      first assumption that breaks.**
+    - ⚠️ **An evicted world is stamped on the way out.** `world_save` leaves
+      `updated_at_ms` at 0 because Postgres fills it in; the in-memory eviction path never
+      goes through Postgres, and a 0 there reads as "asleep since 1970" — a fifty-six-year
+      catch-up on the one task that owns every world.
+    - *Ecology and raids still do not exist*, so what is built is the HOOK, not the
+      contents: a new subsystem catches up by adding a pass to `advance_to`, and one that
+      cannot supply a closed form has to declare its saturation horizon.
+  - 🔴 *The original design note, for the record.* Asked for directly — a world asleep for a while should wake to
     "now", with its Shifts, regrowth, conflicts and (later) fields and raids having
     happened. Replaying the sim cannot do it, and the arithmetic is not close: the tick is
     100 ms and the measured creature step at d1300 (11,836 creatures) is **15.8 ms**, so

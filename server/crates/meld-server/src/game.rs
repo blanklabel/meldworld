@@ -1755,6 +1755,28 @@ struct StationDto {
     stock: String,
 }
 
+/// The wire form of `[weather]` — the sky's constants, as both sides read them.
+///
+/// It lives here rather than on `meld_balance::Weather` because `meld-balance` is a leaf
+/// config loader that does not know the wire crate, and rather than at each call site
+/// because a per-field copy in two places is a sky the client and the server disagree
+/// about. One function, so there is nothing to keep in sync.
+fn sky_of(balance: &Balance) -> meld_proto::sky::Sky {
+    let w = &balance.weather;
+    meld_proto::sky::Sky {
+        // The unit every other duration here is in. Sent rather than assumed: the client
+        // has no `balance.toml`, and one that guessed the server's cadence would drift.
+        tick_ms: balance.battle.tick_ms as u32,
+        day_ticks: w.day_ticks,
+        fair_ticks: w.fair_ticks,
+        gust_ticks: w.gust_ticks,
+        storm_ticks: w.storm_ticks,
+        clearing_ticks: w.clearing_ticks,
+        super_storm_in: w.super_storm_in,
+        rain_chance: w.rain_chance.clone(),
+    }
+}
+
 /// **A world's key is its SEED** (CANON §W1: "its identity is a player-chosen seed").
 /// This is the row in `worlds` and the entry in the Router's map, and it is the same
 /// string in both — see [`WorldActor::key`].
@@ -1856,6 +1878,9 @@ impl WorldActor {
         };
         meld_db::WorldSave {
             world_key: self.key.clone(),
+            // Stamped by the store, not by the caller — `updated_at` is `now()` in the
+            // same statement, so the timestamp cannot disagree with the row it describes.
+            updated_at_ms: 0,
             seed: self.arena.seed as i64,
             tick_count: self.tick_count as i64,
             shift_generation: self.shift_generation as i64,
@@ -4793,7 +4818,14 @@ impl GameState {
             if dormant {
                 // Keep the save so the next diver stands the same world back up rather
                 // than rolling a fresh one under the same name.
-                self.restore.insert(w.key.clone(), save.clone());
+                //
+                // ⚠️ **Stamp it on the way out.** `world_save` leaves `updated_at_ms` at 0
+                // because Postgres fills it in from `now()` — but this copy never goes
+                // through Postgres, and a 0 here reads to the wake path as "asleep since
+                // 1970", which would ask `advance_to` to catch up fifty-six years.
+                let mut save = save.clone();
+                save.updated_at_ms = now_ms() as i64;
+                self.restore.insert(w.key.clone(), save);
                 asleep.push(w.key.clone());
                 tracing::info!(
                     key = %w.key,
@@ -5983,6 +6015,33 @@ impl GameState {
                 empty_since: None,
             };
             self.worlds.insert(world_key.clone(), world);
+            // **THE ONE PLACE WALL-CLOCK ENTERS A WORLD** (`SC-3`, and CANON §W2 survives
+            // it). A world read back off disk — or evicted from memory and stood up again
+            // — slept for some real amount of time, and the whole point of a world that
+            // outlives its divers is that it kept changing while nobody was in it. Here
+            // that elapsed time becomes a TARGET TICK, at the world boundary, exactly the
+            // way `MELD_*` reads are confined here; everything past this line is a pure
+            // function of `(seed, tick)` again.
+            //
+            // Done AFTER insertion so `advance_to` runs against the world in the map —
+            // catching up a local and then inserting it would work today and silently
+            // stop working the moment anything else looks the world up mid-wake.
+            // A save with no timestamp is one nothing stamped — treat it as having just
+            // gone to sleep rather than asking the world to catch up from the epoch. It
+            // should be unreachable (both writers stamp), which is why it is a floor
+            // rather than a panic: being wrong here costs a stale clock, and being wrong
+            // the other way costs an unbounded Shift replay on the one task.
+            if let Some(save) = restored.as_ref().filter(|s| s.updated_at_ms > 0) {
+                let slept_ms = now_ms().saturating_sub(save.updated_at_ms as u64);
+                let tick_ms = balance.battle.tick_ms.max(1);
+                let target = (save.tick_count.max(0) as u64).saturating_add(slept_ms / tick_ms);
+                if let Some(w) = self.worlds.get_mut(&world_key) {
+                    w.advance_to(target);
+                    // It woke at `now`, so its save cadence and its dormancy clock start
+                    // from there rather than from whenever it fell asleep.
+                    w.last_save_tick = w.tick_count;
+                }
+            }
         }
         // Every diver's first dive ends their tutorial state, so their *next* run is
         // a fresh random world. Idempotent: only the not-yet-dived are persisted.
@@ -6518,6 +6577,13 @@ impl GameState {
                     // the client can only place it because `terrain_offset` rides here too.
                     basins: inst.arena.basins.clone(),
                     rivers: inst.arena.rivers.clone(),
+                    // THE SKY (FS-5). Its constants, once — a property of the world,
+                    // fixed for its lifetime — plus the world clock they are read
+                    // against. Everything about time of day and weather is derived from
+                    // `(seed, tick)` on both sides, so nothing about the sky is sent per
+                    // frame and two people in one world cannot disagree about the hour.
+                    sky: Some(sky_of(&balance)),
+                    world_tick: inst.tick_count,
                     // The world's own fact, not the caller's request: a joiner who asked
                     // for a normal dive still lands in a live tutorial world.
                     tutorial: inst.tutorial,
@@ -10770,6 +10836,27 @@ impl WorldActor {
         let mut out = Vec::new();
         let mut effects: Vec<WorldEffect> = std::mem::take(&mut self.pending_effects);
 
+        // **THE CLOCK, RARELY** (`FS-5`). Time of day and the weather phase are pure
+        // functions of `(seed, tick)` on both sides, so the only thing that has to cross
+        // the wire is the tick — and only often enough to stop a client's own estimate
+        // drifting. Everything else about the sky was decided when `run.started` carried
+        // the constants.
+        //
+        // It goes to everyone in the world including players in a battle: they will be
+        // back on the overworld shortly, and a correction that skipped them would land as
+        // a visible jump in the sky at the exact moment the arena clears.
+        let sync = self.balance.weather.sky_sync_ticks.max(1) as u64;
+        if self.tick_count.is_multiple_of(sync) {
+            let msg = serialize_payload(&ww::SkyTick { tick: self.tick_count });
+            for r in &self.run.runs {
+                out.push(Outgoing {
+                    player_id: r.player_id.clone(),
+                    msg_type: ww::SkyTick::TYPE,
+                    payload: msg.clone(),
+                });
+            }
+        }
+
         // 1) The overworld always advances — even while some party is in a battle.
         // Roaming creatures move and skirmish with rival factions; creatures pulled
         // into a battle are `in_battle` and hold still. Doing this every tick (not
@@ -11101,6 +11188,115 @@ impl WorldActor {
     /// a world reloaded from Postgres resumes mid-warning exactly where it left off —
     /// which is the whole point of the scheduler being pure (§W5: two integers replay
     /// the history).
+    /// **A DORMANT WORLD CATCHES UP IN CLOSED FORM** (`SC-3`), never by replaying ticks.
+    ///
+    /// A world outlives its divers and keeps changing (CANON §W1), so one that slept — in
+    /// memory, or across a restart — has to wake up at *now* rather than at the tick it
+    /// slept at. Stepping cannot do that, and the arithmetic is not close: the tick is
+    /// 100 ms and the measured creature step at d1300 (11,836 creatures) is 15.8 ms, so a
+    /// dormant hour is ~9.5 min of CPU, a day ~3.8 h and a week ~26 h — on the single task
+    /// that owns every world. An hour of dormancy is already an unacceptable login cost,
+    /// so catch-up-by-stepping is dead at any dormancy worth having.
+    ///
+    /// **Almost nothing needs stepping, which is what makes it tractable:**
+    ///
+    /// - **Shifts** are already closed-form and already EXACT — `shift::roll` is pure in
+    ///   `(seed, generation)` — so this enumerates the generations landing in the window
+    ///   rather than the ticks between them. This is the one subsystem that genuinely
+    ///   iterates, and it MUST: `shift_region` picks the least-recently-disturbed span
+    ///   half the time, so which sections a Shift reached depends on the order they
+    ///   landed in. That is history, not arithmetic, and it cannot be collapsed.
+    /// - **Regrowth** is `Arena::regrow(target)` — one call, exact, because it partitions
+    ///   on `now - felled_tick >= regrow_ticks` rather than counting down.
+    /// - **Creature mending** is rate × elapsed and SATURATES
+    ///   (`creature_regen_fraction_per_sec` is a full heal in 100 s), so past ~2 minutes
+    ///   the answer is not an approximation of what stepping would have produced — it is
+    ///   the same fixed point.
+    /// - **Structures** fall out of the Shift enumeration for free: an anchor pays
+    ///   `shift_hold_damage_fraction` for every Shift it turns aside, so an untended one
+    ///   dies on schedule without anything here knowing what an anchor is.
+    ///
+    /// ⚠️ **The Force blast has no one to hit, and that is load-bearing.** A live Shift
+    /// damages the heroes standing in it; a dormant world has no divers by definition —
+    /// it is why it is dormant — so that whole half is a no-op here rather than something
+    /// this function has to reimplement. If a world ever sleeps with players in it, this
+    /// assumption is the first thing that breaks.
+    ///
+    /// ⚠️ **And CANON §W2 survives it.** Wall-clock enters at exactly ONE place — turning
+    /// elapsed real time into `target`, at the world boundary, the same discipline that
+    /// confines `MELD_*` reads there. Everything in here is a pure function of
+    /// `(seed, tick)`, so the same wake-time reproduces the same world and §W5 persistence
+    /// stays two integers and a small delta.
+    ///
+    /// Returns how many Shifts were actually applied.
+    fn advance_to(&mut self, target: u64) -> usize {
+        if target <= self.tick_count {
+            return 0;
+        }
+        let balance = self.balance.clone();
+        let seed = self.arena.seed;
+        let elapsed_ticks = target - self.tick_count;
+
+        // 1) Enumerate the Shifts that landed while nobody was here. The generation
+        //    counter advances over ALL of them — the schedule is a pure function of the
+        //    seed (§W5) and must not be desynchronised by how much work we chose to do —
+        //    and only the last `max_catchup_shifts` are applied. An older Shift's
+        //    re-scatter is largely overwritten by the newer ones on top of it anyway.
+        let mut due: Vec<meld_world::shift::ShiftRoll> = Vec::new();
+        loop {
+            let roll = meld_world::shift::roll(&balance, seed, self.shift_generation);
+            if roll.land_tick > target {
+                break;
+            }
+            self.shift_generation += 1;
+            due.push(roll);
+            // The schedule is derived, so a cadence that failed to advance would spin
+            // here forever on the one task that owns every world.
+            if due.len() > 1_000_000 {
+                tracing::error!(key = %self.key, "world.catchup: shift schedule did not advance");
+                break;
+            }
+        }
+        let skipped = due.len().saturating_sub(balance.world_persist.max_catchup_shifts);
+        let mut landed = 0;
+        for roll in due.into_iter().skip(skipped) {
+            let Some((first, last)) = self.arena.shift_region(&balance, &roll) else { continue };
+            // An anchor turns a Shift aside and pays for it (CANON §W3). A held Shift
+            // never reaches the log, exactly as in the live path: nothing about the world
+            // changed except the anchor's HP, which rides the delta already.
+            if self.arena.hold_shift(&balance, first, last).is_some() {
+                continue;
+            }
+            self.shift_log.push((roll.generation, first, last));
+            self.arena.apply_shift(&balance, &roll, first, last);
+            landed += 1;
+        }
+
+        // 2) The clock itself. Set before the rate-based passes so they measure against
+        //    the world's real age, and set unconditionally even when the Shift replay was
+        //    capped — the clock is what the sky and every future gate read (`FS-5`), and a
+        //    world that woke with a stale clock would be showing the wrong hour to
+        //    everyone standing in it.
+        self.tick_count = target;
+        // The tell belongs to a warning nobody was here to receive.
+        self.shift_warned = false;
+
+        // 3) The saturating half, in one pass each.
+        self.arena.regrow(&balance, target);
+        let dt = (elapsed_ticks as f64) * (balance.battle.tick_ms.max(1) as f64) / 1000.0;
+        self.arena.mend_creatures(dt);
+
+        tracing::info!(
+            key = %self.key,
+            to = target,
+            elapsed_ticks,
+            shifts_applied = landed,
+            shifts_skipped = skipped,
+            "world.catchup: a dormant world woke up at now"
+        );
+        landed
+    }
+
     fn advance_shift(&mut self) -> Vec<Outgoing> {
         let balance = self.balance.clone();
         let seed = self.arena.seed;
@@ -15368,6 +15564,102 @@ mod sharding_tests {
             out.iter().any(|o| o.msg_type == ws::Error::TYPE),
             "a full world should say so rather than failing silently"
         );
+    }
+
+    /// **A dormant world wakes at NOW, in closed form** (`SC-3`). The whole claim: it
+    /// keeps changing while nobody is in it, and catching up must not cost a tick per
+    /// tick — a dormant week is 6,048,000 of them, ~26 h of CPU on the one task.
+    #[tokio::test]
+    async fn a_dormant_world_wakes_up_at_now() {
+        let (mut g, _rx, ids) = router(1).await;
+        g.form_run(vec![ids[0].clone()], &ids[0], None, false, None, Some(4242));
+        let key = g.sessions[&ids[0]].world.clone().unwrap();
+        assert_eq!(g.worlds[&key].tick_count, 0);
+
+        // A day of dormancy at the shipped tick.
+        let a_day = 24 * 60 * 60 * 1000 / g.balance.battle.tick_ms.max(1);
+        let started = std::time::Instant::now();
+        g.worlds.get_mut(&key).unwrap().advance_to(a_day);
+        let took = started.elapsed();
+
+        assert_eq!(g.worlds[&key].tick_count, a_day, "the clock has to reach now");
+        assert!(
+            g.worlds[&key].shift_generation > 0,
+            "a day of weather should have moved the Shift schedule on"
+        );
+        // The point of closed form. Replaying a day would be hours; this is the guard
+        // that it is not being replayed at all. Generous, because the box is shared —
+        // it is a ratio-of-absurdity check, not a benchmark.
+        assert!(took.as_secs() < 20, "catching up a day took {took:?} — is it stepping?");
+    }
+
+    /// The schedule stays a pure function of the seed even when the REPLAY is capped:
+    /// the generation counter advances over every Shift that landed, so a world that
+    /// slept a long time comes back on the same calendar as one that never slept.
+    #[tokio::test]
+    async fn capping_the_replay_does_not_desynchronise_the_schedule() {
+        let mut b = Balance::load_default().unwrap();
+        b.world_persist.max_catchup_shifts = 2;
+        let (mut g, _rx, ids) = router(1).await;
+        g.balance = Arc::new(b);
+        g.form_run(vec![ids[0].clone()], &ids[0], None, false, None, Some(77));
+        let key = g.sessions[&ids[0]].world.clone().unwrap();
+
+        let target = 500_000;
+        let applied = g.worlds[&key].balance.clone();
+        let _ = applied;
+        let landed = g.worlds.get_mut(&key).unwrap().advance_to(target);
+        let w = &g.worlds[&key];
+
+        // Every generation whose Shift landed by `target` is retired…
+        let next = meld_world::shift::roll(&w.balance, w.arena.seed, w.shift_generation);
+        assert!(
+            next.land_tick > target,
+            "the generation counter must be past every Shift that landed"
+        );
+        let prev = meld_world::shift::roll(&w.balance, w.arena.seed, w.shift_generation - 1);
+        assert!(prev.land_tick <= target, "…and no further than that");
+        // …while only the capped number were actually applied.
+        assert!(landed <= 2, "the replay cap should have bounded the work, got {landed}");
+        assert!(w.shift_generation > 2, "this window should hold more Shifts than the cap");
+    }
+
+    /// Regrowth and mending are the SATURATING half: past their horizon the answer is a
+    /// fixed point rather than an approximation, which is what makes capping honest.
+    /// A creature felled long ago is standing again; nothing is left owed.
+    #[tokio::test]
+    async fn the_saturating_half_settles_rather_than_approximating() {
+        let (mut g, _rx, ids) = router(1).await;
+        g.form_run(vec![ids[0].clone()], &ids[0], None, false, None, Some(31337));
+        let key = g.sessions[&ids[0]].world.clone().unwrap();
+
+        // Wound everything, then sleep past every horizon.
+        let wounded = {
+            let w = g.worlds.get_mut(&key).unwrap();
+            let mut n = 0;
+            for m in w.arena.monsters.iter_mut().filter(|m| !m.defeated) {
+                m.hp = 1;
+                n += 1;
+            }
+            n
+        };
+        assert!(wounded > 0, "the world should have some wildlife to wound");
+        g.worlds.get_mut(&key).unwrap().advance_to(10_000_000);
+
+        let w = &g.worlds[&key];
+        // ⚠️ Asserted against each creature's CURRENT `max_hp`, never one captured before
+        // the sleep: a Shift re-rolls the creatures in the region it lands on, so a
+        // creature can come out the far side of a long dormancy at a different size. The
+        // property is "nothing is left owed healing", not "this number did not move".
+        let hurt: Vec<&str> = w
+            .arena
+            .monsters
+            .iter()
+            .filter(|m| !m.defeated && m.hp < m.max_hp)
+            .map(|m| m.entity_id.as_str())
+            .collect();
+        assert!(hurt.is_empty(), "creatures still wounded after saturation: {hurt:?}");
+        assert!(w.arena.fallen.is_empty(), "everything felled should have regrown by now");
     }
 
     /// A tutorial world is onboarding rather than a place — it is never persisted and

@@ -106,8 +106,20 @@ free while the world was a field on the Router and silently skipped the abandone
 ephemeral burn once it was not.
 A world **outlives its divers** (§W1) but not forever: an empty one hibernates out of memory
 after `[world_persist] dormant_after_ticks`, because the creature step is the expensive half
-of a tick and does not care whether anybody is watching. ⚠️ Its clock STOPS while dormant —
-the closed-form `advance_to` catch-up is what closes that.
+of a tick and does not care whether anybody is watching. It wakes at **now**, in CLOSED FORM
+(`WorldActor::advance_to`) — replaying a dormant day would be ~3.8 h of CPU on the one task
+and it costs ~3 s instead. Only the Shift iterates (its order is history); regrowth is
+`regrow(target)` in one call and mending is rate × elapsed and saturating.
+⚠️ **Wall-clock enters at exactly ONE place** — `WorldSave.updated_at_ms` becoming a target
+tick at the world boundary — so CANON §W2 holds and everything past that line is a pure
+function of `(seed, tick)`. A NEW subsystem catches up by adding a pass to `advance_to`, and
+one that cannot supply a closed form must declare its saturation horizon.
+⚠️ **`max_catchup_shifts` caps the REPLAY, never the SCHEDULE**: the generation counter
+advances over every Shift that landed, or the world comes back on a different calendar than
+one that never slept.
+⚠️ **A dormant world has no divers by definition, so a Shift's Force blast has nobody to hit
+** — `advance_to` leans on that rather than reimplementing it. If a world ever sleeps with
+players in it, that is the first assumption to break.
 
 ## How to run
 
@@ -930,6 +942,26 @@ through `LOOK_FILE`, so it A/Bs inside one running game.
 `bool::default()` (false), NOT to `Look::default()` — so a field that reads as enabled in the
 source is disabled for everyone who has ever run the game and has a `LOOK_FILE` on disk.
 Name the default function.
+
+**THE SKY BELONGS TO THE WORLD, NOT TO THE VIEWER** (`FS-5`). Time of day and the weather
+phase were a per-client animation accumulating wall-clock, so two people on the same patch
+of ground could disagree about whether it was night and whether it was raining — and
+nothing could be *gated* on the time of day, because there was no such fact.
+[`meld_proto::sky`](shared/meld-proto/src/sky.rs) is the one registry both sides read:
+everything is a pure function of `(seed, world tick)`, which is the clock CANON §W2 already
+insists on ("never wall-clock") and is what makes a world that slept wake at the right hour
+by construction. The magnitudes ride `run.started` because the client has no `balance.toml`
+— including `tick_ms`, since every duration in the struct is in ticks and a client guessing
+the server's cadence would drift by design. **Nothing about the sky is sent per frame**: the
+server restates the tick every `[weather] sky_sync_ticks` and the client derives the rest
+locally, because a sky the server interpolated *for* you is a second clock that can disagree
+with the first.
+⚠️ **The CADENCE is global and only the PRECIPITATION is local.** `[weather] rain_chance` is
+per-biome (a desert is 0.05, a mire 0.90), but the phases turn over at the same tick
+everywhere: per-biome phase lengths would jump the weather as you crossed a boundary and put
+a party spread over two cells back to disagreeing about the time. What stays client-side is
+the SMOOTHING — how fast the trees ease into a gust is a look, on `WorldFeel` with the rest.
+⚠️ Weather still has **no mechanical effect**; that is the rest of `FS-2`.
 
 **A NIGHT BUG NEEDS A NIGHT YOU CAN PIN.** `MELD_WORLD_FEEL="sky_t=0.0"` opens the session
 at midnight (`0.25` sunrise, `0.5` noon, `0.75` sunset) — the same argument as `MELD_TALLY`

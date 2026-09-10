@@ -55,6 +55,7 @@ pub struct Balance {
     pub affliction: Affliction,
     pub shift: Shift,
     pub world_persist: WorldPersist,
+    pub weather: Weather,
     pub building: Building,
 }
 
@@ -836,6 +837,24 @@ impl Building {
 
 /// A world is a place, not a lobby (CANON §W1/§W5): it outlives its divers, and its
 /// delta from the seed baseline is written to Postgres so it outlives the process.
+/// `[weather]` — the magnitudes behind [`meld_proto::sky`]. Structure is code there,
+/// coefficients are here, and they ride `run.started` because the client has no
+/// `balance.toml` (same contract as `[region]`).
+#[derive(Debug, Clone, Deserialize)]
+pub struct Weather {
+    pub day_ticks: u32,
+    pub fair_ticks: u32,
+    pub gust_ticks: u32,
+    pub storm_ticks: u32,
+    pub clearing_ticks: u32,
+    pub super_storm_in: u32,
+    pub rain_chance: Vec<f32>,
+    /// How often the server re-states the world clock (`world.sky`). Drift control, not
+    /// the sky: the client derives everything locally between these.
+    pub sky_sync_ticks: u32,
+}
+
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct WorldPersist {
     pub enabled: bool,
@@ -847,6 +866,10 @@ pub struct WorldPersist {
     /// A world outliving its divers is the point; ticking forever is a leak, because the
     /// creature step costs the same whether or not anyone is watching.
     pub dormant_after_ticks: u64,
+    /// SC-3 — how many Shifts a WAKING world replays. The generation counter still
+    /// advances over every one that landed (the schedule is a pure function of the seed);
+    /// only the last N are applied.
+    pub max_catchup_shifts: usize,
 }
 
 #[derive(Debug, Clone, Deserialize)]

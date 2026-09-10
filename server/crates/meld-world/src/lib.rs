@@ -9769,7 +9769,13 @@ impl Arena {
     /// still being hit, and the clash's own `clash_linger_seconds` is exactly what covers
     /// the gap between one blow and the next — without it a creature would tick health
     /// back between every pair of swings and a skirmish could never resolve.
-    fn mend_creatures(&mut self, dt: f64) {
+    /// ⚠️ **`pub` because a DORMANT world has to catch up on it** (`SC-3`). Everything
+    /// here is rate × elapsed and SATURATES — `creature_regen_fraction_per_sec` is a full
+    /// heal in 100 s — so past a couple of minutes the answer is not an approximation of
+    /// what stepping would have produced, it is the same fixed point. That is exactly the
+    /// property that lets a world asleep for a week wake correctly without replaying
+    /// 6,048,000 ticks (~26 h of CPU).
+    pub fn mend_creatures(&mut self, dt: f64) {
         let rate = self.creature_regen;
         if rate <= 0.0 {
             return;

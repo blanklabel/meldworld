@@ -839,6 +839,7 @@ pub(crate) fn update_run_stats(
     world: Res<Overworld>,
     session: Res<Session>,
     mut stats: ResMut<RunStats>,
+    mut sky: ResMut<crate::world_render::Sky>,
 ) {
     let Some(me) = world.entities.get(&session.player_id) else {
         return;
@@ -857,6 +858,15 @@ pub(crate) fn update_run_stats(
     }
     if stats.biome != biome {
         stats.biome = biome;
+    }
+    // `FS-2` — which biome's rain chance the sky should be rolling against. This is the
+    // one place that already asks the decomposition where the player is standing, so the
+    // sky reads it from here rather than repeating the lookup: two answers to "which
+    // biome is this" is how the HUD label and the weather end up disagreeing.
+    let here = crate::world_render::biome_at_world(me.x, me.y);
+    let idx = meld_proto::regions::BIOMES.iter().position(|b| *b == here).unwrap_or(0);
+    if sky.biome_index != idx {
+        sky.biome_index = idx;
     }
 }
 
