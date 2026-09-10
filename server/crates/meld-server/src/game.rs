@@ -11335,13 +11335,25 @@ impl WorldActor {
                         *slot_hp = hp;
                     }
                 }
-                // …and what is still gripping each hero, for the same reason: no free
-                // cleanse between fights any more than a free heal.
-                let carried: Vec<Vec<String>> = cids
-                    .iter()
-                    .map(|cid| inst.battles[bidx].battle.combatant_afflictions(cid))
-                    .collect();
-                inst.hero_afflictions.insert(pid.clone(), carried);
+                // ⚠️ **AN AFFLICTION ENDS WITH THE FIGHT IT WAS TAKEN IN (owner's call).**
+                // Wounds still carry — that is the line above — but poison, web, chill and
+                // the rest are wiped when the bell goes.
+                //
+                // This REVERSES the older rule, deliberately and on the owner's instruction
+                // after play. That rule ("no free cleanse between fights any more than a free
+                // heal") is a good argument on paper, and in the hand it played as: take
+                // venom in a fight you won, carry it out with no antidote in the bag, and
+                // watch the hero die on the walk home with nothing to do about it. A
+                // condition you cannot answer is not a decision, it is a delayed loss — and
+                // the cures that were supposed to answer it (`CN`: Poultice, Sanctuary,
+                // Panacea) are not reliably in reach at the depth this bites.
+                //
+                // The run-side store stays, because it is what a CURE writes through and what
+                // a dungeon trap's lingering venom would use; it is simply no longer fed from
+                // the end of a battle. Clearing rather than leaving it stale matters: the
+                // entry outlives the fight, so a hero who walked out of a poisoned fight last
+                // time would otherwise be re-poisoned at the start of the next one.
+                inst.hero_afflictions.remove(pid);
                 // Every hero that FELL in this fight owes the durability tax on its own
                 // kit (GR-2). Counted by the engine per fall rather than read off the
                 // end state, so a hero raised and killed again pays twice and a hero
@@ -13118,6 +13130,7 @@ mod level_up_cure_tests {
 #[cfg(test)]
 mod shifting_lands_tests {
     use super::*;
+
 
     /// A world with a Shift due almost immediately, so the driver can be watched
     /// end-to-end in a test instead of in five wall-clock minutes.

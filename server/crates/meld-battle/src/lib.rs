@@ -5263,8 +5263,18 @@ impl Battle {
             // No pattern: unpredictable rather than stupid. Still respects the rank, so a
             // front line is worth holding even against a mindless thing.
             TargetProfile::Random => {
+                // ⚠️ **THIS SAID "still respects the rank" AND DID NOT.** It was a flat pick
+                // over every hostile, so the one profile that should make a front line feel
+                // worth holding was the one that walked straight past it — and a back-row
+                // caster was exactly as likely to be swung at as the shield in front of it.
+                // Reported from play as the back line drawing as much fire as the front.
+                //
+                // `covered` applies the same `back_row_target_weight` roll
+                // `weakest_with_cover` already uses, so both profiles read the rank the same
+                // way and there is ONE definition of what standing behind someone buys.
                 let pick = (self.next_rand_unit() * hostile.len() as f64) as usize;
-                (Some(hostile[pick.min(hostile.len() - 1)]), None)
+                let picked = hostile[pick.min(hostile.len() - 1)];
+                (Some(self.covered(&hostile, picked)), None)
             }
             // Hunts the back rank ON PURPOSE — the counter to hiding every caster behind a
             // wall. Falls back to the weakest when there is no back rank to hunt.
@@ -5308,8 +5318,21 @@ impl Battle {
     /// The weakest hostile, with the back rank's cover applied — the original rule.
     fn weakest_with_cover(&mut self, hostile: &[usize]) -> usize {
         let weakest = *hostile.iter().min_by_key(|&&i| self.fighters[i].hp).expect("non-empty");
-        if !self.fighters[weakest].back_row {
-            return weakest;
+        self.covered(hostile, weakest)
+    }
+
+    /// **WHAT STANDING BEHIND SOMEONE BUYS, IN ONE PLACE.** Given the target a profile
+    /// WANTED, hand back the one it actually swings at: a front-rank body intercepts a blow
+    /// aimed past it with probability `1 - back_row_target_weight`, and only if there is
+    /// somebody up there to do the intercepting.
+    ///
+    /// Every profile that picks a single body goes through here, so "the back row is harder
+    /// to reach" is one rule rather than one per profile — which is how `Random` came to
+    /// ignore the rank entirely while its own comment claimed it did not. A profile that
+    /// deliberately reaches PAST the line (`Backline`) must not call this, and does not.
+    fn covered(&mut self, hostile: &[usize], wanted: usize) -> usize {
+        if !self.fighters[wanted].back_row {
+            return wanted;
         }
         let front = hostile
             .iter()
@@ -5318,7 +5341,7 @@ impl Battle {
             .min_by_key(|&i| self.fighters[i].hp);
         match front {
             Some(f) if self.next_rand_unit() >= self.back_row_target_weight => f,
-            _ => weakest,
+            _ => wanted,
         }
     }
 
