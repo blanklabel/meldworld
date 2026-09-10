@@ -743,7 +743,15 @@ struct Session {
     session_id: String,
     seq_out: u32,
     last_client_seq: u32,
-    in_instance: bool,
+    /// **THE ROUTING ENTRY** — which world this player is in ([`WorldActor::key`]), or
+    /// `None` for town. This used to be a bare `in_instance: bool`, which was the honest
+    /// shape while there was exactly one world and is a routing bug the moment there are
+    /// two: every world-bound message would have to guess which world the caller meant.
+    ///
+    /// It is also what scopes the party channel. `chat.say`'s `Party` was
+    /// `s.in_instance == mine` — "everyone who is in some run" — so with many worlds two
+    /// parties in different seeds would have heard each other.
+    world: Option<String>,
     /// Per-hero-slot combat bonuses from equipped gear, loaded from the DB
     /// after connect (each hero can wear different gear).
     gear_bonuses: Vec<GearBonus>,
@@ -1478,6 +1486,17 @@ fn barren_world() -> bool {
 }
 
 struct WorldActor {
+    /// **This world's identity, and its row in `worlds`** (CANON §W1: a world's identity
+    /// IS its seed). A shared world's key is its seed in decimal; a TUTORIAL world's is a
+    /// minted `tutorial:<uuid>` — the guided corridor is onboarding rather than a place,
+    /// it is never persisted, and two players each starting one must not land in the same
+    /// one just because the roll agreed.
+    ///
+    /// It lives on the actor rather than only in the Router's map key so that everything
+    /// the world writes about itself — `world_save` above all — names the same world the
+    /// Router filed it under. A save keyed by a constant is what made multi-world
+    /// impossible to add safely: every world would have overwritten every other one's row.
+    key: String,
     balance: Arc<Balance>,
     /// Fire-and-forget persistence sink (a clone of `GameState`'s), so world-owned
     /// lifecycle logic (deaths, etc.) can enqueue writes without touching the Router.
@@ -1636,6 +1655,17 @@ struct WorldActor {
     /// reached depends on how far the world had streamed when it landed; that is history,
     /// and history has to be written down.
     shift_log: Vec<(u64, usize, usize)>,
+    /// This world's tick at its last hibernate, so the save cadence is measured in WORLD
+    /// time rather than in how long the process happens to have been up. Per-world
+    /// because worlds are stood up at different moments and tick independently — a single
+    /// Router-wide high-water mark would let a busy world's saves suppress a quiet one's.
+    last_save_tick: u64,
+    /// The tick this world last had a diver in it, or `None` while one is standing in it.
+    /// A world outliving its divers is the point (CANON §W1) — but "outlives" cannot mean
+    /// "ticks forever": the creature step is the expensive half of a tick and does not
+    /// care whether anybody is watching, so N idle deep worlds would cost the budget N
+    /// times over. `hibernate_worlds` evicts one that has been empty this long.
+    empty_since: Option<u64>,
 }
 
 /// CANON §W5 — everything about a world that is NOT derivable from its seed.
@@ -1725,10 +1755,30 @@ struct StationDto {
     stock: String,
 }
 
-/// The one world key today. Multi-world (SC-3) is what varies it; until then a single
-/// constant keeps the schema honest about being keyed rather than pretending there can
-/// only ever be one row.
-const WORLD_KEY: &str = "default";
+/// **A world's key is its SEED** (CANON §W1: "its identity is a player-chosen seed").
+/// This is the row in `worlds` and the entry in the Router's map, and it is the same
+/// string in both — see [`WorldActor::key`].
+fn world_key_of(seed: u64) -> String {
+    seed.to_string()
+}
+
+/// The key of a **tutorial** world — its own NAMESPACE over the same seeds.
+///
+/// The guided corridor is onboarding rather than a place: it dies with its divers
+/// (`remove_from_instance`) and is never written to `worlds`. But it is still a world
+/// people can share — joining a live tutorial world is a real, handled case — so this
+/// prefixes rather than replacing the seed. Sharing a namespace with normal worlds would
+/// let a guided corridor and a persistent world collide on one key, and whichever was
+/// built first would silently swallow the other's divers.
+fn tutorial_world_key(seed: u64) -> String {
+    format!("tutorial:{seed}")
+}
+
+/// Is this key a tutorial world's? The persistence paths ask, because a tutorial world
+/// must never be saved and must never be restored.
+fn is_tutorial_key(key: &str) -> bool {
+    key.starts_with("tutorial:")
+}
 
 impl WorldActor {
     /// Fold the live world down to what §W5 actually stores.
@@ -1805,7 +1855,7 @@ impl WorldActor {
                 .collect(),
         };
         meld_db::WorldSave {
-            world_key: WORLD_KEY.to_string(),
+            world_key: self.key.clone(),
             seed: self.arena.seed as i64,
             tick_count: self.tick_count as i64,
             shift_generation: self.shift_generation as i64,
@@ -4501,6 +4551,11 @@ struct Lobby {
     code: String,
     host: String,
     members: Vec<LobbyMember>,
+    /// **Which world this group is going to** (SC-3), if the host named one. Settled at
+    /// CREATE rather than at start, because it is the one thing a joiner has to know
+    /// before readying up: which place they are agreeing to go to. `None` rolls a fresh
+    /// seed at `lobby.start`, which is what every co-op dive did before worlds had names.
+    seed: Option<u64>,
 }
 
 struct GameState {
@@ -4509,15 +4564,22 @@ struct GameState {
     sessions: HashMap<String, Session>,
     /// Connection order, for deterministic party formation.
     order: Vec<String>,
-    world: Option<WorldActor>,
-    /// A world read back from Postgres at boot and not yet stood up. `form_run` claims
-    /// it the first time anybody dives: the world is only *built* in one place, and
-    /// restoring is that build reading its seed and its delta from disk instead of from
-    /// a fresh roll.
-    restore: Option<meld_db::WorldSave>,
-    /// The world's tick at the last hibernate, so the save cadence is measured in world
-    /// time rather than in how long the process happens to have been up.
-    last_world_save: u64,
+    /// **Every live world, keyed by [`WorldActor::key`]** — SC-3's shard table. The
+    /// single-owner/no-locks invariant (CANON §S) survives verbatim: this is still one
+    /// task, it now ticks N worlds instead of one. A world is a self-contained
+    /// `(Arena, runs, battles)`, so worlds never read each other and the isolation is
+    /// structural rather than enforced.
+    ///
+    /// ⚠️ **Reach a world through [`GameState::world_of`] / [`world_of_mut`], never by
+    /// picking one out of this map.** "The world" stopped being a thing that exists the
+    /// moment there were two, and a handler that grabs an arbitrary entry is a player
+    /// acting on somebody else's world.
+    worlds: HashMap<String, WorldActor>,
+    /// Worlds read back from Postgres at boot and not yet stood up, keyed the same way.
+    /// `form_run` claims one the first time anybody dives into it: a world is only
+    /// *built* in one place, and restoring is that build reading its seed and its delta
+    /// from disk instead of from a fresh roll.
+    restore: HashMap<String, meld_db::WorldSave>,
     /// Open co-op lobbies, keyed by join code.
     lobbies: HashMap<String, Lobby>,
     /// player_id -> the lobby code they're in.
@@ -4554,9 +4616,8 @@ impl GameState {
             db,
             sessions: HashMap::new(),
             order: Vec::new(),
-            world: None,
-            restore: None,
-            last_world_save: 0,
+            worlds: HashMap::new(),
+            restore: HashMap::new(),
             lobbies: HashMap::new(),
             player_lobby: HashMap::new(),
             pending_gear_load: Vec::new(),
@@ -4570,23 +4631,82 @@ impl GameState {
         }
     }
 
+    /// **The world this player is in, if any.** THE routing lookup — every world-bound
+    /// handler goes through here, so "which world did the caller mean" is answered in one
+    /// place off one piece of state (`Session::world`) rather than by each call site.
+    fn world_of(&self, player_id: &str) -> Option<&WorldActor> {
+        let key = self.sessions.get(player_id)?.world.as_ref()?;
+        self.worlds.get(key)
+    }
+
+    fn world_of_mut(&mut self, player_id: &str) -> Option<&mut WorldActor> {
+        let key = self.sessions.get(player_id)?.world.clone()?;
+        self.worlds.get_mut(&key)
+    }
+
+    /// A world's key: its seed, in the namespace the dive belongs to.
+    fn namespaced_key(&self, tutorial: bool, seed: u64) -> String {
+        if tutorial {
+            tutorial_world_key(seed)
+        } else {
+            world_key_of(seed)
+        }
+    }
+
+    /// **Matchmaking for a dive that named no world.** Picks the FULLEST live world with
+    /// room for the arriving group, in the matching namespace; `None` means build a new
+    /// one from a fresh roll.
+    ///
+    /// Fullest-with-room rather than emptiest, and that is the whole design: players who
+    /// did not choose a world should end up in the same one, because a shared world with
+    /// people in it is the thing worth having. Spreading them out would technically
+    /// balance the tick and would make every unnamed diver feel like the only person
+    /// online. Ties break on the key so the choice is reproducible rather than
+    /// `HashMap`-iteration-order luck.
+    fn choose_world(&self, tutorial: bool, arriving: usize) -> Option<String> {
+        let cap = self.balance.world.max_divers_per_world;
+        self.worlds
+            .values()
+            .filter(|w| w.tutorial == tutorial)
+            .filter(|w| w.run.runs.len() + arriving <= cap)
+            .max_by(|a, b| {
+                a.run
+                    .runs
+                    .len()
+                    .cmp(&b.run.runs.len())
+                    // `max_by` keeps the LAST maximum, so reverse the key comparison to
+                    // land on the lowest key rather than the highest.
+                    .then_with(|| b.key.cmp(&a.key))
+            })
+            .map(|w| w.key.clone())
+    }
+
+    /// Is this player in a run? Derived from the routing entry rather than stored beside
+    /// it — two sources of truth for "am I in a world" is how a session ends up unable to
+    /// dive again because a flag outlived the world it described.
+    fn in_instance(&self, player_id: &str) -> bool {
+        self.sessions.get(player_id).is_some_and(|s| s.world.is_some())
+    }
+
     async fn run(mut self, mut rx: mpsc::Receiver<ServerEvent>) {
         // CANON §W5: a hibernated world reloads on first joiner. Read at boot rather than
         // lazily, because this is the one moment the loop is allowed to await Postgres —
         // once the tick is running, every DB touch goes down `db_writes`.
         if self.balance.world_persist.enabled {
-            match self.db.load_world(WORLD_KEY).await {
-                Ok(Some(save)) => {
-                    tracing::info!(
-                        seed = save.seed,
-                        tick = save.tick_count,
-                        generation = save.shift_generation,
-                        sections = save.sections,
-                        "world.persist: a world was waiting"
-                    );
-                    self.restore = Some(save);
+            match self.db.list_worlds().await {
+                Ok(saves) => {
+                    for save in saves {
+                        tracing::info!(
+                            key = %save.world_key,
+                            seed = save.seed,
+                            tick = save.tick_count,
+                            generation = save.shift_generation,
+                            sections = save.sections,
+                            "world.persist: a world was waiting"
+                        );
+                        self.restore.insert(save.world_key.clone(), save);
+                    }
                 }
-                Ok(None) => {}
                 Err(e) => tracing::error!("world.persist: load failed, seeding fresh: {e}"),
             }
         }
@@ -4603,7 +4723,19 @@ impl GameState {
                     None => break, // all senders dropped
                 },
                 _ = ticker.tick() => {
-                    let (out, effects) = self.world.as_mut().map(|w| w.tick()).unwrap_or_default();
+                    // Every world advances on the one tick. Still ONE task, so the
+                    // no-locks invariant (CANON §S) holds exactly as it did with a single
+                    // world — what changed is only how many `Arena`s it owns. Collected
+                    // before dispatch because applying a world's effects can tear down
+                    // ANOTHER entry in the map (a last diver leaving), and that must not
+                    // happen while this loop borrows it.
+                    let mut out = Vec::new();
+                    let mut effects = Vec::new();
+                    for w in self.worlds.values_mut() {
+                        let (o, e) = w.tick();
+                        out.extend(o);
+                        effects.extend(e);
+                    }
                     self.apply_world_effects(effects);
                     self.dispatch(out);
                 }
@@ -4621,33 +4753,59 @@ impl GameState {
             self.flush_bounty_loads().await;
             let banked = self.complete_extractions().await;
             self.dispatch(banked);
-            if let Some(w) = self.world.as_mut() {
-                let harvested = w.advance_harvests();
-                self.dispatch(harvested);
+            let mut channels = Vec::new();
+            for w in self.worlds.values_mut() {
+                channels.extend(w.advance_harvests());
+                channels.extend(w.advance_building());
             }
-            if let Some(w) = self.world.as_mut() {
-                let built = w.advance_building();
-                self.dispatch(built);
-            }
-            self.hibernate_world();
+            self.dispatch(channels);
+            self.hibernate_worlds();
         }
     }
 
-    /// Write the world's delta out on its own cadence (`[world_persist]
+    /// Write each world's delta out on its OWN cadence (`[world_persist]
     /// save_every_ticks`). Measured in WORLD ticks, so a world nobody is standing in —
     /// which still shifts, still regrows, and is exactly the case persistence exists for
-    /// — is saved at the same rate as a busy one.
-    fn hibernate_world(&mut self) {
+    /// — is saved at the same rate as a busy one, and a busy world's saves can never
+    /// starve a quiet one's (the high-water mark is per-world, not per-Router).
+    fn hibernate_worlds(&mut self) {
         if !self.balance.world_persist.enabled {
             return;
         }
         let every = self.balance.world_persist.save_every_ticks.max(1);
-        let Some(w) = self.world.as_ref() else { return };
-        if w.tutorial || w.tick_count < self.last_world_save + every {
-            return;
+        let dormant_after = self.balance.world_persist.dormant_after_ticks;
+        // Worlds that have been empty long enough go to sleep: saved, then dropped out of
+        // memory so they stop costing a creature step every tick. They come back on the
+        // next dive into them, through the same `restore` path a server restart uses.
+        let mut asleep: Vec<String> = Vec::new();
+        for w in self.worlds.values_mut() {
+            if w.tutorial || is_tutorial_key(&w.key) {
+                continue;
+            }
+            let dormant = w
+                .empty_since
+                .is_some_and(|since| w.tick_count >= since + dormant_after);
+            if !dormant && w.tick_count < w.last_save_tick + every {
+                continue;
+            }
+            w.last_save_tick = w.tick_count;
+            let save = w.world_save();
+            if dormant {
+                // Keep the save so the next diver stands the same world back up rather
+                // than rolling a fresh one under the same name.
+                self.restore.insert(w.key.clone(), save.clone());
+                asleep.push(w.key.clone());
+                tracing::info!(
+                    key = %w.key,
+                    tick = w.tick_count,
+                    "world.persist: hibernating an empty world"
+                );
+            }
+            let _ = self.db_writes.send(DbWrite::SaveWorld(Box::new(save)));
         }
-        self.last_world_save = w.tick_count;
-        let _ = self.db_writes.send(DbWrite::SaveWorld(Box::new(w.world_save())));
+        for key in asleep {
+            self.worlds.remove(&key);
+        }
     }
 
     fn dispatch(&mut self, out: Vec<Outgoing>) {
@@ -4706,7 +4864,7 @@ impl GameState {
                         session_id,
                         seq_out: 2,
                         last_client_seq: 0,
-                        in_instance: false,
+                        world: None,
                         gear_bonuses: Vec::new(),
                         forging_level: None,
                         character_class: CharacterClass::Explorer,
@@ -4733,19 +4891,20 @@ impl GameState {
             }
             ServerEvent::Disconnected { player_id } => {
                 // Drop the player from any lobby first (notifying the rest), then
-                // from the session/instance. The leaver's own `lobby.closed` is
-                // discarded since their socket is gone.
+                // from the instance, and only THEN from the session. The leaver's own
+                // `lobby.closed` is discarded since their socket is gone.
+                //
+                // ⚠️ **The session has to outlive the world work.** Which world a player
+                // is in now lives on their `Session` (SC-3's routing entry), so removing
+                // the session first would leave `world_of` with nothing to answer from —
+                // the abandoned-run burn would silently not fire and the leaver would
+                // stay enrolled in a world nothing could ever drop them from. It was safe
+                // in the other order only while "the world" was a field on the Router.
                 let out = self.leave_lobby(&player_id);
-                self.sessions.remove(&player_id);
-                self.order.retain(|p| p != &player_id);
-                self.pending_gear_load.retain(|p| p != &player_id);
-                self.pending_skill_load.retain(|p| p != &player_id);
-                self.pending_bounty_load.retain(|p| p != &player_id);
-                self.pending_hero_load.retain(|p| p != &player_id);
                 // A disconnect that drops a still-unresolved run ends it
                 // `abandoned` — the other red-burning end (spec §5): any
                 // equipped Vault-owned red gear is permanently deleted.
-                let abandoned = self.world.as_ref().is_some_and(|inst| {
+                let abandoned = self.world_of(&player_id).is_some_and(|inst| {
                     inst.run
                         .runs
                         .iter()
@@ -4755,6 +4914,12 @@ impl GameState {
                     let _ = self.db_writes.send(DbWrite::BurnEphemeral(player_id.clone()));
                 }
                 self.remove_from_instance(&player_id);
+                self.sessions.remove(&player_id);
+                self.order.retain(|p| p != &player_id);
+                self.pending_gear_load.retain(|p| p != &player_id);
+                self.pending_skill_load.retain(|p| p != &player_id);
+                self.pending_bounty_load.retain(|p| p != &player_id);
+                self.pending_hero_load.retain(|p| p != &player_id);
                 out
             }
             ServerEvent::Client { player_id, raw } => {
@@ -4787,12 +4952,25 @@ impl GameState {
     /// 0 — so persisting it would hand the next player a world that had already been
     /// walked, and hand the returning one a corridor they had already seen.
     fn remove_from_instance(&mut self, player_id: &str) {
-        let Some(inst) = self.world.as_mut() else {
+        let Some(key) = self.sessions.get_mut(player_id).and_then(|s| s.world.take()) else {
+            return;
+        };
+        let Some(inst) = self.worlds.get_mut(&key) else {
             return;
         };
         inst.forget_player(player_id);
-        if inst.run.runs.is_empty() && (inst.tutorial || !self.balance.world_persist.enabled) {
-            self.world = None;
+        // A world OUTLIVES its divers (CANON §W1) — it keeps shifting, regrowing and
+        // holding what players built — so an empty one stays in the map and keeps
+        // ticking, and `hibernate_worlds` is what eventually puts it to sleep. Only the
+        // two worlds that are not places come down immediately: a tutorial corridor, and
+        // any world at all when persistence is off (there is then nowhere for it to have
+        // outlived anybody).
+        if inst.run.runs.is_empty() {
+            if inst.tutorial || is_tutorial_key(&key) || !self.balance.world_persist.enabled {
+                self.worlds.remove(&key);
+            } else {
+                inst.empty_since = Some(inst.tick_count);
+            }
         }
     }
 
@@ -4872,7 +5050,7 @@ impl GameState {
             .get(player_id)
             .and_then(|s| s.hunts.as_ref())
             .map(quarry_targets);
-        if let (Some(w), Some(t)) = (self.world.as_mut(), targets) {
+        if let (Some(w), Some(t)) = (self.world_of_mut(player_id), targets) {
             w.quarry.insert(player_id.to_string(), t);
         }
         let mut out = Vec::new();
@@ -4912,9 +5090,9 @@ impl GameState {
     }
 
     fn release_from_run(&mut self, player_id: &str) {
-        if let Some(s) = self.sessions.get_mut(player_id) {
-            s.in_instance = false;
-        }
+        // The routing entry is cleared by `remove_from_instance` itself — it is what
+        // tells that function WHICH world to drop the player from, so clearing it first
+        // would leave them enrolled in a world nothing can reach any more.
         self.remove_from_instance(player_id);
     }
 
@@ -5002,16 +5180,20 @@ impl GameState {
         let Some(me) = self.sessions.get(player_id) else {
             return Vec::new();
         };
-        let (username, mine) = (me.username.clone(), me.in_instance);
-        // `Party` is "the people you are actually among": everyone in the maze if you are
-        // in it, everyone still in town if you are not. There is one world, so this is the
-        // honest scope today — LC-1's ward sharding is what narrows it to proximity later.
+        let (username, mine) = (me.username.clone(), me.world.clone());
+        // `Party` is "the people you are actually among": everyone in YOUR world if you
+        // are in one, everyone still in town if you are not. It compared
+        // `in_instance == in_instance` — "are we both in some run" — which was the honest
+        // scope while there was exactly one world and leaks the moment there are two:
+        // parties in different seeds would have heard each other. `Channel::World` stays
+        // server-global on purpose; it is the general channel, not "this world".
+        // LC-1's ward sharding is what narrows `Party` to proximity later.
         let room: Vec<&str> = self
             .sessions
             .iter()
             .filter(|(_, s)| match req.channel {
                 wc::Channel::World => true,
-                wc::Channel::Party => s.in_instance == mine,
+                wc::Channel::Party => s.world == mine,
             })
             .map(|(pid, _)| pid.as_str())
             .collect();
@@ -5061,7 +5243,7 @@ impl GameState {
             wo::TownSeen::TYPE => self.handle_onboarding_town_seen(player_id, raw.seq),
             wo::RunSeen::TYPE => self.handle_onboarding_run_seen(player_id, raw.seq),
             wr::BeginExtraction::TYPE => {
-                let (out, eff) = match self.world.as_mut() {
+                let (out, eff) = match self.world_of_mut(player_id) {
                     Some(w) => w.handle_begin_extraction(player_id, raw),
                     None => (
                         vec![error(player_id, ErrorCode::InvalidState, "Not in a run.", Some(raw.seq))],
@@ -5072,7 +5254,7 @@ impl GameState {
                 out
             }
             wr::BuildStation::TYPE => {
-                let (out, eff) = match self.world.as_mut() {
+                let (out, eff) = match self.world_of_mut(player_id) {
                     Some(w) => w.handle_build_station(player_id, raw),
                     None => (
                         vec![error(player_id, ErrorCode::InvalidState, "Not in a run.", Some(raw.seq))],
@@ -5084,7 +5266,7 @@ impl GameState {
             }
             wr::Strike::TYPE => self.handle_strike(player_id, raw),
             wr::TeardownStation::TYPE => {
-                let (out, eff) = match self.world.as_mut() {
+                let (out, eff) = match self.world_of_mut(player_id) {
                     Some(w) => w.handle_teardown_station(player_id, raw),
                     None => (
                         vec![error(player_id, ErrorCode::InvalidState, "Not in a run.", Some(raw.seq))],
@@ -5099,12 +5281,10 @@ impl GameState {
                 // city anvil, where the only smith is you. Same message, same heat, same
                 // rules — the difference is only whose skill is doing it.
                 let in_run = self
-                    .world
-                    .as_ref()
+                    .world_of(player_id)
                     .is_some_and(|w| w.run.runs.iter().any(|r| r.player_id == player_id));
                 let (out, eff) = if in_run {
-                    self.world
-                        .as_mut()
+                    self.world_of_mut(player_id)
                         .map(|w| w.handle_smith_request(player_id, raw))
                         .unwrap_or_default()
                 } else {
@@ -5114,7 +5294,7 @@ impl GameState {
                 out
             }
             wr::Harvest::TYPE => {
-                let (out, eff) = match self.world.as_mut() {
+                let (out, eff) = match self.world_of_mut(player_id) {
                     Some(w) => w.handle_harvest(player_id, raw),
                     None => (
                         vec![error(player_id, ErrorCode::InvalidState, "Not in a run.", Some(raw.seq))],
@@ -5125,7 +5305,7 @@ impl GameState {
                 out
             }
             wr::PsykerHold::TYPE => {
-                let out = match self.world.as_mut() {
+                let out = match self.world_of_mut(player_id) {
                     Some(w) => w.handle_psyker_hold(player_id, raw),
                     None => {
                         vec![error(player_id, ErrorCode::InvalidState, "Not in a run.", Some(raw.seq))]
@@ -5133,20 +5313,20 @@ impl GameState {
                 };
                 out
             }
-            wr::BuildStructure::TYPE => match self.world.as_mut() {
+            wr::BuildStructure::TYPE => match self.world_of_mut(player_id) {
                 Some(w) => w.handle_build_structure(player_id, raw),
                 None => vec![error(player_id, ErrorCode::InvalidState, "Not in a run.", Some(raw.seq))],
             },
-            wr::RepairStructure::TYPE => match self.world.as_mut() {
+            wr::RepairStructure::TYPE => match self.world_of_mut(player_id) {
                 Some(w) => w.handle_repair_structure(player_id, raw),
                 None => vec![error(player_id, ErrorCode::InvalidState, "Not in a run.", Some(raw.seq))],
             },
-            wr::DemolishStructure::TYPE => match self.world.as_mut() {
+            wr::DemolishStructure::TYPE => match self.world_of_mut(player_id) {
                 Some(w) => w.handle_demolish_structure(player_id, raw),
                 None => vec![error(player_id, ErrorCode::InvalidState, "Not in a run.", Some(raw.seq))],
             },
             wr::UseItem::TYPE => {
-                let (out, eff) = match self.world.as_mut() {
+                let (out, eff) = match self.world_of_mut(player_id) {
                     Some(w) => w.handle_use_item(player_id, raw),
                     None => (
                         vec![error(player_id, ErrorCode::InvalidState, "Not in a run.", Some(raw.seq))],
@@ -5157,7 +5337,7 @@ impl GameState {
                 out
             }
             wr::MoveItem::TYPE => {
-                let (out, eff) = match self.world.as_mut() {
+                let (out, eff) = match self.world_of_mut(player_id) {
                     Some(w) => w.handle_move_item(player_id, raw),
                     None => (
                         vec![error(player_id, ErrorCode::InvalidState, "Not in a run.", Some(raw.seq))],
@@ -5169,7 +5349,7 @@ impl GameState {
             }
             wc::Say::TYPE => self.handle_say(player_id, raw),
             wr::CancelHarvest::TYPE => {
-                let (out, eff) = match self.world.as_mut() {
+                let (out, eff) = match self.world_of_mut(player_id) {
                     Some(w) => w.handle_cancel_harvest(player_id, raw),
                     None => (
                         vec![error(player_id, ErrorCode::InvalidState, "Not in a run.", Some(raw.seq))],
@@ -5180,7 +5360,7 @@ impl GameState {
                 out
             }
             wr::OpenChest::TYPE => {
-                let (out, eff) = match self.world.as_mut() {
+                let (out, eff) = match self.world_of_mut(player_id) {
                     Some(w) => w.handle_open_chest(player_id, raw),
                     None => (
                         vec![error(player_id, ErrorCode::InvalidState, "Not in a run.", Some(raw.seq))],
@@ -5192,7 +5372,7 @@ impl GameState {
             }
             wr::DisarmTrap::TYPE => {
                 let req: Result<wr::DisarmTrap, _> = serde_json::from_value(raw.payload);
-                match (self.world.as_mut(), req) {
+                match (self.world_of_mut(player_id), req) {
                     (Some(w), Ok(r)) => w.disarm_dungeon_trap(player_id, &r.entity_id, raw.seq),
                     (None, _) => {
                         vec![error(player_id, ErrorCode::InvalidState, "Not in a run.", Some(raw.seq))]
@@ -5209,13 +5389,13 @@ impl GameState {
                 if let Some(s) = self.sessions.get_mut(player_id) {
                     s.snap_delta = req.delta;
                 }
-                if let Some(w) = self.world.as_mut() {
+                if let Some(w) = self.world_of_mut(player_id) {
                     w.set_delta_snapshots(player_id, req.delta);
                 }
                 Vec::new()
             }
             wr::WatchBattle::TYPE => {
-                let (out, eff) = match self.world.as_mut() {
+                let (out, eff) = match self.world_of_mut(player_id) {
                     Some(w) => w.handle_watch_battle(player_id, raw),
                     None => (
                         vec![error(player_id, ErrorCode::InvalidState, "Not in a run.", Some(raw.seq))],
@@ -5226,7 +5406,7 @@ impl GameState {
                 out
             }
             wr::StopWatching::TYPE => {
-                let (out, eff) = match self.world.as_mut() {
+                let (out, eff) = match self.world_of_mut(player_id) {
                     // Nothing to stop without a world, and asking is not an error: the
                     // client fires this off the same key that opened the feed.
                     Some(w) => w.handle_stop_watching(player_id, raw),
@@ -5236,7 +5416,7 @@ impl GameState {
                 out
             }
             wr::JoinBattle::TYPE => {
-                let (out, eff) = match self.world.as_mut() {
+                let (out, eff) = match self.world_of_mut(player_id) {
                     Some(w) => w.handle_join_battle(player_id, raw),
                     None => (
                         vec![error(player_id, ErrorCode::InvalidState, "Not in a run.", Some(raw.seq))],
@@ -5247,7 +5427,7 @@ impl GameState {
                 out
             }
             wr::RenameHero::TYPE => {
-                let (out, eff) = match self.world.as_mut() {
+                let (out, eff) = match self.world_of_mut(player_id) {
                     Some(w) => w.handle_rename_hero(player_id, raw),
                     // No active run (party-builder pre-dive path): reproduce the
                     // pre-move no-world behaviour — validate, update only the session
@@ -5289,7 +5469,7 @@ impl GameState {
                 out
             }
             wr::SetFormation::TYPE => {
-                let (out, eff) = match self.world.as_mut() {
+                let (out, eff) = match self.world_of_mut(player_id) {
                     Some(w) => w.handle_set_formation(player_id, raw),
                     // No active run (party-builder pre-dive path): reproduce the
                     // pre-move no-world behaviour — validate, update only the session
@@ -5331,7 +5511,7 @@ impl GameState {
                 out
             }
             wr::EquipLoot::TYPE => {
-                let (out, eff) = match self.world.as_mut() {
+                let (out, eff) = match self.world_of_mut(player_id) {
                     Some(w) => w.handle_equip_loot(player_id, raw),
                     None => (
                         vec![error(player_id, ErrorCode::InvalidState, "Not in a run.", Some(raw.seq))],
@@ -5343,7 +5523,7 @@ impl GameState {
             }
             wr::EnterDungeon::TYPE => self.handle_enter_dungeon(player_id, raw),
             wm::MoveIntent::TYPE => {
-                let (out, eff) = match self.world.as_mut() {
+                let (out, eff) = match self.world_of_mut(player_id) {
                     Some(w) => w.handle_move(player_id, raw),
                     None => (
                         vec![error(player_id, ErrorCode::InvalidState, "Not in a run.", Some(raw.seq))],
@@ -5354,7 +5534,7 @@ impl GameState {
                 out
             }
             wb::SubmitAction::TYPE => {
-                let (out, eff) = match self.world.as_mut() {
+                let (out, eff) = match self.world_of_mut(player_id) {
                     Some(w) => w.handle_submit(player_id, raw),
                     None => (
                         vec![error(player_id, ErrorCode::NotFound, "No battle.", Some(raw.seq))],
@@ -5382,7 +5562,7 @@ impl GameState {
                 return vec![error(player_id, ErrorCode::ValidationError, "bad enter_dungeon", Some(seq))]
             }
         };
-        let Some(inst) = self.world.as_mut() else {
+        let Some(inst) = self.world_of_mut(player_id) else {
             return vec![error(player_id, ErrorCode::InvalidState, "Not in a run.", Some(seq))];
         };
         inst.enter_dungeon_by_id(player_id, &req.entity_id, seq)
@@ -5448,7 +5628,7 @@ impl GameState {
         if self
             .sessions
             .get(player_id)
-            .map(|s| s.in_instance)
+            .map(|s| s.world.is_some())
             .unwrap_or(false)
         {
             return vec![error(
@@ -5477,7 +5657,7 @@ impl GameState {
                 .filter(|p| {
                     self.sessions
                         .get(*p)
-                        .map(|s| !s.in_instance && !self.player_lobby.contains_key(*p))
+                        .map(|s| s.world.is_none() && !self.player_lobby.contains_key(*p))
                         .unwrap_or(false)
                 })
                 .take(meld_proto::limits::PARTY_MAX)
@@ -5493,7 +5673,10 @@ impl GameState {
             )];
         }
         let wants_hub = req.as_ref().and_then(|e| e.hub.clone());
-        self.form_run(party_ids, player_id, Some(client_seq), wants_tutorial, wants_hub)
+        // SC-3: which world. A request, not a fact — `Started.world_seed` says where
+        // they actually landed, and a full world refuses rather than silently forking.
+        let wants_seed = req.as_ref().and_then(|e| e.seed);
+        self.form_run(party_ids, player_id, Some(client_seq), wants_tutorial, wants_hub, wants_seed)
     }
 
     /// Enroll `party_ids` into a shared MazeInstance and emit `run.started` to
@@ -5507,6 +5690,11 @@ impl GameState {
         wants_tutorial: bool,
         // The departure hub the initiator asked for (PG-2), if any. Clamped below.
         wants_hub: Option<String>,
+        // **Which world the initiator asked for** (SC-3) — a seed, the world's own
+        // identity. `None` rolls a fresh one, which is what every dive did while there
+        // was exactly one world. A REQUEST: the world actually entered rides back on
+        // `Started.world_seed`.
+        wants_seed: Option<u64>,
     ) -> Vec<Outgoing> {
         // PG-2 — where this dive departs from, and therefore what level its heroes start
         // at (`meld_run::base_run_level`). This was hard-coded to the Center Hub, which is
@@ -5593,34 +5781,71 @@ impl GameState {
         let departure_hub_distance = dev_distance.unwrap_or(0);
         let speed = self.balance.world.avatar_speed_tiles_per_sec;
 
-        // Create the shared instance on the first entry.
-        if self.world.is_none() {
-            let instance_id = Uuid::now_v7().to_string();
+        // ------------------------------------------------------------------ SC-3
+        // WHICH WORLD? A world's identity is its SEED (CANON §W1), so this is settled
+        // before anything is built: the initiator either named one, or a fresh roll
+        // names a new one. `MELD_SEED` still wins for the QA harness, which needs a
+        // reproducible layout without a client able to ask for one.
+        //
+        // The tutorial decision has to be hoisted here with it, because it is what
+        // decides whether this dive joins a NAMED world at all — a guided corridor is
+        // onboarding rather than a place, so it gets a private key nobody can name.
+        let force_biome: Option<&'static str> = std::env::var("MELD_BIOME")
+            .ok()
+            .and_then(|v| meld_world::BIOMES.iter().copied().find(|b| *b == v.trim()));
+        let tutorial = force_biome.is_none()
+            && !std::env::var("MELD_NO_TUTORIAL").is_ok_and(|v| v != "0")
+            // The guided dive owns the first corridor; the sandbox wants open ground.
+            && !build_sandbox()
+            && (wants_tutorial || std::env::var("MELD_TUTORIAL").is_ok_and(|v| v != "0"));
+        let instance_id = Uuid::now_v7().to_string();
+        let named = std::env::var("MELD_SEED")
+            .ok()
+            .and_then(|v| v.trim().parse::<u64>().ok())
+            .or(wants_seed);
+        // **AN UNNAMED DIVE IS A MATCHMAKING REQUEST, NOT A REQUEST FOR SOLITUDE.**
+        // "Put me somewhere" has to keep meaning what it meant when there was one world,
+        // or every diver who did not type a number would get a private world and the game
+        // would quietly stop being multiplayer for anyone who has not been told about
+        // seeds. `choose_world` packs them into the fullest world with room; only a NAMED
+        // seed shards. (This is the matchmaking half of the Router's job, per
+        // `proposals/server-scaling.md` Lever C.)
+        let (world_key, seed) = match named {
+            Some(seed) => (self.namespaced_key(tutorial, seed), seed),
+            None => match self.choose_world(tutorial, party_ids.len()) {
+                Some(key) => {
+                    let seed = self.worlds[&key].arena.seed;
+                    (key, seed)
+                }
+                None => {
+                    let seed = world_seed();
+                    (self.namespaced_key(tutorial, seed), seed)
+                }
+            },
+        };
+        // A world is CAPPED and scale is many worlds (CANON §W1) — it holds unique
+        // player-built structures, so a full one can never be auto-forked. ⚠️ CANON says
+        // it queues; there is no queue yet, so it refuses. The check counts the divers
+        // ALREADY there plus the ones arriving, because a lobby arrives as a group and
+        // admitting half of it is worse than admitting none.
+        let seated = self.worlds.get(&world_key).map_or(0, |w| w.run.runs.len());
+        if seated + party_ids.len() > self.balance.world.max_divers_per_world {
+            return vec![error(
+                initiator,
+                ErrorCode::InvalidState,
+                "That world is full — pick another seed.",
+                client_seq,
+            )];
+        }
+
+        // Build the world on the first entry into it.
+        if !self.worlds.contains_key(&world_key) {
             // The tutorial is OPT-IN, not auto-forced on a first dive: the hub OFFERS the
             // guided Forest-first onboarding (centred, obstacle-free area 0) but a normal
             // dive is a randomized run, so a returning player isn't dropped into the same
             // corridor every `make play`. `wants_tutorial` comes from the client's
             // `run.enter_maze` `tutorial` flag; `MELD_TUTORIAL=1` forces it on for
             // headless/QA.
-            // DEV/QA harness (in-memory build): `MELD_BIOME=<forest|desert|ashfall|
-            // tundra|mire>` pins every section to that biome so its maze can be loaded +
-            // screenshotted on demand, and `MELD_SEED=<n>` fixes the layout for
-            // reproducibility. `MELD_BIOME`/`MELD_NO_TUTORIAL` force the tutorial off.
-            // All read only here at the server boundary — `meld-world` stays pure.
-            let force_biome: Option<&'static str> = std::env::var("MELD_BIOME")
-                .ok()
-                .and_then(|v| meld_world::BIOMES.iter().copied().find(|b| *b == v.trim()));
-            let tutorial = force_biome.is_none()
-                && !std::env::var("MELD_NO_TUTORIAL").is_ok_and(|v| v != "0")
-                // The guided dive owns the first corridor; the sandbox wants open ground.
-                && !build_sandbox()
-                && (wants_tutorial || std::env::var("MELD_TUTORIAL").is_ok_and(|v| v != "0"));
-            // Server-generated world seed (CANON: the client never supplies or
-            // computes seeds) — overridable by `MELD_SEED` for the QA harness.
-            let seed = std::env::var("MELD_SEED")
-                .ok()
-                .and_then(|v| v.trim().parse::<u64>().ok())
-                .unwrap_or_else(world_seed);
             // `MELD_END_FIGHT=1` — bring THE END FIGHT to the hub instead of walking an hour
             // out to it. It only moves where the encounter is placed: the three bosses carry
             // AUTHORED absolute stats (`set_piece`), so the fight you meet at d30 is
@@ -5666,11 +5891,14 @@ impl GameState {
             // construction site: restoring IS the normal build, reading its seed and its
             // delta off disk instead of off a fresh roll. A tutorial dive never claims
             // one — the guided corridor is onboarding, not a place.
-            let restored = (!tutorial).then(|| self.restore.take()).flatten();
+            let restored = (!tutorial).then(|| self.restore.remove(&world_key)).flatten();
             if let Some(save) = &restored {
-                tracing::info!(seed = save.seed, "world.persist: standing the saved world back up");
+                tracing::info!(
+                    key = %world_key,
+                    seed = save.seed,
+                    "world.persist: standing the saved world back up"
+                );
             }
-            self.last_world_save = restored.as_ref().map(|s| s.tick_count as u64).unwrap_or(0);
             // **THE WORLD IS DRAWN HERE, AND THE DIVERS ARE TOLD WHAT IT IS DOING.**
             //
             // Hoisted out of the `WorldActor` literal below for one reason: the reporter
@@ -5698,7 +5926,8 @@ impl GameState {
                     },
                 ),
             };
-            self.world = Some(WorldActor {
+            let world = WorldActor {
+                key: world_key.clone(),
                 balance: balance.clone(),
                 db_writes: self.db_writes.clone(),
                 arena,
@@ -5749,7 +5978,11 @@ impl GameState {
                     .unwrap_or_default(),
                 edges: HashMap::new(),
                 battle_immune_until: HashMap::new(),
-            });
+                last_save_tick: restored.as_ref().map(|s| s.tick_count as u64).unwrap_or(0),
+                // Built because somebody is diving into it right now.
+                empty_since: None,
+            };
+            self.worlds.insert(world_key.clone(), world);
         }
         // Every diver's first dive ends their tutorial state, so their *next* run is
         // a fresh random world. Idempotent: only the not-yet-dived are persisted.
@@ -5762,7 +5995,17 @@ impl GameState {
             }
         }
 
-        let inst = self.world.as_mut().expect("instance exists");
+        // **The routing entries.** Written before anything reads the world back, so
+        // `world_of` answers for every member from here on — a member enrolled in a
+        // world their session does not point at is a player the Router cannot deliver to.
+        for pid in &party_ids {
+            if let Some(s) = self.sessions.get_mut(pid) {
+                s.world = Some(world_key.clone());
+            }
+        }
+        let inst = self.worlds.get_mut(&world_key).expect("world was just built");
+        // Somebody is in it again, so the dormancy clock stops.
+        inst.empty_since = None;
         let instance_id = inst.run.instance_id.clone();
         let base_run_level = inst.run.base_run_level;
 
@@ -6172,15 +6415,15 @@ impl GameState {
         }
         for pid in &party_ids {
             if let Some(s) = self.sessions.get_mut(pid) {
-                s.in_instance = true;
+                s.world = Some(world_key.clone());
             }
         }
         // Roster views per player (built before the shared instance borrow below).
         let rosters: HashMap<String, Vec<wr::HeroView>> = party_ids
             .iter()
-            .map(|pid| (pid.clone(), self.world.as_ref().unwrap().party_views(pid)))
+            .map(|pid| (pid.clone(), self.worlds[&world_key].party_views(pid)))
             .collect();
-        let inst = self.world.as_ref().expect("instance exists");
+        let inst = &self.worlds[&world_key];
 
         // run.started to this party's members (spawn positions from the arena).
         let member_views: Vec<wr::Member> = party_ids
@@ -6342,7 +6585,7 @@ impl GameState {
                 Some((pid.clone(), quarry_targets(board)))
             })
             .collect();
-        if let Some(w) = self.world.as_mut() {
+        if let Some(w) = self.worlds.get_mut(&world_key) {
             for (pid, targets) in quarry {
                 w.quarry.insert(pid, targets);
             }
@@ -6375,6 +6618,7 @@ impl GameState {
             code: lobby.code.clone(),
             host_player_id: lobby.host.clone(),
             members,
+            seed: lobby.seed,
         };
         lobby
             .members
@@ -6400,7 +6644,7 @@ impl GameState {
 
     fn handle_lobby_create(&mut self, player_id: &str, raw: RawEnvelope) -> Vec<Outgoing> {
         if self.player_lobby.contains_key(player_id)
-            || self.sessions.get(player_id).map(|s| s.in_instance).unwrap_or(false)
+            || self.in_instance(player_id)
         {
             return vec![error(
                 player_id,
@@ -6409,10 +6653,9 @@ impl GameState {
                 Some(raw.seq),
             )];
         }
-        let party = serde_json::from_value::<wl::Create>(raw.payload)
-            .ok()
-            .and_then(|c| c.party);
-        let party = self.lobby_party(party);
+        let req = serde_json::from_value::<wl::Create>(raw.payload).ok();
+        let seed = req.as_ref().and_then(|c| c.seed);
+        let party = self.lobby_party(req.and_then(|c| c.party));
         // A short, unique join code.
         let mut code = new_lobby_code();
         while self.lobbies.contains_key(&code) {
@@ -6428,6 +6671,7 @@ impl GameState {
                     party,
                     ready: false,
                 }],
+                seed,
             },
         );
         self.player_lobby.insert(player_id.to_string(), code.clone());
@@ -6436,7 +6680,7 @@ impl GameState {
 
     fn handle_lobby_join(&mut self, player_id: &str, raw: RawEnvelope) -> Vec<Outgoing> {
         if self.player_lobby.contains_key(player_id)
-            || self.sessions.get(player_id).map(|s| s.in_instance).unwrap_or(false)
+            || self.in_instance(player_id)
         {
             return vec![error(
                 player_id,
@@ -6572,13 +6816,14 @@ impl GameState {
             }
             self.player_lobby.remove(pid);
         }
+        let seed = lobby.seed;
         self.lobbies.remove(&code);
         let ids: Vec<String> = members.into_iter().map(|(pid, _)| pid).collect();
         // Co-op dives are always the normal randomized run (the tutorial is a solo,
         // first-load onboarding — never the shared lobby path).
         // A co-op dive departs from the INITIATOR's deepest hub — the lobby leader is the
         // one whose record the run is scoped to, and `form_run` clamps it anyway.
-        self.form_run(ids, player_id, Some(seq), false, None)
+        self.form_run(ids, player_id, Some(seq), false, None, seed)
     }
 
 }
@@ -8012,8 +8257,7 @@ impl GameState {
         for pid in loads {
             if let Ok(uid) = Uuid::parse_str(&pid) {
                 let hero_classes: Vec<String> = self
-                    .world
-                    .as_ref()
+                    .world_of(&pid)
                     .and_then(|inst| inst.party_classes.get(&pid))
                     .map(|classes| classes.iter().map(|c| meld_run::class_key(*c).to_string()).collect())
                     .unwrap_or_default();
@@ -8026,7 +8270,7 @@ impl GameState {
                     // world copy behaviour-identical to a live session read: gear only
                     // changes here (and at form_run), and this flush runs AFTER `tick`
                     // in the loop, so a moved method never sees a stale copy mid-tick.
-                    if let Some(w) = self.world.as_mut() {
+                    if let Some(w) = self.world_of_mut(&pid) {
                         if w.run.runs.iter().any(|r| r.player_id == pid) {
                             // Re-dress on the way in. THIS is where the dev flag used to
                             // die: `form_run` dressed the party, and this line — a tick
@@ -8169,7 +8413,7 @@ impl GameState {
         if job.service == "brew" {
             return meld_proto::consumables::recipe(&job.recipe).map(|r| r.min_level);
         }
-        let w = self.world.as_ref()?;
+        let w = self.world_of(&job.requester)?;
         let run = w.run.runs.iter().find(|r| r.player_id == job.requester)?;
         Some(
             meld_world::Scaling::new(&self.balance).tier(run.max_distance_reached.max(0) as i64)
@@ -8243,7 +8487,7 @@ impl GameState {
             if let Some(s) = self.sessions.get_mut(&pid) {
                 s.forging_level = levels.get("forging").copied();
             }
-            if let Some(w) = self.world.as_mut() {
+            if let Some(w) = self.world_of_mut(&pid) {
                 w.skill_levels.insert(pid, levels);
             }
         }
@@ -8265,7 +8509,7 @@ impl GameState {
                         .map(|spec| (r.bounty_id.to_string(), spec))
                 })
                 .collect();
-            if let Some(w) = self.world.as_mut() {
+            if let Some(w) = self.world_of_mut(&pid) {
                 w.bounties.insert(pid, specs);
             }
         }
@@ -8340,8 +8584,7 @@ impl GameState {
                 "enhance" => {
                     let slot = row.equipped_hero_slot.unwrap_or(0);
                     let in_run = self
-                        .world
-                        .as_ref()
+                        .world_of(&job.requester)
                         .is_some_and(|w| w.run.runs.iter().any(|r| r.player_id == job.requester));
                     if !in_run {
                         Err("An edge only lasts a dive - ask on the way in.".to_string())
@@ -8366,7 +8609,7 @@ impl GameState {
                                     "accessory" => Edge { spd: amount, ..Default::default() },
                                     _ => Edge { def: amount, ..Default::default() },
                                 };
-                                if let Some(w) = self.world.as_mut() {
+                                if let Some(w) = self.world_of_mut(&job.requester) {
                                     let v = w.edges.entry(job.requester.clone()).or_default();
                                     while v.len() <= slot as usize {
                                         v.push(Edge::default());
@@ -8484,8 +8727,7 @@ impl GameState {
             Ok(_) => {
                 // The city anvil has no station to wear out (`station_id` empty).
                 let left = self
-                    .world
-                    .as_mut()
+                    .world_of_mut(&job.owner)
                     .filter(|_| !job.station_id.is_empty())
                     .and_then(|w| w.arena.spend_station_use(&job.station_id))
                     .unwrap_or(0);
@@ -8498,8 +8740,7 @@ impl GameState {
                 left
             }
             Err(_) => self
-                .world
-                .as_ref()
+                .world_of(&job.owner)
                 .and_then(|w| {
                     w.arena
                         .stations
@@ -8532,8 +8773,7 @@ impl GameState {
     async fn pour_tonic(&mut self, job: &SmithJob, requester: Uuid) -> Result<String, String> {
         let f = self.balance.forge.clone();
         let in_run = self
-            .world
-            .as_ref()
+            .world_of(&job.requester)
             .is_some_and(|w| w.run.runs.iter().any(|r| r.player_id == job.requester));
         if !in_run {
             return Err("A tonic only lasts a dive - ask on the way in.".to_string());
@@ -8552,7 +8792,7 @@ impl GameState {
                     f.tonic_amount(f.tonic_regen, job.quality),
                 );
                 let size = self.balance.battle.party_size_per_player;
-                if let Some(w) = self.world.as_mut() {
+                if let Some(w) = self.world_of_mut(&job.requester) {
                     let v = w.edges.entry(job.requester.clone()).or_default();
                     while v.len() < size {
                         v.push(Edge::default());
@@ -8697,7 +8937,7 @@ impl GameState {
                     if let Some(s) = self.sessions.get_mut(&pid) {
                         s.hunts = Some(board);
                     }
-                    if let Some(w) = self.world.as_mut() {
+                    if let Some(w) = self.world_of_mut(&pid) {
                         w.quarry.insert(pid.clone(), targets);
                     }
                 }
@@ -10318,11 +10558,17 @@ impl GameState {
             chits: i64,
             gear: Vec<LootGear>,
             deepest: i32,
+            /// **The roster of the extractor's OWN world**, captured here rather than
+            /// read globally. Who is told that somebody came home is a property of the
+            /// world they came home from; a single Router-wide member list would
+            /// announce one seed's extraction to every other seed's divers.
+            members: Vec<String>,
+            /// Same reason: whose durability was charged is that world's bookkeeping.
+            world_key: String,
         }
-        let (banks, members): (Vec<Banked>, Vec<String>) = {
-            let Some(inst) = self.world.as_mut() else {
-                return Vec::new();
-            };
+        let banks: Vec<Banked> = {
+            let mut banks = Vec::new();
+            for (world_key, inst) in self.worlds.iter_mut() {
             let done: Vec<(String, String)> = inst
                 .extraction
                 .iter()
@@ -10330,9 +10576,10 @@ impl GameState {
                 .map(|(p, e)| (p.clone(), e.method.clone()))
                 .collect();
             if done.is_empty() {
-                return Vec::new();
+                continue;
             }
-            let mut banks = Vec::new();
+            let members: Vec<String> =
+                inst.run.runs.iter().map(|r| r.player_id.clone()).collect();
             for (pid, method) in &done {
                 inst.extraction.remove(pid);
                 if let Some(a) = inst.arena.avatar_mut(pid) {
@@ -10368,12 +10615,16 @@ impl GameState {
                         chits,
                         gear,
                         deepest: r.max_distance_reached,
+                        members: members.clone(),
+                        world_key: world_key.clone(),
                     });
                 }
             }
-            let members: Vec<String> =
-                inst.run.runs.iter().map(|r| r.player_id.clone()).collect();
-            (banks, members)
+            }
+            if banks.is_empty() {
+                return Vec::new();
+            }
+            banks
         };
 
         let db = self.db.clone();
@@ -10450,7 +10701,7 @@ impl GameState {
                     }
                 }
             }
-            for pid in &members {
+            for pid in &b.members {
                 let own = pid == &b.player_id;
                 out.push(out_msg(
                     pid,
@@ -10464,8 +10715,8 @@ impl GameState {
                         chits: if own { b.chits } else { 0 },
                         gear_banked: if own { b.gear.clone() } else { vec![] },
                         durability_loss_applied: self
-                            .world
-                            .as_ref()
+                            .worlds
+                            .get(&b.world_key)
                             .is_some_and(|w| w.durability_charged.contains(&b.player_id)),
                     },
                 ));
@@ -12437,10 +12688,10 @@ impl WorldActor {
             // Drop the dead player's avatar + run from the world NOW — inline, this
             // tick, before the later overworld snapshot — so they don't linger a frame
             // (matching the pre-SC-3 behaviour where release ran inline here). The rest
-            // of the teardown (session `in_instance` flip, per-player bookkeeping, and
-            // dropping the world if it's now empty) can't be done from world logic, so
-            // it rides the effect below; its `remove_from_instance` re-runs these two
-            // retains idempotently.
+            // of the teardown (clearing the session's routing entry, per-player
+            // bookkeeping, and dropping the world if it's now empty) can't be done from
+            // world logic, so it rides the effect below; its `remove_from_instance`
+            // re-runs these two retains idempotently.
             self.arena.avatars.retain(|a| a.player_id != pid);
             self.run.runs.retain(|r| r.player_id != pid);
             effects.push(WorldEffect::ReleaseFromRun(pid));
@@ -13409,6 +13660,7 @@ mod shifting_lands_tests {
             arena.ensure_frontier(&balance, 900.0);
         }
         let w = WorldActor {
+            key: world_key_of(909),
             balance: balance.clone(),
             db_writes: tx,
             arena,
@@ -13452,6 +13704,8 @@ mod shifting_lands_tests {
             shift_generation: 0,
             shift_warned: false,
             shift_log: Vec::new(),
+            last_save_tick: 0,
+            empty_since: None,
         };
         (w, rx)
     }
@@ -14956,5 +15210,240 @@ mod hero_fall_tax_tests {
         let writes = drained(&mut rx);
         let charged = falls_of(&writes);
         assert!(charged.is_empty(), "nobody went down, yet gear was billed: {charged:?}");
+    }
+}
+
+/// **SC-3 — the Router shards, and a world is a place you can name.**
+///
+/// These are the CI-gating half: `qa/two_worlds.rs` drives the same claims through real
+/// bot clients over the real wire, but `qa/` is deliberately out of CI, so the routing
+/// invariants are held here where `make check` runs them.
+#[cfg(test)]
+mod sharding_tests {
+    use super::*;
+
+    fn balance() -> Arc<Balance> {
+        Arc::new(Balance::load_default().unwrap())
+    }
+
+    /// A Router with `n` connected sessions named `p0..pn`, and the receivers kept alive
+    /// (dropping them makes `dispatch` treat every client as gone).
+    async fn router(n: usize) -> (GameState, Vec<mpsc::Receiver<String>>, Vec<String>) {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        // `Db` is only touched by the async flush paths; nothing here reaches Postgres.
+        let db = Db::connect("memory://sharding", 4).await.unwrap();
+        let mut g = GameState::new(balance(), db, tx);
+        let (mut rxs, mut ids) = (Vec::new(), Vec::new());
+        for i in 0..n {
+            let pid = format!("p{i}");
+            let (out, rx) = mpsc::channel(256);
+            g.sessions.insert(
+                pid.clone(),
+                Session {
+                    username: pid.clone(),
+                    out,
+                    session_id: pid.clone(),
+                    seq_out: 2,
+                    last_client_seq: 0,
+                    world: None,
+                    gear_bonuses: Vec::new(),
+                    forging_level: None,
+                    character_class: CharacterClass::Explorer,
+                    party_comp: None,
+                    hero_names: None,
+                    hero_rows: None,
+                    has_dived: true,
+                    tutorial_town_seen: true,
+                    tutorial_run_seen: true,
+                    deepest_ever: 0,
+                    unlocks: None,
+                    pending_materials: Vec::new(),
+                    hunts: None,
+                    snap_delta: false,
+                },
+            );
+            g.order.push(pid.clone());
+            rxs.push(rx);
+            ids.push(pid);
+        }
+        (g, rxs, ids)
+    }
+
+    /// The headline claim. Two divers naming two seeds get two worlds, each is routed to
+    /// its own, and neither world's roster holds the other's player — which is what makes
+    /// the isolation structural rather than a filter somebody has to remember to apply.
+    #[tokio::test]
+    async fn two_seeds_are_two_worlds() {
+        let (mut g, _rx, ids) = router(2).await;
+        g.form_run(vec![ids[0].clone()], &ids[0], None, false, None, Some(111));
+        g.form_run(vec![ids[1].clone()], &ids[1], None, false, None, Some(222));
+
+        assert_eq!(g.worlds.len(), 2, "two seeds should have built two worlds");
+        assert_eq!(g.sessions[&ids[0]].world.as_deref(), Some("111"));
+        assert_eq!(g.sessions[&ids[1]].world.as_deref(), Some("222"));
+        for (key, seed, mine, theirs) in
+            [("111", 111u64, &ids[0], &ids[1]), ("222", 222, &ids[1], &ids[0])]
+        {
+            let w = &g.worlds[key];
+            assert_eq!(w.arena.seed, seed, "world {key} should be generated from its own seed");
+            assert!(w.run.runs.iter().any(|r| &r.player_id == mine));
+            assert!(
+                !w.run.runs.iter().any(|r| &r.player_id == theirs),
+                "world {key} holds a diver who asked for the other seed"
+            );
+        }
+    }
+
+    /// The other half, and the one that stops `seed` from being decorative: a field that
+    /// was parsed and ignored — every dive getting its own private world — would satisfy
+    /// the isolation test above perfectly.
+    #[tokio::test]
+    async fn one_seed_is_one_world() {
+        let (mut g, _rx, ids) = router(2).await;
+        g.form_run(vec![ids[0].clone()], &ids[0], None, false, None, Some(777));
+        g.form_run(vec![ids[1].clone()], &ids[1], None, false, None, Some(777));
+
+        assert_eq!(g.worlds.len(), 1, "one seed should be one place");
+        let w = &g.worlds["777"];
+        assert!(w.run.runs.iter().any(|r| r.player_id == ids[0]));
+        assert!(w.run.runs.iter().any(|r| r.player_id == ids[1]));
+    }
+
+    /// A world is CAPPED and scale is many worlds (CANON §W1) — it holds unique
+    /// player-built structures, so a full one can never be auto-forked into a second copy
+    /// under the same name. ⚠️ CANON says it queues; there is no queue yet, so it refuses,
+    /// and the test holds the property that matters either way: **the cap is never
+    /// exceeded, and the world the group asked for is not silently duplicated.**
+    #[tokio::test]
+    async fn a_full_world_refuses_rather_than_forking() {
+        let mut b = Balance::load_default().unwrap();
+        b.world.max_divers_per_world = 2;
+        let (mut g, _keep, ids) = router(3).await;
+        g.balance = Arc::new(b);
+
+        for pid in ids.iter().take(2) {
+            g.form_run(vec![pid.clone()], pid, None, false, None, Some(9));
+        }
+        assert_eq!(g.worlds["9"].run.runs.len(), 2);
+
+        let out = g.form_run(vec![ids[2].clone()], &ids[2], None, false, None, Some(9));
+        assert_eq!(g.worlds.len(), 1, "a refused dive must not have built a second world");
+        assert_eq!(g.worlds["9"].run.runs.len(), 2, "the cap was exceeded");
+        assert!(g.sessions[&ids[2]].world.is_none(), "a refused diver must not be routed anywhere");
+        assert!(
+            out.iter().any(|o| o.msg_type == ws::Error::TYPE),
+            "a full world should say so rather than failing silently"
+        );
+    }
+
+    /// A tutorial world is onboarding rather than a place — it is never persisted and
+    /// dies with its divers — but it is still a world people can SHARE, so it is its own
+    /// NAMESPACE over the same seeds rather than a private key. Sharing one namespace
+    /// would let a guided corridor and a persistent world collide on a seed, and whichever
+    /// was built first would silently swallow the other's divers.
+    #[tokio::test]
+    async fn a_tutorial_world_is_its_own_namespace() {
+        let (mut g, _rx, ids) = router(2).await;
+        g.form_run(vec![ids[0].clone()], &ids[0], None, true, None, Some(5));
+        g.form_run(vec![ids[1].clone()], &ids[1], None, false, None, Some(5));
+
+        assert_eq!(g.worlds.len(), 2, "seed 5 guided and seed 5 for real are two worlds");
+        let guided = g.sessions[&ids[0]].world.clone().unwrap();
+        let real = g.sessions[&ids[1]].world.clone().unwrap();
+        assert!(is_tutorial_key(&guided) && g.worlds[&guided].tutorial);
+        assert!(!is_tutorial_key(&real) && !g.worlds[&real].tutorial);
+        assert_eq!(g.worlds[&guided].arena.seed, g.worlds[&real].arena.seed, "same seed");
+    }
+
+    /// **An unnamed dive is a matchmaking request, not a request for solitude.** Every
+    /// `qa/` bot that meets another one dives without naming a world, and so does every
+    /// player who has not been told seeds exist — so "put me somewhere" has to keep
+    /// meaning what it meant when there was one world. Rolling a private world per
+    /// unnamed diver would compile, pass every isolation test, and quietly stop the game
+    /// being multiplayer.
+    #[tokio::test]
+    async fn unnamed_divers_are_put_together() {
+        let (mut g, _rx, ids) = router(3).await;
+        for pid in &ids {
+            g.form_run(vec![pid.clone()], pid, None, false, None, None);
+        }
+        assert_eq!(g.worlds.len(), 1, "three unnamed divers should have met");
+        assert_eq!(g.worlds.values().next().unwrap().run.runs.len(), 3);
+    }
+
+    /// …and matchmaking respects the cap: an unnamed diver arriving at a full world gets
+    /// a NEW one rather than being refused. Refusing is only right for a NAMED world —
+    /// they asked for that place specifically. Somebody who asked for "anywhere" should
+    /// be given anywhere.
+    #[tokio::test]
+    async fn an_unnamed_diver_overflows_into_a_new_world() {
+        let mut b = Balance::load_default().unwrap();
+        b.world.max_divers_per_world = 2;
+        let (mut g, _rx, ids) = router(3).await;
+        g.balance = Arc::new(b);
+        for pid in &ids {
+            g.form_run(vec![pid.clone()], pid, None, false, None, None);
+        }
+        assert_eq!(g.worlds.len(), 2, "the third diver should have opened a second world");
+        let mut sizes: Vec<usize> = g.worlds.values().map(|w| w.run.runs.len()).collect();
+        sizes.sort_unstable();
+        assert_eq!(sizes, vec![1, 2], "packed, not spread");
+        assert!(ids.iter().all(|p| g.sessions[p].world.is_some()), "nobody was refused");
+    }
+
+    /// Leaving a world clears the routing entry, and the world OUTLIVES the diver (§W1) —
+    /// it stays in the map ticking rather than being torn down the moment it empties.
+    /// A tutorial corridor is the exception and goes with its diver.
+    #[tokio::test]
+    async fn a_world_outlives_its_diver_but_a_tutorial_does_not() {
+        let (mut g, _rx, ids) = router(2).await;
+        g.form_run(vec![ids[0].clone()], &ids[0], None, false, None, Some(31));
+        g.form_run(vec![ids[1].clone()], &ids[1], None, true, None, None);
+        let tutorial_key = g.sessions[&ids[1]].world.clone().unwrap();
+
+        g.release_from_run(&ids[0]);
+        assert!(g.sessions[&ids[0]].world.is_none(), "the routing entry must be cleared");
+        assert!(g.worlds.contains_key("31"), "a world is a place — it outlives its divers");
+        assert_eq!(
+            g.worlds["31"].empty_since,
+            Some(g.worlds["31"].tick_count),
+            "an emptied world starts its dormancy clock"
+        );
+
+        g.release_from_run(&ids[1]);
+        assert!(
+            !g.worlds.contains_key(&tutorial_key),
+            "a tutorial corridor dies with its diver — persisting it hands the next player \
+             a world someone has already walked"
+        );
+    }
+
+    /// `chat.say`'s party channel is "the people you are actually among". It compared
+    /// `in_instance == in_instance` — *are we both in some run* — which was the honest
+    /// scope while there was one world and leaks the moment there are two.
+    #[tokio::test]
+    async fn party_chat_does_not_cross_worlds() {
+        let (mut g, _rx, ids) = router(3).await;
+        g.form_run(vec![ids[0].clone()], &ids[0], None, false, None, Some(41));
+        g.form_run(vec![ids[1].clone()], &ids[1], None, false, None, Some(42));
+        // ids[2] never dives: they are in town.
+
+        let say = |channel: &str, seq: u32| RawEnvelope {
+            msg_type: "chat.say".to_string(),
+            seq,
+            ts: 0,
+            payload: serde_json::json!({ "text": "hello", "channel": channel }),
+        };
+        let heard: Vec<String> =
+            g.handle_say(&ids[0], say("party", 10)).into_iter().map(|o| o.player_id).collect();
+        assert!(heard.contains(&ids[0]), "you hear yourself");
+        assert!(!heard.contains(&ids[1]), "a diver in another world overheard the party channel");
+        assert!(!heard.contains(&ids[2]), "someone in town overheard a party in the field");
+
+        // …and the world channel is still everyone: it is the general channel, not
+        // "this world", and narrowing it here would be a different feature.
+        let heard: Vec<String> =
+            g.handle_say(&ids[0], say("world", 11)).into_iter().map(|o| o.player_id).collect();
+        assert_eq!(heard.len(), 3, "the world channel is server-global");
     }
 }

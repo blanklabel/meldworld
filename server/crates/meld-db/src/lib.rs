@@ -5727,4 +5727,39 @@ impl Db {
             Backend::Mem(m) => Ok(m.lock().unwrap().worlds.get(world_key).cloned()),
         }
     }
+
+    /// **Every hibernated world** (SC-3). The Router reads these at boot and stands each
+    /// one up on the first dive into it, so a world that outlived the process is waiting
+    /// under its own key rather than only the one key somebody thought to ask for.
+    ///
+    /// Ordered by `world_key` so the listing is stable run to run — a browser (SC-9)
+    /// renders this, and a list that reshuffles itself between reads is unusable.
+    pub async fn list_worlds(&self) -> Result<Vec<WorldSave>, DbError> {
+        match &self.backend {
+            Backend::Pg(pool) => {
+                let rows = sqlx::query(
+                    "SELECT world_key, seed, tick_count, shift_generation, sections, delta
+                     FROM worlds ORDER BY world_key",
+                )
+                .fetch_all(pool)
+                .await?;
+                Ok(rows
+                    .into_iter()
+                    .map(|r| WorldSave {
+                        world_key: r.get("world_key"),
+                        seed: r.get("seed"),
+                        tick_count: r.get("tick_count"),
+                        shift_generation: r.get("shift_generation"),
+                        sections: r.get("sections"),
+                        delta: r.get("delta"),
+                    })
+                    .collect())
+            }
+            Backend::Mem(m) => {
+                let mut out: Vec<WorldSave> = m.lock().unwrap().worlds.values().cloned().collect();
+                out.sort_by(|a, b| a.world_key.cmp(&b.world_key));
+                Ok(out)
+            }
+        }
+    }
 }

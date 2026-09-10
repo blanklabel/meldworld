@@ -89,6 +89,9 @@ pub struct World {
     pub interaction_radius_tiles: f64,
     pub avatar_speed_tiles_per_sec: f64,
     pub battle_reentry_grace_ms: u64,
+    /// SC-3 — divers one world holds at once. Scale is MANY worlds, never a bigger one:
+    /// a world carries unique player-built structures, so it cannot be auto-forked.
+    pub max_divers_per_world: usize,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -840,6 +843,10 @@ pub struct WorldPersist {
     pub creature_regrow_ticks: u64,
     pub node_regrow_ticks: u64,
     pub chest_regrow_ticks: u64,
+    /// SC-3 — ticks an EMPTY world keeps running before it hibernates out of memory.
+    /// A world outliving its divers is the point; ticking forever is a leak, because the
+    /// creature step costs the same whether or not anyone is watching.
+    pub dormant_after_ticks: u64,
 }
 
 #[derive(Debug, Clone, Deserialize)]

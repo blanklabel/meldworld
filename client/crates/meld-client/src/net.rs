@@ -103,7 +103,7 @@ pub enum ClientCmd {
     /// immediately (unlike the Vault's HTTP equip, which is next-dive-only).
     EquipLoot { gear_id: String, hero_slot: Option<i32> },
     /// Co-op lobby.
-    LobbyCreate { party: Vec<String> },
+    LobbyCreate { party: Vec<String>, seed: Option<u64> },
     LobbyJoin { code: String, party: Vec<String> },
     LobbyReady { ready: bool },
     LobbyStart,
@@ -971,6 +971,9 @@ pub enum ServerMsg {
         code: String,
         host: String,
         members: Vec<(String, String, bool)>,
+        /// SC-3 — the world this group is forming up to enter, as the SERVER reports it.
+        /// `None` means the seed is not decided yet and `lobby.start` will roll one.
+        seed: Option<u64>,
     },
     /// The lobby was disbanded / this player left it.
     LobbyClosed,
@@ -2321,8 +2324,8 @@ impl Inner {
                 wr::EquipLoot::TYPE,
                 json!({ "gear_id": gear_id, "hero_slot": hero_slot }),
             ),
-            ClientCmd::LobbyCreate { party } => {
-                self.send_env(wl::Create::TYPE, json!({ "party": party }))
+            ClientCmd::LobbyCreate { party, seed } => {
+                self.send_env(wl::Create::TYPE, json!({ "party": party, "seed": seed }))
             }
             ClientCmd::LobbyJoin { code, party } => {
                 self.send_env(wl::Join::TYPE, json!({ "code": code, "party": party }))
@@ -3146,6 +3149,7 @@ impl Inner {
                     code: raw.payload["code"].as_str().unwrap_or("").to_string(),
                     host: raw.payload["host_player_id"].as_str().unwrap_or("").to_string(),
                     members,
+                    seed: raw.payload["seed"].as_u64(),
                 });
             }
             "lobby.closed" => self.out.push_back(ServerMsg::LobbyClosed),

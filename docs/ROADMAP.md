@@ -5363,22 +5363,34 @@ Directly underpins CR-4 (sim budget), MON-2 (persistent camps/instances), and LC
   send in parallel across cores. Decouples sim cadence from snapshot cadence
   (enables sub-stepped projectiles). Single-owner invariant preserved — workers
   only read a frozen copy.
-- [ ] **SC-4 — A LOBBY YOU CAN BROWSE: worlds you can SEE, not codes you have to be
-  told.** Depends on `SC-3` (there is exactly one world until it lands —
-  `const WORLD_KEY = "default"`, whose own comment says multi-world is what varies it).
+- [ ] **SC-9 — A LOBBY YOU CAN BROWSE: worlds you can SEE, not codes you have to be
+  told.** ⚠️ *Renumbered from `SC-4`, which was already taken.* `SC-1`…`SC-4` are
+  [`proposals/server-scaling.md`](proposals/server-scaling.md)'s four levers A–D in
+  order, and the gateway item below is Lever D; this one was added later and collided
+  with it. Two items sharing an ID defeats the point of having stable ones — a branch
+  named for `SC-4` could mean either. (It briefly went to `SC-6`, which `#393` took for
+  creature LOD in the meantime — hence `SC-9`. **Take the next free number in the epic,
+  never the next number after the last one you can see**: five of these were allocated
+  concurrently on different branches.)
+   🟡 *Unblocked:* `SC-3`'s multi-world slice landed, so the two things this item
+  said did not exist now do — **a seed on the wire** (`run.enter_maze { seed }`,
+  `lobby.create { seed }`, echoed back as `Started.world_seed`) and **a reader**
+  (`Db::list_worlds`). What is still missing is the BROWSER: an HTTP listing under
+  `/v1/`, live occupancy per world, and a per-world board. `WORLD_KEY = "default"` is
+  gone — a world's key is its seed.
   Recorded because the co-op that EXISTS reads as a placeholder for this and is easy to
   mistake for a broken version of it. What ships today is a **private code party**: `[C]`
   opens the lobby, `lobby.create` mints a 6-char code, friends `lobby.join` it, the host
   starts a shared dive. There is no discovery, and the mental model people arrive with —
   *a seed is an instance, browse the instances, see who is on each* — is not a half-built
   version of that, it is a different feature. What it wants, none of which exists:
-  - **A seed on the wire.** `lobby.create`, `lobby.join` and `run.enter_maze` carry no
-    seed field at all; the only way to pick a world is `MELD_SEED`, a dev env var read at
-    the server boundary. "Play seed 424242 with me" is currently unsayable.
-  - **A listing.** Nothing under `/v1/` enumerates worlds, so there is no world list to
-    render — local, remote or otherwise — and no occupancy to show. The `worlds` table is
-    already keyed and already stores a seed, so the schema is ready; what is missing is a
-    second key and a reader.
+  - ✅ **A seed on the wire.** Landed with `SC-3`: `run.enter_maze { seed }` and
+    `lobby.create { seed }` name a world, the lobby shows it to every member, and
+    `Started.world_seed` reports the one you actually entered. "Play seed 424242 with me"
+    is sayable — by typing it into the lobby's World field.
+  - 🟡 **A listing.** `Db::list_worlds` reads every hibernated world (the Router already
+    uses it at boot). Still nothing under `/v1/` enumerates them, so there is no list to
+    RENDER — that plus live occupancy is the browser's remaining half.
   - **Occupancy.** Nothing counts players per world. "3 divers on this seed" is the single
     line that makes a browser worth opening rather than a list of numbers.
   - **A per-world board.** The Vanguard Wall shows the GLOBAL seasonal leaderboard
@@ -5409,9 +5421,54 @@ Directly underpins CR-4 (sim budget), MON-2 (persistent camps/instances), and LC
     `set_formation` / `begin_extraction`) from `impl GameState` onto `impl WorldActor`,
     each returning `(Vec<Outgoing>, Vec<WorldEffect>)`; `GameState` is now the **Router**
     (sessions / lobbies / routing) that applies the returned effects. Still one task
-    (single-owner/no-locks invariant intact). **Remaining:** the b1-B boundary (spawn
-    `WorldActor` as its own task so it never calls `GameState` methods), then multi-world
-    + hub handoff + Postgres hibernation, and the two-world isolation QA test.
+    (single-owner/no-locks invariant intact).
+  - 🟢 **MULTI-WORLD LANDED — a world's name is its SEED, and there are many.**
+    `world: Option<WorldActor>` is `worlds: HashMap<String, WorldActor>` keyed by
+    [`WorldActor::key`] (a seed in decimal; a guided corridor is the same seed in its own
+    namespace, `tutorial:<seed>`, so onboarding and a persistent world can never collide
+    on one key). `run.enter_maze { seed }`
+    and `lobby.create { seed }` name one; the world you actually LAND in still rides back
+    on `Started.world_seed`, because a client that displays what it asked for looks
+    identical while being wrong. **Still one task** — it ticks N worlds now, so
+    single-owner/no-locks (CANON §S) survives verbatim.
+    - **The routing entry moved onto the session.** `Session.in_instance: bool` is
+      `Session.world: Option<String>` — the honest shape while there was one world, and a
+      routing bug the moment there are two, since every world-bound handler would have to
+      guess which world the caller meant. `world_of` / `world_of_mut` is the ONE lookup.
+    - ⚠️ **It was a chat leak too.** `chat.say`'s `Party` channel filtered on
+      `s.in_instance == mine` — *are we both in some run* — so two parties in different
+      seeds would have heard each other. It is `s.world == mine` now.
+    - ⚠️ **And a disconnect ordering bug fell out of it.** The `Disconnected` arm removed
+      the session *before* the world work; with the world reachable only through the
+      session, that silently skipped the abandoned-run ephemeral burn and left the leaver
+      enrolled in a world nothing could drop them from. The session now outlives it.
+    - **An empty world hibernates OUT OF MEMORY** (`[world_persist] dormant_after_ticks`).
+      A world outliving its divers is the point (§W1), but "outlives" cannot mean "ticks
+      forever": the creature step is the expensive half of a tick (15.8 ms at d1300) and
+      does not care whether anyone is watching, so N idle deep worlds would cost the
+      budget N times over. Evicted worlds are saved and stood back up on the next dive,
+      through the same `restore` path a server restart uses — `Db::list_worlds` reads them
+      all at boot rather than the one key somebody thought to ask for.
+    - ⚠️ **A full world REFUSES; CANON §W1 says it should QUEUE.** The cap
+      (`[world] max_divers_per_world`) is real and held by test, but there is no queue —
+      a fake one that never dequeues is worse than a clear "pick another seed". That is
+      the honest remaining gap in this slice.
+    - ⚠️ **An UNNAMED dive is a matchmaking request, not a request for solitude.**
+      `choose_world` packs unnamed divers into the FULLEST world with room (packed, not
+      spread — a shared world with people in it is the thing worth having); only a NAMED
+      seed shards, and only a named world refuses when full, because somebody who asked
+      for "anywhere" should be given anywhere. Rolling a private world per unnamed diver
+      compiles, passes every isolation test, and quietly stops the game being multiplayer
+      for everyone who has not been told seeds exist — which is every `qa/` bot that
+      meets another one.
+    - Held by `game::sharding_tests` (8, in CI) and `qa/two_worlds.rs`. Both halves are
+      asserted: two seeds never see each other, AND one seed is one place — the isolation
+      test alone passes perfectly if `seed` is parsed and ignored and every diver gets a
+      private world.
+    **Remaining:** the b1-B boundary (spawn `WorldActor` as its own task so it never calls
+    `GameState` methods), the closed-form dormancy catch-up below (an evicted world's
+    clock currently STOPS until someone dives back in), the admission queue, and hub
+    handoff.
   - 🔴 *Design settled, not built: **a dormant world catches up in CLOSED FORM, never by
     replaying ticks**.* Asked for directly — a world asleep for a while should wake to
     "now", with its Shifts, regrowth, conflicts and (later) fields and raids having
@@ -5450,7 +5507,16 @@ Directly underpins CR-4 (sim budget), MON-2 (persistent camps/instances), and LC
       §W5 persistence stays two integers.
     - *Ecology (food, fields, population diffs) and raids do not exist yet* — Epic E is
       itself gated on this item — so what to build now is the HOOK, not the contents.
-  - 🔴 *And "let the player change the seed in town" needs this item, not a button.* Asked
+  - ✅ *"Let the player change the seed in town" — the multi-world slice above is what
+    answered it.* Recorded here as it was written, because the reasoning is still the
+    reason it could not be a button: a world **outlives its divers** (§W1) and holds
+    player-built structures, so while there was exactly one live world a seed-change
+    button did not reload *your* world, it destroyed *everyone's*. The non-destructive
+    shape named below — `world_key = seed` plus hibernate-and-restore — is exactly what
+    shipped. The seed as a readable NAME had already landed separately
+    (`Started.world_seed` → the menu's Map column); what was missing was making it
+    *choosable*, which `run.enter_maze { seed }` and `lobby.create { seed }` now are.
+  - 🔴 *The original note, for the record.* Asked
     for as "it would cause a game reload"; in today's build it is heavier than that. A world
     **outlives its divers** by design (§W1) and holds player-built structures (BD-2
     buildings, BD-3 anchors, forward towns), and there is exactly one live world

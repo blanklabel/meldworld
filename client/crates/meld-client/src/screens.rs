@@ -952,11 +952,24 @@ pub(crate) fn lobby_input(
             leave_lobby_state(&mut lobby, &mut next);
             return;
         }
+        // **TWO FIELDS, BECAUSE THEY ARE OPPOSITE ACTIONS** (SC-3). A CODE joins somebody
+        // else's group; a SEED names the world your own group is going to. Collapsing
+        // them onto one line would mean guessing which a player meant from what they
+        // typed — and an all-digit join code is a perfectly ordinary join code.
+        if keys.just_pressed(KeyCode::Tab) {
+            lobby.editing_seed = !lobby.editing_seed;
+            return;
+        }
         // Not in a lobby yet: create one, or type a code and join.
         if keys.just_pressed(KeyCode::Enter) {
-            // ENTER with no code = create; with a code = join.
+            // ENTER with no code = create; with a code = join. A seed only means anything
+            // on the create side: a joiner is going wherever the host already named, and
+            // the server tells them where that is on `lobby.state`.
             if lobby.code_input.is_empty() {
-                net.0.send(ClientCmd::LobbyCreate { party: session.party.clone() });
+                net.0.send(ClientCmd::LobbyCreate {
+                    party: session.party.clone(),
+                    seed: lobby.seed_input.parse::<u64>().ok(),
+                });
             } else {
                 net.0.send(ClientCmd::LobbyJoin {
                     code: lobby.code_input.clone(),
@@ -966,10 +979,21 @@ pub(crate) fn lobby_input(
             return;
         }
         if keys.just_pressed(KeyCode::Backspace) {
-            lobby.code_input.pop();
+            if lobby.editing_seed {
+                lobby.seed_input.pop();
+            } else {
+                lobby.code_input.pop();
+            }
         }
         for key in keys.get_just_pressed() {
-            if lobby.code_input.len() < 6 {
+            if lobby.editing_seed {
+                // Digits only: a seed is a number, and `u64::MAX` is 20 digits.
+                if lobby.seed_input.len() < 20 {
+                    if let Some(c) = key_to_code_char(*key).filter(char::is_ascii_digit) {
+                        lobby.seed_input.push(c);
+                    }
+                }
+            } else if lobby.code_input.len() < 6 {
                 if let Some(c) = key_to_code_char(*key) {
                     lobby.code_input.push(c);
                 }
@@ -1003,6 +1027,9 @@ pub(crate) fn lobby_input(
 fn leave_lobby_state(lobby: &mut LobbyData, next: &mut NextState<Screen>) {
     lobby.in_lobby = false;
     lobby.code_input.clear();
+    lobby.seed_input.clear();
+    lobby.editing_seed = false;
+    lobby.seed = None;
     lobby.my_ready = false;
     next.set(Screen::City);
 }
@@ -1040,14 +1067,28 @@ pub(crate) fn render_lobby(
     }
     let Ok(mut t) = q.single_mut() else { return };
     if !lobby.in_lobby {
+        // The caret marks which field [Tab] is on, so "why is nothing typing" is never a
+        // question — with two fields and one keyboard, an invisible focus is a dead key.
+        let (code_caret, seed_caret) = if lobby.editing_seed { ("", "_") } else { ("_", "") };
+        let world = if lobby.seed_input.is_empty() {
+            "a new world".to_string()
+        } else {
+            format!("world {}", lobby.seed_input)
+        };
         **t = format!(
-            "Join code: {}_\n\ntype a code + ENTER to join,\nor ENTER (empty) to create a new lobby\n\n[ESC] back to the city",
-            lobby.code_input
+            "Join code: {}{code_caret}\n     World: {}{seed_caret}   ({world})\n\n             [TAB] switch field\n\ntype a code + ENTER to join someone,\n             or ENTER with no code to create a lobby\n\n[ESC] back to the city",
+            lobby.code_input, lobby.seed_input,
         );
         return;
     }
     let host_is_me = lobby.host == session.player_id;
-    let mut lines = vec![format!("Code: {}", lobby.code), String::new()];
+    // The world is the SERVER's answer, never the host's own input echoed back — a
+    // joiner never typed one and still has to see which place they are agreeing to go to.
+    let world = match lobby.seed {
+        Some(seed) => format!("World {seed}"),
+        None => "World: a new one".to_string(),
+    };
+    let mut lines = vec![format!("Code: {}    {world}", lobby.code), String::new()];
     for (id, username, ready) in &lobby.members {
         let you = if id == &session.player_id { " (you)" } else { "" };
         let host = if id == &lobby.host { " [host]" } else { "" };
@@ -1081,7 +1122,10 @@ pub(crate) fn lobby_buttons(
         }
         match btn.0 {
             LobbyAct::Create => {
-                net.0.send(ClientCmd::LobbyCreate { party: session.party.clone() });
+                net.0.send(ClientCmd::LobbyCreate {
+                    party: session.party.clone(),
+                    seed: lobby.seed_input.parse::<u64>().ok(),
+                });
             }
             LobbyAct::Ready => {
                 let want = !lobby.my_ready;

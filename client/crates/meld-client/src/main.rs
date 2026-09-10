@@ -898,6 +898,20 @@ struct LobbyData {
     members: Vec<(String, String, bool)>,
     /// The code being typed on the join line (before joining).
     code_input: String,
+    /// **SC-3 — the world being named on the create line**, digits only (a world's
+    /// identity is its seed). Empty rolls a fresh one, which is what creating a lobby
+    /// always did. [Tab] moves between this and the join code, because they are opposite
+    /// actions: a CODE joins somebody else's group, a SEED names the place your own group
+    /// is going.
+    seed_input: String,
+    /// Which of the two fields [Tab] is currently editing.
+    editing_seed: bool,
+    /// The world the lobby is actually forming up to enter, as the SERVER reports it on
+    /// `lobby.state`. Kept apart from `seed_input` on purpose: a joiner never typed a
+    /// seed and still has to be shown which world they are agreeing to go to, and showing
+    /// the host their own input back would be the client displaying what it asked for
+    /// rather than what is true.
+    seed: Option<u64>,
     my_ready: bool,
 }
 

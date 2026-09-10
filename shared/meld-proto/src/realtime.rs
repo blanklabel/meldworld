@@ -768,6 +768,16 @@ pub mod run {
         /// corridor every time. The hub offers it but never forces it.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub tutorial: Option<bool>,
+        /// **Which WORLD to dive into** — its seed is its identity (CANON D19/§W1: a
+        /// world is a *player-seeded* shard, and §W5 stores the number rather than the
+        /// map because the baseline is a pure function of it). Absent asks for a fresh
+        /// roll, which is what every dive did when there was exactly one world.
+        ///
+        /// It is a **request, not a fact**: a full world queues rather than auto-forking
+        /// (§W1), and a tutorial dive never joins a named world at all — so the world you
+        /// land in rides back on `Started.world_seed` and the client must display THAT.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub seed: Option<u64>,
     }
     impl Message for EnterMaze {
         const TYPE: &'static str = "run.enter_maze";
@@ -865,7 +875,7 @@ pub mod run {
         /// the client has not been told about is walkable ground drawn over open water.
         #[serde(default)]
         pub straits: Vec<crate::coast::Strait>,
-    /// **The WORLD's seed — its public name** (CANON D19: the overworld is a
+        /// **The WORLD's seed — its public name** (CANON D19: the overworld is a
         /// *player-seeded* World, and §W5 stores this number instead of a map because the
         /// baseline is a pure function of it).
         ///
@@ -1979,6 +1989,14 @@ pub mod lobby {
     pub struct Create {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub party: Option<Vec<CharacterClass>>,
+        /// **Which WORLD this group is forming up to dive into** — a seed, the world's
+        /// own identity (CANON §W1). Absent rolls a fresh one at `lobby.start`.
+        ///
+        /// It is settled by the HOST at create time rather than at start, because it is
+        /// the one thing a joiner needs to know BEFORE they ready up: which place they
+        /// are agreeing to go to. It rides back on every `lobby.state`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub seed: Option<u64>,
     }
     impl Message for Create {
         const TYPE: &'static str = "lobby.create";
@@ -2033,6 +2051,11 @@ pub mod lobby {
         pub code: String,
         pub host_player_id: Id,
         pub members: Vec<MemberView>,
+        /// The world this group will dive into, if the host named one. `None` means a
+        /// fresh roll at `lobby.start` — the seed is not decided yet, and a lobby that
+        /// showed a number here before one was chosen would be inventing the answer.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub seed: Option<u64>,
     }
     impl Message for State {
         const TYPE: &'static str = "lobby.state";
