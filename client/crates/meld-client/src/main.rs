@@ -2058,6 +2058,12 @@ struct CityUi {
     /// The name being typed for the next loadout save. On `CityUi` rather than the
     /// panel so it survives the panel being rebuilt when the saved list changes.
     loadout_name: String,
+    /// The saved party this field is RENAMING, if any — otherwise the field names the
+    /// next save. One field, two jobs, and which one it is doing has to be state rather
+    /// than a guess: "rename" used to mean "apply whatever happens to be typed here to
+    /// this row", so clicking it on an empty field did nothing a player could see, and
+    /// clicking it after typing renamed a party without ever saying which.
+    loadout_rename: Option<String>,
     /// True while the Drill Yard's party picker is open (PT: choose the team you
     /// take down). Opens by itself the first time an account reaches town without a
     /// party of its own, so nobody dives with the newcomer default by accident.

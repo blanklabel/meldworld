@@ -284,6 +284,39 @@ Right now the party is fixed at dive time; players can't rearrange or save teams
     because an in-memory account is a brand-new one and one hero beside one class is not a
     size at which a layout can be judged.
 
+- [x] **PT-8 — A rename is click, type, Enter — for a hero and for a saved party.**
+  Reported from play as *"I can't rename more than one hero in a party… once you hit enter
+  it should just save"* and *"rename button for parties doesn't work"*. Three faults on one
+  screen, and the two that were reproducible are the same fault: a rename that does not
+  behave like a rename.
+  - *The saved-party rename was not an edit.* It applied whatever happened to be in the
+    NAME field at the instant you clicked it, so the ordinary gesture — click "rename",
+    then type — did nothing, and its only complaint ("Type the new name first.") went to
+    the town status strip, which the yard's own scrim is drawn over. **A button whose
+    entire response to a click is invisible is a button that does not work.** It arms an
+    edit now (`CityUi::loadout_rename`), prefills the field with the name the party HAS,
+    and **Enter commits** — the same gesture the hero card beside it already used. Esc
+    drops it, the heading says which of its two jobs the field is doing, and the panel owns
+    the edit's lifetime rather than the five places that write `party_open`.
+  - *A rename from TOWN wrote nothing the player could see.* The Drill Yard wrote the local
+    copy and the menu's own `[R]` did not — and a run-less rename is answered with an EMPTY
+    roster, which is exactly when `hero_name_at` falls back to `AccountHeroNames`. So the
+    same action stuck in one place and reverted in the other. One `commit_hero_rename` now,
+    so a third screen offering a rename cannot get half of it.
+  - *And the hero name was filed under the wrong slot on the way back.* `get_hero_names` /
+    `get_hero_rows` read `ORDER BY slot` packed straight into a `Vec`, dropping the slot —
+    so any gap in the `heroes` rows shifts every later hero one place left, and the next
+    rename of "hero 2" lands on slot 1. That is *literally* "renaming a second hero
+    overwrites the first". Register seeds all four slots, which is the only reason it held;
+    it was one migration or one older account away from not holding, and the failure is
+    silent and looks like the button. Both reads are slot-INDEXED now, through one
+    `place_by_slot`.
+  - ⚠️ **The first repro of "can't rename more than one" was the HARNESS**, not the game:
+    `ButtonInput::press` only records `just_pressed` when the key was not already down and
+    the test helper never released, so a second `Enter` in one test fired nothing. It cost
+    an hour of chasing a bug the code did not have. The tests tap (press *and* release);
+    driven through the real window with real clicks, four heroes rename in a row.
+
 - [x] **PT-6 — Your last party is the default, with its gear.** The composition was
   already persisted per slot (`heroes.class_key`) and already seeded back, but the seed
   reads `UnlocksRes` — which arrives over the WEBSOCKET while the hero roster arrives
@@ -5015,6 +5048,21 @@ only the things that can't be class-gated.
     fountain joins the district anchors in the one soft-collide list; and the townsfolk,
     the city avatar and the monoliths all light at night off `illuminate_players` and the
     same `Sky`, which they simply were not carrying.
+
+- [x] **UX-11 — The party faces the fight square-on.** Reported from play as *"I don't
+  know why the characters are 3/4 turning towards the enemies… should just have them face
+  straight ahead"*. `#382` posed each hero a notch inward (3/5, north-east / north-west) to
+  trade squareness for legibility — from dead behind a Hunter and an Explorer are two dark
+  silhouettes, and the battle screen is where telling them apart decides what you press.
+  Played, it read as the party twisting away from the creature it was fighting: the row
+  stopped looking like a LINE, which costs more than the silhouettes buy.
+  - *Shipped:* no pose override at all. A battle hero is already LOCKED facing the fight,
+    and the world→screen lookup resolves that to its own back — so the world facing is the
+    only statement of the rule, and it holds on every edge at once. The retired override
+    was picked off `root.x`, a SOUTH-edge idea, so a joined ally on the west or east edge
+    got a pose chosen for somebody else's line; its test only ever asked about the south
+    and agreed. `every_party_edge_is_drawn_looking_at_the_fight` asks the mapping instead.
+    Hero 1 still faces the camera while it awaits your order (`face_cam`, unchanged).
 
 - [ ] **UX-1 — Last City minimap & compass (town-only).** A minimap and compass
   **for Last City itself** so players can navigate the hub — locate the districts

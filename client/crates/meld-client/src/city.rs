@@ -320,6 +320,7 @@ pub(crate) fn city_hud(
     mut heat: ResMut<crate::overworld::HeatUi>,
     mut pick: ResMut<CounterPick>,
     mut unlocks: ResMut<UnlocksRes>,
+    mut loadouts: ResMut<LoadoutData>,
 ) {
     inv.loaded = false;
     net.0.fetch_inventory();
@@ -359,6 +360,18 @@ pub(crate) fn city_hud(
             }
         }
         unlocks.loaded = true;
+        // …and it seeds the SAVED PARTIES, for the same reason and the same way. The nav
+        // column and every control in it — load, rename, delete — exist only once a party
+        // has been saved, and a save cannot succeed here: the account this flag stands up
+        // is a fiction the CLIENT holds, so the server (which owns a genuinely new account
+        // with one Explorer and one slot) refuses the composition, and the list comes back
+        // empty however many times you press Save. So the whole left third of this screen
+        // was uncapturable, which is exactly the gap the roster stand-up above exists to
+        // close one column over.
+        if loadouts.list.is_empty() {
+            loadouts.list = crate::mocks::saved_parties();
+            loadouts.loaded = true;
+        }
     }
     // Screenshot-only: land with a row already picked, so the detail column's description,
     // amount and commit buttons are on screen without a click to make them appear.
@@ -1897,7 +1910,13 @@ mod tests {
             .insert_resource(LoadoutData::default())
             .add_systems(
                 Update,
-                (party_panel_buttons, yard_rename_input, loadout_name_input, loadout_name_caret),
+                (
+                    party_panel_buttons,
+                    yard_rename_input,
+                    loadout_buttons,
+                    loadout_name_input,
+                    loadout_name_caret,
+                ),
             );
         app
     }
@@ -1906,6 +1925,134 @@ mod tests {
         app.world_mut().resource_mut::<ButtonInput<KeyCode>>().press(key);
         app.update();
         app.world_mut().resource_mut::<ButtonInput<KeyCode>>().clear();
+    }
+
+    /// ⚠️ **PRESS AND RELEASE, WHICH [`press`] ABOVE DOES NOT.** `ButtonInput::press` only
+    /// records `just_pressed` when the key was not ALREADY down, and `clear()` leaves it
+    /// down — so `press(Enter)` twice in one test fires once, and the second commit
+    /// silently never happens. That reproduces as "you can only rename one hero", which is
+    /// a bug in the harness rather than in the game; anything that taps the same key twice
+    /// has to use this.
+    fn tap(app: &mut App, key: KeyCode) {
+        app.world_mut().resource_mut::<ButtonInput<KeyCode>>().press(key);
+        app.update();
+        app.world_mut().resource_mut::<ButtonInput<KeyCode>>().release(key);
+        app.world_mut().resource_mut::<ButtonInput<KeyCode>>().clear();
+        app.update();
+    }
+
+    fn type_name(app: &mut App, text: &str) {
+        for c in text.chars() {
+            let key = match c {
+                'a' => KeyCode::KeyA,
+                'b' => KeyCode::KeyB,
+                'c' => KeyCode::KeyC,
+                'd' => KeyCode::KeyD,
+                _ => unreachable!("extend `type_name` for {c}"),
+            };
+            tap(app, key);
+        }
+    }
+
+    /// **RENAMING TWO HEROES IN A ROW IS ONE GESTURE TWICE**, and each Enter commits the
+    /// hero whose card is open — not the one before it. Reported from play as only the
+    /// first rename sticking.
+    #[test]
+    fn every_hero_can_be_renamed_in_turn() {
+        let mut app = yard_app();
+        app.world_mut().spawn((YardRenameButton(0), Interaction::Pressed));
+        app.update();
+        assert_eq!(app.world().resource::<HeroRename>().slot, Some(0));
+        type_name(&mut app, "a");
+        tap(&mut app, KeyCode::Enter);
+        assert!(
+            app.world().resource::<HeroRename>().slot.is_none(),
+            "Enter has to close the field, or the next click cannot open one"
+        );
+        app.world_mut().spawn((YardRenameButton(1), Interaction::Pressed));
+        app.update();
+        assert_eq!(
+            app.world().resource::<HeroRename>().slot,
+            Some(1),
+            "a committed rename must leave the next hero's rename openable"
+        );
+        type_name(&mut app, "d");
+        tap(&mut app, KeyCode::Enter);
+        let names = &app.world().resource::<AccountHeroNames>().names;
+        assert_eq!(names[0], "Asha", "the first rename was undone by the second");
+        assert_eq!(names[1], "Bexd", "the second rename never landed");
+    }
+
+    /// **A RENAME WRITES THE LOCAL COPY, OR IN TOWN IT WRITES NOTHING THE PLAYER SEES.**
+    /// The server answers a run-less rename with an empty roster, which is exactly when
+    /// `hero_name_at` reads [`AccountHeroNames`] — so a path that only sends the message
+    /// watches the card revert. Held on the shared commit, because the menu's own [R] took
+    /// the other path for as long as both existed.
+    #[test]
+    fn a_rename_lands_locally_so_town_can_see_it() {
+        let net = NetRes(crate::net::start("http://127.0.0.1:1".into()));
+        let mut names = AccountHeroNames {
+            names: vec!["Ash".into(), "Bex".into()],
+            ..Default::default()
+        };
+        commit_hero_rename(&net, &mut names, 1, "  Cy  ");
+        assert_eq!(names.names[1], "Cy", "the name is trimmed and written where town reads it");
+        commit_hero_rename(&net, &mut names, 3, "Dee");
+        assert_eq!(names.names[3], "Dee", "a slot past the end grows the list rather than dropping the rename");
+        assert_eq!(names.names[2], "", "the slot it grew past is unnamed, not a copy of a neighbour");
+        commit_hero_rename(&net, &mut names, 1, "   ");
+        assert_eq!(names.names[1], "Cy", "an empty name is refused, never written as a blank card");
+    }
+
+    /// **"RENAME" OPENS AN EDIT; ENTER COMMITS IT.** It used to apply whatever happened to
+    /// be in the name field at that instant, so the ordinary gesture — click rename, then
+    /// type — did nothing at all, and its only complaint went to the town status strip
+    /// underneath the yard's own scrim.
+    #[test]
+    fn renaming_a_saved_party_is_click_type_enter() {
+        let mut app = yard_app();
+        app.world_mut().resource_mut::<LoadoutData>().list =
+            vec![meld_client::net::LoadoutLine { name: "Reapers".into(), classes: vec!["explorer".into()] }];
+        app.world_mut().spawn((LoadoutRenameButton("Reapers".into()), Interaction::Pressed));
+        app.update();
+        let city = app.world().resource::<CityUi>();
+        assert_eq!(city.loadout_rename.as_deref(), Some("Reapers"), "the click must arm the edit");
+        assert_eq!(city.loadout_name, "Reapers", "the field starts from the name it HAS");
+        type_name(&mut app, "a");
+        assert_eq!(app.world().resource::<CityUi>().loadout_name, "Reapersa");
+        tap(&mut app, KeyCode::Enter);
+        let city = app.world().resource::<CityUi>();
+        assert!(city.loadout_rename.is_none(), "Enter commits and closes the edit");
+        assert!(city.loadout_name.is_empty(), "a committed field does not keep its contents");
+    }
+
+    /// Esc drops the edit and leaves the saved party alone — and, crucially, does NOT then
+    /// fall through to the save arm the way an un-armed Enter would.
+    #[test]
+    fn esc_drops_a_saved_party_rename() {
+        let mut app = yard_app();
+        app.world_mut().resource_mut::<CityUi>().loadout_rename = Some("Reapers".into());
+        app.world_mut().resource_mut::<CityUi>().loadout_name = "Reapersa".into();
+        tap(&mut app, KeyCode::Escape);
+        let city = app.world().resource::<CityUi>();
+        assert!(city.loadout_rename.is_none());
+        assert!(city.loadout_name.is_empty());
+    }
+
+    /// Closing the yard ends the edit, so reopening it does not point the next Enter at a
+    /// party the player is no longer looking at.
+    #[test]
+    fn leaving_the_yard_ends_a_name_edit() {
+        let mut app = yard_app();
+        app.add_systems(Update, party_panel);
+        app.world_mut().resource_mut::<CityUi>().loadout_rename = Some("Reapers".into());
+        app.world_mut().resource_mut::<CityUi>().loadout_name = "Reapersa".into();
+        app.update();
+        app.world_mut().resource_mut::<CityUi>().party_open = false;
+        app.update();
+        let city = app.world().resource::<CityUi>();
+        assert!(city.loadout_rename.is_none(), "the edit outlived the panel that owns it");
+        assert!(city.loadout_name.is_empty());
     }
 
     /// Open the rename the way the yard actually offers it: the button.
@@ -3521,6 +3668,11 @@ pub(crate) struct YardRenameButton(pub usize);
 #[derive(Component)]
 pub(crate) struct YardRenameText;
 
+/// The heading over the name field, which says whether the field is naming the next SAVE
+/// or renaming a party you already have.
+#[derive(Component)]
+pub(crate) struct LoadoutNameLabel;
+
 /// Marks the class picker's root, so it can be despawned when the picker closes.
 #[derive(Component)]
 pub(crate) struct PartyPickerRoot;
@@ -3598,7 +3750,7 @@ fn yard_card(
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn party_panel(
     mut commands: Commands,
-    city: Res<CityUi>,
+    mut city: ResMut<CityUi>,
     unlocks: Res<UnlocksRes>,
     session: Res<Session>,
     hero_names: Res<AccountHeroNames>,
@@ -3628,6 +3780,14 @@ pub(crate) fn party_panel(
     let sig = (loadouts.list.len(), unlocks.owned.len(), unlocks.party_slots as i64 ^ names);
     if city.party_open == *was_open && (!city.party_open || sig == *shown) {
         return;
+    }
+    // Opening or closing the yard ends any name edit in progress, HERE rather than at the
+    // five places that write `party_open`: the panel owns the field, so a new way in or out
+    // of the yard cannot leave a rename armed at a party the player is no longer looking
+    // at. Same rule the picker's own panel states one system down.
+    if city.party_open != *was_open {
+        city.loadout_rename = None;
+        city.loadout_name.clear();
     }
     *was_open = city.party_open;
     *shown = sig;
@@ -3743,7 +3903,14 @@ pub(crate) fn party_panel(
                         });
                     }
                     nav.spawn(glass::divider());
-                    nav.spawn(glass::text("NAME", 12.0, glass::DIM));
+                    // The field does two jobs and has to say which one, or "rename" and
+                    // "Save this party" are two buttons pointed at one anonymous box.
+                    nav.spawn((
+                        Text::new("NAME"),
+                        LoadoutNameLabel,
+                        TextFont { font_size: FontSize::Px(12.0), ..default() },
+                        TextColor(glass::DIM),
+                    ));
                     // A real FIELD: the focused edge every other typable box in the game
                     // has, and the caret below blinks in it.
                     //
@@ -4205,7 +4372,10 @@ pub(crate) fn party_panel_buttons(
 /// rest of the time — the panel is the one place in town that swallows letter keys.
 pub(crate) fn loadout_name_input(
     keys: Res<ButtonInput<KeyCode>>,
+    net: NonSend<NetRes>,
     rename: Res<HeroRename>,
+    session: Res<Session>,
+    loadouts: Res<LoadoutData>,
     mut city: ResMut<CityUi>,
 ) {
     // Two text fields share one keyboard: while a hero is being renamed the letters
@@ -4213,6 +4383,53 @@ pub(crate) fn loadout_name_input(
     // picker is up nothing is being typed at all — letters landing in a field behind a
     // modal is a name the player never sees themselves write.
     if !city.party_open || rename.slot.is_some() || city.yard_picker.is_some() {
+        return;
+    }
+    // ENTER COMMITS, because a field you can type into and cannot submit is a field that
+    // reads as broken — the same complaint the hero card answered with its own Enter. Which
+    // of the two things it commits is `loadout_rename`: editing an existing party's name,
+    // or naming the next save. One answer, in the one place that holds the state, rather
+    // than each button guessing what the field currently means.
+    if keys.just_pressed(KeyCode::Enter) {
+        let typed = city.loadout_name.trim().to_string();
+        match city.loadout_rename.take() {
+            Some(from) if typed.is_empty() || typed == from => {
+                // Nothing asked for. Drop the edit rather than sending a no-op the server
+                // would refuse — and say so, since the field visibly closing is the only
+                // other thing the player sees.
+                city.loadout_name.clear();
+                city.notice = format!("\"{from}\" keeps its name.");
+            }
+            Some(from) => {
+                city.loadout_name.clear();
+                net.0.rename_loadout(from.clone(), typed.clone());
+                city.notice = format!("Renamed \"{from}\" to \"{typed}\".");
+            }
+            None => {
+                // The typed name if there is one, else the next free "Party N" — an empty
+                // field should still save something rather than refuse.
+                let name = if typed.is_empty() {
+                    let mut n = 1;
+                    while loadouts.list.iter().any(|l| l.name == format!("Party {n}")) {
+                        n += 1;
+                    }
+                    format!("Party {n}")
+                } else {
+                    typed
+                };
+                city.loadout_name.clear();
+                net.0.save_loadout(name.clone(), session.party.clone());
+                city.notice = format!("Saved as \"{name}\".");
+            }
+        }
+        return;
+    }
+    // Esc drops a rename edit and leaves the saved party alone. It cannot reach the class
+    // picker from here (that arm is guarded above on the picker being shut), and the hero
+    // rename owns Esc while ITS field is open, so the three never contend for the key.
+    if keys.just_pressed(KeyCode::Escape) && city.loadout_rename.is_some() {
+        city.loadout_rename = None;
+        city.loadout_name.clear();
         return;
     }
     let shift = keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight);
@@ -4239,9 +4456,22 @@ pub(crate) fn loadout_name_caret(
     time: Res<Time>,
     city: Res<CityUi>,
     rename: Res<HeroRename>,
-    mut q: Query<&mut Text, (With<LoadoutNameText>, Without<PartySlotHeroName>)>,
-    mut hero_q: Query<(&PartySlotHeroName, &mut Text), Without<LoadoutNameText>>,
+    mut q: Query<&mut Text, (With<LoadoutNameText>, Without<PartySlotHeroName>, Without<LoadoutNameLabel>)>,
+    mut hero_q: Query<(&PartySlotHeroName, &mut Text), (Without<LoadoutNameText>, Without<LoadoutNameLabel>)>,
+    mut label_q: Query<&mut Text, (With<LoadoutNameLabel>, Without<LoadoutNameText>, Without<PartySlotHeroName>)>,
 ) {
+    // What the field is FOR, above the field. A rename edit and a fresh save look
+    // identical otherwise — same box, same caret — and the difference is which party the
+    // next Enter changes.
+    if let Ok(mut t) = label_q.single_mut() {
+        let want = match &city.loadout_rename {
+            Some(from) => format!("RENAMING \"{from}\"\nEnter to keep, Esc to drop"),
+            None => "NAME\nEnter saves this party".to_string(),
+        };
+        if **t != want {
+            **t = want;
+        }
+    }
     // The hero card being renamed shows the buffer you are typing INTO IT, rather than a
     // field elsewhere on the screen collecting letters for it.
     for (tag, mut t) in &mut hero_q {
@@ -4320,29 +4550,34 @@ pub(crate) fn loadout_buttons(
     }
     for (i, b) in &del_q {
         if *i == Interaction::Pressed {
+            // A rename edit open on the row that just went has nothing left to land on,
+            // and leaving it armed would point the next Enter at a party that is gone.
+            if city.loadout_rename.as_deref() == Some(b.0.as_str()) {
+                city.loadout_rename = None;
+                city.loadout_name.clear();
+            }
             net.0.delete_loadout(b.0.clone());
             city.notice = format!("Deleted \"{}\".", b.0);
         }
     }
-    // RENAME takes the name field's contents and leaves the saved composition alone. It
-    // refuses an empty field rather than inventing a "Party N" the way Save does: an
-    // unnamed save is still a save, but an unnamed rename is a request with no content.
+    // ⚠️ **RENAME OPENS AN EDIT; IT DOES NOT SUBMIT ONE.** It used to take whatever
+    // happened to be in the name field and apply it on the spot, which made the button
+    // read as broken in the ordinary case: you click "rename", the field is empty, and the
+    // only thing that happens is a line of text in the TOWN STATUS STRIP — which the yard's
+    // own scrim is drawn over. A button whose entire response to a click is invisible is a
+    // button that does not work, whatever the code did.
+    //
+    // So it is the same gesture the hero beside it uses: click, the field fills with the
+    // name it HAS and takes the cursor, type, Enter. `loadout_name_input` commits it —
+    // one place that knows whether this field is naming a new save or editing an old one,
+    // because "what does Enter do here" cannot be answered twice.
     for (i, b) in &ren_q {
         if *i != Interaction::Pressed {
             continue;
         }
-        let to = city.loadout_name.trim().to_string();
-        if to.is_empty() {
-            city.notice = "Type the new name first.".to_string();
-            continue;
-        }
-        if to == b.0 {
-            city.notice = format!("\"{to}\" is already its name.");
-            continue;
-        }
-        city.loadout_name.clear();
-        net.0.rename_loadout(b.0.clone(), to.clone());
-        city.notice = format!("Renamed \"{}\" to \"{to}\".", b.0);
+        city.loadout_rename = Some(b.0.clone());
+        city.loadout_name = b.0.clone();
+        city.notice.clear();
     }
     for i in &save_q {
         if *i != Interaction::Pressed {
@@ -4361,6 +4596,7 @@ pub(crate) fn loadout_buttons(
             typed
         };
         city.loadout_name.clear();
+        city.loadout_rename = None;
         net.0.save_loadout(name.clone(), session.party.clone());
         city.notice = format!("Saved as \"{name}\".");
     }
@@ -4495,6 +4731,36 @@ pub(crate) fn party_panel_refresh(
     }
 }
 
+/// Send a hero rename **and write the local copy**, for every screen that offers one.
+///
+/// ⚠️ **THE LOCAL WRITE IS NOT AN OPTIMISATION; IN TOWN IT IS THE ONLY THING THAT LANDS.**
+/// A rename with no run behind it is answered with an EMPTY roster — there is no party to
+/// describe yet — and `hero_name_at` falls back to [`AccountHeroNames`] exactly then, so a
+/// path that only sends the message watches the card snap straight back to the old name.
+/// The Drill Yard did this and the menu's own [R] did not, which is why the same action
+/// stuck in one place and did nothing in the other. One function, so a third screen that
+/// offers a rename cannot get half of it.
+///
+/// The server applies the same trim and the same 24-character cap, so the copy written here
+/// and the one stored agree. An empty name is refused rather than sent, since the server
+/// rejects it and a blank card is not what the player asked for.
+pub(crate) fn commit_hero_rename(
+    net: &NetRes,
+    hero_names: &mut AccountHeroNames,
+    slot: usize,
+    buffer: &str,
+) {
+    let name: String = buffer.trim().chars().take(24).collect();
+    if name.is_empty() {
+        return;
+    }
+    if hero_names.names.len() <= slot {
+        hero_names.names.resize(slot + 1, String::new());
+    }
+    hero_names.names[slot] = name.clone();
+    net.0.send(ClientCmd::RenameHero { slot: slot as i32, name });
+}
+
 /// Type a hero's name in the Drill Yard. Reuses the same [`HeroRename`] buffer and
 /// the same `run.rename_hero` message the in-dive party screen uses, so a name set
 /// here and a name set there are one thing.
@@ -4515,20 +4781,7 @@ pub(crate) fn yard_rename_input(
         return;
     }
     if keys.just_pressed(KeyCode::Enter) {
-        let name = rename.buffer.trim().to_string();
-        if !name.is_empty() {
-            // Write the local copy too. Renaming from town has no run behind it, so
-            // the server persists the name and answers with an EMPTY roster — there
-            // is no party to describe yet — and the card would snap back to the old
-            // name the moment the edit buffer cleared. The server applies the same
-            // trim and the same 24-character cap this buffer does, so the optimistic
-            // copy and the stored one agree.
-            if hero_names.names.len() <= slot {
-                hero_names.names.resize(slot + 1, String::new());
-            }
-            hero_names.names[slot] = name.clone();
-            net.0.send(ClientCmd::RenameHero { slot: slot as i32, name });
-        }
+        commit_hero_rename(&net, &mut hero_names, slot, &rename.buffer);
         rename.slot = None;
         rename.buffer.clear();
         return;
