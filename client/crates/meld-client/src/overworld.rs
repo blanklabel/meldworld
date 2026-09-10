@@ -1591,7 +1591,29 @@ pub(crate) fn sync_overworld_sprites(
         {
             let dt = (now - cur.t).clamp(0.05, 0.30);
             let observed = (e.x - cur.x).hypot(e.y - cur.y) / dt;
-            interp.speed += (observed - interp.speed) * OW_SPEED_EMA;
+            // ⚠️ **STANDING STILL IS NOT EVIDENCE ABOUT HOW FAST YOU WALK.** This folded
+            // in a sample every tick including every idle one, so `speed` decayed to zero
+            // while the player stood there — and since the extrapolation below is SCALED by
+            // it, every walk began with no lead at all and had to spin the estimate back up
+            // over ~6 ticks (~600 ms). ⚠️ **SIZE IT HONESTLY:** `ahead` is `now - cur.t`,
+            // which runs 0..0.1 s between ticks rather than reaching the 0.22 s clamp, so
+            // the lead this restores is ~0.3 units — about **50 ms**, not the clamp's 220.
+            // It is the ONSET that reads badly (no lead at all for the first stride), and
+            // 50 ms is not on its own the half-second reported from play: the rest of that
+            // budget is ~25 ms of send quantisation, ~50 ms of mean tick, and ~62 ms of
+            // this chase's own settle — with NO client-side prediction under any of it.
+            //
+            // The quantity here is "how fast does this avatar WALK", which is a constant of
+            // the character, not a per-moment velocity — so it is only evidence while the
+            // avatar is actually walking. The first real sample is ADOPTED rather than
+            // blended, or the very first walk of a session pays the same ramp.
+            if steer.0 != Vec2::ZERO && observed > 0.01 {
+                if interp.speed <= 0.01 {
+                    interp.speed = observed;
+                } else {
+                    interp.speed += (observed - interp.speed) * OW_SPEED_EMA;
+                }
+            }
         }
         for (id, e) in &world.entities {
             let cur = InterpSample { x: e.x, y: e.y, t: now };
