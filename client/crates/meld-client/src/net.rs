@@ -683,6 +683,11 @@ pub enum ServerMsg {
         /// Inland water: this world's standing bodies and river chains.
         basins: Vec<meld_proto::coast::Basin>,
         rivers: Vec<meld_proto::coast::RiverNode>,
+        /// **THE SKY'S CONSTANTS** (`FS-5`) and the world clock they are read against.
+        /// `None` from a server too old to say, which is the one case where the client
+        /// keeps running its own local sky.
+        sky: Option<meld_proto::sky::Sky>,
+        world_tick: u64,
         /// **THE REGION DECOMPOSITION** ([`meld_proto::regions`]) — how this world is
         /// partitioned into cells, plus the `[biome_gate]` that decides which biome each may
         /// wear. The ground shader derives every fragment's cell from it, so a client that
@@ -974,6 +979,11 @@ pub enum ServerMsg {
         /// SC-3 — the world this group is forming up to enter, as the SERVER reports it.
         /// `None` means the seed is not decided yet and `lobby.start` will roll one.
         seed: Option<u64>,
+    },
+    /// FS-5 — the world's tick, restated periodically so the client's own estimate of
+    /// the clock cannot drift. Everything about the sky is derived from it locally.
+    SkyTick {
+        tick: u64,
     },
     /// The lobby was disbanded / this player left it.
     LobbyClosed,
@@ -2708,6 +2718,12 @@ impl Inner {
                 // which every reader — the shader included — treats as "no world here".
                 let regions: meld_proto::regions::Regions =
                     serde_json::from_value(raw.payload["regions"].clone()).unwrap_or_default();
+                // The sky's constants and the world clock (FS-5). Absent from an older
+                // server, and `None` rather than a zeroed `Sky`: a degenerate one would
+                // render as a world stuck at midnight and read as a broken shader.
+                let sky: Option<meld_proto::sky::Sky> =
+                    serde_json::from_value(raw.payload["sky"].clone()).ok();
+                let world_tick = raw.payload["world_tick"].as_u64().unwrap_or(0);
                 self.out.push_back(ServerMsg::RunStarted {
                     terrain_off,
                     peaks,
@@ -2715,6 +2731,8 @@ impl Inner {
                     bridges,
                     straits,
                     world_seed,
+                    sky,
+                    world_tick,
                     lobes,
                     basins,
                     rivers,
@@ -3151,6 +3169,12 @@ impl Inner {
                     members,
                     seed: raw.payload["seed"].as_u64(),
                 });
+            }
+            // FS-5 — the world clock, restated. The whole sky is derived from it.
+            "world.sky" => {
+                if let Some(tick) = raw.payload["tick"].as_u64() {
+                    self.out.push_back(ServerMsg::SkyTick { tick });
+                }
             }
             "lobby.closed" => self.out.push_back(ServerMsg::LobbyClosed),
             "world.snapshot" => {

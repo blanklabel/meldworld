@@ -34,6 +34,7 @@ pub mod materials;
 pub mod names;
 pub mod realtime;
 pub mod skills;
+pub mod sky;
 pub mod statuses;
 pub mod structures;
 pub mod synergies;

@@ -1755,6 +1755,28 @@ struct StationDto {
     stock: String,
 }
 
+/// The wire form of `[weather]` — the sky's constants, as both sides read them.
+///
+/// It lives here rather than on `meld_balance::Weather` because `meld-balance` is a leaf
+/// config loader that does not know the wire crate, and rather than at each call site
+/// because a per-field copy in two places is a sky the client and the server disagree
+/// about. One function, so there is nothing to keep in sync.
+fn sky_of(balance: &Balance) -> meld_proto::sky::Sky {
+    let w = &balance.weather;
+    meld_proto::sky::Sky {
+        // The unit every other duration here is in. Sent rather than assumed: the client
+        // has no `balance.toml`, and one that guessed the server's cadence would drift.
+        tick_ms: balance.battle.tick_ms as u32,
+        day_ticks: w.day_ticks,
+        fair_ticks: w.fair_ticks,
+        gust_ticks: w.gust_ticks,
+        storm_ticks: w.storm_ticks,
+        clearing_ticks: w.clearing_ticks,
+        super_storm_in: w.super_storm_in,
+        rain_chance: w.rain_chance.clone(),
+    }
+}
+
 /// **A world's key is its SEED** (CANON §W1: "its identity is a player-chosen seed").
 /// This is the row in `worlds` and the entry in the Router's map, and it is the same
 /// string in both — see [`WorldActor::key`].
@@ -6518,6 +6540,13 @@ impl GameState {
                     // the client can only place it because `terrain_offset` rides here too.
                     basins: inst.arena.basins.clone(),
                     rivers: inst.arena.rivers.clone(),
+                    // THE SKY (FS-5). Its constants, once — a property of the world,
+                    // fixed for its lifetime — plus the world clock they are read
+                    // against. Everything about time of day and weather is derived from
+                    // `(seed, tick)` on both sides, so nothing about the sky is sent per
+                    // frame and two people in one world cannot disagree about the hour.
+                    sky: Some(sky_of(&balance)),
+                    world_tick: inst.tick_count,
                     // The world's own fact, not the caller's request: a joiner who asked
                     // for a normal dive still lands in a live tutorial world.
                     tutorial: inst.tutorial,
@@ -10769,6 +10798,27 @@ impl WorldActor {
         }
         let mut out = Vec::new();
         let mut effects: Vec<WorldEffect> = std::mem::take(&mut self.pending_effects);
+
+        // **THE CLOCK, RARELY** (`FS-5`). Time of day and the weather phase are pure
+        // functions of `(seed, tick)` on both sides, so the only thing that has to cross
+        // the wire is the tick — and only often enough to stop a client's own estimate
+        // drifting. Everything else about the sky was decided when `run.started` carried
+        // the constants.
+        //
+        // It goes to everyone in the world including players in a battle: they will be
+        // back on the overworld shortly, and a correction that skipped them would land as
+        // a visible jump in the sky at the exact moment the arena clears.
+        let sync = self.balance.weather.sky_sync_ticks.max(1) as u64;
+        if self.tick_count.is_multiple_of(sync) {
+            let msg = serialize_payload(&ww::SkyTick { tick: self.tick_count });
+            for r in &self.run.runs {
+                out.push(Outgoing {
+                    player_id: r.player_id.clone(),
+                    msg_type: ww::SkyTick::TYPE,
+                    payload: msg.clone(),
+                });
+            }
+        }
 
         // 1) The overworld always advances — even while some party is in a battle.
         // Roaming creatures move and skirmish with rival factions; creatures pulled

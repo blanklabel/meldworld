@@ -226,6 +226,24 @@ pub mod movement {
 pub mod world {
     use super::*;
 
+    /// S2C — **what tick the world is on** (`FS-5`). The sky's whole payload.
+    ///
+    /// Time of day and the weather phase are pure functions of `(seed, tick)`
+    /// ([`crate::sky`]), so the only thing that has to cross the wire is the clock — and
+    /// rarely, because the client runs its own estimate forward between these and
+    /// derives everything locally. A 60 Hz sky on the wire would be absurd, and a sky the
+    /// server interpolated *for* the client would be a second clock able to disagree with
+    /// the first.
+    ///
+    /// The constants and the seed arrive once, on `run.started`. This is the correction.
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct SkyTick {
+        pub tick: u64,
+    }
+    impl Message for SkyTick {
+        const TYPE: &'static str = "world.sky";
+    }
+
 
     /// S2C — one streamed section's LANDFORMS (and its trail contribution).
     ///
@@ -896,6 +914,23 @@ pub mod run {
         pub basins: Vec<crate::coast::Basin>,
         #[serde(default)]
         pub rivers: Vec<crate::coast::RiverNode>,
+        /// **THE SKY'S CONSTANTS** ([`crate::sky::Sky`]) — day length, the weather
+        /// cycle's phase durations, and each biome's chance of actually being rained on.
+        ///
+        /// They ride here for the same reason `regions` does: they are balance
+        /// (`[weather]`) and the client has no `balance.toml`, and they are a property of
+        /// the WORLD fixed for its lifetime, so copying them onto a periodic message
+        /// would be one more chance for two copies to disagree about what the sky is.
+        ///
+        /// `None` means the server did not say — an older build. The type carries that
+        /// rather than a zeroed `Sky`, because a degenerate sky would render as a world
+        /// stuck at midnight and read as a bug in the shader.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub sky: Option<crate::sky::Sky>,
+        /// The world's tick at entry — the clock everything above is derived from. The
+        /// client advances its own estimate from here, and `world.sky` corrects it.
+        #[serde(default)]
+        pub world_tick: u64,
     }
     /// Walkable extent of the instance (world-generation.md corridor bounds).
     #[derive(Debug, Clone, Serialize, Deserialize)]
