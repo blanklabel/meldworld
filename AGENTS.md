@@ -1229,6 +1229,21 @@ scales with pixels.
 average 29-49, identical configs drifted 24 -> 35 ms back-to-back and produced a 92 ms
 "baseline" that was pure contamination. Prefer a SAME-PROCESS A/B (`LOOK_FILE` toggles flip
 live) over separate runs, and read a suspicious result as the instrument before the code.
+⚠️ **AND A LIGHT-DENSE SCENE OVERFLOWS THE CLUSTER INDEX LIST, WHICH BEVY ONLY LEARNS A FRAME
+LATE.** GPU clustering writes one `u32` per (froxel, light) pair into a single per-view list,
+sized at 65,536 by default, and detects the overflow by reading the GPU's own count BACK — so
+an overflowing scene renders with TRUNCATED light lists ("the scene lighting may have been
+corrupted for a few frames") before the resize lands. Last City is over the line: a `NightLamp`
+per townsperson plus the magitech pylons is ~30 point lights of real range standing in one
+plaza. `ClusterCapacity` ([`main.rs`](client/crates/meld-client/src/main.rs)) sizes the list up
+front, in `Plugin::finish` — the resource does not exist until `PbrPlugin::finish` builds it
+from the `RenderAdapter`, so neither `build` nor a `Startup` system can reach it in time.
+⚠️ **Do not round the capacity up "to be safe":** the whole list is zeroed and re-uploaded
+EVERY frame, per view, so capacity is per-frame bandwidth and not a one-time allocation.
+`MELD_CLUSTER_INDICES=<n>` is how it gets re-measured — set it LOW and the resize warning
+reports `next_power_of_two` of the TRUE demand, since the GPU counts what it needed regardless
+of what the buffer could hold, so one warning from a tiny start answers outright instead of a
+ladder of doublings.
 
 ⚠️ **Autoplay takes no onboarding, and that is load-bearing for this loop.** The town
 tour and the "Before You Dive" card are modal, nothing presses their buttons for you, and
