@@ -102,6 +102,59 @@ fn fps_on() -> bool {
     std::env::var("MELD_FPS").is_ok_and(|v| v != "0")
 }
 
+/// **THE CLUSTER INDEX LIST IS SIZED UP FRONT, BECAUSE GROWING IT CORRUPTS THE LIGHTING.**
+/// GPU clustering bins every point light into the view's froxels and writes one `u32` per
+/// (cluster, light) pair into a single index list. Bevy sizes that list at
+/// `GPU_CLUSTERING_INITIAL_INDEX_LIST_CAPACITY` (65,536) and only learns it was too small by
+/// reading the GPU's own count back a frame later — so an overflowing scene renders with
+/// *truncated* light lists until the resize lands, which is the "scene lighting may have been
+/// corrupted for a few frames" its warning names. Last City is the scene over the line: the
+/// plaza carries a `NightLamp` per townsperson plus the magitech pylons — ~30 point lights of
+/// real range in one square, and every pair overlapping in a froxel costs an entry each.
+///
+/// ⚠️ **PAID EVERY FRAME, PER VIEW, NOT ONCE.** `prepare_clusters_for_gpu_clustering` zeroes
+/// and re-uploads the WHOLE list each frame, so this is 4 bytes × capacity × views of upload a
+/// frame — over-provisioning "to be safe" buys bandwidth nobody asked for. Size it to the
+/// worst scene we actually ship and re-measure rather than rounding up.
+///
+/// `MELD_CLUSTER_INDICES=<n>` is how you re-measure: set it LOW (16) and boot the scene, and
+/// the resize warning reports `next_power_of_two` of the real demand — the GPU counts what it
+/// needed regardless of what the buffer could hold, so one warning from a tiny start gives the
+/// answer outright instead of a ladder of doublings.
+const CLUSTER_INDEX_LIST_CAPACITY: usize = 131_072;
+
+fn cluster_index_list_capacity() -> usize {
+    std::env::var("MELD_CLUSTER_INDICES")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(CLUSTER_INDEX_LIST_CAPACITY)
+}
+
+/// Applies [`CLUSTER_INDEX_LIST_CAPACITY`] to the resource `PbrPlugin` builds.
+///
+/// It has to be `finish` rather than `build` or a `Startup` system: the resource does not
+/// exist until `PbrPlugin::finish` creates it (it needs the `RenderAdapter` to know whether
+/// this device can cluster on the GPU at all), and plugin `finish` runs in registration order,
+/// so ours lands after `DefaultPlugins`' and before the first frame extracts it. No render
+/// app — the headless test harness — means no resource, and this is a no-op.
+struct ClusterCapacity;
+
+impl Plugin for ClusterCapacity {
+    fn build(&self, _app: &mut App) {}
+
+    fn finish(&self, app: &mut App) {
+        let Some(mut settings) =
+            app.world_mut().get_resource_mut::<bevy::light::cluster::GlobalClusterSettings>()
+        else {
+            return;
+        };
+        // `None` is CPU clustering, which sizes its own lists per view and has no knob here.
+        if let Some(gpu) = settings.gpu_clustering.as_mut() {
+            gpu.initial_index_list_capacity = cluster_index_list_capacity();
+        }
+    }
+}
+
 fn main() {
     raise_open_file_limit();
     // Self-contained build: boot the server in-process (in-memory DB, embedded
@@ -181,6 +234,8 @@ fn main() {
                     ..default()
                 }),
         )
+        // Size the GPU clustering index list before the first frame — see `ClusterCapacity`.
+        .add_plugins(ClusterCapacity)
         .init_state::<Screen>()
         // The biome-blending ground material (see `GroundBiome`).
         // ⚠️ **`MELD_FPS=1` PRINTS FRAME TIME.** Reported from play as "the overworld chugs",
