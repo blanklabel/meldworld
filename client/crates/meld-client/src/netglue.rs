@@ -111,6 +111,7 @@ pub(crate) fn pump_net(
             ResMut<crate::battle_fx::BattleFx>,
             ResMut<crate::battle::BattleOpening>,
             ResMut<crate::screens::Descent>,
+            ResMut<crate::world_render::Sky>,
         ),
     ),
     mut roster: ResMut<PartyRoster>,
@@ -118,7 +119,7 @@ pub(crate) fn pump_net(
     state: Res<State<Screen>>,
     mut next: ResMut<NextState<Screen>>,
 ) {
-    let (world_path, world_frame, terrain, report, perks, hero_names, loadouts, run_gear, world_web, dungeon_scene, vanguard, shop, notice, clock, craft, (explored, station, heat, pops, hunts, bounties, tell, battle_fx, opening_card, descent)) = &mut world_res;
+    let (world_path, world_frame, terrain, report, perks, hero_names, loadouts, run_gear, world_web, dungeon_scene, vanguard, shop, notice, clock, craft, (explored, station, heat, pops, hunts, bounties, tell, battle_fx, opening_card, descent, sky)) = &mut world_res;
     net.0.poll();
     while let Some(msg) = net.0.try_recv() {
         match msg {
@@ -261,6 +262,8 @@ pub(crate) fn pump_net(
                 rivers,
                 regions,
                 tutorial,
+                sky: world_sky,
+                world_tick,
             } => {
                 // Seed this run's terrain BEFORE the ground/entities render, so the shader
                 // + every entity Y grow the same per-run-varied hills (no "same hill by the
@@ -285,6 +288,15 @@ pub(crate) fn pump_net(
                 // …and HOW this world is partitioned. The ground shader derives every
                 // fragment's cell from this, so it has to land before the first frame.
                 crate::world_render::set_regions(regions);
+                // …and THE SKY (FS-5). Its constants and the world clock they are read
+                // against, so this client derives the same hour and the same storm as
+                // everyone else standing in this world instead of animating its own.
+                // Absent only from a server too old to say, and there the local sky
+                // keeps running: a world with no clock still has to look like something.
+                match world_sky {
+                    Some(s) => sky.adopt(s, world_seed, world_tick),
+                    None => sky.forget_world(),
+                }
                 crate::world_render::set_lobes(lobes);
                 crate::world_render::set_water(basins, rivers);
                 // Fresh dive: drop any terrain from the previous run before the new
@@ -348,6 +360,10 @@ pub(crate) fn pump_net(
                     next.set(Screen::Lobby);
                 }
             }
+            // FS-5 — the world clock, restated. A SNAP, not a nudge: both sides hold the
+            // same integer, so there is nothing to reconcile, and a client that stalled
+            // has to catch up rather than converge slowly on a time already gone by.
+            ServerMsg::SkyTick { tick } => sky.sync(tick),
             ServerMsg::LobbyClosed => {
                 lobby.in_lobby = false;
                 lobby.members.clear();

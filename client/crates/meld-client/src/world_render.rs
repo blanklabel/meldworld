@@ -3894,8 +3894,32 @@ pub(crate) struct Sky {
     pub(crate) phase_timer: f32,
     /// This storm covers the WHOLE area (rain everywhere, not just under the cloud).
     pub(crate) super_storm: bool,
-    /// Counts storms, so the super-storm roll varies each time.
+    /// Counts storms, so the super-storm roll varies each time. **Local fallback only**
+    /// — an authoritative sky keys its roll on the world's own cycle index instead.
     pub(crate) cycle: u32,
+    /// **THE WORLD'S SKY, WHEN THERE IS ONE** (`FS-5`). Its constants arrive once on
+    /// `run.started`; `t`, the phase and the wind/rain targets are then derived from
+    /// `(world_seed, world_tick)` rather than accumulated locally, so everyone standing
+    /// in a world sees the same hour and the same storm.
+    ///
+    /// `None` in the city, in the static mockups, and against a server too old to say —
+    /// there the local phase machine below still runs, because a world with no clock
+    /// still has to look like something.
+    pub(crate) world: Option<meld_proto::sky::Sky>,
+    /// The client's own estimate of the world clock, advanced from wall-clock between the
+    /// server's occasional `world.sky` corrections. An estimate rather than a value we
+    /// wait to be told, because the sky has to move at frame rate and the wire must not.
+    pub(crate) world_tick: f64,
+    /// The world's seed — half of the key every weather roll is taken on.
+    pub(crate) world_seed: u64,
+    /// Which biome the viewer is standing in, as an index into
+    /// [`meld_proto::regions::BIOMES`] — written by `update_run_stats`, which is the one
+    /// place that already asks the decomposition where the player is.
+    ///
+    /// Only the PRECIPITATION is local (`FS-2`: deserts should rarely rain); the cadence
+    /// is the world's, so crossing a biome boundary changes whether it is raining on you
+    /// and never what time it is or where in the cycle the sky has got to.
+    pub(crate) biome_index: usize,
     /// Daylight factor (0 = night, 1 = day), recomputed each frame by [`apply_sky`]
     /// so other systems (e.g. the Explorer avatar lamp) can read the darkness without
     /// duplicating the sun-angle math.
@@ -3909,6 +3933,56 @@ impl Sky {
         Sky { t: feel.sky_t, ..default() }
     }
 }
+impl Sky {
+    /// Adopt a world's authoritative sky (`run.started`).
+    pub(crate) fn adopt(&mut self, sky: meld_proto::sky::Sky, seed: u64, tick: u64) {
+        self.world = Some(sky);
+        self.world_seed = seed;
+        self.world_tick = tick as f64;
+    }
+
+    /// The server's periodic correction. A SNAP rather than a nudge: the two clocks are
+    /// the same integer, so there is nothing to reconcile — and a client that stalled has
+    /// to catch up rather than converge slowly on a time that has already moved on.
+    pub(crate) fn sync(&mut self, tick: u64) {
+        self.world_tick = tick as f64;
+    }
+
+    /// Back to a local sky — leaving a world for the city, where there is no world clock.
+    pub(crate) fn forget_world(&mut self) {
+        self.world = None;
+    }
+
+    /// Advance an AUTHORITATIVE sky by `dt` seconds, returning whether there was one.
+    ///
+    /// Pulled out of [`advance_sky`] so it can be tested without a Bevy app: this branch
+    /// is the whole claim of `FS-5` — that what a client shows is *derived from the world
+    /// clock* rather than animated locally — and a claim nothing asserts is one this repo
+    /// has shipped unconsumed before.
+    pub(crate) fn advance_world(&mut self, dt: f32) -> bool {
+        let Some(world) = self.world.clone() else { return false };
+        // The server's tick, run forward locally between its occasional corrections.
+        // `tick_ms` comes from the server for exactly this: a client that assumed the
+        // cadence would drift by design.
+        self.world_tick += (dt as f64) * 1000.0 / (world.tick_ms.max(1) as f64);
+        let tick = self.world_tick.max(0.0) as u64;
+        self.t = world.time_of_day(tick);
+        let (phase, cycle) = world.phase_at(tick);
+        self.phase = phase;
+        self.cycle = cycle as u32;
+        self.super_storm = world.super_storm(self.world_seed, cycle);
+        // Smoothing stays LOCAL. Which sky the world is showing is a fact; how fast this
+        // client's trees lean into it is a look, and belongs with the rest of the look.
+        let (wind_target, rain_target) =
+            world.wind_and_rain(self.world_seed, tick, self.biome_index);
+        let wr = 0.35 * dt;
+        self.wind += (wind_target - self.wind).clamp(-wr, wr);
+        let rr = 0.25 * dt;
+        self.weather += (rain_target - self.weather).clamp(-rr, rr);
+        true
+    }
+}
+
 impl Default for Sky {
     fn default() -> Self {
         Sky {
@@ -3923,6 +3997,10 @@ impl Default for Sky {
             super_storm: false,
             cycle: 0,
             day: 1.0,
+            world: None,
+            world_tick: 0.0,
+            world_seed: 0,
+            biome_index: 0,
         }
     }
 }
@@ -3986,6 +4064,15 @@ pub(crate) fn advance_sky(
     mut sky: ResMut<Sky>,
 ) {
     let dt = time.delta_secs();
+    // **IN A WORLD, THE SKY IS DERIVED RATHER THAN ACCUMULATED** (`FS-5`). Time of day
+    // and the storm phase are pure functions of `(seed, tick)`, so every client in a
+    // world reaches the same sky without one being sent — the wire carries only the
+    // clock, and rarely. What stays local is the SMOOTHING: how fast this particular
+    // client eases the trees into a gust is a look, not a fact, and belongs on
+    // `WorldFeel` with the rest of the look.
+    if sky.advance_world(dt) {
+        return;
+    }
     sky.t = (sky.t + dt / feel.day_len.max(1.0)).fract();
     // Weather phase machine: Fair → Gust (wind rises, a storm is coming) → Storm (rain)
     // → Clearing → Fair. Wind LEADS the rain, so the trees start tossing before the
@@ -6001,5 +6088,110 @@ mod weather_tests {
             "the grass scatter must be ordered after `hd2d::billboard`, or it composes onto \
              whatever last frame left behind"
         );
+    }
+}
+
+/// **FS-5 — the sky the client shows is the WORLD's, not this client's.**
+///
+/// The proto side proves the derivation is a pure function of `(seed, tick)`; these hold
+/// the half that has burned this repo before — that the client actually *consumes* it.
+/// `bridges`, `pack:` and the whole inland-water system were each generated correctly and
+/// rendered by nobody.
+#[cfg(test)]
+mod world_sky_tests {
+    use super::*;
+
+    fn world_sky() -> meld_proto::sky::Sky {
+        meld_proto::sky::Sky {
+            tick_ms: 100,
+            day_ticks: 6000,
+            fair_ticks: 6000,
+            gust_ticks: 160,
+            storm_ticks: 220,
+            clearing_ticks: 140,
+            super_storm_in: 5,
+            rain_chance: vec![1.0; meld_proto::regions::BIOMES.len()],
+        }
+    }
+
+    /// Two clients that agree on the tick agree on the sky — whatever they were showing
+    /// before, and however differently they got there. This is the whole point: one of
+    /// them has been running for an hour and the other just arrived.
+    #[test]
+    fn two_clients_on_one_world_see_the_same_sky() {
+        let (mut a, mut b) = (Sky::default(), Sky::default());
+        a.adopt(world_sky(), 424242, 7_777);
+        b.adopt(world_sky(), 424242, 7_777);
+        // …and one of them has been staring at a completely different sky until now.
+        b.t = 0.9;
+        b.phase = 2;
+        a.advance_world(0.016);
+        b.advance_world(0.016);
+        assert_eq!(a.t, b.t, "the hour is the world's");
+        assert_eq!(a.phase, b.phase, "so is the weather phase");
+        assert_eq!(a.super_storm, b.super_storm);
+    }
+
+    /// The clock is DERIVED, never accumulated: rewind the tick and the sky rewinds with
+    /// it. A client that integrated wall-clock could not do this, which is exactly why it
+    /// could not agree with anyone.
+    #[test]
+    fn the_clock_is_derived_rather_than_accumulated() {
+        let mut s = Sky::default();
+        s.adopt(world_sky(), 7, 4_500);
+        s.advance_world(0.016);
+        let sunset = s.t;
+        assert!((sunset - 0.75).abs() < 0.01, "tick 4500 of 6000 is sunset, got {sunset}");
+
+        s.advance_world(600.0); // ten minutes on
+        assert!((s.t - sunset).abs() < 0.01, "a full day later is the same hour, got {}", s.t);
+
+        s.sync(1_500); // the server says otherwise
+        s.advance_world(0.016);
+        assert!((s.t - 0.25).abs() < 0.01, "a correction SNAPS, got {}", s.t);
+    }
+
+    /// With no world there is no world clock, so the local sky keeps running — the city,
+    /// the static mockups, and a server too old to say. It must not silently freeze.
+    #[test]
+    fn without_a_world_the_local_sky_still_runs() {
+        let mut s = Sky::default();
+        assert!(!s.advance_world(0.016), "nothing to derive from");
+        s.adopt(world_sky(), 1, 0);
+        assert!(s.advance_world(0.016), "…and everything to derive from once there is");
+        s.forget_world();
+        assert!(!s.advance_world(0.016), "leaving the world hands the sky back");
+    }
+
+    /// **The biome changes the RAIN and never the CLOCK** (`FS-2`). Walking from a mire
+    /// into a desert must dry the storm out without moving the sky — per-biome cadence
+    /// would jump the weather at the boundary and put a party spread across one back to
+    /// disagreeing about the time.
+    #[test]
+    fn crossing_a_biome_changes_the_rain_and_not_the_hour() {
+        let mut sky = world_sky();
+        let desert = meld_proto::regions::BIOMES.iter().position(|b| *b == "desert").unwrap();
+        let mire = meld_proto::regions::BIOMES.iter().position(|b| *b == "mire").unwrap();
+        sky.rain_chance[desert] = 0.0;
+        sky.rain_chance[mire] = 1.0;
+        // Stand in the storm phase of the first cycle.
+        let storm_tick = (sky.fair_ticks + sky.gust_ticks) as u64 + 10;
+
+        let mut wet = Sky::default();
+        wet.adopt(sky.clone(), 3, storm_tick);
+        wet.biome_index = mire;
+        let mut dry = Sky::default();
+        dry.adopt(sky, 3, storm_tick);
+        dry.biome_index = desert;
+        // Long enough for the smoothing to arrive somewhere.
+        for _ in 0..300 {
+            wet.advance_world(0.016);
+            dry.advance_world(0.016);
+        }
+        assert!(wet.weather > 0.5, "the mire is being rained on ({})", wet.weather);
+        assert_eq!(dry.weather, 0.0, "the desert's storm is dry");
+        assert!(dry.wind > 0.5, "…but it is still a storm ({})", dry.wind);
+        assert_eq!(wet.t, dry.t, "and the hour is the world's, not the biome's");
+        assert_eq!(wet.phase, dry.phase, "so is the phase");
     }
 }

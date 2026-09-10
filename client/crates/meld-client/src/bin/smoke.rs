@@ -54,6 +54,8 @@ fn main() {
             match msg {
                 // The headless bot has no HUD to pop a floater on.
                 ServerMsg::Harvested { .. } => {}
+                // …and no sky to derive from the world clock (FS-5).
+                ServerMsg::SkyTick { .. } => {}
                 ServerMsg::VaultNotice { .. } => {}
                 ServerMsg::HuntBoard { .. }
                 | ServerMsg::HuntProgress { .. }

@@ -3031,6 +3031,45 @@ safe_radius = 60.0
 # where you aren't"). This is the share of picks that are uniform-random instead.
 random_pick_share = 0.5
 
+# =============================================================================
+# [weather] — THE SKY IS THE WORLD'S, NOT THE VIEWER'S (FS-5, and FS-2's first half).
+#
+# Time of day and the storm cycle used to be a per-client animation accumulating
+# wall-clock, so two people on the same patch of ground could disagree about whether it
+# was night and whether it was raining. These are the magnitudes behind
+# `meld_proto::sky`, which derives both from `(seed, world tick)` on BOTH sides of the
+# wire — the same discipline CANON §W2 already imposes on the Shift, and what makes a
+# world that slept wake at the right hour by construction.
+#
+# Everything here is in TICKS (100 ms), because the world clock is the tick counter.
+# ⚠️ Weather has no mechanical effect yet — no visibility, movement, harvest or elemental
+# interaction. That is the rest of FS-2. This is the shared, authoritative clock those
+# rules will hang off.
+# =============================================================================
+[weather]
+day_ticks = 6000                 # 10 min: one full day -> night -> day [TUNABLE]
+# The dry spell, and much the longest phase: it is what governs how OFTEN weather happens,
+# so it is the one to move when the world reads as permanently overcast.
+fair_ticks = 6000                # 10 min [TUNABLE]
+gust_ticks = 160                 # the wind LEADS the rain, so trees toss before it lands
+storm_ticks = 220
+clearing_ticks = 140
+super_storm_in = 5               # 1 storm in 5 blows harder and soaks the whole area
+# Per-biome chance that a cycle's storm actually WETS that biome, in
+# `meld_proto::regions::BIOMES` order: field, forest, desert, ashfall, tundra, mire,
+# amber_wood, seized_engine, nestiphian_cradle, hearth_plains, seraphic_oubliette.
+#
+# ⚠️ The CADENCE is global and only the precipitation is local. Giving each biome its own
+# phase lengths would jump the weather as you walked across a boundary and would put a
+# party spread over two cells back to disagreeing — which is the bug this system exists to
+# fix. A desert simply spends nearly all of its storms windy and dry.
+rain_chance = [0.55, 0.70, 0.05, 0.20, 0.50, 0.90, 0.70, 0.30, 0.50, 0.40, 0.30]
+# How often the server re-states the world clock. Only a correction: the client runs its
+# own estimate forward and derives the whole sky locally, so this is drift control rather
+# than the sky itself. Cheap enough to be generous, small enough that a client that just
+# woke from a stall snaps back within a few seconds.
+sky_sync_ticks = 100             # every 10 s at the shipped tick
+
 [world_persist]
 # A world is a place. It is not torn down when the last diver leaves (CANON §W1),
 # it keeps ticking, and its delta from the seed baseline is written to Postgres so

@@ -894,6 +894,26 @@ through `LOOK_FILE`, so it A/Bs inside one running game.
 source is disabled for everyone who has ever run the game and has a `LOOK_FILE` on disk.
 Name the default function.
 
+**THE SKY BELONGS TO THE WORLD, NOT TO THE VIEWER** (`FS-5`). Time of day and the weather
+phase were a per-client animation accumulating wall-clock, so two people on the same patch
+of ground could disagree about whether it was night and whether it was raining — and
+nothing could be *gated* on the time of day, because there was no such fact.
+[`meld_proto::sky`](shared/meld-proto/src/sky.rs) is the one registry both sides read:
+everything is a pure function of `(seed, world tick)`, which is the clock CANON §W2 already
+insists on ("never wall-clock") and is what makes a world that slept wake at the right hour
+by construction. The magnitudes ride `run.started` because the client has no `balance.toml`
+— including `tick_ms`, since every duration in the struct is in ticks and a client guessing
+the server's cadence would drift by design. **Nothing about the sky is sent per frame**: the
+server restates the tick every `[weather] sky_sync_ticks` and the client derives the rest
+locally, because a sky the server interpolated *for* you is a second clock that can disagree
+with the first.
+⚠️ **The CADENCE is global and only the PRECIPITATION is local.** `[weather] rain_chance` is
+per-biome (a desert is 0.05, a mire 0.90), but the phases turn over at the same tick
+everywhere: per-biome phase lengths would jump the weather as you crossed a boundary and put
+a party spread over two cells back to disagreeing about the time. What stays client-side is
+the SMOOTHING — how fast the trees ease into a gust is a look, on `WorldFeel` with the rest.
+⚠️ Weather still has **no mechanical effect**; that is the rest of `FS-2`.
+
 **A NIGHT BUG NEEDS A NIGHT YOU CAN PIN.** `MELD_WORLD_FEEL="sky_t=0.0"` opens the session
 at midnight (`0.25` sunrise, `0.5` noon, `0.75` sunset) — the same argument as `MELD_TALLY`
 holding a haul on screen. Nightfall is otherwise minutes into a session and gone again
