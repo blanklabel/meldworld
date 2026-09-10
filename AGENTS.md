@@ -106,8 +106,20 @@ free while the world was a field on the Router and silently skipped the abandone
 ephemeral burn once it was not.
 A world **outlives its divers** (§W1) but not forever: an empty one hibernates out of memory
 after `[world_persist] dormant_after_ticks`, because the creature step is the expensive half
-of a tick and does not care whether anybody is watching. ⚠️ Its clock STOPS while dormant —
-the closed-form `advance_to` catch-up is what closes that.
+of a tick and does not care whether anybody is watching. It wakes at **now**, in CLOSED FORM
+(`WorldActor::advance_to`) — replaying a dormant day would be ~3.8 h of CPU on the one task
+and it costs ~3 s instead. Only the Shift iterates (its order is history); regrowth is
+`regrow(target)` in one call and mending is rate × elapsed and saturating.
+⚠️ **Wall-clock enters at exactly ONE place** — `WorldSave.updated_at_ms` becoming a target
+tick at the world boundary — so CANON §W2 holds and everything past that line is a pure
+function of `(seed, tick)`. A NEW subsystem catches up by adding a pass to `advance_to`, and
+one that cannot supply a closed form must declare its saturation horizon.
+⚠️ **`max_catchup_shifts` caps the REPLAY, never the SCHEDULE**: the generation counter
+advances over every Shift that landed, or the world comes back on a different calendar than
+one that never slept.
+⚠️ **A dormant world has no divers by definition, so a Shift's Force blast has nobody to hit
+** — `advance_to` leans on that rather than reimplementing it. If a world ever sleeps with
+players in it, that is the first assumption to break.
 
 ## How to run
 

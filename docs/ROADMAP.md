@@ -5494,11 +5494,42 @@ Directly underpins CR-4 (sim budget), MON-2 (persistent camps/instances), and LC
       test alone passes perfectly if `seed` is parsed and ignored and every diver gets a
       private world.
     **Remaining:** the b1-B boundary (spawn `WorldActor` as its own task so it never calls
-    `GameState` methods), the closed-form dormancy catch-up below (an evicted world's
-    clock currently STOPS until someone dives back in), the admission queue, and hub
-    handoff.
-  - 🔴 *Design settled, not built: **a dormant world catches up in CLOSED FORM, never by
-    replaying ticks**.* Asked for directly — a world asleep for a while should wake to
+    `GameState` methods), the admission queue, and hub handoff. *(The dormancy catch-up
+    below has since landed, so an evicted world no longer wakes with a stopped clock.)*
+  - ✅ **BUILT — a dormant world catches up in CLOSED FORM, never by replaying ticks.**
+    `WorldActor::advance_to(target)`, called the moment a world is stood back up (off
+    disk, or after `dormant_after_ticks` evicted it). Measured: a simulated DAY of
+    dormancy catches up in ~3 s, against the ~3.8 h replaying it would cost — held by
+    `a_dormant_world_wakes_up_at_now` as a ratio-of-absurdity bound rather than a
+    benchmark, since the box is shared.
+    - **Wall-clock enters at exactly ONE place** — `WorldSave.updated_at_ms` (stamped by
+      Postgres's own `now()` in the same statement, so it cannot disagree with the row)
+      turned into a target tick at the world boundary. Everything past that line is a
+      pure function of `(seed, tick)` again, so CANON §W2 survives and §W5 persistence
+      stays two integers and a small delta.
+    - **Only the Shift iterates**, and it must: `shift_region` picks least-recently-
+      disturbed half the time, so order is history. Regrowth is `regrow(target)` in ONE
+      call (it partitions on `now - felled_tick`, so it was already tick-absolute), and
+      creature mending is rate × elapsed and saturating.
+    - ⚠️ **`max_catchup_shifts` caps the REPLAY, never the SCHEDULE.** The generation
+      counter advances over every Shift that landed — it is a pure function of the seed
+      and must not desynchronise because of how much work we chose to do — and only the
+      last N are applied, since an older Shift's re-scatter is largely overwritten by the
+      newer ones on top of it. Held by
+      `capping_the_replay_does_not_desynchronise_the_schedule`.
+    - ⚠️ **The Force blast has nobody to hit, and that is load-bearing.** A live Shift
+      damages the heroes standing in it; a dormant world has no divers *by definition* —
+      that is why it is dormant — so that half is a no-op rather than something
+      `advance_to` reimplements. **If a world ever sleeps with players in it, this is the
+      first assumption that breaks.**
+    - ⚠️ **An evicted world is stamped on the way out.** `world_save` leaves
+      `updated_at_ms` at 0 because Postgres fills it in; the in-memory eviction path never
+      goes through Postgres, and a 0 there reads as "asleep since 1970" — a fifty-six-year
+      catch-up on the one task that owns every world.
+    - *Ecology and raids still do not exist*, so what is built is the HOOK, not the
+      contents: a new subsystem catches up by adding a pass to `advance_to`, and one that
+      cannot supply a closed form has to declare its saturation horizon.
+  - 🔴 *The original design note, for the record.* Asked for directly — a world asleep for a while should wake to
     "now", with its Shifts, regrowth, conflicts and (later) fields and raids having
     happened. Replaying the sim cannot do it, and the arithmetic is not close: the tick is
     100 ms and the measured creature step at d1300 (11,836 creatures) is **15.8 ms**, so
