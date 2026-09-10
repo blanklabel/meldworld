@@ -2659,12 +2659,14 @@ Make time in the field a living, dangerous place worth screenshotting.
   (#339-#341, #344, #353, #355-#358, #360-#368, #377, #380); links and the prison
   end-game remain —
   [`proposals/the-world-is-a-maze.md`](proposals/the-world-is-a-maze.md). Owner's direction;
-  supersedes `WG-7`'s ROUTES half and absorbs `WG-8` wholesale.* ⚠️ **Wall density is no
-  longer "tuning" — it is bounded by the MOVER**, and stage 9 measured where: at
-  `maze_radial_scale_cap` 48 a creature's mean excursion falls to 2.07 of a 9.0 leash, i.e.
-  it stops walking. The cap sits at **40**, one step under that ceiling, so the next
-  increment of density has to be bought by making creatures steer better rather than by
-  raising the number. Reported from play, after
+  supersedes `WG-7`'s ROUTES half and absorbs `WG-8` wholesale.* ⚠️ **Wall density was bounded by the MOVER, and is not any more.**
+  ⚠️ *And the number that set the old bound was misread here: "at cap 48 mean excursion
+  falls to 2.07" was the **worst seed**, not the mean — the mean was 2.56, well over the
+  2.1 floor. One unlucky seed against a per-seed guard, not the wildlife giving up.* The
+  mover now COMMITS to a side when it deflects, so a creature traces a thicket's boundary
+  instead of bouncing along its inside; measured, excursion is then **flat in the cap**
+  (2.68/2.23 at 56, 2.68/2.23 at 72, 2.69/2.23 at 96). The cap is **72**, and what bounds
+  it now is COST at depth rather than movement. Reported from play, after
   `WG-6` landed: *"it doesn't feel maze like at all… just feels like weird rings on a map
   with some paths through… nothing should really be a ring at all particularly now that
   biomes are cells."* Correct on both counts, and the cause is structural: **cells decide
