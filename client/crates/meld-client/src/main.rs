@@ -259,6 +259,11 @@ fn main() {
         .add_plugins(bevy_ecs_tilemap::TilemapPlugin)
         // Daytime sky blue behind the diorama (the fog fades the ground into it).
         .insert_resource(ClearColor(Color::srgb(0.53, 0.72, 0.93)))
+        // The two carried lanterns are the only shadow-casting point lights left, and each
+        // is six cube faces over the whole scene every frame. A lamp with a 14-unit range
+        // cannot use a 1024² face (Bevy's default); 512 keeps its silhouettes crisp at a
+        // quarter of the shadow-pass fill.
+        .insert_resource(bevy::light::PointLightShadowMap { size: 512 })
         .init_resource::<battle_fx::BattleFx>()
         .init_resource::<builder::BuildMode>()
         .init_resource::<hd2d::Look>()
@@ -380,6 +385,7 @@ fn main() {
                 // Player characters carry their own light at night (overworld +
                 // battle) so the game stays readable in the dark.
                 illuminate_players,
+                minimap::gate_minimap_camera,
             ),
         )
         // Join
