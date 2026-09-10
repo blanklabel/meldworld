@@ -2631,6 +2631,12 @@ design for this epic: [`proposals/worldgen-wg.md`](proposals/worldgen-wg.md).
     - **Standing things are not re-grounded every frame.** `sync_overworld_sprites` ran
       `terrain_height` per entity per frame; it runs only for an entity whose feet moved or
       when the height field's epoch changed.
+    - **The landform windows are view-culled at the fog** (this item's own "net-faster fix,
+      identified and not done"): anything whose nearest point is past `fog_end + 60` is
+      dropped before the slot cut, so the shader's per-fragment loops run over what can be
+      seen. The point-light shadow map is 512² (the two carried lanterns have a 14-unit range),
+      and the corner map's offscreen camera renders only while a map is on screen — it drew its
+      5,184 tiles every frame in every state.
 
   **The known cost.** The ground shader runs SEVEN landform loops per fragment (bridges,
   ridges, peaks, basins, rivers, straits, lobes), each iteration doing distance math, over
@@ -5362,9 +5368,16 @@ Directly underpins CR-4 (sim budget), MON-2 (persistent camps/instances), and LC
     Both grids were `HashMap<cell, Vec<idx>>` over all 5,842 alive creatures, and together
     cost 6 ms of the 11 that remained after the first two changes.
   - **Measured after:** creatures 44.8 → **3.5 ms** mean; the whole tick 77 → **5.5 ms**. The
-    residue is ~2.8 ms in `free()` for the ~700 creatures that step — the shoreline and
-    obstacle tests a candidate step pays — which is the next thing to cut if the budget
-    ever needs it. `meld_world::profile` counts the phases so that cost is read as work.
+    residue was ~2.8 ms in `free()` for the ~700 creatures that step — the shoreline and
+    obstacle tests a candidate step pays. `meld_world::profile` counts the phases so that
+    cost is read as work.
+  - **The shoreline is asked once per thirty units, not once per step.** Every water term is
+    a signed distance or bounded by one, so a dry answer of depth `-d` holds for any point
+    within `d`. A creature remembers where it last asked and the margin it got
+    (`MonsterSpawn::dry_at` / `dry_margin`) and skips the walk over every landform in reach
+    while a one-unit hop stays inside thirty units of margin — the basin term that follows
+    the terrain gradient only matters inside a basin's radius, where the rim distance is what
+    the margin came from.
 - [x] **SC-7 — Delta snapshots: send what changed, not the world.** A full `world.snapshot`
   re-sent every static tree, rock, chest and node in the interest disc at 10 Hz — **70.9 KB
   per tick, 709 KB/s per player** at d1269 — and the client re-parsed and re-inserted all of

@@ -3305,6 +3305,7 @@ pub(crate) fn update_ground_biome_rings(
     dungeon: Res<DungeonSceneRes>,
     ground_q: Query<&MeshMaterial3d<GroundMat>, With<WorldGround>>,
     mut mats: ResMut<Assets<GroundMat>>,
+    look: Res<hd2d::Look>,
     mut last_window: Local<Option<(u64, u64, i32, i32, u8, bool, bool)>>,
 ) {
     let Ok(handle) = ground_q.single() else { return };
@@ -3392,6 +3393,13 @@ pub(crate) fn update_ground_biome_rings(
         return;
     }
     *last_window = Some(key);
+    // **SLOTS ARE VIEW-CULLED, NOT SLOT-FILLED.** Every list below is sorted nearest-first and
+    // then cut to its slot count — so a mire uploaded 16 basins when only 11 could be inside
+    // the fog, and every ground fragment looped over the extra five. Nothing past the fog's
+    // end has a shape on screen (it is fog colour), so anything whose nearest point is
+    // further than that is dropped before the cut. The shader's loops run over the COUNT,
+    // per fragment and per vertex, so this is the cheapest fragment work there is to remove.
+    let horizon = if look.fog_on { look.fog_end + 60.0 } else { f32::INFINITY };
 
     // ⚠️ **A DISTANCE CULL OF THE LANDFORM UPLOADS WAS TRIED HERE AND TAKEN BACK OUT — DO
     // NOT RE-ADD IT WITHOUT A MEASUREMENT FIRST.**
@@ -3437,6 +3445,7 @@ pub(crate) fn update_ground_biome_rings(
         let d = |q: &[f32; 4]| (q[0] - px).hypot(q[1] - pz) - q[2];
         d(a).total_cmp(&d(b))
     });
+    peaks.retain(|q| (q[0] - px).hypot(q[1] - pz) - q[2] <= horizon);
     let n = peaks.len().min(PEAK_SLOTS);
     for (i, slot) in mat.extension.params.peaks.iter_mut().enumerate() {
         *slot = if i < n {
@@ -3460,6 +3469,7 @@ pub(crate) fn update_ground_biome_rings(
         meld_proto::coast::dist_to_segment_pub(px, pz, s[0], s[1], s[2], s[3])
     };
     let mut rg = (*ridges()).clone();
+    rg.retain(|r| near_first(r) - r[4].max(r[5]) <= horizon);
     rg.sort_by(|a, b| near_first(a).total_cmp(&near_first(b)));
     let rn = rg.len().min(RIDGE_SLOTS / 2);
     for (i, slot) in mat.extension.params.ridges.iter_mut().enumerate() {
@@ -3478,11 +3488,7 @@ pub(crate) fn update_ground_biome_rings(
         meld_proto::coast::dist_to_segment_pub(px, pz, s[0], s[1], s[2], s[3])
     };
     let mut bg = (*bridges()).clone();
-    // ⚠️ **NOR ARE BRIDGES CULLED.** A bridge is *forced LAND* spanning water, which puts it
-    // in the same category as the straits and lobes rather than with the ridges: culling one
-    // does not flatten a span, it drowns it. There are at most `MAX_BRIDGES` (8) of them
-    // against sixteen basins and forty river nodes, so the iterations saved would not have
-    // paid for the risk even if it were safe.
+    bg.retain(|b| span_near_first(b) - b[4] <= horizon);
     bg.sort_by(|a, b| span_near_first(a).total_cmp(&span_near_first(b)));
     let bn = bg.len().min(BRIDGE_SLOTS / 2);
     for (i, slot) in mat.extension.params.bridges.iter_mut().enumerate() {
@@ -3524,14 +3530,15 @@ pub(crate) fn update_ground_biome_rings(
     // …and the coast's lobes, windowed the same way and for the same reason.
     let mut near_lobes: Vec<meld_proto::coast::Lobe> =
         LOBES.read().map(|l| (**l).clone()).unwrap_or_default();
-    // ⚠️ **NOR ARE LOBES CULLED** — a lobe is a BAY or an ISLE, so like the straits above it
-    // decides land from water rather than decorating either. See the note on the straits:
-    // dropping these is what painted the whole world the sea's own light blue.
+    // A lobe is a BAY or an ISLE, so like the straits it decides land from water. It is safe
+    // to cull at the horizon below only because it is a real disc measured by true distance to
+    // its rim: past the fog it has nothing on screen. The straits are NOT culled — see above.
     near_lobes.sort_by(|a, b| {
         let da = (a[0].hypot(a[1]) - pr).abs();
         let db = (b[0].hypot(b[1]) - pr).abs();
         da.total_cmp(&db)
     });
+    near_lobes.retain(|l| (l[0] - px).hypot(l[1] - pz) - l[2] <= horizon);
     near_lobes.truncate(LOBE_SLOTS);
     for (i, slot) in mat.extension.params.lobes.iter_mut().enumerate() {
         *slot = match near_lobes.get(i) {
@@ -3551,6 +3558,7 @@ pub(crate) fn update_ground_biome_rings(
         let db = (b[0].hypot(b[1]) - pr).abs();
         da.total_cmp(&db)
     });
+    near_basins.retain(|b| (b[0] - px).hypot(b[1] - pz) - b[2] <= horizon);
     near_basins.truncate(BASIN_SLOTS);
     for (i, slot) in mat.extension.params.basins.iter_mut().enumerate() {
         *slot = match near_basins.get(i) {

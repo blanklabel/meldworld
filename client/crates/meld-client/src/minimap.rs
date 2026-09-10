@@ -155,6 +155,7 @@ pub(crate) fn setup(
 
     let (span_x, span_y) = (TILES_X as f32 * TILE, TILES_Y as f32 * TILE);
     commands.spawn((
+        MinimapCamera,
         Camera2d,
         Camera {
             // Transparent, so the panel's own glass shows through wherever the world has
@@ -413,6 +414,26 @@ pub(crate) fn repaint(
 /// Half the grid's width in tiles — what a corner panel showing the whole texture spans.
 pub(crate) fn corner_tiles_half() -> f32 {
     TILES_X as f32 * 0.5
+}
+
+/// The offscreen camera that paints the map's ground.
+#[derive(Component)]
+pub(crate) struct MinimapCamera;
+
+/// Render the map's ground only while a map is on screen. The camera drew its 5,184 tiles
+/// to the offscreen texture every frame in every state — the Join screen, a battle, the
+/// city — for a panel that only the Overworld shows, and only once the map perk is owned.
+pub(crate) fn gate_minimap_camera(
+    view: Res<MapView>,
+    state: Res<State<crate::Screen>>,
+    mut cams: Query<&mut Camera, With<MinimapCamera>>,
+) {
+    let want = view.open && *state.get() == crate::Screen::Overworld;
+    for mut cam in &mut cams {
+        if cam.is_active != want {
+            cam.is_active = want;
+        }
+    }
 }
 
 pub(crate) fn track_map_view(

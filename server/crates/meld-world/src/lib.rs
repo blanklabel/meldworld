@@ -1911,6 +1911,11 @@ pub struct MonsterSpawn {
     /// which is every creature in the on-ramp. Same reason the Resonant's overworld regen
     /// banks its own remainder.
     regen_accum: f64,
+    /// The last point this creature's shoreline test found dry, and how far from any water
+    /// it was there (a lower bound in world units). A candidate step within a unit of it,
+    /// with thirty units of margin, is dry without asking — see `step_creatures_with_aggro`.
+    dry_at: Position,
+    dry_margin: f64,
     /// Where this creature is currently walking while it has nothing to chase, or
     /// `None` before it has picked its first destination.
     ///
@@ -2012,6 +2017,8 @@ impl MonsterSpawn {
             in_battle: false,
             skirmish_cd: 0.0,
             regen_accum: 0.0,
+            dry_at: Position::new(0.0, 0.0),
+            dry_margin: 0.0,
             wander_to: None,
             veer: 0,
             wander_left: 0.0,
@@ -9179,7 +9186,9 @@ impl Arena {
         // came out no faster than walking the world's water. Hoisting it out of the loop is the
         // difference between an index and a ritual.
         let wix = self.water_index();
-        let dry = |p: &Position| -> bool {
+        // Signed water depth at `p` (positive = wet), so a caller can keep the MARGIN a dry
+        // answer came with and skip the next ask when it cannot have changed.
+        let water_depth = |p: &Position| -> f32 {
             let (fx, fz) = (p.x as f32, p.y as f32);
             let (cx, cz) = wix.bucket(p.x, p.y);
             let mut inland = -1000.0f32;
@@ -9219,7 +9228,7 @@ impl Arena {
                 rivers: &rivers,
                 bridges: &bridge_snap,
             }
-            .is_land_given_inland(fx, fz, inland)
+            .water_given_inland(fx, fz, inland)
         };
         let corridorize = |p: &Position| -> Position {
             if radial_half <= 0.0 {
@@ -9477,12 +9486,32 @@ impl Arena {
                 // either side. That is the same thing an animal does at a trunk, it keeps
                 // whatever progress the heading still makes, and it costs a handful of hashed
                 // lookups rather than a path search.
-                let free = |px: f64, py: f64| -> bool {
+                // **THE SHORELINE IS ASKED ONCE PER THIRTY UNITS, NOT ONCE PER STEP.** Every
+                // water term is a signed distance (straits, lobes, bridges, river channels,
+                // a basin's rim) or bounded by one, so a dry answer of depth `-d` means no
+                // water within `d` of that point. A creature steps a fraction of a unit a
+                // tick; far from any shore it was paying the full walk over every landform
+                // in reach for an answer it already had. The one term that is not a
+                // distance — a basin's `below`, which follows the terrain gradient — only
+                // matters INSIDE a basin's radius, where `within` (a true distance) is what
+                // the margin came from; thirty units of margin against a one-unit hop
+                // leaves that comfortably conservative.
+                let mut dry_cache = (m.dry_at, m.dry_margin);
+                let mut free = |px: f64, py: f64| -> bool {
                     profile::add(profile::FREE_CALLS, 1);
                     let q = Position::new(px, py);
-                    !obstacles.blocks(&q, 0.5)
-                        && dry(&q)
-                        && area_level_at(areas, &corridorize(&q)) == m.elevation
+                    if obstacles.blocks(&q, 0.5) {
+                        return false;
+                    }
+                    let cached = dry_cache.1 >= 30.0 && q.distance_to(&dry_cache.0) <= 1.0;
+                    if !cached {
+                        let depth = water_depth(&q);
+                        if depth > 0.0 {
+                            return false;
+                        }
+                        dry_cache = (q, f64::from(-depth));
+                    }
+                    area_level_at(areas, &corridorize(&q)) == m.elevation
                 };
                 // Re-clamps each candidate the same way the straight step was clamped, or a
                 // steered creature could round its own area's radius band.
@@ -9547,6 +9576,8 @@ impl Arena {
                     m.wander_to = None;
                     m.veer = 0;
                 }
+                m.dry_at = dry_cache.0;
+                m.dry_margin = dry_cache.1;
             }
         }
 
