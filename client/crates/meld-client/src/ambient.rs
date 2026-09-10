@@ -22,7 +22,6 @@ const N_BLADES: usize = (GRID * GRID) as usize;
 #[derive(Component)]
 pub(crate) struct GrassBlade {
     idx: usize,
-    mat: Handle<StandardMaterial>,
     last: Option<(i32, i32)>,
     /// This blade's own sway offset, from its cell hash, so neighbours never lean in
     /// lockstep. Stored rather than recomputed because the cell block below only runs when
@@ -35,14 +34,15 @@ impl GrassBlade {
     /// can be hidden.
     #[cfg(test)]
     pub(crate) fn for_test() -> Self {
-        Self { idx: 0, mat: Handle::default(), last: None, phase: 0.0 }
+        Self { idx: 0, last: None, phase: 0.0 }
     }
 }
 
 /// Grass variant sprites, shared with the scatter update so it can re-point a blade's
 /// material at its cell's chosen variant.
 #[derive(Resource)]
-pub(crate) struct AmbientGrass(Vec<Handle<Image>>);
+/// The three shared grass materials — see `setup_ambient` for why they are shared.
+pub(crate) struct AmbientGrass(Vec<Handle<StandardMaterial>>);
 
 fn hash(mut x: u64) -> u32 {
     x = x.wrapping_add(0x9E37_79B9_7F4A_7C15);
@@ -73,16 +73,22 @@ pub(crate) fn setup_ambient(
     assets: Res<AssetServer>,
 ) {
     let quad = meshes.add(hd2d::cyl_billboard_mesh(2.2, 2.2, 10, 55.0));
-    let grass: Vec<Handle<Image>> = ["decor_grass_tuft", "decor_grass_shrub", "decor_grass_flower"]
-        .iter()
-        .map(|k| assets.load(format!("props/{k}.png")))
-        .collect();
+    // ONE material per texture, shared by every blade wearing it, so the grass BATCHES: it
+    // used to mint a material per blade — 225 materials over three textures, which is 225
+    // draw calls for what is three. A blade changes variant by swapping its material handle
+    // (`update_ambient_scatter`), never by writing into a material of its own.
+    let grass: Vec<Handle<StandardMaterial>> =
+        ["decor_grass_tuft", "decor_grass_shrub", "decor_grass_flower"]
+            .iter()
+            .map(|k| {
+                mats.add(hd2d::sprite_material(Color::WHITE, assets.load(format!("props/{k}.png"))))
+            })
+            .collect();
     for i in 0..N_BLADES {
-        let mat = mats.add(hd2d::sprite_material(Color::WHITE, grass[i % grass.len()].clone()));
         commands.spawn((
-            GrassBlade { idx: i, mat: mat.clone(), last: None, phase: 0.0 },
+            GrassBlade { idx: i, last: None, phase: 0.0 },
             Mesh3d(quad.clone()),
-            MeshMaterial3d(mat),
+            MeshMaterial3d(grass[i % grass.len()].clone()),
             Transform::default(),
             Visibility::Hidden,
             hd2d::Billboard,
@@ -105,9 +111,13 @@ pub(crate) fn update_ambient_scatter(
     sky: Option<Res<crate::world_render::Sky>>,
     frame: Res<crate::WorldFrame>,
     state: Res<State<crate::Screen>>,
-    mut mats: ResMut<Assets<StandardMaterial>>,
     players: Query<(&WorldEntity, &Transform), Without<GrassBlade>>,
-    mut blades: Query<(&mut GrassBlade, &mut Transform, &mut Visibility)>,
+    mut blades: Query<(
+        &mut GrassBlade,
+        &mut Transform,
+        &mut Visibility,
+        &mut MeshMaterial3d<StandardMaterial>,
+    )>,
     mut epoch: Local<u64>,
 ) {
     // A landed Shift repaints cells under a standing player. A blade recomputes only when it
@@ -117,7 +127,7 @@ pub(crate) fn update_ambient_scatter(
     let stale = *epoch != now_epoch;
     *epoch = now_epoch;
     let Some(p) = player_pos(&session, &players) else {
-        for (_, _, mut v) in &mut blades {
+        for (_, _, mut v, _) in &mut blades {
             if !matches!(*v, Visibility::Hidden) {
                 *v = Visibility::Hidden;
             }
@@ -128,7 +138,7 @@ pub(crate) fn update_ambient_scatter(
     let wind = sky.map(|s| s.wind).unwrap_or(0.0);
     let bx = (p.x / SPACING).round() as i32;
     let bz = (p.z / SPACING).round() as i32;
-    for (mut blade, mut tf, mut vis) in &mut blades {
+    for (mut blade, mut tf, mut vis, mut mat) in &mut blades {
         // ⚠️ THE LEAN RUNS EVERY FRAME, ABOVE THE CELL GUARD. Everything below only executes
         // when a blade moves to a NEW cell — which is almost never — so a sway computed down
         // there freezes each blade at whatever angle it happened to be assigned. Grass that
@@ -179,8 +189,8 @@ pub(crate) fn update_ambient_scatter(
         // the canopy is a gale nobody believes. The lean itself is applied above, every frame;
         // this only records the blade's offset so neighbours never sway in lockstep.
         blade.phase = (h >> 24) as f32 * 0.0246;
-        if let Some(mut m) = mats.get_mut(&blade.mat) {
-            m.base_color_texture = Some(grass.0[variant].clone());
+        if mat.0 != grass.0[variant] {
+            mat.0 = grass.0[variant].clone();
         }
         *vis = Visibility::Visible;
     }

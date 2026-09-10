@@ -27,6 +27,7 @@
 //! Still deferred (documented, not lost): true 2D radial chunk streaming,
 //! Gatekeeper arenas, chokepoint geometry, and the infinite zone past d=5000.
 
+pub mod profile;
 pub mod abilities;
 pub mod maze;
 pub mod shift;
@@ -3257,6 +3258,12 @@ pub struct Arena {
     clash_linger: f64,
     creature_regen: f64,
     loot_pickup_radius: f64,
+    /// `[ai] creature_active_radius`: a creature within this of any avatar steps every tick.
+    active_radius: f64,
+    /// `[ai] creature_far_slices`: everything further out steps once every this many ticks.
+    far_slices: u32,
+    /// How many times `step_creatures` has run — the phase the far slices are dealt from.
+    step_counter: u64,
     /// Every placed creature's position **in the bent (world) frame**, bucketed into a
     /// coarse grid so placement can refuse to drop a standard spawn inside another
     /// creature's pull radius in O(1) rather than scanning thousands of monsters (the
@@ -3845,6 +3852,9 @@ impl Arena {
             clash_linger: balance.ai.clash_linger_seconds,
             creature_regen: balance.ai.creature_regen_fraction_per_sec,
             loot_pickup_radius: balance.ai.loot_pickup_radius,
+            active_radius: balance.ai.creature_active_radius,
+            far_slices: balance.ai.creature_far_slices,
+            step_counter: 0,
             blockers: std::cell::RefCell::new(None),
             creature_spots: SpotGrid::new(balance.ai.group_radius + balance.encounters.pack_spread),
         };
@@ -9082,6 +9092,44 @@ impl Arena {
                 )
             })
             .collect();
+        // **A CREATURE NOBODY CAN SEE IS STEPPED AT A WALKING PACE, NOT A FRAME RATE.**
+        //
+        // Measured at d1269 (5,842 creatures, one player) this pass was 45 ms of a 100 ms
+        // tick, and every creature in the world was paying for a player who could see the
+        // 128 units around them. So the pass has two rates: a creature within
+        // `[ai] creature_active_radius` of ANY avatar (a party in a battle still stands
+        // somewhere) steps every tick, and everything further out steps once every
+        // `[ai] creature_far_slices` ticks with the accumulated `dt` — the same distance
+        // walked, in one hop, where nothing is watching. A world with nobody in it keeps the
+        // full rate, because the tests that hold what a stepped world looks like were
+        // written against one and nothing is saved by coarsening a world with no players.
+        let prof_t0 = std::time::Instant::now();
+        self.step_counter = self.step_counter.wrapping_add(1);
+        let anchors: Vec<Position> = self.avatars.iter().map(|a| a.position).collect();
+        let slices = if anchors.is_empty() { 1 } else { self.far_slices.max(1) as u64 };
+        let active_r2 = self.active_radius * self.active_radius;
+        let phase = self.step_counter;
+        // `(dt for this creature, is it NEAR)`. A far creature steps coarsely and only
+        // WANDERS: it hunts no player (none is within its aggro radius, by construction) and
+        // it skirmishes with nothing — a turf war nobody can see is not a living world, it
+        // is a bill. Which is also what lets the two spatial grids below index only the near
+        // creatures instead of every creature in the world.
+        let is_near = |p: &Position| -> bool {
+            slices <= 1
+                || anchors.iter().any(|a| {
+                    let (dx, dy) = (a.x - p.x, a.y - p.y);
+                    dx * dx + dy * dy <= active_r2
+                })
+        };
+        let lod = |i: usize, p: &Position| -> Option<(f64, bool)> {
+            if is_near(p) {
+                Some((dt, true))
+            } else if (i as u64).wrapping_add(phase).is_multiple_of(slices) {
+                Some((dt * slices as f64, false))
+            } else {
+                None
+            }
+        };
         let (x_max, x_min, lateral) = (self.x_max, self.x_min, self.lateral);
         // Arc params for un-bending world → corridor when sampling terrace elevation
         // (creatures stay on their own level even though the world fans around the hub).
@@ -9165,52 +9213,47 @@ impl Arena {
         // ⚠️ The CACHED field — see `Arena::blockers`. This was a full rebuild on a hot
         // path: once a tick here, and once per movement intent in `apply_move_with`.
         let obstacles = self.blockers();
-        // Combat state of every creature, snapshotted so a creature can target
-        // another without aliasing the `&mut` iteration below. (pos, faction, alive, def).
-        // The species rides along with the faction: `creatures_at_odds` needs BOTH, because
-        // a creature's faction is handed down by whatever pack promoted it and is therefore
-        // not a property of its kind (CR-13).
-        let cs: Vec<(Position, String, bool, i32, String)> = self
-            .monsters
-            .iter()
-            .map(|m| {
-                (
-                    m.position,
-                    m.faction.clone(),
-                    !m.defeated && !m.in_battle,
-                    m.def,
-                    m.monster_kind.clone(),
-                )
-            })
-            .collect();
-        // Spatial hash of live creatures (by index into `cs`) so the skirmish-target
-        // search is ~O(nearby) instead of scanning every creature per creature
-        // (was O(monsters²), which grew unbounded as the endless world streamed in).
-        // Cell = skirmish_aggro so a creature's aggro circle always fits inside its
-        // own cell's 3×3 neighbourhood. Determinism is preserved: candidates are
-        // tie-broken by (distance, index j), which reproduces the old `min_by` over
-        // index-ordered iteration exactly, regardless of bucket visit order.
+        // Spatial hash of live creatures (by index) so the skirmish-target search is
+        // ~O(nearby) instead of scanning every creature per creature (was O(monsters²),
+        // which grew unbounded as the endless world streamed in). Cell = skirmish_aggro so a
+        // creature's aggro circle always fits inside its own cell's 3×3 neighbourhood.
+        // Determinism is preserved: candidates are tie-broken by (distance, index j), which
+        // reproduces the old `min_by` over index-ordered iteration exactly, regardless of
+        // bucket visit order.
+        //
+        // ⚠️ NO STRINGS ARE COPIED HERE ANY MORE. This used to snapshot every creature's
+        // faction and kind into a `Vec<(Position, String, bool, i32, String)>` — twice a
+        // tick, once per pass — so a creature could be read while another was being moved.
+        // At 5,842 creatures that was ~23,000 heap allocations a tick for strings nothing
+        // mutated. The passes are split into a read-only DECISION phase over `&self.monsters`
+        // and a mutating APPLY phase instead, which is what the snapshot was standing in for.
+        profile::add(profile::SETUP_NS, prof_t0.elapsed().as_nanos() as u64);
+        let prof_t1 = std::time::Instant::now();
+        let alive = |m: &MonsterSpawn| !m.defeated && !m.in_battle;
         let cell = skirmish_aggro.max(1.0);
         let cell_of = |p: &Position| ((p.x / cell).floor() as i32, (p.y / cell).floor() as i32);
         let mut grid: HashMap<(i32, i32), Vec<usize>> = HashMap::new();
-        for (j, (pos, _, alive, _, _)) in cs.iter().enumerate() {
-            if *alive {
-                grid.entry(cell_of(pos)).or_default().push(j);
+        for (j, m) in self.monsters.iter().enumerate() {
+            if alive(m) && is_near(&m.position) {
+                grid.entry(cell_of(&m.position)).or_default().push(j);
             }
         }
-        // Immutable borrow of a disjoint field — safe alongside `monsters.iter_mut()`.
+        // Immutable borrow of a disjoint field — safe alongside the mutable indexing below.
         let areas = &self.areas;
 
-        // --- Movement pass: pick a target and close on it (or wander) ----------
-        for (i, m) in self.monsters.iter_mut().enumerate() {
-            if m.defeated || m.in_battle {
+        profile::add(profile::GRID_NS, prof_t1.elapsed().as_nanos() as u64);
+        let prof_t2 = std::time::Instant::now();
+        // --- Movement pass, decision: who steps this tick, and at what -----------
+        // (index, dt for this creature, player target, creature target)
+        type Move = (usize, f64, Option<Position>, Option<Position>);
+        let mut moves: Vec<Move> = Vec::new();
+        for (i, m) in self.monsters.iter().enumerate() {
+            if !alive(m) {
                 continue;
             }
-            // A Psyker's pin: it does not move, chase or skirmish while it holds. Counted
-            // down HERE rather than against a clock, so the world stays a pure function of
-            // its own ticks and a paused instance does not leak the hold away.
+            let Some((dt_i, near)) = lod(i, &m.position) else { continue };
             if m.held_for > 0.0 {
-                m.held_for = (m.held_for - dt).max(0.0);
+                moves.push((i, dt_i, None, None));
                 continue;
             }
             let aggro_range = match m.aggression.as_str() {
@@ -9218,55 +9261,64 @@ impl Arena {
                 "territorial" => terr_aggro,
                 _ => 0.0, // passive: never chases (but still retaliates below)
             };
-            // A creature that can't chase (passive) has no player/creature target,
-            // so skip both O(players)/O(monsters) scans entirely — otherwise every
-            // passive creature still walks the whole monster list each tick just to
-            // produce `None`. (Same result, less work; behaviour unchanged.)
-            let (player_target, creature_target) = if aggro_range > 0.0 {
-                // Nearest active player within aggro range — each player's range is
-                // scaled by their Bulwark multiplier (Phoenix Guard parties are chased
-                // from closer).
-                let player_target = players
-                    .iter()
-                    .filter(|(p, mult)| m.position.distance_to(p) <= aggro_range * mult)
-                    .map(|(p, _)| *p)
-                    .min_by(|a, b| m.position.distance_to(a).total_cmp(&m.position.distance_to(b)));
-                // Nearest hostile-faction creature within skirmish aggro (initiators
-                // only), found via the spatial grid: scan just this creature's 3×3
-                // cell neighbourhood. Tie-break by (distance, index) to match the old
-                // full index-ordered scan bit-for-bit.
-                let (cx, cy) = cell_of(&m.position);
-                let mut best: Option<(f64, usize, Position)> = None;
-                for dx in -1..=1 {
-                    for dy in -1..=1 {
-                        let Some(bucket) = grid.get(&(cx + dx, cy + dy)) else { continue };
-                        for &j in bucket {
-                            if j == i {
-                                continue;
-                            }
-                            let (pos, fac, _, _, kind) = &cs[j];
-                            if !creatures_at_odds(&m.faction, &m.monster_kind, fac, kind) {
-                                continue;
-                            }
-                            let d = m.position.distance_to(pos);
-                            if d > skirmish_aggro {
-                                continue;
-                            }
-                            let better = match best {
-                                None => true,
-                                Some((bd, bj, _)) => d < bd || (d == bd && j < bj),
-                            };
-                            if better {
-                                best = Some((d, j, *pos));
-                            }
+            // A creature that can't chase (passive) has no player/creature target, so
+            // skip both scans entirely. A FAR creature has nobody to chase either.
+            if aggro_range <= 0.0 || !near {
+                moves.push((i, dt_i, None, None));
+                continue;
+            }
+            // Nearest active player within aggro range — each player's range is scaled by
+            // their Bulwark multiplier (Phoenix Guard parties are chased from closer).
+            let player_target = players
+                .iter()
+                .filter(|(p, mult)| m.position.distance_to(p) <= aggro_range * mult)
+                .map(|(p, _)| *p)
+                .min_by(|a, b| m.position.distance_to(a).total_cmp(&m.position.distance_to(b)));
+            // Nearest hostile-faction creature within skirmish aggro (initiators only),
+            // found via the spatial grid: scan just this creature's 3×3 cell neighbourhood.
+            let (cx, cy) = cell_of(&m.position);
+            let mut best: Option<(f64, usize, Position)> = None;
+            for dx in -1..=1 {
+                for dy in -1..=1 {
+                    let Some(bucket) = grid.get(&(cx + dx, cy + dy)) else { continue };
+                    for &j in bucket {
+                        if j == i {
+                            continue;
+                        }
+                        let o = &self.monsters[j];
+                        if !creatures_at_odds(&m.faction, &m.monster_kind, &o.faction, &o.monster_kind) {
+                            continue;
+                        }
+                        let d = m.position.distance_to(&o.position);
+                        if d > skirmish_aggro {
+                            continue;
+                        }
+                        let better = match best {
+                            None => true,
+                            Some((bd, bj, _)) => d < bd || (d == bd && j < bj),
+                        };
+                        if better {
+                            best = Some((d, j, o.position));
                         }
                     }
                 }
-                let creature_target = best.map(|(_, _, pos)| pos);
-                (player_target, creature_target)
-            } else {
-                (None, None)
-            };
+            }
+            moves.push((i, dt_i, player_target, best.map(|(_, _, pos)| pos)));
+        }
+
+        profile::add(profile::DECIDE_NS, prof_t2.elapsed().as_nanos() as u64);
+        profile::add(profile::STEPPED, moves.len() as u64);
+        let prof_t3 = std::time::Instant::now();
+        // --- Movement pass, apply: close on the target (or wander) ----------------
+        for (i, dt, player_target, creature_target) in moves {
+            let m = &mut self.monsters[i];
+            // A Psyker's pin: it does not move, chase or skirmish while it holds. Counted
+            // down HERE rather than against a clock, so the world stays a pure function of
+            // its own ticks and a paused instance does not leak the hold away.
+            if m.held_for > 0.0 {
+                m.held_for = (m.held_for - dt).max(0.0);
+                continue;
+            }
             // Prefer whichever target is closer; a creature target lets us stop short
             // and brawl, a player target we must actually touch to trigger a battle.
             let (target, is_creature) = match (player_target, creature_target) {
@@ -9398,6 +9450,7 @@ impl Arena {
                 // whatever progress the heading still makes, and it costs a handful of hashed
                 // lookups rather than a path search.
                 let free = |px: f64, py: f64| -> bool {
+                    profile::add(profile::FREE_CALLS, 1);
                     let q = Position::new(px, py);
                     !obstacles.blocks(&q, 0.5)
                         && dry(&q)
@@ -9473,19 +9526,7 @@ impl Arena {
         // Any two living hostile-faction creatures within attack range hit each
         // other on their own cooldown — passive creatures fight back too, they just
         // never gave chase. Uses post-movement positions.
-        let now: Vec<(Position, String, bool, i32, String)> = self
-            .monsters
-            .iter()
-            .map(|m| {
-                (
-                    m.position,
-                    m.faction.clone(),
-                    !m.defeated && !m.in_battle,
-                    m.def,
-                    m.monster_kind.clone(),
-                )
-            })
-            .collect();
+        //
         // Spatial hash of the POST-MOVEMENT positions, for the same reason the movement
         // pass above has one — and it is the same bug: that pass was fixed and this one,
         // twenty lines below it, was left scanning every creature for every creature.
@@ -9498,24 +9539,35 @@ impl Arena {
         // cell's 3x3 neighbourhood. Determinism is preserved by tie-breaking on
         // (distance, index j), which reproduces the old `min_by` over index-ordered
         // iteration exactly, whatever order the buckets are visited in (CANON §S).
+        profile::add(profile::APPLY_NS, prof_t3.elapsed().as_nanos() as u64);
+        let prof_t4 = std::time::Instant::now();
         let dcell = skirmish_range.max(1.0);
         let dcell_of = |p: &Position| ((p.x / dcell).floor() as i32, (p.y / dcell).floor() as i32);
         let mut dgrid: HashMap<(i32, i32), Vec<usize>> = HashMap::new();
-        for (j, (pos, _, alive, _, _)) in now.iter().enumerate() {
-            if *alive {
-                dgrid.entry(dcell_of(pos)).or_default().push(j);
+        for (j, m) in self.monsters.iter().enumerate() {
+            if alive(m) && is_near(&m.position) {
+                dgrid.entry(dcell_of(&m.position)).or_default().push(j);
             }
         }
-        // (attacker, victim, damage) — the attacker is carried so the pass can report
-        // WHO is fighting whom (`CR-2`), not only who lost HP.
-        let mut hits: Vec<(usize, usize, i32)> = Vec::new();
-        for (i, m) in self.monsters.iter_mut().enumerate() {
-            if m.defeated || m.in_battle {
-                m.skirmish_cd = 0.0;
+        // Decision phase, read-only: (attacker, its new cooldown, the blow it lands).
+        // The attacker is carried so the pass can report WHO is fighting whom (`CR-2`),
+        // not only who lost HP.
+        // (attacker, its new cooldown, the blow it lands: (victim, damage))
+        type Swing = (usize, f64, Option<(usize, i32)>);
+        let mut swings: Vec<Swing> = Vec::new();
+        for (i, m) in self.monsters.iter().enumerate() {
+            if !alive(m) {
+                if m.skirmish_cd != 0.0 {
+                    swings.push((i, 0.0, None));
+                }
                 continue;
             }
-            m.skirmish_cd = (m.skirmish_cd - dt).max(0.0);
-            if m.skirmish_cd > 0.0 {
+            let Some((dt_i, near)) = lod(i, &m.position) else { continue };
+            let cd = (m.skirmish_cd - dt_i).max(0.0);
+            if cd > 0.0 || !near {
+                if cd != m.skirmish_cd {
+                    swings.push((i, cd, None));
+                }
                 continue;
             }
             let (cx, cy) = dcell_of(&m.position);
@@ -9529,32 +9581,51 @@ impl Arena {
                         if j == i {
                             continue;
                         }
-                        let (pos, fac, alive, def, kind) = &now[j];
-                        if !*alive || !creatures_at_odds(&m.faction, &m.monster_kind, fac, kind) {
+                        let o = &self.monsters[j];
+                        if !creatures_at_odds(&m.faction, &m.monster_kind, &o.faction, &o.monster_kind) {
                             continue;
                         }
-                        let d = m.position.distance_to(pos);
+                        let d = m.position.distance_to(&o.position);
                         if d > skirmish_range {
                             continue;
                         }
                         if best.is_none_or(|(bd, bj, _)| d < bd || (d == bd && j < bj)) {
-                            best = Some((d, j, *def));
+                            best = Some((d, j, o.def));
                         }
                     }
                 }
             }
-            if let Some((_, j, victim_def)) = best {
-                let dmg = (m.atk - victim_def).max(1);
+            match best {
+                Some((_, j, victim_def)) => {
+                    let dmg = (m.atk - victim_def).max(1);
+                    swings.push((i, interval, Some((j, dmg))));
+                }
+                None => swings.push((i, 0.0, None)),
+            }
+        }
+        let mut hits: Vec<(usize, usize, i32)> = Vec::new();
+        for (i, cd, hit) in swings {
+            self.monsters[i].skirmish_cd = cd;
+            if let Some((j, dmg)) = hit {
                 hits.push((i, j, dmg));
-                m.skirmish_cd = interval;
             }
         }
         for &(_, j, dmg) in &hits {
             self.monsters[j].hp -= dmg;
         }
-        self.record_clashes(&hits, dt);
+        profile::add(profile::DAMAGE_NS, prof_t4.elapsed().as_nanos() as u64);
+        let prof_t5 = std::time::Instant::now();
+        let near_pos: Vec<Position> = anchors.clone();
+        self.record_clashes(&hits, dt, |p| {
+            slices <= 1
+                || near_pos.iter().any(|a| {
+                    let (dx, dy) = (a.x - p.x, a.y - p.y);
+                    dx * dx + dy * dy <= active_r2
+                })
+        });
         // A wound closes, slowly, and only once nobody is hitting it any more.
         self.mend_creatures(dt);
+        profile::add(profile::TAIL_NS, prof_t5.elapsed().as_nanos() as u64);
 
         // --- Deaths → ground loot ---------------------------------------------
         let mut drops: Vec<(Id, String, Position)> = Vec::new();
@@ -9586,7 +9657,10 @@ impl Arena {
     /// Membership is by ENTITY ID so `prune_defeated` may compact `monsters` freely,
     /// and a member that has died, been pulled into a player's battle, or streamed
     /// away is dropped here — a clash of one is not a fight.
-    fn record_clashes(&mut self, hits: &[(usize, usize, i32)], dt: f64) {
+    fn record_clashes(&mut self, hits: &[(usize, usize, i32)], dt: f64, near: impl Fn(&Position) -> bool) {
+        if hits.is_empty() && self.clashes.is_empty() {
+            return; // the common tick: nobody swung and nothing is live — skip the index pass
+        }
         for c in self.clashes.iter_mut() {
             c.quiet += dt;
         }
@@ -9625,10 +9699,13 @@ impl Arena {
         // ONE index pass over the monsters, not a `find` per member: this runs every tick,
         // the world streams outward without bound, and a scan per clash member is
         // quadratic in dive depth — the same trap the placement grid exists for.
+        // Only the creatures near a player are indexed: nothing far away swings any more
+        // (see the creature LOD in `step_creatures_with_aggro`), so a clash whose bodies have
+        // all drifted out of range simply lapses — which is also what its linger would do.
         let live: std::collections::HashMap<&str, Position> = self
             .monsters
             .iter()
-            .filter(|m| !m.defeated && !m.in_battle && m.hp > 0)
+            .filter(|m| !m.defeated && !m.in_battle && m.hp > 0 && near(&m.position))
             .map(|m| (m.entity_id.as_str(), m.position))
             .collect();
         self.clashes.retain_mut(|c| {
@@ -9669,9 +9746,17 @@ impl Arena {
         if rate <= 0.0 {
             return;
         }
-        let busy = self.clashing().into_iter().map(String::from).collect::<std::collections::HashSet<_>>();
+        // Borrowed, not copied: this runs every tick over every creature, and the set used
+        // to be rebuilt from freshly allocated `String`s each time.
+        let clashes = &self.clashes;
+        let busy: std::collections::HashSet<&str> =
+            clashes.iter().flat_map(|c| c.members.iter().map(String::as_str)).collect();
         for m in self.monsters.iter_mut() {
-            if m.defeated || m.in_battle || m.hp >= m.max_hp || busy.contains(&m.entity_id) {
+            if m.defeated || m.in_battle || m.hp >= m.max_hp {
+                m.regen_accum = 0.0;
+                continue;
+            }
+            if !busy.is_empty() && busy.contains(m.entity_id.as_str()) {
                 // A creature at full carries no debt forward, so a long healthy stretch
                 // cannot bank a burst of healing for the moment it finally gets hit.
                 m.regen_accum = 0.0;

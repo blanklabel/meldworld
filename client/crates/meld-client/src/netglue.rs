@@ -352,9 +352,17 @@ pub(crate) fn pump_net(
                 lobby.members.clear();
                 lobby.code.clear();
             }
-            ServerMsg::Snapshot { entities, last_input_seq } => {
+            ServerMsg::Snapshot { entities, last_input_seq, delta, removed } => {
                 world.last_input_seq = last_input_seq;
-                world.entities.clear();
+                // A full snapshot replaces the world; a delta upserts what changed and drops
+                // what left. Everything else in the map is still exactly what the server
+                // holds — that is the contract `wm::Snapshot::delta` states.
+                if !delta {
+                    world.entities.clear();
+                }
+                for id in removed {
+                    world.entities.remove(&id);
+                }
                 for e in entities {
                     world.entities.insert(
                         e.id,

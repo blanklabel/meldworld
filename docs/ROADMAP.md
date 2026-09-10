@@ -2598,6 +2598,40 @@ design for this epic: [`proposals/worldgen-wg.md`](proposals/worldgen-wg.md).
     `fog_end` is 500, so ~80% of those 161,604 vertices sit in pure fog colour. Tightening
     the cascades makes near shadows *sharper* at the same time as cheaper.
 
+  - ✅ **Landed (perf pass, Sep 2026).** Everything below was structural — none of it needed
+    the clock to be trusted:
+    - **The fragment shader's basin loop recomputed the ground per basin.** `inland_water_at`
+      called `terrain_height_wgsl + peak_dome + ridge_wedge` INSIDE its 16-basin loop for a
+      value that does not depend on the basin — ~900 iterations per ground FRAGMENT. Hoisted;
+      the loop is now ~72.
+    - **Two sun cascades ending at the fog** (`hd2d::sun_cascades`), not Bevy's default four
+      to 150 units. Each cascade is a full pass over the 161k-vertex displaced ground.
+    - **Point-light shadow maps off** for the four party lamps, the creature lamp, the two
+      target markers and the plaza monoliths — six render passes each, up to eight of them in
+      a night battle. The two carried lanterns (overworld Explorer, city hero) keep theirs.
+    - **`[profile.release]`**: thin LTO and one codegen unit, in both workspaces. There was no
+      release profile at all.
+    - **`terrain_height` stopped allocating.** Every landform table is an `Arc<Vec<_>>` behind
+      its `RwLock`; a snapshot of the shoreline is seven refcount bumps where it was six `Vec`
+      clones — per entity per frame, and ~31,000 allocations per minimap repaint.
+    - **The ground uniform's windows re-cut only when their inputs move**, the grass shares
+      three materials (225 draw calls → 3), and the billboard yaw, particle visibility, star
+      visibility and hero-glow writes happen only when the value moved, so a standing camera
+      dirties nothing.
+    - **UI redraws on change.** Thirteen immediate-mode panels rebuilt their node trees every
+      frame. The battle, city and overworld panels now gate on `is_changed()` (with
+      `advance_hit_fx`/`advance_atb_flash` touching their resources only when something is
+      live, so the flag means what it says), the action plate keeps a content key and is
+      MOVED to follow the head, and mob nameplates are a per-creature pool moved in place.
+    - **Ground detail instances keep their model for life.** Reassigning a slot's
+      `WorldAssetRoot` re-instantiated a GLB hierarchy; walking crossed a cell every second
+      or two and re-derived a whole row of the 17x17 window at once. Cells are dealt to
+      parked instances of the right model instead — the hitch profile this item recorded
+      ("p90 425 ms, worst 3,732 ms") was this.
+    - **Standing things are not re-grounded every frame.** `sync_overworld_sprites` ran
+      `terrain_height` per entity per frame; it runs only for an entity whose feet moved or
+      when the height field's epoch changed.
+
   **The known cost.** The ground shader runs SEVEN landform loops per fragment (bridges,
   ridges, peaks, basins, rivers, straits, lobes), each iteration doing distance math, over
   most of the screen. `#337` took the worst case from ~106 to ~124 iterations per ground
@@ -5281,6 +5315,49 @@ Directly underpins CR-4 (sim budget), MON-2 (persistent camps/instances), and LC
     is empty in a fight, and its reach really bounds) and
     `a_fight_does_not_pay_to_build_a_world_nobody_is_looking_at` (a ratio, not a duration
     — same reason `the_creature_step_stays_linear_in_the_creature_count` is one).
+- [x] **SC-6 — Creatures step at the rate somebody can see them.** `step_creatures` stepped
+  every creature in the world every tick: measured with the new `MELD_TICK_STATS` profiler at
+  d1269 (5,842 creatures, one player) it was **44.8 ms of a 100 ms tick**, and the player
+  could see 128 units of it. Three changes, all in `Arena::step_creatures_with_aggro`:
+  - **Two rates.** A creature within `[ai] creature_active_radius` (240) of ANY avatar steps
+    every tick; everything further out steps once every `[ai] creature_far_slices` (10)
+    ticks with the accumulated `dt` — the same ground covered in one hop — and only
+    WANDERS: no player to chase (none is within its aggro radius, by construction) and no
+    skirmish, because a turf war nobody can see is a bill rather than a living world. A world
+    with nobody in it keeps the full rate, so every world-gen test that steps a world still
+    measures what it always did.
+  - **No strings copied.** Both passes snapshotted every creature's faction and kind into a
+    `Vec<(Position, String, bool, i32, String)>` so one creature could be read while another
+    was moved — ~23,000 heap allocations a tick. They are a read-only DECISION phase over
+    `&self.monsters` and a mutating APPLY phase now, which is what the copy stood in for.
+  - **The skirmish grids index only the near creatures**, and the clash index does too.
+    Both grids were `HashMap<cell, Vec<idx>>` over all 5,842 alive creatures, and together
+    cost 6 ms of the 11 that remained after the first two changes.
+  - **Measured after:** creatures 44.8 → **3.5 ms** mean; the whole tick 77 → **5.5 ms**. The
+    residue is ~2.8 ms in `free()` for the ~700 creatures that step — the shoreline and
+    obstacle tests a candidate step pays — which is the next thing to cut if the budget
+    ever needs it. `meld_world::profile` counts the phases so that cost is read as work.
+- [x] **SC-7 — Delta snapshots: send what changed, not the world.** A full `world.snapshot`
+  re-sent every static tree, rock, chest and node in the interest disc at 10 Hz — **70.9 KB
+  per tick, 709 KB/s per player** at d1269 — and the client re-parsed and re-inserted all of
+  it. `movement.snapshot_mode {delta: true}` (the Bevy client sends it on
+  `session.authenticated`; the QA bots and the MCP harness do not, and keep full snapshots)
+  switches a session to deltas: `WorldActor::snap_baseline` remembers a content stamp per
+  entity per player, and each tick sends only new or changed rows plus `removed` ids. **The
+  first snapshot after any gap — a battle, a dungeon, a connection — is always full**, so a
+  client can never hold a world it was never sent. Client-side the map is upserted rather
+  than rebuilt, and the message parses typed straight from the wire text instead of through
+  a `serde_json::Value` and back. **Measured:** 70.9 → **3.6 KB per tick** (709 → 36 KB/s).
+  - The pre-cull's obstacle scan is off a chunk grid too (`StaticGrid`, rebuilt only when the
+    obstacle list changes): it tested all 109,496 obstacles against the audience every tick
+    for the ~1,000 in reach. Snapshot build 2.0 → **0.78 ms**; the whole tick at d1269 with
+    one player is **4.3 ms** mean, from 77 before this pass.
+- [x] **SC-8 — A clock on the tick.** The loop had no timing of its own; every number in this
+  file about the tick came from a one-off test. `MELD_TICK_STATS=1` logs per-phase mean/max
+  every five seconds (`meld_server::prof`, `target: meld_tick`), and
+  `tick_budget_at_depth` (`cargo test --release -p meld-server -- --ignored --nocapture
+  tick_budget_at_depth`) is the standing benchmark every loop change gets its before/after
+  from: a d1269 world, one walking player, 200 ticks, phase costs and snapshot bytes.
 - [ ] **SC-2 — Sim/IO split (in-process).** The instance task publishes an
   immutable `Arc<WorldSnapshot>` per tick; a worker pool does cull + serialize +
   send in parallel across cores. Decouples sim cadence from snapshot cadence

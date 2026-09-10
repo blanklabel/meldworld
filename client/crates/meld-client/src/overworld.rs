@@ -1582,6 +1582,7 @@ pub(crate) fn sync_overworld_sprites(
     mut predict: ResMut<Predict>,
     dungeon: Res<world_render::DungeonSceneRes>,
     mut q: Query<(Entity, &WorldEntity, &mut Transform)>,
+    mut last_epoch: Local<u64>,
 ) {
     let _t = crate::world_render::Spike::new("sync_overworld_sprites");
     let Some(wa) = wa else { return };
@@ -1687,11 +1688,17 @@ pub(crate) fn sync_overworld_sprites(
     let exempt = |id: &str| id == my_id.as_str() || id == "portal";
     let dist_from_me = |x: f32, y: f32| me_pos.map(|(mx, my)| (x - mx).hypot(y - my));
     let mut seen = HashSet::new();
+    // The height field's version: when it moves (a section streamed in, a Shift re-cut the
+    // ground) every standing thing is re-grounded once, whether or not it walked.
+    let epoch = crate::world_render::terrain_epoch();
+    let ground_moved = *last_epoch != epoch;
+    *last_epoch = epoch;
     for (entity, we, mut tf) in &mut q {
         let Some(e) = world.entities.get(&we.0) else {
             commands.entity(entity).despawn();
             continue;
         };
+        let before_xz = (tf.translation.x, tf.translation.z);
         // Render-unload: drop entities that have fallen far behind (past the fog wall)
         // so render + memory stay bounded as you dive deep. The server keeps tracking
         // and simulating them — this is purely what the client chooses to draw.
@@ -1819,8 +1826,18 @@ pub(crate) fn sync_overworld_sprites(
         }
         // Ride the rolling ground: discrete terrace level + the continuous heightmap
         // under the just-updated xz. Matches `world_pos` so spawn and per-frame agree.
-        tf.translation.y = e.level as f32 * STEP_HEIGHT
-            + crate::world_render::terrain_height(tf.translation.x, tf.translation.z);
+        //
+        // Only when the feet MOVED (or the ground did): `terrain_height` walks every peak,
+        // range, strait, lobe and bridge in the world, and most of what is on screen is a
+        // tree that has not moved since it was spawned. Per entity per frame that was the
+        // largest CPU cost on the overworld after the snapshot itself.
+        if ground_moved
+            || (tf.translation.x - before_xz.0).abs() > 1e-4
+            || (tf.translation.z - before_xz.1).abs() > 1e-4
+        {
+            tf.translation.y = e.level as f32 * STEP_HEIGHT
+                + crate::world_render::terrain_height(tf.translation.x, tf.translation.z);
+        }
     }
     for (id, e) in &world.entities {
         if seen.contains(id) {
@@ -2750,9 +2767,13 @@ pub(crate) struct NightLamp {
 /// Root UI node that holds the per-mob nameplates (Explorer/Psyker intel).
 #[derive(Component)]
 pub(crate) struct NameplateRoot;
-/// One mob nameplate (rebuilt each frame).
+/// One mob nameplate. `id` is the creature it labels and `key` a hash of what the plate
+/// says; while both hold, the plate is MOVED to follow its creature rather than rebuilt.
 #[derive(Component)]
-pub(crate) struct Nameplate;
+pub(crate) struct Nameplate {
+    id: String,
+    key: u64,
+}
 /// Root UI node for the corner minimap.
 #[derive(Component)]
 pub(crate) struct MinimapRoot;
@@ -2771,12 +2792,20 @@ pub(crate) fn update_minimap(
     mut root_q: Query<(Entity, &mut Node), With<MinimapRoot>>,
     old: Query<Entity, With<MinimapDot>>,
 ) {
+    // Rebuild on change, not on frame: the dots are placed from the snapshot, which lands
+    // ten times a second, and from the map's framing — see `battle::render_enemy_panel`.
+    if !(old.is_empty() || world.is_changed() || perks.is_changed() || view.is_changed()) {
+        return;
+    }
     for e in &old {
         commands.entity(e).despawn();
     }
     let Ok((root, mut node)) = root_q.single_mut() else { return };
     let tier = perks.0.explorer_map;
-    node.display = if tier >= 1 { Display::Flex } else { Display::None };
+    let display = if tier >= 1 { Display::Flex } else { Display::None };
+    if node.display != display {
+        node.display = display;
+    }
     if tier == 0 {
         return;
     }
@@ -2886,19 +2915,28 @@ pub(crate) fn illuminate_players(
     let night = (1.0 - sky.day).clamp(0.0, 1.0);
     // Self-illumination: warm glow keyed off each sprite's own texture colours.
     let ef = night * 1.15;
+    let want = LinearRgba::rgb(ef, ef * 0.9, ef * 0.7);
     for mh in &sprites {
-        if let Some(mut m) = mats.get_mut(&mh.0) {
-            // Only the COLOUR here. Which frame lights up is `animate_chars`' business,
-            // set alongside the base texture so the two can never disagree — read from
-            // here it was a frame stale on whichever frames the scheduler happened to run
-            // this system first, and the hero juddered in the dark.
-            m.emissive = LinearRgba::rgb(ef, ef * 0.9, ef * 0.7);
+        // Only the COLOUR here. Which frame lights up is `animate_chars`' business,
+        // set alongside the base texture so the two can never disagree — read from
+        // here it was a frame stale on whichever frames the scheduler happened to run
+        // this system first, and the hero juddered in the dark.
+        //
+        // Read before write: `get_mut` alone marks the material modified and re-uploads
+        // it every frame, day or night, whether or not the glow moved.
+        if mats.get(&mh.0).is_some_and(|m| m.emissive != want) {
+            if let Some(mut m) = mats.get_mut(&mh.0) {
+                m.emissive = want;
+            }
         }
     }
     // Each hero's lamp, scaled by nightfall and its own strength (the Explorer's is far
     // brighter — its class feature — while the rest stay a soft fill).
     for (mut light, lamp) in &mut lamps {
-        light.intensity = night * lamp.strength;
+        let want = night * lamp.strength;
+        if light.intensity != want {
+            light.intensity = want;
+        }
     }
 }
 
@@ -2916,15 +2954,14 @@ pub(crate) fn update_mob_nameplates(
     cam_q: WorldCamera,
     root_q: Query<Entity, With<NameplateRoot>>,
     mob_q: Query<(&WorldEntity, &GlobalTransform)>,
-    old: Query<Entity, With<Nameplate>>,
+    mut plates: Query<(Entity, &Nameplate, &mut Node)>,
 ) {
-    // Clear last frame's plates.
-    for e in &old {
-        commands.entity(e).despawn();
-    }
     let intel = perks.0.hunter_intel;
     let threat = perks.0.hunter_threat;
     if !nameplates_wanted(intel, threat, &world) {
+        for (e, _, _) in &plates {
+            commands.entity(e).despawn();
+        }
         return;
     }
     let Some((cam, cam_tf)) = cam_q.iter().next() else {
@@ -2933,7 +2970,21 @@ pub(crate) fn update_mob_nameplates(
     let Ok(root) = root_q.single() else {
         return;
     };
-    commands.entity(root).with_children(|p| {
+    // **A PLATE IS MOVED, NOT REBUILT.** These used to be torn down and respawned every
+    // frame — a node tree with several text runs per creature on screen, re-laid-out and
+    // re-shaped at frame rate for words that change when a creature is hit. Pass one
+    // decides what should be on screen and where; pass two moves the plates that already
+    // say the right thing and drops the rest; pass three spawns what is missing.
+    struct Want<'a> {
+        id: &'a str,
+        at: Vec2,
+        key: u64,
+        ent: &'a OwEntity,
+        marker: &'static str,
+        marker_col: Color,
+    }
+    let mut wanted: Vec<Want> = Vec::new();
+    {
         for (we, gtf) in &mob_q {
             let Some(ent) = world.entities.get(&we.0) else {
                 continue;
@@ -2997,8 +3048,51 @@ pub(crate) fn update_mob_nameplates(
             } else {
                 ("", Color::NONE)
             };
+            // Everything the plate below draws, so an unchanged key means an unchanged plate.
+            let bar = (intel >= 2 || ent.clashing || wounded(ent))
+                .then(|| match (ent.hp, ent.max_hp) {
+                    (Some(hp), Some(max)) if max > 0 => {
+                        Some(((hp as f32 / max as f32).clamp(0.0, 1.0) * 40.0) as u8)
+                    }
+                    _ => None,
+                })
+                .flatten();
+            let key = glass::redraw_key(&(
+                &ent.boss,
+                ent.expects_parties,
+                ent.quarry,
+                ent.held,
+                ent.clashing,
+                marker,
+                intel,
+                ent.mob_level,
+                bar,
+            ));
+            wanted.push(Want { id: we.0.as_str(), at: s, key, ent, marker, marker_col });
+        }
+    }
+    let mut kept: HashSet<&str> = HashSet::new();
+    for (e, plate, mut node) in &mut plates {
+        match wanted.iter().find(|w| w.id == plate.id && w.key == plate.key) {
+            Some(w) => {
+                let (l, t) = (Val::Px(w.at.x - 24.0), Val::Px(w.at.y - 14.0));
+                if node.left != l || node.top != t {
+                    node.left = l;
+                    node.top = t;
+                }
+                kept.insert(w.id);
+            }
+            None => commands.entity(e).despawn(),
+        }
+    }
+    commands.entity(root).with_children(|p| {
+        for w in &wanted {
+            if kept.contains(w.id) {
+                continue;
+            }
+            let (ent, marker, marker_col, s) = (w.ent, w.marker, w.marker_col, w.at);
             p.spawn((
-                Nameplate,
+                Nameplate { id: w.id.to_string(), key: w.key },
                 Node {
                     position_type: PositionType::Absolute,
                     left: Val::Px(s.x - 24.0),
@@ -5243,9 +5337,12 @@ mod heat_tests {
     }
 }
 
-/// One frame's worth of the over-the-head action panel (rebuilt each frame).
+/// The over-the-head action panel. `key` is a hash of everything drawn inside it: while it
+/// holds, the plate is only MOVED to follow the head, never rebuilt.
 #[derive(Component)]
-pub(crate) struct ActionHud;
+pub(crate) struct ActionHud {
+    key: u64,
+}
 
 /// Ask the bench in reach for its temporary boon — the ONE dispatch, shared by [N] and the
 /// plate's chip.
@@ -5382,20 +5479,20 @@ pub(crate) fn update_action_hud(
     cam_q: WorldCamera,
     root_q: Query<Entity, With<NameplateRoot>>,
     players: Query<(&WorldEntity, &GlobalTransform)>,
-    old: Query<Entity, With<ActionHud>>,
+    mut old: Query<(Entity, &ActionHud, &mut Node)>,
     wa: Option<Res<WorldAssets>>,
     tutorial_run: Res<TutorialRun>,
     roster: Res<PartyRoster>,
 ) {
-    for e in &old {
-        commands.entity(e).despawn();
-    }
-    // Age the floaters and drop the ones that have had their moment.
+    // Age the floaters and drop the ones that have had their moment. Read-only when there
+    // are none, so `pops` is only flagged changed while something is actually in the air.
     let dt = time.delta_secs();
-    for p in pops.items.iter_mut() {
-        p.age += dt;
+    if !pops.items.is_empty() {
+        for p in pops.items.iter_mut() {
+            p.age += dt;
+        }
+        pops.items.retain(|p| p.age < HARVEST_POP_TTL);
     }
-    pops.items.retain(|p| p.age < HARVEST_POP_TTL);
 
     let running = session.channeling && session.channel_fill_ms > 0;
     if running && !*was_channeling {
@@ -5441,7 +5538,11 @@ pub(crate) fn update_action_hud(
         && pops.items.is_empty()
         && conditions.is_empty()
     {
-        return; // nothing to say, so nothing on screen (the [E]-only rule)
+        // Nothing to say, so nothing on screen (the [E]-only rule).
+        for (e, _, _) in &old {
+            commands.entity(e).despawn();
+        }
+        return;
     }
     let Some((cam, cam_tf)) = cam_q.iter().next() else { return };
     let Ok(root) = root_q.single() else { return };
@@ -5451,15 +5552,57 @@ pub(crate) fn update_action_hud(
     let head = me.translation() + Vec3::Y * 2.35;
     let Ok(at) = cam.world_to_viewport(cam_tf, head) else { return };
 
+    let line = if session.channeling {
+        Some("[E] stop".to_string())
+    } else {
+        target.as_ref().map(|t| t.prompt())
+    };
+    let boon_line = boon.as_ref().map(|(_, _, what)| format!("[N] {what}"));
+    // Watching stays on offer even mid-channel: reading the fight over there is
+    // exactly what you might want to do while you finish gathering.
+    let watch_line = watch.map(|what| format!("\u{f0817} [V] {what}"));
+    let pct = if session.channeling { channel_fill_pct(*phase, session.channel_fill_ms) } else { 0.0 };
+    // **THE PLATE FOLLOWS THE HEAD EVERY FRAME AND IS REBUILT ONLY WHEN ITS WORDS CHANGE.**
+    // It used to be torn down and respawned every frame — layout and glyph shaping for a
+    // panel whose text changes a few times a minute. The key holds everything drawn inside
+    // it; the bar's fill and a pop's fade are quantised so they still animate, in steps the
+    // eye does not see, without a rebuild per frame.
+    let key = glass::redraw_key(&(
+        &line,
+        &boon_line,
+        &watch_line,
+        &conditions,
+        highlight,
+        session.channeling,
+        (pct * 0.5) as u8,
+        pops.items
+            .iter()
+            .map(|p| (p.kind.as_str(), p.label(), ((1.0 - p.age / HARVEST_POP_TTL) * 16.0) as u8))
+            .collect::<Vec<_>>(),
+    ));
     const W: f32 = 230.0;
+    let left = Val::Px(at.x - W / 2.0);
+    // Sit above the head, and leave room for however many pops are in the air.
+    let top = Val::Px(at.y - 34.0 - 18.0 * pops.items.len() as f32);
+    if let Ok((_, hud, mut node)) = old.single_mut() {
+        if hud.key == key {
+            if node.left != left || node.top != top {
+                node.left = left;
+                node.top = top;
+            }
+            return;
+        }
+    }
+    for (e, _, _) in &old {
+        commands.entity(e).despawn();
+    }
     commands.entity(root).with_children(|p| {
         p.spawn((
-            ActionHud,
+            ActionHud { key },
             Node {
                 position_type: PositionType::Absolute,
-                left: Val::Px(at.x - W / 2.0),
-                // Sit above the head, and leave room for however many pops are in the air.
-                top: Val::Px(at.y - 34.0 - 18.0 * pops.items.len() as f32),
+                left,
+                top,
                 width: Val::Px(W),
                 flex_direction: FlexDirection::Column,
                 align_items: AlignItems::Center,
@@ -5489,15 +5632,6 @@ pub(crate) fn update_action_hud(
                     ));
                 });
             }
-            let line = if session.channeling {
-                Some("[E] stop".to_string())
-            } else {
-                target.as_ref().map(|t| t.prompt())
-            };
-            let boon_line = boon.as_ref().map(|(_, _, what)| format!("[N] {what}"));
-            // Watching stays on offer even mid-channel: reading the fight over there is
-            // exactly what you might want to do while you finish gathering.
-            let watch_line = watch.map(|what| format!("\u{f0817} [V] {what}"));
             if line.is_none()
                 && boon_line.is_none()
                 && watch_line.is_none()
@@ -5552,7 +5686,6 @@ pub(crate) fn update_action_hud(
                         });
                 }
                 if session.channeling {
-                    let pct = channel_fill_pct(*phase, session.channel_fill_ms);
                     plate
                         .spawn((
                             Node {

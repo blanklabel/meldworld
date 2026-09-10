@@ -427,29 +427,41 @@ pub(crate) fn track_map_view(
     // panel wants a tight ring around the player. Rather than render twice, the framing
     // follows whichever is being looked at — the menu when it is open, the player otherwise.
     let open = menu.section == Some(crate::MenuSection::Map) && explored.walked;
-    if !open {
+    // Written only when the framing MOVED: a `ResMut` write flags the resource changed
+    // whether or not the value did, and `update_minimap` redraws its dots on that flag.
+    let want: Option<(Vec2, f32)> = if !open {
         // Corner mode: centred on the party, spanning the Explorer's own map radius.
         if perks.0.explorer_map == 0 {
-            view.open = false;
-            return;
+            None
+        } else {
+            world.entities.get(&session.player_id).map(|me| {
+                (
+                    Vec2::new(me.x, me.y),
+                    (perks.0.explorer_map_radius.max(1.0) * 2.0) / TILES_X as f32,
+                )
+            })
         }
-        let Some(me) = world.entities.get(&session.player_id) else {
-            view.open = false;
-            return;
-        };
-        view.open = true;
-        view.centre = Vec2::new(me.x, me.y);
-        view.units = (perks.0.explorer_map_radius.max(1.0) * 2.0) / TILES_X as f32;
-        return;
+    } else {
+        // The panel's pixel size, from `explored_map`. One place would be better than two;
+        // they are held together by `the_ground_is_framed_like_the_panel_it_sits_in`.
+        const W: f32 = 460.0;
+        const H: f32 = 260.0;
+        Some(MapView::frame_on(crate::overworld::map_bounds(&explored), W, H))
+    };
+    match want {
+        None => {
+            if view.open {
+                view.open = false;
+            }
+        }
+        Some((centre, units)) => {
+            if !view.open || view.centre != centre || view.units != units {
+                view.open = true;
+                view.centre = centre;
+                view.units = units;
+            }
+        }
     }
-    // The panel's pixel size, from `explored_map`. One place would be better than two;
-    // they are held together by `the_ground_is_framed_like_the_panel_it_sits_in`.
-    const W: f32 = 460.0;
-    const H: f32 = 260.0;
-    let (centre, units) = MapView::frame_on(crate::overworld::map_bounds(&explored), W, H);
-    view.open = true;
-    view.centre = centre;
-    view.units = units;
 }
 
 #[cfg(test)]

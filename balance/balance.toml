@@ -2015,6 +2015,14 @@ skirmish_aggro_radius = 6.5  # hostile-faction creatures hunt each other within 
 skirmish_attack_range = 1.7  # ... and trade blows once this close (overworld skirmish)
 skirmish_attack_interval = 0.85 # seconds between a creature's overworld blows
 loot_pickup_radius = 1.9     # a player auto-collects ground loot dropped within this range
+# Creature simulation level of detail. A creature within `creature_active_radius` of any
+# avatar steps every tick; everything further out steps once every `creature_far_slices`
+# ticks with the accumulated dt (same ground covered, in one hop, where nobody is looking).
+# Measured at d1269 with one player: 5,842 creatures cost 45 ms of a 100 ms tick before
+# this, and the player could see 128 units. Keep the radius above `interest_radius_chunks
+# × chunk_size` plus the widest perk reveal, so nothing a player can see steps coarsely.
+creature_active_radius = 240.0
+creature_far_slices = 10
 
 # Overworld class perks ("party sense"): each hero class, when present in the
 # party, grants a distinct overworld utility whose tier scales with the shared

@@ -764,7 +764,14 @@ pub enum ServerMsg {
         pouches: Vec<Vec<(String, i32)>>,
         capacity: i32,
     },
-    Snapshot { entities: Vec<EntityView>, last_input_seq: u32 },
+    Snapshot {
+        entities: Vec<EntityView>,
+        last_input_seq: u32,
+        /// `false`: the complete visible set — replace the world. `true`: only what changed,
+        /// with `removed` naming what left (see `wm::Snapshot::delta`).
+        delta: bool,
+        removed: Vec<String>,
+    },
     BattleStarted {
         battle_id: String,
         your_combatant_id: String,
@@ -2351,7 +2358,187 @@ impl Inner {
         });
     }
 
+    /// One overworld snapshot, already typed. Split out of `handle_text` so the hot
+    /// message can be parsed straight from the wire text (see the head peek there).
+    fn on_snapshot(&mut self, s: wm::Snapshot) {
+        let entities = s
+            .entities
+            .into_iter()
+            .map(|e| {
+                // Server tags monsters `mob:<kind>:<faction>`, the portal
+                // `portal`, and players with their avatar state (`active`, …).
+                let mut radius = 0.0;
+                let mut bodies_required: u8 = 1;
+                let mut opened = false;
+                let mut chest_tier = 0;
+                let mut quarry = false;
+                let mut expects_parties = 0u8;
+                let mut held = false;
+                let mut clashing = false;
+                let mut boss: Option<String> = None;
+                let (kind, monster_kind, faction) = match e.avatar_state.as_deref() {
+                    Some("portal") => (EntityKind::Portal, None, None),
+                    Some("stair") => (EntityKind::Stair, None, None),
+                    Some(s) if s.starts_with("trap:") => (
+                        EntityKind::Trap,
+                        Some(s["trap:".len()..].to_string()),
+                        None,
+                    ),
+                    Some(s) if s.starts_with("chest:") => {
+                        // chest:<tier>:<open>
+                        opened = s.ends_with(":1");
+                        chest_tier = s["chest:".len()..]
+                            .split(':')
+                            .next()
+                            .and_then(|t| t.parse().ok())
+                            .unwrap_or(0);
+                        (EntityKind::Chest, None, None)
+                    }
+                    Some(s) if s.starts_with("mob:") => {
+                        let t = parse_mob_state(s);
+                        quarry = t.quarry;
+                        held = t.held;
+                        clashing = t.clashing;
+                        boss = t.boss.map(str::to_string);
+                        expects_parties = t.parties;
+                        (
+                            EntityKind::Monster,
+                            Some(t.kind.to_string()),
+                            (!t.faction.is_empty()).then(|| t.faction.to_string()),
+                        )
+                    }
+                    Some(s) if s.starts_with("resource:") => {
+                        (EntityKind::Resource, Some(s["resource:".len()..].to_string()), None)
+                    }
+                    Some(s) if s.starts_with("loot:") => {
+                        (EntityKind::Loot, Some(s["loot:".len()..].to_string()), None)
+                    }
+                    Some(s) if s.starts_with("obstacle:") => {
+                        // obstacle:<kind>:<radius>
+                        let rest = &s["obstacle:".len()..];
+                        let (k, r) = rest.rsplit_once(':').unwrap_or((rest, "1"));
+                        radius = r.parse().unwrap_or(1.0);
+                        (EntityKind::Obstacle, Some(k.to_string()), None)
+                    }
+                    Some(s) if s.starts_with("station:") => {
+                        // station:<kind>:<uses_left> — the remaining jobs
+                        // ride `bodies_required`, the existing "how many"
+                        // field, rather than growing the wire a number that
+                        // only one tag uses.
+                        let rest = &s["station:".len()..];
+                        let (k, u) = rest.rsplit_once(':').unwrap_or((rest, "0"));
+                        bodies_required = u.parse().unwrap_or(0);
+                        (EntityKind::Station, Some(k.to_string()), None)
+                    }
+                    Some(s) if s.starts_with("structure:") => {
+                        // structure:<function>:<hp_pct>:<building>
+                        let mut it = s["structure:".len()..].split(':');
+                        let f = it.next().unwrap_or("").to_string();
+                        bodies_required = it.next().and_then(|v| v.parse().ok()).unwrap_or(100);
+                        // Still going up rides `opened`, the existing
+                        // "is it in its other state" flag, rather than
+                        // growing the wire a bool one tag uses.
+                        opened = it.next() == Some("1");
+                        (EntityKind::Structure, Some(f), None)
+                    }
+                    Some(s) if s.starts_with("entrance:") => {
+                        // entrance:<dungeon>:<bodies>
+                        let rest = &s["entrance:".len()..];
+                        let (n, b) = rest.rsplit_once(':').unwrap_or((rest, "1"));
+                        bodies_required = b.parse().unwrap_or(1);
+                        (EntityKind::Entrance, Some(n.to_string()), None)
+                    }
+                    _ => (EntityKind::Player, None, None),
+                };
+                let battling = matches!(kind, EntityKind::Player)
+                    && e.avatar_state.as_deref() == Some("in_battle");
+                let is_mob = matches!(kind, EntityKind::Monster);
+                EntityView {
+                    id: e.entity_id,
+                    x: e.position.x,
+                    y: e.position.y,
+                    kind,
+                    monster_kind,
+                    faction,
+                    radius,
+                    battling,
+                    level: e.level.unwrap_or(0),
+                    opened,
+                    chest_tier,
+                    mob_level: is_mob.then_some(e.mob_level).flatten(),
+                    hp: is_mob.then_some(e.hp).flatten(),
+                    max_hp: is_mob.then_some(e.max_hp).flatten(),
+                    encounter_class: if is_mob { e.encounter_class } else { None },
+                    aggression: if is_mob { e.aggression } else { None },
+                    quarry,
+                    expects_parties,
+                    held,
+                    boss,
+                    clashing,
+                    bodies_required,
+                }
+            })
+            .collect();
+        self.out.push_back(ServerMsg::Snapshot {
+            entities,
+            last_input_seq: s.last_input_seq,
+            delta: s.delta,
+            removed: s.removed,
+        });
+    }
+
+    /// One streamed terrain section, already typed — same reason as `on_snapshot`.
+    fn on_terrain_section(&mut self, t: ww::TerrainSection) {
+        let section = TerrainSectionView {
+            index: t.index,
+            start_x: t.start_x,
+            end_x: t.end_x,
+            path: t.path.into_iter().map(|p| (p.x, p.y)).collect(),
+            biome: t.biome,
+            radial_half: t.radial_half,
+            corridor_lateral: t.corridor_lateral,
+            peaks: t.peaks,
+            ridges: t.ridges,
+            bridges: t.bridges,
+            straits: t.straits,
+            lobes: t.lobes,
+            basins: t.basins,
+            rivers: t.rivers,
+        };
+        self.out.push_back(ServerMsg::TerrainSection { section });
+    }
+
     fn handle_text(&mut self, text: &str) {
+        // **THE HOT MESSAGES PARSE TYPED, STRAIGHT FROM THE WIRE.** The general path below
+        // materialises every payload as a `serde_json::Value` tree and then converts it a
+        // second time with `from_value` — two full walks and an allocation per node, on the
+        // main thread, and the snapshot is tens of kilobytes ten times a second. The head is
+        // peeked with the payload left as raw text, and the two big world messages
+        // deserialize from that text once.
+        #[derive(serde::Deserialize)]
+        struct Head<'a> {
+            #[serde(rename = "type")]
+            msg_type: &'a str,
+            #[serde(borrow)]
+            payload: &'a serde_json::value::RawValue,
+        }
+        if let Ok(head) = serde_json::from_str::<Head>(text) {
+            match head.msg_type {
+                "world.snapshot" => {
+                    if let Ok(s) = serde_json::from_str::<wm::Snapshot>(head.payload.get()) {
+                        self.on_snapshot(s);
+                    }
+                    return;
+                }
+                "world.terrain_section" => {
+                    if let Ok(t) = serde_json::from_str::<ww::TerrainSection>(head.payload.get()) {
+                        self.on_terrain_section(t);
+                    }
+                    return;
+                }
+                _ => {}
+            }
+        }
         let raw: RawEnvelope = match serde_json::from_str(text) {
             Ok(r) => r,
             Err(_) => return,
@@ -2359,6 +2546,11 @@ impl Inner {
         match raw.msg_type.as_str() {
             "session.authenticated" => {
                 self.phase = Phase::Ready;
+                // Ask for delta snapshots: the full ones re-sent every static prop in a
+                // 128-unit disc ten times a second (tens of kilobytes a tick), and this
+                // client re-parsed all of it. The server answers with one full snapshot and
+                // then only changes — see `wm::Snapshot::delta`.
+                self.send_env(wm::SnapshotMode::TYPE, json!({ "delta": true }));
                 self.out.push_back(ServerMsg::Connected {
                     player_id: self.player_id.clone(),
                 });
@@ -2959,149 +3151,12 @@ impl Inner {
             "lobby.closed" => self.out.push_back(ServerMsg::LobbyClosed),
             "world.snapshot" => {
                 if let Ok(s) = serde_json::from_value::<wm::Snapshot>(raw.payload) {
-                    let entities = s
-                        .entities
-                        .into_iter()
-                        .map(|e| {
-                            // Server tags monsters `mob:<kind>:<faction>`, the portal
-                            // `portal`, and players with their avatar state (`active`, …).
-                            let mut radius = 0.0;
-                            let mut bodies_required: u8 = 1;
-                            let mut opened = false;
-                            let mut chest_tier = 0;
-                            let mut quarry = false;
-                            let mut expects_parties = 0u8;
-                            let mut held = false;
-                            let mut clashing = false;
-                            let mut boss: Option<String> = None;
-                            let (kind, monster_kind, faction) = match e.avatar_state.as_deref() {
-                                Some("portal") => (EntityKind::Portal, None, None),
-                                Some("stair") => (EntityKind::Stair, None, None),
-                                Some(s) if s.starts_with("trap:") => (
-                                    EntityKind::Trap,
-                                    Some(s["trap:".len()..].to_string()),
-                                    None,
-                                ),
-                                Some(s) if s.starts_with("chest:") => {
-                                    // chest:<tier>:<open>
-                                    opened = s.ends_with(":1");
-                                    chest_tier = s["chest:".len()..]
-                                        .split(':')
-                                        .next()
-                                        .and_then(|t| t.parse().ok())
-                                        .unwrap_or(0);
-                                    (EntityKind::Chest, None, None)
-                                }
-                                Some(s) if s.starts_with("mob:") => {
-                                    let t = parse_mob_state(s);
-                                    quarry = t.quarry;
-                                    held = t.held;
-                                    clashing = t.clashing;
-                                    boss = t.boss.map(str::to_string);
-                                    expects_parties = t.parties;
-                                    (
-                                        EntityKind::Monster,
-                                        Some(t.kind.to_string()),
-                                        (!t.faction.is_empty()).then(|| t.faction.to_string()),
-                                    )
-                                }
-                                Some(s) if s.starts_with("resource:") => {
-                                    (EntityKind::Resource, Some(s["resource:".len()..].to_string()), None)
-                                }
-                                Some(s) if s.starts_with("loot:") => {
-                                    (EntityKind::Loot, Some(s["loot:".len()..].to_string()), None)
-                                }
-                                Some(s) if s.starts_with("obstacle:") => {
-                                    // obstacle:<kind>:<radius>
-                                    let rest = &s["obstacle:".len()..];
-                                    let (k, r) = rest.rsplit_once(':').unwrap_or((rest, "1"));
-                                    radius = r.parse().unwrap_or(1.0);
-                                    (EntityKind::Obstacle, Some(k.to_string()), None)
-                                }
-                                Some(s) if s.starts_with("station:") => {
-                                    // station:<kind>:<uses_left> — the remaining jobs
-                                    // ride `bodies_required`, the existing "how many"
-                                    // field, rather than growing the wire a number that
-                                    // only one tag uses.
-                                    let rest = &s["station:".len()..];
-                                    let (k, u) = rest.rsplit_once(':').unwrap_or((rest, "0"));
-                                    bodies_required = u.parse().unwrap_or(0);
-                                    (EntityKind::Station, Some(k.to_string()), None)
-                                }
-                                Some(s) if s.starts_with("structure:") => {
-                                    // structure:<function>:<hp_pct>:<building>
-                                    let mut it = s["structure:".len()..].split(':');
-                                    let f = it.next().unwrap_or("").to_string();
-                                    bodies_required = it.next().and_then(|v| v.parse().ok()).unwrap_or(100);
-                                    // Still going up rides `opened`, the existing
-                                    // "is it in its other state" flag, rather than
-                                    // growing the wire a bool one tag uses.
-                                    opened = it.next() == Some("1");
-                                    (EntityKind::Structure, Some(f), None)
-                                }
-                                Some(s) if s.starts_with("entrance:") => {
-                                    // entrance:<dungeon>:<bodies>
-                                    let rest = &s["entrance:".len()..];
-                                    let (n, b) = rest.rsplit_once(':').unwrap_or((rest, "1"));
-                                    bodies_required = b.parse().unwrap_or(1);
-                                    (EntityKind::Entrance, Some(n.to_string()), None)
-                                }
-                                _ => (EntityKind::Player, None, None),
-                            };
-                            let battling = matches!(kind, EntityKind::Player)
-                                && e.avatar_state.as_deref() == Some("in_battle");
-                            let is_mob = matches!(kind, EntityKind::Monster);
-                            EntityView {
-                                id: e.entity_id,
-                                x: e.position.x,
-                                y: e.position.y,
-                                kind,
-                                monster_kind,
-                                faction,
-                                radius,
-                                battling,
-                                level: e.level.unwrap_or(0),
-                                opened,
-                                chest_tier,
-                                mob_level: is_mob.then_some(e.mob_level).flatten(),
-                                hp: is_mob.then_some(e.hp).flatten(),
-                                max_hp: is_mob.then_some(e.max_hp).flatten(),
-                                encounter_class: if is_mob { e.encounter_class } else { None },
-                                aggression: if is_mob { e.aggression } else { None },
-                                quarry,
-                                expects_parties,
-                                held,
-                                boss,
-                                clashing,
-                                bodies_required,
-                            }
-                        })
-                        .collect();
-                    self.out.push_back(ServerMsg::Snapshot {
-                        entities,
-                        last_input_seq: s.last_input_seq,
-                    });
+                    self.on_snapshot(s);
                 }
             }
             "world.terrain_section" => {
                 if let Ok(t) = serde_json::from_value::<ww::TerrainSection>(raw.payload) {
-                    let section = TerrainSectionView {
-                        index: t.index,
-                        start_x: t.start_x,
-                        end_x: t.end_x,
-                        path: t.path.into_iter().map(|p| (p.x, p.y)).collect(),
-                        biome: t.biome,
-                        radial_half: t.radial_half,
-                        corridor_lateral: t.corridor_lateral,
-                        peaks: t.peaks,
-                        ridges: t.ridges,
-                        bridges: t.bridges,
-                        straits: t.straits,
-                        lobes: t.lobes,
-                        basins: t.basins,
-                        rivers: t.rivers,
-                    };
-                    self.out.push_back(ServerMsg::TerrainSection { section });
+                    self.on_terrain_section(t);
                 }
             }
             "world.dungeon_scene" => {

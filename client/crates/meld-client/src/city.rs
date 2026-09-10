@@ -959,7 +959,10 @@ pub(crate) fn city_scene(
                         // faces of render, and the street lamps line spokes the camera is
                         // rarely looking down — so the ones that pay for themselves are the
                         // four standing where the player actually is.
-                        shadow_maps_enabled: i < 4,
+                        // Off since the point-light shadow pass was measured: six faces
+                        // per light over the plaza, four lights, for a shadow the sun's
+                        // cascades already draw.
+                        shadow_maps_enabled: false,
                         ..default()
                     },
                     Transform::from_xyz(0.0, h * 0.78, 0.0),
@@ -1549,7 +1552,11 @@ pub(crate) fn render_city(
     mut q_status: Query<&mut Text, With<CityStatusText>>,
 ) {
     if let Ok(mut t) = q_vault.single_mut() {
-        **t = city_vault_text(&inv);
+        // Compare before writing: an unconditional assignment re-shapes the text every frame.
+        let want = city_vault_text(&inv);
+        if **t != want {
+            **t = want;
+        }
     }
     if let Ok(mut t) = q_status.single_mut() {
         let prompt = if !session.status.is_empty() {
@@ -1573,13 +1580,16 @@ pub(crate) fn render_city(
             .live(time.elapsed_secs_f64())
             .map(str::to_string)
             .or_else(|| (!city.notice.is_empty()).then(|| city.notice.clone()));
-        **t = match crate::overworld::heat_line(&heat, time.elapsed_secs_f64()) {
+        let want = match crate::overworld::heat_line(&heat, time.elapsed_secs_f64()) {
             Some(bar) => format!("{bar}\n{prompt}"),
             None => match spoken {
                 Some(line) => format!("{line}\n{prompt}"),
                 None => prompt,
             },
         };
+        if **t != want {
+            **t = want;
+        }
     }
 }
 
@@ -5031,6 +5041,10 @@ pub(crate) fn render_travel_column(
     old: Query<Entity, With<TravelColumn>>,
     root_q: Query<Entity, With<CityRoot>>,
 ) {
+    // Rebuild on change, not on frame — see `battle::render_enemy_panel`.
+    if !(old.is_empty() || city.is_changed() || session.is_changed() || tutorial.is_changed()) {
+        return;
+    }
     for e in &old {
         commands.entity(e).despawn();
     }
@@ -5115,7 +5129,13 @@ pub(crate) fn render_district_nameplates(
     cam_q: Query<(&Camera, &GlobalTransform), With<Camera3d>>,
     root_q: Query<Entity, With<DistrictNameplateRoot>>,
     old: Query<Entity, With<DistrictNameplate>>,
+    cam_moved: Query<(), (With<Camera3d>, Changed<GlobalTransform>)>,
 ) {
+    // Rebuild on change, not on frame — see `battle::render_enemy_panel`. The plates are
+    // projected, so the camera moving is a change.
+    if !(old.is_empty() || city.is_changed() || !cam_moved.is_empty()) {
+        return;
+    }
     for e in &old {
         commands.entity(e).despawn();
     }
@@ -5360,6 +5380,21 @@ pub(crate) fn render_counter_panel(
     old: Query<Entity, With<CounterPanel>>,
     root_q: Query<Entity, With<CityRoot>>,
 ) {
+    // Rebuild on change, not on frame — see `battle::render_enemy_panel`.
+    if !(old.is_empty()
+        || city.is_changed()
+        || session.is_changed()
+        || inv.is_changed()
+        || shop.is_changed()
+        || shop_selling.is_changed()
+        || craft.is_changed()
+        || board.is_changed()
+        || hunts.is_changed()
+        || bounties.is_changed()
+        || pick.is_changed())
+    {
+        return;
+    }
     for e in &old {
         commands.entity(e).despawn();
     }
