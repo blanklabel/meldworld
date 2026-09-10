@@ -9059,7 +9059,7 @@ impl Arena {
         let lod = |i: usize, p: &Position| -> Option<(f64, bool)> {
             if is_near(p) {
                 Some((dt, true))
-            } else if (i as u64).wrapping_add(phase) % slices == 0 {
+            } else if (i as u64).wrapping_add(phase).is_multiple_of(slices) {
                 Some((dt * slices as f64, false))
             } else {
                 None
@@ -9180,7 +9180,8 @@ impl Arena {
         let prof_t2 = std::time::Instant::now();
         // --- Movement pass, decision: who steps this tick, and at what -----------
         // (index, dt for this creature, player target, creature target)
-        let mut moves: Vec<(usize, f64, Option<Position>, Option<Position>)> = Vec::new();
+        type Move = (usize, f64, Option<Position>, Option<Position>);
+        let mut moves: Vec<Move> = Vec::new();
         for (i, m) in self.monsters.iter().enumerate() {
             if !alive(m) {
                 continue;
@@ -9486,7 +9487,9 @@ impl Arena {
         // Decision phase, read-only: (attacker, its new cooldown, the blow it lands).
         // The attacker is carried so the pass can report WHO is fighting whom (`CR-2`),
         // not only who lost HP.
-        let mut swings: Vec<(usize, f64, Option<(usize, i32)>)> = Vec::new();
+        // (attacker, its new cooldown, the blow it lands: (victim, damage))
+        type Swing = (usize, f64, Option<(usize, i32)>);
+        let mut swings: Vec<Swing> = Vec::new();
         for (i, m) in self.monsters.iter().enumerate() {
             if !alive(m) {
                 if m.skirmish_cd != 0.0 {
