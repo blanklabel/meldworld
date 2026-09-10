@@ -5732,7 +5732,7 @@ impl Db {
             Backend::Pg(pool) => {
                 let row = sqlx::query(
                     "SELECT seed, tick_count, shift_generation, sections, delta,
-                            EXTRACT(EPOCH FROM updated_at) * 1000 AS updated_at_ms
+                            (EXTRACT(EPOCH FROM updated_at) * 1000)::float8 AS updated_at_ms
                      FROM worlds WHERE world_key = $1",
                 )
                 .bind(world_key)
@@ -5763,7 +5763,7 @@ impl Db {
             Backend::Pg(pool) => {
                 let rows = sqlx::query(
                     "SELECT world_key, seed, tick_count, shift_generation, sections, delta,
-                            EXTRACT(EPOCH FROM updated_at) * 1000 AS updated_at_ms
+                            (EXTRACT(EPOCH FROM updated_at) * 1000)::float8 AS updated_at_ms
                      FROM worlds ORDER BY world_key",
                 )
                 .fetch_all(pool)
