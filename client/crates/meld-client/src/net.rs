@@ -843,6 +843,9 @@ pub enum ServerMsg {
         items: Vec<(String, i32)>,
         gear: Vec<(String, meld_proto::enums::Insurance)>,
     },
+    /// A world-generation pass is under way (`run.generating`) — the descent screen's
+    /// only real news. See `screens::Descent`.
+    Generating { step: String, index: u32, total: u32, biome: Option<String>, attempt: u32 },
     /// An extraction channel began / broke.
     ChannelStarted { completes_at: u64, fill_ms: u64, method: String },
     ChannelInterrupted,
@@ -3267,6 +3270,17 @@ impl Inner {
                         items,
                         gear_drops,
                         worn,
+                    });
+                }
+            }
+            "run.generating" => {
+                if let Ok(g) = serde_json::from_value::<wr::Generating>(raw.payload) {
+                    self.out.push_back(ServerMsg::Generating {
+                        step: g.step,
+                        index: g.index,
+                        total: g.total,
+                        biome: g.biome,
+                        attempt: g.attempt,
                     });
                 }
             }

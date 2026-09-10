@@ -567,9 +567,86 @@ pub(crate) fn join_login_refresh(
 #[derive(Component)]
 pub(crate) struct DescendRoot;
 
-/// The live line — what the world is doing right now, and how long it has taken.
+/// The live line — how long the wait has taken.
 #[derive(Component)]
 pub(crate) struct DescendStatus;
+
+/// The pass the server says it is on, in a few words.
+#[derive(Component)]
+pub(crate) struct DescendPass;
+
+/// One clause on what that pass actually does — the little detail that turns a step name
+/// into something worth reading.
+#[derive(Component)]
+pub(crate) struct DescendDetail;
+
+/// The filled part of the honest progress bar (a section count, never a timer).
+#[derive(Component)]
+pub(crate) struct DescendFill;
+
+/// **WHAT THE SERVER SAID IT WAS DOING, LAST.** Fed by `run.generating` (see
+/// `wr::Generating`), read by `render_descending`.
+///
+/// Every field is the server's own answer, so an empty `step` means the honest thing:
+/// nothing has told us anything. That is a real case and not a bug — a **re-dive into a
+/// world that already exists** generates nothing at all (the server builds one world per
+/// instance), and a **restored** world is replayed from its seed in one un-narrated call. The
+/// screen falls back to naming what a world is MADE of in those cases, rather than inventing
+/// a pass nobody ran.
+#[derive(Resource, Default)]
+pub(crate) struct Descent {
+    pub(crate) step: String,
+    pub(crate) index: u32,
+    pub(crate) total: u32,
+    pub(crate) biome: Option<String>,
+    pub(crate) attempt: u32,
+}
+
+/// What a pass is called, and one clause on what it is doing — the whole point of the
+/// screen. Both halves are true of the code that reports them (`meld_world::GenStage`); a
+/// step this does not know is named plainly rather than dressed up, because a wrong
+/// explanation is worse than none.
+fn pass_words(d: &Descent) -> (String, &'static str) {
+    match d.step.as_str() {
+        "maze" => (
+            "the maze is decided".into(),
+            "which walls stand, and where the passes through them are left",
+        ),
+        "section" => {
+            let where_ = match d.biome.as_deref() {
+                Some(b) if !b.is_empty() => format!("the {} is laid down", biome_words(b)),
+                _ => "the ground is laid down".into(),
+            };
+            (where_, "its ranges raised, its rivers walked downhill, its wildlife placed")
+        }
+        "bend" => (
+            "the corridor is bent into an arc".into(),
+            "so the world fans out around the hub in every direction but west",
+        ),
+        "route" => (
+            "the way out is walked".into(),
+            "end to end, so a route through is guaranteed before you set foot on it",
+        ),
+        "restart" => (
+            "the route did not hold".into(),
+            "this world is discarded, and another is drawn from scratch",
+        ),
+        "" => (
+            "the world is being drawn".into(),
+            "the maze decided, its ranges raised, its rivers walked downhill",
+        ),
+        other => (other.to_string(), "the world is being drawn"),
+    }
+}
+
+/// "amber_wood" → "Amber Wood". `title_case` alone leaves the underscore in, and a biome
+/// with one in its key is the only kind this screen ever gets wrong.
+fn biome_words(key: &str) -> String {
+    key.split('_')
+        .map(crate::world_render::title_case)
+        .collect::<Vec<_>>()
+        .join(" ")
+}
 
 /// **THE WORLD IS BEING MADE, AND THE PLAYER SHOULD SEE THAT.**
 ///
@@ -579,12 +656,35 @@ pub(crate) struct DescendStatus;
 /// one-line status string in the bottom strip — *"stepping through The Threshold…"* — which
 /// does not read as work happening. It reads as a hang.
 ///
-/// ⚠️ **THE READOUT IS HONEST, WHICH IS THE WHOLE POINT.** It shows ELAPSED TIME rather than a
-/// progress bar, because the client has no idea how far along generation is — the server sends
-/// nothing until it is finished — and a bar that fills on a timer is a lie that gets found out
-/// the first time a world takes twice as long. A clock that ticks is proof of life; a fake bar
-/// is a promise nobody made.
-pub(crate) fn descending_ui(mut commands: Commands) {
+/// ⚠️ **THE READOUT IS HONEST, WHICH IS THE WHOLE POINT — AND NOW IT CAN AFFORD TO SAY MORE.**
+/// This comment used to explain why the screen showed nothing but an elapsed clock: the client
+/// had no idea how far along generation was, because the server sent nothing until it was
+/// finished, and a bar that fills on a timer is a lie that gets found out the first time a
+/// world takes twice as long.
+///
+/// The server tells us now (`run.generating` — see `Descent`), so the pass name, the clause
+/// under it and the bar are all the server's own answers about work it has actually done. The
+/// clock stays, because it is the one thing that is true even when nothing has spoken: a
+/// re-dive into a live world generates nothing at all, and a restored world is replayed in one
+/// un-narrated call.
+///
+/// **Reported at 3.4-4.2 s in release for the initial chain**, and several times that when the
+/// route does not hold — this is not a flash the player never sees.
+pub(crate) fn descending_ui(mut commands: Commands, mut descent: ResMut<Descent>) {
+    // A previous dive's last pass is not this one's first. Forget it, or a re-dive opens on
+    // "the way out is walked" for a world nobody is drawing.
+    *descent = match crate::flags::descend_stage_flag() {
+        // `MELD_DESCEND=<step>` stages one pass for a screenshot; a section gets a count and
+        // a country, since that is the frame the layout has to survive.
+        Some(step) => Descent {
+            index: if step == "section" { 3 } else { 0 },
+            total: if step == "section" { 8 } else { 0 },
+            biome: (step == "section").then(|| "amber_wood".to_string()),
+            attempt: if step == "restart" { 2 } else { 1 },
+            step,
+        },
+        None => Descent::default(),
+    };
     commands
         .spawn((
             DescendRoot,
@@ -615,15 +715,39 @@ pub(crate) fn descending_ui(mut commands: Commands) {
                 TextFont { font_size: FontSize::Px(22.0), ..default() },
                 TextColor(Color::srgb(0.72, 0.80, 0.95)),
             ));
-            // What is actually happening out there, in the game's own terms. These are the
-            // real passes `push_section` runs, in the order it runs them — not invented steps.
+            // The pass the server is on, and one clause on what that pass does. Not invented
+            // steps: `meld_world::GenStage` reports the real ones, in the order they run.
             p.spawn((
-                Text::new(
-                    "the maze is decided  ·  its ranges raised  ·  its rivers walked downhill\n                     a way through is guaranteed before you ever set foot on it",
-                ),
+                DescendPass,
+                Text::new(""),
+                TextFont { font_size: FontSize::Px(20.0), ..default() },
+                TextColor(Color::srgb(0.86, 0.91, 1.0)),
+            ));
+            p.spawn((
+                DescendDetail,
+                Text::new(""),
                 TextFont { font_size: FontSize::Px(15.0), ..default() },
                 TextColor(Color::srgb(0.50, 0.58, 0.74)),
             ));
+            // The bar. Fixed width so it never resizes the column as the fill moves, and it
+            // stays in place (empty) when nothing has told us a count — a bar that appears
+            // and disappears reads as a glitch, where an empty one reads as "not yet".
+            p.spawn((
+                Node {
+                    width: Val::Px(420.0),
+                    height: Val::Px(6.0),
+                    margin: UiRect::top(Val::Px(4.0)),
+                    ..default()
+                },
+                BackgroundColor(Color::srgba(0.30, 0.38, 0.55, 0.35)),
+            ))
+            .with_children(|bar| {
+                bar.spawn((
+                    DescendFill,
+                    Node { width: Val::Percent(0.0), height: Val::Percent(100.0), ..default() },
+                    BackgroundColor(Color::srgb(0.62, 0.74, 0.98)),
+                ));
+            });
             p.spawn((
                 DescendStatus,
                 Text::new(""),
@@ -633,14 +757,22 @@ pub(crate) fn descending_ui(mut commands: Commands) {
         });
 }
 
-/// Ticks the descent readout: a moving ellipsis so the screen is visibly alive, and the
-/// elapsed seconds once the wait is long enough to be worth naming.
+/// Ticks the descent readout: the pass the server is on, what that pass does, an honest bar,
+/// and a moving ellipsis + elapsed seconds so the screen is visibly alive even when nothing
+/// has spoken.
 pub(crate) fn render_descending(
     time: Res<Time>,
+    descent: Res<Descent>,
     mut started: Local<f32>,
-    mut q: Query<&mut Text, With<DescendStatus>>,
+    mut status: Query<&mut Text, With<DescendStatus>>,
+    mut pass: Query<&mut Text, (With<DescendPass>, Without<DescendStatus>)>,
+    mut detail: Query<
+        &mut Text,
+        (With<DescendDetail>, Without<DescendStatus>, Without<DescendPass>),
+    >,
+    mut fill: Query<&mut Node, With<DescendFill>>,
 ) {
-    let Ok(mut t) = q.single_mut() else {
+    let Ok(mut t) = status.single_mut() else {
         // Not on this screen: forget the clock so the next descent starts from zero.
         *started = 0.0;
         return;
@@ -660,6 +792,41 @@ pub(crate) fn render_descending(
     } else {
         format!("stepping through{dots}    {secs:.0}s")
     };
+
+    let (name, clause) = pass_words(&descent);
+    if let Ok(mut p) = pass.single_mut() {
+        // The section count rides the pass line rather than the bar, because a bar with no
+        // number on it cannot say whether it is stuck. An attempt past the first is named
+        // too: a re-draw is otherwise indistinguishable from the first one hanging.
+        let count = if descent.total > 0 {
+            format!("      {} of {}", descent.index, descent.total)
+        } else {
+            String::new()
+        };
+        let again = if descent.attempt > 1 {
+            format!("      attempt {}", descent.attempt)
+        } else {
+            String::new()
+        };
+        **p = format!("{name}{count}{again}");
+    }
+    if let Ok(mut d) = detail.single_mut() {
+        **d = clause.to_string();
+    }
+    if let Ok(mut f) = fill.single_mut() {
+        // Sections are the only pass with a count of its own, so they are the only thing
+        // this measures. The passes on either side of them are pinned to the ends they sit
+        // at — the maze before any ground, the bend and the route walk after all of it —
+        // which is a fact about the order, not a guess about the clock.
+        let pct = match descent.step.as_str() {
+            "section" if descent.total > 0 => {
+                100.0 * descent.index as f32 / descent.total as f32
+            }
+            "bend" | "route" => 100.0,
+            _ => 0.0,
+        };
+        f.width = Val::Percent(pct);
+    }
 }
 
 pub(crate) fn lobby_ui(mut commands: Commands) {
@@ -1127,6 +1294,37 @@ pub(crate) fn ended_buttons(
 
 #[cfg(test)]
 mod tests {
+    /// **EVERY PASS THE SERVER CAN REPORT HAS WORDS ON THIS SIDE.** `pass_words` falls back
+    /// to printing the bare key, so a step nobody wrote a line for does not fail — it just
+    /// puts `section` on screen where a sentence should be, which is this repo's oldest
+    /// failure mode (a token the client never renders). `wr::Generating::STEPS` is the one
+    /// list both sides read; the server `debug_assert`s against it too.
+    #[test]
+    fn every_generation_pass_has_words_for_the_player() {
+        for step in meld_proto::realtime::run::Generating::STEPS {
+            let d = Descent { step: step.to_string(), ..Descent::default() };
+            let (name, clause) = pass_words(&d);
+            assert_ne!(name, step, "the `{step}` pass renders as its own wire key");
+            assert!(
+                name.len() > step.len() && clause.len() > 20,
+                "the `{step}` pass has no readable line: {name:?} / {clause:?}"
+            );
+        }
+    }
+
+    /// A section names the ground it laid, and an underscored key is the only kind the screen
+    /// could get wrong — `title_case` alone leaves "amber_wood" in the sentence.
+    #[test]
+    fn a_section_names_the_country_it_just_made() {
+        let d = Descent {
+            step: "section".into(),
+            index: 3,
+            total: 8,
+            biome: Some("amber_wood".into()),
+            attempt: 1,
+        };
+        assert_eq!(pass_words(&d).0, "the Amber Wood is laid down");
+    }
 
     /// Every class card's kit comes from the ONE registry, so a card can never again name
     /// an ability that was renamed or put its unlocks at the wrong level — the Explorer's

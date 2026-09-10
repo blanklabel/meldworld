@@ -899,6 +899,59 @@ pub mod run {
         const TYPE: &'static str = "run.started";
     }
 
+    /// S2C — **the world is being drawn, and this is the pass it is on.**
+    ///
+    /// ⚠️ **BEFORE THIS, THE CLIENT WAS SENT NOTHING UNTIL GENERATION FINISHED**, so the
+    /// descent screen could only offer an elapsed clock — which reads as a hang rather than
+    /// as work. And the wait is not short: measured in RELEASE, the initial eight-section
+    /// chain takes **3.4-4.2 s**, and a world whose guaranteed route does not hold is thrown
+    /// away and drawn again from scratch (up to twelve times), which is the one thing that
+    /// can multiply that.
+    ///
+    /// It reaches the player *while the work is happening* because the game loop and each
+    /// session's writer are **separate tasks**: the loop is blocked solid through generation,
+    /// but the writer is polled on another worker and puts these on the socket as they are
+    /// queued. Anything batched into the loop's normal dispatch would arrive with
+    /// `run.started` and say nothing.
+    ///
+    /// **Structured, not a sentence.** The words are presentation and belong to the client;
+    /// `index`/`total` is what makes an HONEST progress bar possible — the thing the old
+    /// screen deliberately refused to draw, because a bar that fills on a timer is a lie
+    /// that gets found out the first time a world takes twice as long.
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct Generating {
+        /// Which pass: `maze` | `section` | `bend` | `route` | `restart`.
+        pub step: String,
+        /// For `section`, which one — 1-based, of `total`. Both `0` when the pass has no
+        /// count of its own, which is how the client knows not to draw a bar.
+        #[serde(default)]
+        pub index: u32,
+        #[serde(default)]
+        pub total: u32,
+        /// The theme of the ground just laid, when the pass has one. Real detail: this is
+        /// the section's own representative biome, so the readout names the country being
+        /// made rather than counting anonymous steps.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub biome: Option<String>,
+        /// Which attempt this is, 1-based. A re-draw is invisible otherwise and looks
+        /// exactly like the first one taking forever.
+        #[serde(default)]
+        pub attempt: u32,
+    }
+    impl Message for Generating {
+        const TYPE: &'static str = "run.generating";
+    }
+    impl Generating {
+        /// Every pass the server can report, and the ONE list both sides read.
+        ///
+        /// ⚠️ A step the client has no words for renders as a bare key — which is this
+        /// repo's oldest failure mode wearing a new hat (`pack:` drove combat for a release
+        /// without reaching the client). The keys live here so the client can be held to
+        /// covering all of them by test, rather than to whatever the server happened to send
+        /// the day someone last looked.
+        pub const STEPS: [&'static str; 5] = ["maze", "section", "bend", "route", "restart"];
+    }
+
     /// One of the caller's heroes, for the party/roster panel: persistent name,
     /// class, level, and the four attributes at that level. Stats live here (the
     /// inventory party screen) rather than cluttering the battle HUD.
