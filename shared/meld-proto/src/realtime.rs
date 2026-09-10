@@ -148,6 +148,33 @@ pub mod movement {
         /// bookkeeping on every creature in the cull.
         #[serde(default)]
         pub last_input_seq: u32,
+        /// **A DELTA, for a session that asked for one** (`SnapshotMode`). When `true`,
+        /// `entities` holds only what changed since this session's previous snapshot — new
+        /// in range, moved, or re-tagged — and `removed` names what left; everything else the
+        /// client already holds is still exactly right. When `false` (the default, and every
+        /// snapshot to a session that never opted in) the message is the complete visible set,
+        /// and a client replaces its world with it.
+        ///
+        /// Why: a full snapshot at 10 Hz re-sent every static tree, rock, chest and node in a
+        /// 128-unit disc — measured at **70.9 KB per tick, 709 KB/s per player** at d1269 — and
+        /// the client re-parsed and re-inserted all of it ten times a second. Almost none of it
+        /// had changed. The first snapshot after any gap (a battle, a dungeon, a fresh
+        /// connection) is always full, so a client can never be left holding a stale world.
+        #[serde(default)]
+        pub delta: bool,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        pub removed: Vec<Id>,
+    }
+
+    /// C2S — ask for [`Snapshot::delta`] snapshots (or back to full ones). The next
+    /// snapshot after this lands is full either way, so the client's world is rebuilt from
+    /// a known baseline before the deltas begin.
+    #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+    pub struct SnapshotMode {
+        pub delta: bool,
+    }
+    impl Message for SnapshotMode {
+        const TYPE: &'static str = "movement.snapshot_mode";
     }
     #[derive(Debug, Clone, Default, Serialize, Deserialize)]
     pub struct SnapshotEntity {

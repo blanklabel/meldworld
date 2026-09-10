@@ -6,6 +6,7 @@ pub(crate) mod building;
 pub mod config;
 pub mod game;
 pub mod gateway;
+pub mod prof;
 
 use axum::routing::get;
 use axum::Router;

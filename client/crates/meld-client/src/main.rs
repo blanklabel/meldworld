@@ -2829,7 +2829,17 @@ fn hd2d_remote(
     mut commands: Commands,
     mut look: ResMut<hd2d::Look>,
     mut watch: ResMut<hd2d::LookWatch>,
+    time: Res<Time>,
+    mut next_poll: Local<f32>,
 ) {
+    // The file channel is a dev loop, not a frame's work: two `fs::metadata` syscalls a
+    // frame were the price of hot-reloading the look. Polled a few times a second instead —
+    // a screenshot request or a `LOOK_FILE` edit landing a quarter-second late is nothing.
+    let now = time.elapsed_secs();
+    if now < *next_poll {
+        return;
+    }
+    *next_poll = now + 0.25;
     hd2d::reload_look(&mut look, &mut watch);
     hd2d::maybe_screenshot(&mut commands);
 }

@@ -19,6 +19,16 @@
 
 use bevy::prelude::*;
 
+/// One `u64` for a panel's inputs, so an immediate-mode UI system can ask "did anything I
+/// draw change" before it tears its node tree down. Rebuilding UI every frame re-runs layout
+/// and re-shapes every glyph; most of these panels change ten times a second at most.
+pub fn redraw_key<T: std::hash::Hash>(t: &T) -> u64 {
+    use std::hash::Hasher;
+    let mut h = std::hash::DefaultHasher::new();
+    t.hash(&mut h);
+    h.finish()
+}
+
 /// The glass itself: a cold, dark blue at 88% — opaque enough to read small text
 /// over a bright biome, translucent enough to see the world through.
 pub const GLASS: Color = Color::srgba(0.055, 0.075, 0.17, 0.88);

@@ -73,14 +73,30 @@ Periodic authoritative state of all dynamic entities within the player's interes
 | Field | Type | Required | Nullable | Default | Description |
 |-------|------|----------|----------|---------|-------------|
 | server_tick | integer (int64) | Yes | No | — | Monotonic 20 Hz simulation tick number this snapshot was taken at. |
-| entities | array of object | Yes | No | — | One entry per dynamic entity (players, monsters, gatekeeper bosses) currently in interest radius. Static drops/portals/wards/stalls appear via spawn/despawn and chunk data, not in every snapshot. |
+| entities | array of object | Yes | No | — | One entry per entity (players, monsters, chests, nodes, obstacles, structures, entrances, the portal) currently in interest radius — or, when `delta` is `true`, only the entries that are new or changed since this session's previous snapshot. |
+| delta | boolean | No | No | `false` | `true`: this is a **delta** — `entities` holds only what changed and `removed` what left; the client keeps everything else it already holds. Only ever sent to a session that asked via `movement.snapshot_mode`, and never as the first snapshot after a gap (a battle, a dungeon, a connection): that one is always full. Measured before: 70.9 KB per full snapshot at d1269, 709 KB/s per player. |
+| removed | array of string | No | No | `[]` | Ids that left this session's interest set since its previous snapshot. Only present on a delta. |
 | entities[].entity_id | string (uuid) | Yes | No | — | Entity id, stable across snapshots. |
 | entities[].position | Position | Yes | No | — | Authoritative position at `server_tick`. |
 | entities[].velocity | object | Yes | No | — | Current velocity in tiles/s: fields `x`, `y` (number, double). For client-side interpolation/extrapolation. |
 | entities[].avatar_state | string (tag) | Yes | Yes | — | What this entity IS, as a colon-delimited tag. For a **player avatar**: `active`, `in_battle`, `channeling` or `sleeping` (`in_battle` avatars stand still on the overworld and are valid targets for `social.drop_item_on_player`). For everything else the first part is the kind — `mob:…`, `portal`, `stair`, `trap:<kind>`, `chest:<tier>:<opened>`, `resource:<kind>`, `loot:<kind>`, `obstacle:<kind>:<radius>`, `station:<kind>:<jobs_left>`, `structure:<function>:<hp_pct>:<building>`, `entrance:<dungeon>:<bodies_required>`. See the mob tag below. |
 | ↳ mob tag | `mob:<kind>:<faction>[:token…]` | — | — | — | `kind` is the creature content id and `faction` its lineage. The trailing tokens are a **SET** — read every one, never just the first — and each is either a bare flag or a `key:value` pair: `boss:<key>` (FS-4: which of the ten named bosses this is — a boss overlays a host creature, so `kind` stays the wildlife it rode in on), `held` (pinned by a Psyker, CL-2), `clash` (trading blows with another creature right now, CR-2), and the **per-viewer** `quarry` (the quarry of a hunt this recipient is working, AD-4 — the same creature is not a quarry to the teammate beside them). |
 
-**Ordering:** snapshots are self-contained; a client may drop any snapshot older than the newest received (compare `server_tick`).
+**Ordering:** a full snapshot is self-contained; a client may drop any full snapshot older than the newest received (compare `server_tick`). Deltas are NOT droppable — each assumes the one before it was applied — which is why the server sends a full snapshot after any tick it did not send one.
+
+---
+
+### `movement.snapshot_mode` (C2S)
+
+Ask for delta snapshots, or go back to full ones.
+
+**Direction:** C2S. The Bevy client sends `{"delta": true}` right after `session.authenticated`; the QA bots and the MCP harness never send it and keep full snapshots.
+
+| Field | Type | Required | Nullable | Default | Description |
+|-------|------|----------|----------|---------|-------------|
+| delta | boolean | Yes | No | — | `true` to receive `world.snapshot` with `delta`/`removed` from the next snapshot on; `false` to return to full snapshots. Either way the next snapshot sent is a full one. |
+
+**Results in** — no ack. Takes effect on the next `world.snapshot`.
 
 **Example**
 

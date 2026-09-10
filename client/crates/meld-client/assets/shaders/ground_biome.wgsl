@@ -417,14 +417,23 @@ fn inland_water_at(wxz: vec2<f32>) -> vec2<f32> {
     // margin is divided by a nominal shore slope so it shares world units with the radial
     // one — `coast::BASIN_SHORE_SLOPE`, and it must match.
     let nb = i32(params.basin_count);
+    // The ground under this point does not depend on which basin is being tested, so it is
+    // sampled ONCE, outside the loop. It used to be inside: `peak_dome` and `ridge_wedge`
+    // are the two widest loops in the shader (24 and 32 slots), and evaluating both per
+    // basin put ~900 iterations into every fragment of ground on screen for a value that
+    // never changed between iterations. This runs per FRAGMENT, not per vertex, so that
+    // was the single largest cost in the frame.
+    var ground = 0.0;
+    if (nb > 0) {
+        // `terrain_height_wgsl` takes an ALREADY-OFFSET position, like every other caller.
+        ground = terrain_height_wgsl(wxz + params.terrain_off) + peak_dome(wxz) + ridge_wedge(wxz);
+    }
     for (var k = 0; k < nb; k = k + 1) {
         let b = params.basins[k];
         if (b.z <= 0.0) { continue; }
         let within = b.z - length(wxz - b.xy);
-        // `terrain_height_wgsl` takes an ALREADY-OFFSET position, like every other caller.
         // The divisor is `coast::BASIN_SHORE_SLOPE`, held against this file by
         // `the_basin_shore_slope_matches_the_shader`.
-        let ground = terrain_height_wgsl(wxz + params.terrain_off) + peak_dome(wxz) + ridge_wedge(wxz);
         let below = (b.w - ground) / 0.12;
         let dd = min(within, below);
         if (dd > d) { d = dd; v = body_variant(b.xy); }

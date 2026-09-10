@@ -737,6 +737,9 @@ struct Session {
     /// alternative is an in-memory zero racing the load and announcing "1/8" on a
     /// hunt the account had already finished.
     hunts: Option<HashMap<String, (i32, bool)>>,
+    /// This session asked for delta snapshots (`movement.snapshot_mode`). Copied onto the
+    /// world when the player enters one; the harnesses never ask and keep full snapshots.
+    snap_delta: bool,
 }
 
 /// One outbound message queued for a player, before seq assignment.
@@ -832,6 +835,79 @@ fn unlock_inventory(
         banner,
         deepest_ever,
     }
+}
+
+/// What one delta-snapshot session was last sent: entity id → (content stamp, the tick it
+/// was last visible), and the tick of the last snapshot sent at all.
+#[derive(Default)]
+struct SnapBaseline {
+    last_tick: u64,
+    seen: HashMap<String, (u64, u64)>,
+}
+
+impl SnapBaseline {
+    /// Fold this tick's visible set in and return what to send: the entities that are new
+    /// or changed, the ids that left, and whether this is a delta at all. A gap since the
+    /// last snapshot — the player was in a battle or a dungeon, or has never had one — makes
+    /// it a full snapshot, so a client can never be left holding a world it was never sent.
+    fn diff(
+        &mut self,
+        tick: u64,
+        visible: Vec<wm::SnapshotEntity>,
+    ) -> (Vec<wm::SnapshotEntity>, Vec<String>, bool) {
+        let contiguous = self.last_tick + 1 == tick && !self.seen.is_empty();
+        self.last_tick = tick;
+        if !contiguous {
+            self.seen.clear();
+            for e in &visible {
+                self.seen.insert(e.entity_id.clone(), (snapshot_stamp(e), tick));
+            }
+            return (visible, Vec::new(), false);
+        }
+        let mut changed: Vec<wm::SnapshotEntity> = Vec::new();
+        for e in visible {
+            let stamp = snapshot_stamp(&e);
+            match self.seen.get_mut(&e.entity_id) {
+                Some(slot) => {
+                    let moved = slot.0 != stamp;
+                    *slot = (stamp, tick);
+                    if moved {
+                        changed.push(e);
+                    }
+                }
+                None => {
+                    self.seen.insert(e.entity_id.clone(), (stamp, tick));
+                    changed.push(e);
+                }
+            }
+        }
+        let mut removed: Vec<String> = Vec::new();
+        self.seen.retain(|id, (_, seen_at)| {
+            let keep = *seen_at == tick;
+            if !keep {
+                removed.push(id.clone());
+            }
+            keep
+        });
+        (changed, removed, true)
+    }
+}
+
+/// Everything about a snapshot row that reaches the wire, folded to one number, so an
+/// unchanged row can be left out of a delta. `velocity` is always zero and is skipped.
+fn snapshot_stamp(e: &wm::SnapshotEntity) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::hash::DefaultHasher::new();
+    e.position.x.to_bits().hash(&mut h);
+    e.position.y.to_bits().hash(&mut h);
+    e.avatar_state.hash(&mut h);
+    e.level.hash(&mut h);
+    e.mob_level.hash(&mut h);
+    e.hp.hash(&mut h);
+    e.max_hp.hash(&mut h);
+    e.encounter_class.hash(&mut h);
+    e.aggression.hash(&mut h);
+    h.finish()
 }
 
 fn out_msg<M: Message>(player_id: &str, m: &M) -> Outgoing {
@@ -1317,6 +1393,13 @@ struct WorldActor {
     /// generates synchronously. A player must never be able to walk off the world because a
     /// thread was slow.
     pending_frontier: Option<tokio::sync::oneshot::Receiver<Arena>>,
+    /// `MELD_TICK_STATS=1`: where the tick goes, phase by phase.
+    prof: crate::prof::Prof,
+    /// Players receiving DELTA snapshots (`wm::Snapshot::delta`), and what each was last
+    /// sent: entity id → (content stamp, the tick it was last in their snapshot), plus the
+    /// tick of their last snapshot so a gap — a battle, a dungeon — forces a full one.
+    delta_players: HashSet<String>,
+    snap_baseline: HashMap<String, SnapBaseline>,
     run: InstanceRun,
     /// Every battle currently running in the instance. Independent parties fight
     /// separate encounters at the same time; each is one [`BattleSlot`].
@@ -2685,6 +2768,10 @@ impl WorldActor {
         // is running, `in_battle` is empty so this sends to everyone.
         let in_battle = self.parties_in_battle();
         let mut out = Vec::new();
+        // Taken out for the loop below, which borrows `self` immutably throughout, and put
+        // back after it. A player who is not sent a snapshot this tick keeps a stale
+        // baseline, which the tick gap turns into a full snapshot next time.
+        let mut baselines = std::mem::take(&mut self.snap_baseline);
         // DG-6b: emit the client re-skin cue (`world.dungeon_scene`) on a *transition*
         // only — descend / floor-change / exit. Computed up front (a `&mut self` diff
         // against the last-sent scene) so the snapshot loop below stays an immutable
@@ -2844,16 +2931,37 @@ impl WorldActor {
             // Read per recipient: the field describes the addressee, not the world.
             let last_input_seq =
                 self.arena.avatar(&r.player_id).map(|a| a.last_input_seq).unwrap_or(0);
+            let (entities, removed, delta) = if self.delta_players.contains(&r.player_id) {
+                let base = baselines.entry(r.player_id.clone()).or_default();
+                base.diff(self.tick_count, culled)
+            } else {
+                (culled, Vec::new(), false)
+            };
             out.push(out_msg(
                 &r.player_id,
                 &wm::Snapshot {
                     server_tick,
-                    entities: culled,
+                    entities,
                     last_input_seq,
+                    delta,
+                    removed,
                 },
             ));
         }
+        self.snap_baseline = baselines;
         out
+    }
+
+    /// Switch one player between full and delta snapshots. Either way the next snapshot is
+    /// full, so a client that just asked is rebuilt from a baseline it is then kept up to
+    /// date against.
+    fn set_delta_snapshots(&mut self, player_id: &str, delta: bool) {
+        self.snap_baseline.remove(player_id);
+        if delta {
+            self.delta_players.insert(player_id.to_string());
+        } else {
+            self.delta_players.remove(player_id);
+        }
     }
 
     // --- DG-3b: dungeon subinstances (enter / move / exit + per-space snapshot) ---
@@ -3446,7 +3554,7 @@ impl WorldActor {
             });
         }
         let last_input_seq = self.arena.avatar(pid).map(|a| a.last_input_seq).unwrap_or(0);
-        out_msg(pid, &wm::Snapshot { server_tick, entities, last_input_seq })
+        out_msg(pid, &wm::Snapshot { server_tick, entities, last_input_seq, delta: false, removed: Vec::new() })
     }
 
     /// The caller's hero roster (name/class/level/attributes) for the party panel.
@@ -4491,6 +4599,7 @@ impl GameState {
                         unlocks: None,
                         pending_materials: Vec::new(),
                         hunts: None,
+                        snap_delta: false,
                     },
                 );
                 self.order.push(player_id.clone());
@@ -4972,6 +5081,18 @@ impl GameState {
                     }
                 }
             }
+            wm::SnapshotMode::TYPE => {
+                let Ok(req) = serde_json::from_value::<wm::SnapshotMode>(raw.payload) else {
+                    return vec![error(player_id, ErrorCode::ValidationError, "bad snapshot_mode", Some(raw.seq))];
+                };
+                if let Some(s) = self.sessions.get_mut(player_id) {
+                    s.snap_delta = req.delta;
+                }
+                if let Some(w) = self.world.as_mut() {
+                    w.set_delta_snapshots(player_id, req.delta);
+                }
+                Vec::new()
+            }
             wr::WatchBattle::TYPE => {
                 let (out, eff) = match self.world.as_mut() {
                     Some(w) => w.handle_watch_battle(player_id, raw),
@@ -5437,6 +5558,9 @@ impl GameState {
                     None => Arena::generate_with(&balance, seed, tutorial, force_biome),
                 },
                 pending_frontier: None,
+                prof: crate::prof::Prof::from_env(),
+                delta_players: HashSet::new(),
+                snap_baseline: HashMap::new(),
                 run: InstanceRun::new(instance_id, departure_hub_distance, &balance, now_ms()),
                 battles: Vec::new(),
                 hero_hp: HashMap::new(),
@@ -5512,6 +5636,8 @@ impl GameState {
         // (they opt in via `run.join_battle`). They still share the instance/arena
         // and dive together.
         for member in members {
+            let wants_delta = self.sessions.get(&member.0).is_some_and(|s| s.snap_delta);
+            inst.set_delta_snapshots(&member.0, wants_delta);
             inst.run.add_party(vec![member]);
         }
         // Each dive starts with a stock of Town Portal items — the primary way
@@ -10233,6 +10359,8 @@ impl WorldActor {
     // `GameState::apply_world_effects` applies after the borrow ends.
 
     fn tick(&mut self) -> (Vec<Outgoing>, Vec<WorldEffect>) {
+        self.prof.tick_start();
+        let mut mark = std::time::Instant::now();
         let dt = (self.balance.battle.tick_ms.max(1) as f64) / 1000.0;
         self.tick_count += 1;
         // DG-10: dungeon clocks advance on the WORLD tick, not wall-clock, so a timed door
@@ -10286,11 +10414,13 @@ impl WorldActor {
             // quietly repopulates as the frontier grows, which is the worst of both — a
             // harness that looks barren near the hub and is not further out. Clearing an
             // already-empty `Vec` is free, so the steady-state cost is one branch.
+            self.prof.lap(&mut mark, "pre");
             if barren_world() {
                 self.arena.monsters.clear();
             } else {
                 self.arena.step_creatures_with_aggro(dt, &aggro_mult);
             }
+            self.prof.lap(&mut mark, "creatures");
             // Stream in new sections as the frontier player advances (endless world).
             // Difficulty is radial (distance = hypot from the hub), so in the radial
             // world the frontier is the player's RADIUS; in corridor mode it's x.
@@ -10353,6 +10483,7 @@ impl WorldActor {
                 }
             }
         }
+        self.prof.lap(&mut mark, "frontier");
         // AD-4: stand up any bounty mark the world has now grown out far enough to hold.
         // Cheap: only contracts not yet placed are considered, and each is tried once.
         if !self.bounties.is_empty() {
@@ -10480,6 +10611,7 @@ impl WorldActor {
                 });
             }
         }
+        self.prof.lap(&mut mark, "marks+terrain+entrances");
         // Resonant "Overworld Regen": top up carried hero HP while walking (feeds
         // the next fight's starting HP). Server-authoritative; emits no messages.
         self.apply_overworld_regen(dt);
@@ -10487,11 +10619,13 @@ impl WorldActor {
         // Ground loot dropped by creature-vs-creature kills, auto-collected by any
         // roaming player who walks over it.
         out.extend(self.collect_ground_loot());
+        self.prof.lap(&mut mark, "regen+loot");
 
         // 1b) Creatures moved this tick (step_creatures), so a creature may have
         // closed onto a stationary player. Start any contact battles now — otherwise
         // an aggressive creature could reach you and just sit there until you moved.
         out.extend(self.resolve_touches());
+        self.prof.lap(&mut mark, "touches");
 
         // 2) Advance every active battle independently, for the parties fighting it.
         // Concurrent battles: separate groups fight different encounters at once, so
@@ -10513,15 +10647,18 @@ impl WorldActor {
             }
         }
 
+        self.prof.lap(&mut mark, "battles");
         // 2b) Every WATCHED feed (`SOC-3`): drop the ones no longer watchable, and drive
         // the creature clashes, which have no engine behind them. A watched player battle
         // needs nothing here — the watcher rides its audience funnel above.
         out.extend(self.sweep_watchers());
+        self.prof.lap(&mut mark, "watchers");
 
         // 3) Snapshot the overworld to everyone NOT currently in a battle. This
         // runs every tick regardless of whether any battle is active, so roaming
         // teammates keep receiving world state while others fight.
         out.extend(self.snapshot_msgs());
+        self.prof.lap(&mut mark, "snapshot");
 
         // 4) The Shifting Lands, and the slow recovery between their Shifts. Both run
         // last so they see this tick's deaths and harvests, and both are driven off
@@ -10541,17 +10678,21 @@ impl WorldActor {
                 ));
             }
         }
+        self.prof.lap(&mut mark, "builds+rescue");
         out.extend(self.advance_shift());
+        self.prof.lap(&mut mark, "shift");
         {
             let balance = self.balance.clone();
             self.arena.regrow(&balance, self.tick_count);
         }
+        self.prof.lap(&mut mark, "regrow");
 
         // 5) Reclaim slain creatures so `arena.monsters` stays bounded over a long
         // dive instead of accumulating a corpse per kill forever. Safe here: this is
         // after all battle-end processing (which refers to creatures by stable id,
         // not index) and after the snapshot (which already omits defeated creatures).
         self.arena.prune_defeated();
+        self.prof.lap(&mut mark, "prune");
         (out, effects)
     }
 
@@ -13126,6 +13267,9 @@ mod shifting_lands_tests {
             db_writes: tx,
             arena,
             pending_frontier: None,
+                prof: crate::prof::Prof::from_env(),
+                delta_players: HashSet::new(),
+                snap_baseline: HashMap::new(),
             run: InstanceRun::new("w".into(), 0, &balance, 0),
             battles: Vec::new(),
             hero_hp: HashMap::new(),
@@ -13583,6 +13727,79 @@ mod watching_tests {
     /// creature, p2 is standing right beside them doing nothing at all.
     /// A deep world with one player standing in it, streamed out far enough that the
     /// arena holds thousands of things. Used by the two snapshot-cost guards below.
+    /// `cargo test --release -p meld-server -- --ignored --nocapture tick_budget_at_depth`
+    ///
+    /// Not an assertion: the standing benchmark. A d1269 world with one roaming player, ticked
+    /// two hundred times with the phase profiler on, and the snapshot's wire size beside it.
+    /// Every performance change to the loop gets its before/after from here.
+    #[test]
+    #[ignore]
+    fn tick_budget_at_depth() {
+        let (mut w, _party) = a_deep_world_with_one_player();
+        w.prof = crate::prof::Prof::new(true);
+        // As the real client plays: delta snapshots. `MELD_BENCH_FULL=1` measures the full
+        // ones the harnesses still receive.
+        if std::env::var("MELD_BENCH_FULL").is_err() {
+            w.set_delta_snapshots("p1", true);
+        }
+        let b = w.balance.clone();
+        let at = w.arena.route_point_at(1269.0);
+        // Stream past the lookahead so the frontier arm is quiet and the steady state is
+        // what gets measured.
+        for _ in 0..64 {
+            if w.arena.ensure_frontier(&b, 1269.0 + b.worldgen.stream_lookahead + 50.0).is_empty() {
+                break;
+            }
+        }
+        if let Some(a) = w.arena.avatar_mut("p1") {
+            a.position = at;
+        }
+        eprintln!(
+            "world: {} creatures, {} obstacles, {} sections",
+            w.arena.monsters.len(),
+            w.arena.obstacles.len(),
+            w.arena.areas.len()
+        );
+        let mut bytes = 0usize;
+        let mut msgs = 0usize;
+        let ticks = 200;
+        let t0 = std::time::Instant::now();
+        for i in 0..ticks {
+            // A walking player, so the interest window moves and static entities enter and
+            // leave it the way they do in play.
+            if let Some(a) = w.arena.avatar_mut("p1") {
+                a.position = Position::new(at.x + (i as f64) * 0.15, at.y);
+            }
+            let (out, _) = w.tick();
+            for o in &out {
+                if o.msg_type == "world.snapshot" {
+                    bytes += o.payload.get().len();
+                    msgs += 1;
+                }
+            }
+        }
+        let total = t0.elapsed().as_secs_f64() * 1000.0;
+        eprintln!("{}", w.prof.take_report());
+        let inner: Vec<String> = meld_world::profile::take()
+            .into_iter()
+            .map(|(n, v)| {
+                if n.ends_with("_ns") {
+                    format!("{n} {:.2}ms/tick", v as f64 / 1e6 / ticks as f64)
+                } else {
+                    format!("{n} {:.0}/tick", v as f64 / ticks as f64)
+                }
+            })
+            .collect();
+        eprintln!("step_creatures: {}", inner.join(" | "));
+        eprintln!(
+            "tick mean {:.2} ms | snapshot {} msgs, {:.1} KB each, {:.0} KB/s at 10 Hz",
+            total / ticks as f64,
+            msgs,
+            bytes as f64 / msgs.max(1) as f64 / 1024.0,
+            bytes as f64 / msgs.max(1) as f64 / 1024.0 * 10.0
+        );
+    }
+
     fn a_deep_world_with_one_player() -> (WorldActor, u32) {
         let (mut w, rx) = super::shifting_lands_tests::world(1_000_000, 1);
         std::mem::forget(rx);

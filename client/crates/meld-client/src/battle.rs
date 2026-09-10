@@ -194,9 +194,11 @@ pub(crate) fn spawn_hero_actor(
                     radius,
                     // Same reasoning as the avatar's lamp: light that passes through the
                     // things it lights reads as a tint. Four of these are lit at once, so
-                    // this is the expensive one — if the arena ever costs frames at night,
-                    // this flag is the first thing to try, before `LAMP_STRENGTH`.
-                    shadow_maps_enabled: true,
+                    // this is the expensive one — and it cost frames: a shadowed point light
+                    // is SIX render passes over the whole arena (the displaced ground plane
+                    // included), and a night battle carried up to eight of them. Off; the
+                    // sun's cascades are the shadow the scene reads.
+                    shadow_maps_enabled: false,
                     ..default()
                 },
                 // ⚠️ AT HEAD HEIGHT, NOT AT THE WAIST. At 1.6 the lamp sat BELOW the
@@ -368,7 +370,7 @@ pub(crate) fn spawn_enemy_actor(
                         intensity: 0.0,
                         range: LAMP_REACH * 0.6,
                         radius: LAMP_RADIUS,
-                        shadow_maps_enabled: true,
+                        shadow_maps_enabled: false,
                         ..default()
                     },
                     // ⚠️ CLEAR OF ITS OWN BILLBOARD. At `h * 0.6` this sat barely 0.2 units
@@ -400,7 +402,7 @@ pub(crate) fn spawn_enemy_actor(
                     intensity: 0.0,
                     range: LAMP_REACH,
                     radius: LAMP_RADIUS,
-                    shadow_maps_enabled: true,
+                    shadow_maps_enabled: false,
                     ..default()
                 },
                 Mesh3d(wa.sprite_quad.clone()),
@@ -466,7 +468,7 @@ pub(crate) fn spawn_enemy_actor(
                 intensity: 0.0,
                 range: LAMP_REACH,
                 radius: LAMP_RADIUS,
-                shadow_maps_enabled: true,
+                shadow_maps_enabled: false,
                 ..default()
             },
             Mesh3d(wa.sprite_quad.clone()),
@@ -2504,6 +2506,9 @@ pub(crate) fn render_watch_banner(
     battle: Res<BattleData>,
     existing: Query<Entity, With<WatchBanner>>,
 ) {
+    if !battle.is_changed() && (existing.is_empty() == !battle.spectating) {
+        return; // drawn state already matches — see `render_enemy_panel`
+    }
     for e in &existing {
         commands.entity(e).despawn();
     }
@@ -2560,7 +2565,24 @@ pub(crate) fn render_enemy_panel(
     cam_q: Query<(&Camera, &GlobalTransform), With<Camera3d>>,
     actors: Query<(&BattleActor, &GlobalTransform)>,
     existing: Query<Entity, With<BattleScene>>,
+    cam_moved: Query<(), (With<Camera3d>, Changed<GlobalTransform>)>,
+    actors_moved: Query<(), (With<BattleActor>, Changed<GlobalTransform>)>,
 ) {
+    // REBUILD ON CHANGE, NOT ON FRAME. Everything this draws is read from these inputs;
+    // when none of them moved, last frame's nodes are exactly right and tearing them down
+    // re-runs layout and glyph shaping for nothing.
+    if !(existing.is_empty()
+        || battle.is_changed()
+        || hitfx.is_changed()
+        || feel.is_changed()
+        || menu.is_changed()
+        || target.is_changed()
+        || perks.is_changed()
+        || !cam_moved.is_empty()
+        || !actors_moved.is_empty())
+    {
+        return;
+    }
     for e in &existing {
         commands.entity(e).despawn();
     }
@@ -2886,13 +2908,26 @@ pub(crate) fn render_status_icons(
     cam_q: Query<(&Camera, &GlobalTransform), With<Camera3d>>,
     actors: Query<(&BattleActor, &GlobalTransform)>,
     existing: Query<Entity, With<StatusIconLayer>>,
+    cam_moved: Query<(), (With<Camera3d>, Changed<GlobalTransform>)>,
+    actors_moved: Query<(), (With<BattleActor>, Changed<GlobalTransform>)>,
+    mut last_phase: Local<usize>,
 ) {
+    // Which effect shows this instant when a combatant carries several (1.5 s each).
+    let phase = (time.elapsed_secs() / 1.5) as usize;
+    // Rebuild on change, not on frame — see `render_enemy_panel`.
+    if !(existing.is_empty()
+        || battle.is_changed()
+        || phase != *last_phase
+        || !cam_moved.is_empty()
+        || !actors_moved.is_empty())
+    {
+        return;
+    }
+    *last_phase = phase;
     for e in &existing {
         commands.entity(e).despawn();
     }
     let Some((cam, cam_tf)) = cam_q.iter().next() else { return };
-    // Which effect shows this instant when a combatant carries several (1.5 s each).
-    let phase = (time.elapsed_secs() / 1.5) as usize;
     commands
         .spawn((
             StatusIconLayer,
@@ -2984,6 +3019,15 @@ pub(crate) fn render_ally_parties(
     panel: Res<AllyPanel>,
     existing: Query<Entity, With<AllyPartyStrips>>,
 ) {
+    // Rebuild on change, not on frame — see `render_enemy_panel`.
+    if !(existing.is_empty()
+        || battle.is_changed()
+        || hitfx.is_changed()
+        || feel.is_changed()
+        || panel.is_changed())
+    {
+        return;
+    }
     for e in &existing {
         commands.entity(e).despawn();
     }
@@ -3388,6 +3432,16 @@ pub(crate) fn render_party_window(
     flash: Res<AtbFlash>,
     existing: Query<Entity, With<PartyWindow>>,
 ) {
+    // Rebuild on change, not on frame — see `render_enemy_panel`.
+    if !(existing.is_empty()
+        || battle.is_changed()
+        || hitfx.is_changed()
+        || feel.is_changed()
+        || menu.is_changed()
+        || flash.is_changed())
+    {
+        return;
+    }
     for e in &existing {
         commands.entity(e).despawn();
     }
@@ -3439,18 +3493,23 @@ pub(crate) fn advance_atb_flash(
         return;
     }
     let dt = time.delta_secs();
-    // Age existing flashes and drop the expired.
-    flash.age.retain(|_, a| {
-        *a += dt;
-        *a < feel.atb_flash_ttl
-    });
-    // Newly-ready heroes (weren't ready last frame) get a fresh flash.
-    for id in battle.ready.iter() {
-        if !flash.prev.contains(id) {
-            flash.age.insert(id.clone(), 0.0);
-        }
+    // Age existing flashes and drop the expired — touching the resource only when there is
+    // one, so its change flag means "a flash moved" to the party window reading it.
+    if !flash.age.is_empty() {
+        flash.age.retain(|_, a| {
+            *a += dt;
+            *a < feel.atb_flash_ttl
+        });
     }
-    flash.prev = battle.ready.iter().cloned().collect();
+    // Newly-ready heroes (weren't ready last frame) get a fresh flash.
+    if flash.prev != battle.ready {
+        for id in battle.ready.iter() {
+            if !flash.prev.contains(id) {
+                flash.age.insert(id.clone(), 0.0);
+            }
+        }
+        flash.prev = battle.ready.clone();
+    }
 }
 
 /// Whether any allied hero in this battle is an Phoenix Guard (their wire statuses
@@ -3478,6 +3537,11 @@ pub(crate) fn tactics_toggle(
 /// the seeded feedback stays on screen.
 pub(crate) fn advance_hit_fx(time: Res<Time>, feel: Res<BattleFeel>, mut hitfx: ResMut<HitFx>) {
     if battle_mockup_flag() {
+        return;
+    }
+    // Read-only when nothing is live: a `&mut` deref marks the resource changed whether or
+    // not anything moved, and the panels below rebuild when it does.
+    if hitfx.items.is_empty() && hitfx.callouts.is_empty() && hitfx.acts.is_empty() {
         return;
     }
     let dt = time.delta_secs();
@@ -3520,7 +3584,19 @@ pub(crate) fn render_hit_fx(
     cam_q: Query<(&Camera, &GlobalTransform), With<Camera3d>>,
     actors: Query<(&BattleActor, &GlobalTransform)>,
     existing: Query<Entity, With<HitFxRoot>>,
+    cam_moved: Query<(), (With<Camera3d>, Changed<GlobalTransform>)>,
 ) {
+    // Rebuild on change, not on frame — see `render_enemy_panel`. `HitFx` changes every
+    // frame WHILE a number is in the air (it ages), which is exactly when this must redraw.
+    if !(existing.is_empty()
+        || hitfx.is_changed()
+        || battle.is_changed()
+        || feel.is_changed()
+        || tactics.is_changed()
+        || !cam_moved.is_empty())
+    {
+        return;
+    }
     for e in &existing {
         commands.entity(e).despawn();
     }

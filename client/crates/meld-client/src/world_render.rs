@@ -2495,7 +2495,8 @@ pub(crate) fn terrain_offset() -> (f32, f32) {
 /// height]`, summed onto the ground so each renders + you climb it. Set on `run.started`
 /// and appended per streamed section. A `RwLock` read is cheap + uncontended (only the
 /// main thread touches it), and `terrain_height` is called on the render thread.
-static PEAKS: std::sync::RwLock<Vec<[f32; 4]>> = std::sync::RwLock::new(Vec::new());
+static PEAKS: std::sync::LazyLock<std::sync::RwLock<std::sync::Arc<Vec<[f32; 4]>>>> =
+    std::sync::LazyLock::new(|| std::sync::RwLock::new(std::sync::Arc::new(Vec::new())));
 
 /// The peaks that came with `run.started` — the initial chain's, which no section message
 /// ever re-sends. Held apart from the streamed ones so rebuilding the set after a retile
@@ -2515,7 +2516,7 @@ pub(crate) fn set_peaks(peaks: Vec<[f32; 4]>) {
         *b = peaks.clone();
     }
     if let Ok(mut p) = PEAKS.write() {
-        *p = peaks;
+        *p = std::sync::Arc::new(peaks);
     }
     // The height field moved: re-ground the scenery standing on it.
     bump_terrain_epoch();
@@ -2535,13 +2536,13 @@ pub(crate) fn set_section_peaks(index: u32, peaks: &[[f32; 4]]) {
     by_section.insert(index, peaks.to_vec());
     let streamed: Vec<[f32; 4]> = by_section.values().flatten().copied().collect();
     if let (Ok(mut p), Ok(base)) = (PEAKS.write(), BASE_PEAKS.read()) {
-        *p = base.iter().copied().chain(streamed).collect();
+        *p = std::sync::Arc::new(base.iter().copied().chain(streamed).collect());
     }
     // The height field moved: re-ground the scenery standing on it.
     bump_terrain_epoch();
 }
 /// A snapshot of the current peaks (for the ground shader uniform).
-pub(crate) fn peaks_snapshot() -> Vec<[f32; 4]> {
+pub(crate) fn peaks_snapshot() -> std::sync::Arc<Vec<[f32; 4]>> {
     PEAKS.read().map(|p| p.clone()).unwrap_or_default()
 }
 
@@ -2555,8 +2556,8 @@ pub(crate) fn peaks_snapshot() -> Vec<[f32; 4]> {
 /// so the server re-sends each retiled section's straits UNCHANGED. If it ever stops, this
 /// store drops a sea the server is still colliding against, and the ring redraws as walkable
 /// ground over open water.
-static STRAITS: std::sync::RwLock<Vec<meld_proto::coast::Strait>> =
-    std::sync::RwLock::new(Vec::new());
+static STRAITS: std::sync::LazyLock<std::sync::RwLock<std::sync::Arc<Vec<meld_proto::coast::Strait>>>> =
+    std::sync::LazyLock::new(|| std::sync::RwLock::new(std::sync::Arc::new(Vec::new())));
 static BASE_STRAITS: std::sync::RwLock<Vec<meld_proto::coast::Strait>> =
     std::sync::RwLock::new(Vec::new());
 static SECTION_STRAITS: std::sync::RwLock<
@@ -2572,7 +2573,7 @@ pub(crate) fn set_straits(straits: Vec<meld_proto::coast::Strait>) {
         *b = straits.clone();
     }
     if let Ok(mut s) = STRAITS.write() {
-        *s = straits;
+        *s = std::sync::Arc::new(straits);
     }
     // The height field moved: re-ground the scenery standing on it.
     bump_terrain_epoch();
@@ -2588,7 +2589,7 @@ pub(crate) fn set_section_straits(index: u32, straits: &[meld_proto::coast::Stra
     by_section.insert(index, straits.to_vec());
     let streamed: Vec<meld_proto::coast::Strait> = by_section.values().flatten().copied().collect();
     if let (Ok(mut s), Ok(base)) = (STRAITS.write(), BASE_STRAITS.read()) {
-        *s = base.iter().copied().chain(streamed).collect();
+        *s = std::sync::Arc::new(base.iter().copied().chain(streamed).collect());
     }
     // The height field moved: re-ground the scenery standing on it.
     bump_terrain_epoch();
@@ -2596,7 +2597,7 @@ pub(crate) fn set_section_straits(index: u32, straits: &[meld_proto::coast::Stra
 
 /// A snapshot of the current straits — for the ground shader uniform, for
 /// [`terrain_height`], and for the prop cull that keeps scenery out of the water.
-pub(crate) fn straits_snapshot() -> Vec<meld_proto::coast::Strait> {
+pub(crate) fn straits_snapshot() -> std::sync::Arc<Vec<meld_proto::coast::Strait>> {
     STRAITS.read().map(|s| s.clone()).unwrap_or_default()
 }
 
@@ -2604,8 +2605,8 @@ pub(crate) fn straits_snapshot() -> Vec<meld_proto::coast::Strait> {
 /// ([`meld_proto::coast::Lobe`] — one list for both, since they are one primitive differing
 /// only in which side of the waterline the disc adds to). Kept exactly as `STRAITS` is,
 /// base/per-section split included, so a retile replaces a section's own.
-static LOBES: std::sync::RwLock<Vec<meld_proto::coast::Lobe>> =
-    std::sync::RwLock::new(Vec::new());
+static LOBES: std::sync::LazyLock<std::sync::RwLock<std::sync::Arc<Vec<meld_proto::coast::Lobe>>>> =
+    std::sync::LazyLock::new(|| std::sync::RwLock::new(std::sync::Arc::new(Vec::new())));
 static BASE_LOBES: std::sync::RwLock<Vec<meld_proto::coast::Lobe>> =
     std::sync::RwLock::new(Vec::new());
 static SECTION_LOBES: std::sync::RwLock<
@@ -2621,7 +2622,7 @@ pub(crate) fn set_lobes(lobes: Vec<meld_proto::coast::Lobe>) {
         *b = lobes.clone();
     }
     if let Ok(mut l) = LOBES.write() {
-        *l = lobes;
+        *l = std::sync::Arc::new(lobes);
     }
     // The height field moved: re-ground the scenery standing on it.
     bump_terrain_epoch();
@@ -2636,7 +2637,7 @@ pub(crate) fn set_section_lobes(index: u32, lobes: &[meld_proto::coast::Lobe]) {
     by_section.insert(index, lobes.to_vec());
     let streamed: Vec<meld_proto::coast::Lobe> = by_section.values().flatten().copied().collect();
     if let (Ok(mut l), Ok(base)) = (LOBES.write(), BASE_LOBES.read()) {
-        *l = base.iter().copied().chain(streamed).collect();
+        *l = std::sync::Arc::new(base.iter().copied().chain(streamed).collect());
     }
     // The height field moved: re-ground the scenery standing on it.
     bump_terrain_epoch();
@@ -2644,10 +2645,10 @@ pub(crate) fn set_section_lobes(index: u32, lobes: &[meld_proto::coast::Lobe]) {
 
 /// Inland water: standing bodies and the chains of flowing ones. Same base/per-section
 /// split as everything else the coastline is made of.
-static BASINS: std::sync::RwLock<Vec<meld_proto::coast::Basin>> =
-    std::sync::RwLock::new(Vec::new());
-static RIVERS: std::sync::RwLock<Vec<meld_proto::coast::RiverNode>> =
-    std::sync::RwLock::new(Vec::new());
+static BASINS: std::sync::LazyLock<std::sync::RwLock<std::sync::Arc<Vec<meld_proto::coast::Basin>>>> =
+    std::sync::LazyLock::new(|| std::sync::RwLock::new(std::sync::Arc::new(Vec::new())));
+static RIVERS: std::sync::LazyLock<std::sync::RwLock<std::sync::Arc<Vec<meld_proto::coast::RiverNode>>>> =
+    std::sync::LazyLock::new(|| std::sync::RwLock::new(std::sync::Arc::new(Vec::new())));
 static BASE_WATER: std::sync::RwLock<(Vec<meld_proto::coast::Basin>, Vec<meld_proto::coast::RiverNode>)> =
     std::sync::RwLock::new((Vec::new(), Vec::new()));
 #[allow(clippy::type_complexity)]
@@ -2667,10 +2668,10 @@ pub(crate) fn set_water(
         *b = (basins.clone(), rivers.clone());
     }
     if let Ok(mut x) = BASINS.write() {
-        *x = basins;
+        *x = std::sync::Arc::new(basins);
     }
     if let Ok(mut x) = RIVERS.write() {
-        *x = rivers;
+        *x = std::sync::Arc::new(rivers);
     }
     // The height field moved: re-ground the scenery standing on it.
     bump_terrain_epoch();
@@ -2701,10 +2702,10 @@ pub(crate) fn set_section_water(
     }
     if let Ok(base) = BASE_WATER.read() {
         if let Ok(mut x) = BASINS.write() {
-            *x = base.0.iter().copied().chain(sb).collect();
+            *x = std::sync::Arc::new(base.0.iter().copied().chain(sb).collect());
         }
         if let Ok(mut x) = RIVERS.write() {
-            *x = base.1.iter().copied().chain(sr).collect();
+            *x = std::sync::Arc::new(base.1.iter().copied().chain(sr).collect());
         }
     }
     // The height field moved: re-ground the scenery standing on it.
@@ -2720,12 +2721,12 @@ pub(crate) fn set_section_water(
 /// exists to answer "where am I".
 pub(crate) struct ShoreData {
     pub(crate) terrain_off: (f32, f32),
-    pub(crate) peaks: Vec<[f32; 4]>,
-    pub(crate) straits: Vec<meld_proto::coast::Strait>,
-    pub(crate) lobes: Vec<meld_proto::coast::Lobe>,
-    pub(crate) basins: Vec<meld_proto::coast::Basin>,
-    pub(crate) rivers: Vec<meld_proto::coast::RiverNode>,
-    pub(crate) bridges: Vec<meld_proto::coast::Bridge>,
+    pub(crate) peaks: std::sync::Arc<Vec<[f32; 4]>>,
+    pub(crate) straits: std::sync::Arc<Vec<meld_proto::coast::Strait>>,
+    pub(crate) lobes: std::sync::Arc<Vec<meld_proto::coast::Lobe>>,
+    pub(crate) basins: std::sync::Arc<Vec<meld_proto::coast::Basin>>,
+    pub(crate) rivers: std::sync::Arc<Vec<meld_proto::coast::RiverNode>>,
+    pub(crate) bridges: std::sync::Arc<Vec<meld_proto::coast::Bridge>>,
 }
 
 impl ShoreData {
@@ -2749,6 +2750,11 @@ impl ShoreData {
 }
 
 /// A snapshot of the whole shoreline.
+///
+/// Seven reference-count bumps, no copies. This is called per entity per frame from
+/// `terrain_height` and per TILE by the minimap's repaint, and it used to clone six `Vec`s
+/// every time — measured, ~24 heap allocations per `terrain_height` and ~31,000 for one
+/// minimap repaint.
 pub(crate) fn shore_data() -> ShoreData {
     ShoreData {
         terrain_off: terrain_offset(),
@@ -3076,6 +3082,7 @@ pub(crate) fn update_ground_biome_rings(
     dungeon: Res<DungeonSceneRes>,
     ground_q: Query<&MeshMaterial3d<GroundMat>, With<WorldGround>>,
     mut mats: ResMut<Assets<GroundMat>>,
+    mut last_window: Local<Option<(u64, u64, i32, i32, u8, bool, bool)>>,
 ) {
     let Ok(handle) = ground_q.single() else { return };
     let Some(mut mat) = mats.get_mut(&handle.0) else { return };
@@ -3143,6 +3150,25 @@ pub(crate) fn update_ground_biome_rings(
         .get(&session.player_id)
         .map(|e| (e.x, e.y))
         .unwrap_or((0.0, 0.0));
+    // **THE WINDOWS BELOW ARE RE-CUT ONLY WHEN THEIR INPUTS MOVE.** Everything above this
+    // line animates (the swell's clock, the Shift's tell) and is cheap; everything below sorts
+    // and re-packs every landform table nearest-first — ~10 allocations and four sorts a
+    // frame, in every state, for windows that change when the height field does or when the
+    // player has walked far enough for "nearest" to mean something else. A cell of 8 units is
+    // well inside every slot count's slack.
+    let key = (
+        terrain_epoch(),
+        region_epoch(),
+        (px / 8.0).floor() as i32,
+        (pz / 8.0).floor() as i32,
+        state.get().clone() as u8,
+        frame.have,
+        dungeon.active,
+    );
+    if *last_window == Some(key) {
+        return;
+    }
+    *last_window = Some(key);
 
     // THE AUTHORED PEAKS — **nearest-first**, for exactly the reason the ranges below are.
     //
@@ -3158,7 +3184,7 @@ pub(crate) fn update_ground_biome_rings(
     // when the same bug was found in the ranges; the peaks were missed **because they were
     // written before the pattern existed**, and left alone when the ranges were corrected.
     // `every_windowed_landform_is_sorted_nearest_first` is why they cannot be missed again.
-    let mut peaks = peaks_snapshot();
+    let mut peaks = (*peaks_snapshot()).clone();
     peaks.sort_by(|a, b| {
         let d = |q: &[f32; 4]| (q[0] - px).hypot(q[1] - pz) - q[2];
         d(a).total_cmp(&d(b))
@@ -3185,7 +3211,7 @@ pub(crate) fn update_ground_biome_rings(
     let near_first = |s: &[f32; 6]| {
         meld_proto::coast::dist_to_segment_pub(px, pz, s[0], s[1], s[2], s[3])
     };
-    let mut rg = ridges();
+    let mut rg = (*ridges()).clone();
     rg.sort_by(|a, b| near_first(a).total_cmp(&near_first(b)));
     let rn = rg.len().min(RIDGE_SLOTS / 2);
     for (i, slot) in mat.extension.params.ridges.iter_mut().enumerate() {
@@ -3203,7 +3229,7 @@ pub(crate) fn update_ground_biome_rings(
     let span_near_first = |s: &[f32; 5]| {
         meld_proto::coast::dist_to_segment_pub(px, pz, s[0], s[1], s[2], s[3])
     };
-    let mut bg = bridges();
+    let mut bg = (*bridges()).clone();
     bg.sort_by(|a, b| span_near_first(a).total_cmp(&span_near_first(b)));
     let bn = bg.len().min(BRIDGE_SLOTS / 2);
     for (i, slot) in mat.extension.params.bridges.iter_mut().enumerate() {
@@ -3221,7 +3247,7 @@ pub(crate) fn update_ground_biome_rings(
     // peaks above: the world streams outward without bound, so the only straits that can be
     // on screen are the ones near the player's own ring, and a flat truncation would drop
     // the coast you are standing on in favour of one back at the hub.
-    let mut near: Vec<meld_proto::coast::Strait> = straits_snapshot();
+    let mut near: Vec<meld_proto::coast::Strait> = (*straits_snapshot()).clone();
     near.sort_by(|a, b| (a[0] - pr).abs().total_cmp(&(b[0] - pr).abs()));
     near.truncate(meld_proto::coast::MAX_STRAITS);
     for (i, slot) in mat.extension.params.straits.iter_mut().enumerate() {
@@ -3235,7 +3261,7 @@ pub(crate) fn update_ground_biome_rings(
     mat.extension.params.strait_count = near.len() as u32;
     // …and the coast's lobes, windowed the same way and for the same reason.
     let mut near_lobes: Vec<meld_proto::coast::Lobe> =
-        LOBES.read().map(|l| l.clone()).unwrap_or_default();
+        LOBES.read().map(|l| (**l).clone()).unwrap_or_default();
     near_lobes.sort_by(|a, b| {
         let da = (a[0].hypot(a[1]) - pr).abs();
         let db = (b[0].hypot(b[1]) - pr).abs();
@@ -3254,7 +3280,7 @@ pub(crate) fn update_ground_biome_rings(
     // head to a downstream node and draw water across open country. They are taken as a
     // contiguous run around the player's own ring instead.
     let water = shore_data();
-    let mut near_basins = water.basins.clone();
+    let mut near_basins = (*water.basins).clone();
     near_basins.sort_by(|a, b| {
         let da = (a[0].hypot(a[1]) - pr).abs();
         let db = (b[0].hypot(b[1]) - pr).abs();
@@ -3338,8 +3364,8 @@ static REGIONS: std::sync::RwLock<Option<meld_proto::regions::Regions>> =
 /// **THIS WORLD'S BRIDGES** — spans of forced land carrying the trail across a strait. Held
 /// beside the ranges for the same reason: a per-world landform table the ground shader draws
 /// and [`terrain_height`] stands entities on.
-static BRIDGES: std::sync::RwLock<Vec<meld_proto::coast::Bridge>> =
-    std::sync::RwLock::new(Vec::new());
+static BRIDGES: std::sync::LazyLock<std::sync::RwLock<std::sync::Arc<Vec<meld_proto::coast::Bridge>>>> =
+    std::sync::LazyLock::new(|| std::sync::RwLock::new(std::sync::Arc::new(Vec::new())));
 
 /// The bridges that came with `run.started` — the initial chain's, which no section message
 /// re-sends. Held apart from the streamed ones exactly as `BASE_RIDGES` is.
@@ -3360,7 +3386,7 @@ pub(crate) fn set_bridges(b: Vec<meld_proto::coast::Bridge>) {
         by_section.clear();
     }
     if let Ok(mut all) = BRIDGES.write() {
-        *all = b;
+        *all = std::sync::Arc::new(b);
     }
     // The height field moved: re-ground the scenery standing on it.
     bump_terrain_epoch();
@@ -3388,7 +3414,7 @@ pub(crate) fn set_section_bridges(index: u32, bridges: &[meld_proto::coast::Brid
     let streamed: Vec<meld_proto::coast::Bridge> =
         by_section.values().flatten().copied().collect();
     if let (Ok(mut b), Ok(base)) = (BRIDGES.write(), BASE_BRIDGES.read()) {
-        *b = base.iter().copied().chain(streamed).collect();
+        *b = std::sync::Arc::new(base.iter().copied().chain(streamed).collect());
     }
     // The height field moved: re-ground the scenery standing on it.
     bump_terrain_epoch();
@@ -3408,9 +3434,34 @@ pub(crate) fn set_section_bridges(index: u32, bridges: &[meld_proto::coast::Brid
 /// ⚠️ ONLY WHERE THERE IS A FAN. `bridge_surface` does not consult the coastline, so in
 /// corridor mode (no arc, no sea anywhere) an unconditional approach would raise a deck over
 /// open ground near the hub of every tutorial and every test world.
-pub(crate) fn bridges() -> Vec<meld_proto::coast::Bridge> {
+pub(crate) fn bridges() -> std::sync::Arc<Vec<meld_proto::coast::Bridge>> {
     let streamed = BRIDGES.read().map(|b| b.clone()).unwrap_or_default();
     let (arc_half, city, _) = ground_coast();
+    // The composed list is rebuilt only when its inputs move: the streamed table (by
+    // pointer — a new `Arc` per write) or which scene we are in. `terrain_height` asks for
+    // this once per call, per entity, per frame.
+    let mode: u8 = if city { 1 } else if arc_half > 0.0 { 2 } else { 0 };
+    if let Ok(cache) = BRIDGES_VIEW.read() {
+        if let Some((src, m, view)) = cache.as_ref() {
+            if *m == mode && std::sync::Arc::ptr_eq(src, &streamed) {
+                return view.clone();
+            }
+        }
+    }
+    let view = std::sync::Arc::new(compose_bridges(&streamed, mode));
+    if let Ok(mut cache) = BRIDGES_VIEW.write() {
+        *cache = Some((streamed, mode, view.clone()));
+    }
+    view
+}
+
+#[allow(clippy::type_complexity)]
+static BRIDGES_VIEW: std::sync::RwLock<
+    Option<(std::sync::Arc<Vec<meld_proto::coast::Bridge>>, u8, std::sync::Arc<Vec<meld_proto::coast::Bridge>>)>,
+> = std::sync::RwLock::new(None);
+
+fn compose_bridges(streamed: &[meld_proto::coast::Bridge], mode: u8) -> Vec<meld_proto::coast::Bridge> {
+    let city = mode == 1;
     // ⚠️ **LAST CITY HAS EXACTLY ONE SPAN, AND IT IS NOT THE WORLD'S.** The city is its own
     // scene in its own coordinates, so a world bridge that happens to lie near the origin
     // would raise a deck across the plaza — the same coordinate-frame trap the city's
@@ -3421,11 +3472,11 @@ pub(crate) fn bridges() -> Vec<meld_proto::coast::Bridge> {
     if city {
         return vec![meld_proto::coast::city_bridge()];
     }
-    if arc_half <= 0.0 {
-        return streamed;
+    if mode == 0 {
+        return streamed.to_vec();
     }
     let mut v = vec![western_approach()];
-    v.extend(streamed);
+    v.extend_from_slice(streamed);
     v
 }
 
@@ -3444,8 +3495,8 @@ pub(crate) fn western_approach() -> meld_proto::coast::Bridge {
 /// **THIS WORLD'S RANGES.** Held beside the peaks because it is the same kind of thing: a
 /// per-world landform table the server hands down and both the ground shader and
 /// [`terrain_height`] read, so an entity stands on the mountain rather than inside it.
-static RIDGES: std::sync::RwLock<Vec<meld_proto::terrain::Ridge>> =
-    std::sync::RwLock::new(Vec::new());
+static RIDGES: std::sync::LazyLock<std::sync::RwLock<std::sync::Arc<Vec<meld_proto::terrain::Ridge>>>> =
+    std::sync::LazyLock::new(|| std::sync::RwLock::new(std::sync::Arc::new(Vec::new())));
 
 /// Replace this world's ranges (call on `run.started`).
 pub(crate) fn set_ridges(r: Vec<meld_proto::terrain::Ridge>) {
@@ -3456,7 +3507,7 @@ pub(crate) fn set_ridges(r: Vec<meld_proto::terrain::Ridge>) {
         by_section.clear();
     }
     if let Ok(mut all) = RIDGES.write() {
-        *all = r;
+        *all = std::sync::Arc::new(r);
     }
     // The height field moved: re-ground the scenery standing on it.
     bump_terrain_epoch();
@@ -3487,14 +3538,14 @@ pub(crate) fn set_section_ridges(index: u32, ridges: &[meld_proto::terrain::Ridg
     let streamed: Vec<meld_proto::terrain::Ridge> =
         by_section.values().flatten().copied().collect();
     if let (Ok(mut r), Ok(base)) = (RIDGES.write(), BASE_RIDGES.read()) {
-        *r = base.iter().copied().chain(streamed).collect();
+        *r = std::sync::Arc::new(base.iter().copied().chain(streamed).collect());
     }
     // The height field moved: re-ground the scenery standing on it.
     bump_terrain_epoch();
 }
 
 /// This world's ranges.
-pub(crate) fn ridges() -> Vec<meld_proto::terrain::Ridge> {
+pub(crate) fn ridges() -> std::sync::Arc<Vec<meld_proto::terrain::Ridge>> {
     RIDGES.read().map(|r| r.clone()).unwrap_or_default()
 }
 
@@ -3649,8 +3700,11 @@ pub(crate) fn drive_ashfall(
     let focus = cam_q.single().map(ground_focus).unwrap_or(Vec3::ZERO);
     let t = time.elapsed_secs();
     let show = ash.intensity > 0.02;
+    let vis = if show { Visibility::Inherited } else { Visibility::Hidden };
     for (mut f, mut tf, mut v) in &mut flecks {
-        *v = if show { Visibility::Inherited } else { Visibility::Hidden };
+        if *v != vis {
+            *v = vis;
+        }
         if !show {
             continue;
         }
@@ -4276,8 +4330,11 @@ pub(crate) fn drive_snow(
     // A storm drives it harder and slants it further; fair weather is a gentle fall.
     let hard = 0.45 + sky.weather * 0.55;
     let slant = (0.6 + sky.wind * 2.4) * hard;
+    let vis = if snowing { Visibility::Inherited } else { Visibility::Hidden };
     for (mut f, mut tf, mut v) in &mut flakes {
-        *v = if snowing { Visibility::Inherited } else { Visibility::Hidden };
+        if *v != vis {
+            *v = vis;
+        }
         if !snowing {
             continue;
         }
@@ -4330,6 +4387,12 @@ pub(crate) fn drive_rain(
     // over the play area. Capture its ground position for the drops below.
     let mut ground = Vec2::new(cam.x, cam.z);
     for (mut rc, mut t, mut v) in &mut cloud_q {
+        if *v != vis {
+            *v = vis;
+        }
+        if !raining {
+            continue;
+        }
         rc.off.x += CLOUD_WIND * dt;
         // Keep the cloud in a tight band over the play area so its shower passes over
         // the player as it drifts (rather than wandering off to the horizon).
@@ -4339,7 +4402,6 @@ pub(crate) fn drive_rain(
         }
         t.translation = Vec3::new(cam.x + rc.off.x, RAIN_CLOUD_Y, cam.z + rc.off.y);
         ground = Vec2::new(t.translation.x, t.translation.z);
-        *v = vis;
     }
     // A super storm soaks the WHOLE area: anchor the drops on the player and spread
     // them wide, instead of the tight patch under the drifting cloud.
@@ -4349,7 +4411,9 @@ pub(crate) fn drive_rain(
         (ground, 1.0)
     };
     for (mut d, mut t, mut v) in &mut rain_q {
-        *v = vis;
+        if *v != vis {
+            *v = vis;
+        }
         if raining {
             d.off.y -= 55.0 * dt; // fall
             if d.off.y < 0.0 {
@@ -4889,7 +4953,7 @@ mod ground_uniform_tests {
         let _scene = scene_lock();
         let city = meld_proto::coast::city_bridge();
         set_ground_coast(0.6, true, 0.0);
-        assert_eq!(bridges(), vec![city], "the City is carrying somebody else's bridges");
+        assert_eq!(*bridges(), vec![city], "the City is carrying somebody else's bridges");
 
         // The deck stands ABOVE the bay it crosses. This is the whole regression: as a
         // causeway the crossing was 24 units wide against a 28-unit beach, so every point

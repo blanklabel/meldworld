@@ -373,8 +373,25 @@ pub fn spawn_sun(commands: &mut Commands, look: &Look) {
             color: Color::srgb(1.0, 0.96, 0.85),
             ..default()
         },
+        sun_cascades(look),
         sun_transform(look),
     ));
+}
+
+/// **TWO CASCADES, ENDING WHERE THE FOG BEGINS.** Bevy's default is four cascades out to
+/// 150 units, and every cascade is a full shadow pass over the 161k-vertex displaced ground
+/// and every billboard in it. The camera looks down at a diorama from ~26 units: the first
+/// cascade covers the play space around the party sharply, the second the mid-ground the
+/// eye still reads shadows in. Nothing past the fog's onset needs one — it is fog colour.
+pub fn sun_cascades(look: &Look) -> bevy::light::CascadeShadowConfig {
+    bevy::light::CascadeShadowConfigBuilder {
+        num_cascades: 2,
+        minimum_distance: 0.1,
+        maximum_distance: look.fog_start.clamp(60.0, 160.0),
+        first_cascade_far_bound: 34.0,
+        overlap_proportion: 0.2,
+    }
+    .build()
 }
 
 /// Camera transform orbiting `target` per the `Look` (auto-orbits when enabled).
@@ -513,9 +530,12 @@ pub fn grounded_sprite_y(scale: f32) -> f32 {
 }
 
 pub fn place_billboards(look: Res<Look>, mut q: Query<&mut Transform, With<HeroBillboard>>) {
+    let scale = Vec3::splat(look.sprite_scale);
     for mut t in &mut q {
-        t.translation.y = look.sprite_y;
-        t.scale = Vec3::splat(look.sprite_scale);
+        if t.translation.y != look.sprite_y || t.scale != scale {
+            t.translation.y = look.sprite_y;
+            t.scale = scale;
+        }
     }
 }
 
@@ -576,7 +596,14 @@ pub fn billboard(
     let Ok(cam) = cam_q.single() else { return };
     let cam_world = cam.translation();
     for (mut t, gt) in &mut q {
-        t.rotation = billboard_yaw(gt.translation(), cam_world);
+        let want = billboard_yaw(gt.translation(), cam_world);
+        // Write only when the yaw moved: a `DerefMut` write flags the transform changed
+        // whether or not the value did, and every flagged transform is re-propagated and
+        // re-extracted for the GPU. With a standing camera that was ~2,000 dirty
+        // transforms a frame for nothing.
+        if t.rotation != want {
+            t.rotation = want;
+        }
     }
 }
 

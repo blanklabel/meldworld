@@ -1500,6 +1500,11 @@ pub struct Ai {
     pub skirmish_attack_interval: f64,
     /// A player auto-collects a ground-loot drop within this range.
     pub loot_pickup_radius: f64,
+    /// A creature within this of ANY avatar is stepped every tick; further out it is stepped
+    /// once every `creature_far_slices` ticks with the accumulated `dt`. The interest
+    /// radius is 128 units, so anything past this is happening to nobody.
+    pub creature_active_radius: f64,
+    pub creature_far_slices: u32,
 }
 
 /// Overworld class-perk tunables ("party sense"): each hero class, when present
