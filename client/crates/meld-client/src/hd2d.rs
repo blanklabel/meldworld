@@ -100,6 +100,13 @@ pub const LOOK_FILE: &str = "/tmp/meld-game-look.json";
 #[derive(Component)]
 pub struct ContactShadow;
 
+/// A billboard that never casts a shadow whatever [`Look::billboard_shadows`] says — the
+/// rain, the snow, the ash, the motes, the clouds. [`billboard_shadow_policy`] used to strip
+/// `NotShadowCaster` off every billboard when shadows were on, so ~1,300 particle quads went
+/// through every cascade each frame for shadows nobody could see.
+#[derive(Component)]
+pub struct NoShadowEver;
+
 /// See [`Look::billboard_shadows`] — a named fn so a LOOK_FILE written before the field
 /// existed inherits the real default instead of `bool::default()`.
 fn billboard_shadows_default() -> bool {
@@ -614,7 +621,7 @@ pub fn billboard(
 pub fn billboard_shadow_policy(
     mut commands: Commands,
     look: Res<Look>,
-    tagged: Query<Entity, (With<Billboard>, With<NotShadowCaster>)>,
+    tagged: Query<Entity, (With<Billboard>, With<NotShadowCaster>, Without<NoShadowEver>)>,
     untagged: Query<Entity, (With<Billboard>, Without<NotShadowCaster>)>,
     mut discs: Query<&mut Visibility, With<ContactShadow>>,
 ) {

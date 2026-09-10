@@ -1563,6 +1563,8 @@ pub(crate) fn setup(
         let h = w * (0.28 + rnd() * 0.12);
         commands.spawn((
             Cloud { world: off, y },
+            hd2d::NoShadowEver,
+            NotShadowCaster,
             Mesh3d(puff.clone()),
             MeshMaterial3d(cloud_mat.clone()),
             Transform::from_xyz(off.x, y, off.y).with_scale(Vec3::new(w, h, 1.0)),
@@ -1576,6 +1578,8 @@ pub(crate) fn setup(
         let sz = 34.0 + rnd() * 46.0;
         commands.spawn((
             Cloud { world: off, y: 0.28 },
+            hd2d::NoShadowEver,
+            NotShadowCaster,
             CloudShadow,
             Mesh3d(puff.clone()),
             MeshMaterial3d(cloud_shadow_mat.clone()),
@@ -1676,6 +1680,8 @@ pub(crate) fn setup(
     });
     commands.spawn((
         RainCloud { off: Vec2::new(-22.0, -6.0) },
+        hd2d::NoShadowEver,
+        NotShadowCaster,
         Mesh3d(puff.clone()),
         MeshMaterial3d(rain_cloud_mat),
         Transform::from_xyz(0.0, RAIN_CLOUD_Y, 0.0).with_scale(Vec3::new(78.0, 34.0, 1.0)),
@@ -1705,6 +1711,8 @@ pub(crate) fn setup(
         let off = Vec3::new(ang.cos() * r, rnd() * RAIN_FALL_TOP, ang.sin() * r);
         commands.spawn((
             RainDrop { off },
+            hd2d::NoShadowEver,
+            NotShadowCaster,
             Mesh3d(drop_mesh.clone()),
             MeshMaterial3d(drop_mat.clone()),
             Transform::from_translation(off),
@@ -1743,11 +1751,12 @@ pub(crate) fn setup(
         let sz = 0.34 + rnd() * 0.40;
         commands.spawn((
             Snowflake { off, phase: rnd() * std::f32::consts::TAU },
+            hd2d::NoShadowEver,
+            NotShadowCaster,
             Mesh3d(flake_mesh.clone()),
             MeshMaterial3d(flake_mat.clone()),
             Transform::from_translation(off).with_scale(Vec3::splat(sz)),
             hd2d::Billboard,
-            NotShadowCaster,
             Visibility::Hidden,
         ));
     }
@@ -1779,22 +1788,26 @@ pub(crate) fn setup(
         )
     })
     .collect();
-    let placeholder = detail_scenes[0].0.clone();
-    commands.insert_resource(DetailKit { scenes: detail_scenes });
-    for gz in -DETAIL_K..=DETAIL_K {
-        for gx in -DETAIL_K..=DETAIL_K {
-            commands.spawn((
-                GroundDetail {
-                    slot: IVec2::new(gx, gz),
-                    last: IVec2::splat(i32::MIN),
-                    epoch: u64::MAX,
-                },
-                WorldAssetRoot(placeholder.clone()),
-                Transform::default(),
-                Visibility::Hidden,
-            ));
-        }
+    // **AN INSTANCE KEEPS ITS MODEL FOR LIFE.** The pool used to map each slot to one
+    // world cell and swap the slot's `WorldAssetRoot` to whatever that cell rolled — and a
+    // reassigned root makes Bevy despawn the old GLB hierarchy and instantiate a new one.
+    // Walking crosses a 4-unit cell every second or two, and each crossing re-derived a
+    // whole row of the 17x17 window: dozens of scene instantiations in one frame, which is
+    // exactly the hitch profile measured ("p90 425 ms, worst 3,732 ms"). Now each instance
+    // is spawned ONCE with a fixed model, and `tile_ground_detail` hands cells to free
+    // instances of the model the cell rolled. Moving a transform is free; a scene is not.
+    let variants = detail_scenes.len();
+    let total = ((2 * DETAIL_K + 1) * (2 * DETAIL_K + 1)) as usize;
+    for i in 0..total {
+        let variant = i % variants;
+        commands.spawn((
+            GroundDetail { variant, cell: None, epoch: u64::MAX },
+            WorldAssetRoot(detail_scenes[variant].0.clone()),
+            Transform::default(),
+            Visibility::Hidden,
+        ));
     }
+    commands.insert_resource(DetailKit { scenes: detail_scenes });
 
     // ── Atmosphere motes (client-only) ──────────────────────────────────────
     // Drifting dust/pollen: soft billboarded discs anchored around the camera so
@@ -1829,6 +1842,8 @@ pub(crate) fn setup(
                 speed: 0.2 + rnd() * 0.5,
                 seed: (i as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ 0xF17E,
             },
+            hd2d::NoShadowEver,
+            NotShadowCaster,
             Mesh3d(mote_mesh.clone()),
             MeshMaterial3d(mote_mat.clone()),
             Transform::from_translation(Vec3::new(pos.x, 1.0, pos.y))
@@ -1868,6 +1883,8 @@ pub(crate) fn setup(
         let off = Vec3::new((rnd() - 0.5) * 64.0, rnd() * ASH_FALL_TOP, (rnd() - 0.5) * 48.0);
         commands.spawn((
             AshFleck { off, sway: rnd() * std::f32::consts::TAU, fall: 3.2 + rnd() * 3.6 },
+            hd2d::NoShadowEver,
+            NotShadowCaster,
             Mesh3d(ash_mesh.clone()),
             MeshMaterial3d(ash_mat.clone()),
             Transform::from_translation(off).with_scale(Vec3::splat(0.6 + rnd() * 1.1)),
@@ -2010,10 +2027,12 @@ pub(crate) fn terrain_epoch() -> u64 {
 /// prop only re-derives (and swaps scene) when it actually moves to a new cell.
 #[derive(Component)]
 pub(crate) struct GroundDetail {
-    slot: IVec2,
-    last: IVec2,
-    /// The epoch this slot's height was computed against. Differing from [`terrain_epoch`]
-    /// means the ground moved under it and it must be re-derived even in the same cell.
+    /// Which model this instance IS, for life — an index into `DetailKit::scenes`.
+    variant: usize,
+    /// The world cell it is standing in, or `None` while it is parked (hidden, free).
+    cell: Option<IVec2>,
+    /// The epoch this instance's height was computed against. Differing from
+    /// [`terrain_epoch`] means the ground moved under it and it must be re-derived.
     epoch: u64,
 }
 
@@ -2022,7 +2041,7 @@ impl GroundDetail {
     /// can be hidden.
     #[cfg(test)]
     pub(crate) fn for_test() -> Self {
-        Self { slot: IVec2::ZERO, last: IVec2::ZERO, epoch: u64::MAX }
+        Self { variant: 0, cell: None, epoch: u64::MAX }
     }
 }
 
@@ -2388,56 +2407,100 @@ pub(crate) fn tile_ground_detail(
     kit: Option<Res<DetailKit>>,
     state: Res<State<Screen>>,
     frame: Res<crate::WorldFrame>,
-    mut q: Query<
-        (&mut GroundDetail, &mut Transform, &mut Visibility, &mut WorldAssetRoot),
-        Without<Camera3d>,
-    >,
+    mut q: Query<(&mut GroundDetail, &mut Transform, &mut Visibility), Without<Camera3d>>,
+    mut last: Local<Option<(IVec2, u64)>>,
 ) {
     let _t = Spike::new("tile_ground_detail");
 
     let (Ok(cam), Some(kit)) = (cam_q.single(), kit) else { return };
     let focus = ground_focus(cam);
-    // Height comes from `terrain_height`, which applies the `terrain_amp` flatten AND the
-    // sea dip itself — a prop on a beach has to ride the ramp down, and a prop on the
-    // City's flat plaza has to stay level. Multiplying by an amp out here (which this used
-    // to do) cannot express both.
     let cc = IVec2::new(
         (focus.x / DETAIL_CELL).floor() as i32,
         (focus.z / DETAIL_CELL).floor() as i32,
     );
-    // The height field's version, so a slot re-derives when the ground under it changes as
-    // well as when the player walks it into a new cell.
+    // The height field's version, so a prop re-derives when the ground under it changes as
+    // well as when the player walks the window onto new cells.
     let epoch = terrain_epoch();
-    for (mut d, mut tf, mut vis, mut root) in &mut q {
-        let cell = cc + d.slot;
-        if cell == d.last && d.epoch == epoch {
-            continue; // same world cell AND the same ground — nothing to re-derive
+    if *last == Some((cc, epoch)) {
+        return; // same window, same ground — nothing to hand out or take back
+    }
+    *last = Some((cc, epoch));
+
+    // What the window wants: every cell in it that rolls a prop, with the model it rolled
+    // and where it stands. Position, model, yaw and scale all derive from the cell, so a
+    // spot always looks identical however the instances behind it are dealt.
+    let variants = kit.scenes.len().max(1);
+    let mut wanted: Vec<(IVec2, usize, Vec3, f32, f32)> = Vec::new();
+    for gz in -DETAIL_K..=DETAIL_K {
+        for gx in -DETAIL_K..=DETAIL_K {
+            let cell = cc + IVec2::new(gx, gz);
+            let h = detail_hash(cell);
+            // Density gate: only ~45% of cells carry detail, so it scatters instead of
+            // reading as a rigid grid.
+            if (h & 0xff) as f32 / 255.0 > 0.45 {
+                continue;
+            }
+            let variant = ((h >> 8) as usize) % variants;
+            let base = kit.scenes[variant].1;
+            let jx = ((h >> 16) & 0xffff) as f32 / 65535.0;
+            let jz = ((h >> 32) & 0xffff) as f32 / 65535.0;
+            let yaw = ((h >> 24) & 0xff) as f32 / 255.0 * std::f32::consts::TAU;
+            let sc = base * (0.7 + ((h >> 48) & 0xff) as f32 / 255.0 * 0.7);
+            let (wx, wz) = ((cell.x as f32 + jx) * DETAIL_CELL, (cell.y as f32 + jz) * DETAIL_CELL);
+            // Nothing grows on the sea.
+            if nothing_grows_here(&frame, state.get(), wx, wz) {
+                continue;
+            }
+            // Height comes from `terrain_height`, which applies the `terrain_amp` flatten
+            // AND the sea dip itself — a prop on a beach has to ride the ramp down, and a
+            // prop on the City's flat plaza has to stay level. Multiplying by an amp out
+            // here (which this used to do) cannot express both.
+            wanted.push((cell, variant, Vec3::new(wx, terrain_height(wx, wz), wz), yaw, sc));
         }
-        d.last = cell;
+    }
+    // Take back every instance whose cell left the window (or whose ground moved), keep
+    // the ones still standing where they should, then deal the newly wanted cells to
+    // parked instances of the right model. An instance never changes model, so nothing
+    // here instantiates a scene.
+    let mut still: Vec<bool> = vec![false; wanted.len()];
+    for (mut d, _, mut vis) in &mut q {
+        let Some(cell) = d.cell else { continue };
+        let keep = d.epoch == epoch
+            && wanted.iter().position(|w| w.0 == cell && w.1 == d.variant).map(|i| {
+                still[i] = true;
+            })
+            .is_some();
+        if !keep {
+            d.cell = None;
+            if *vis != Visibility::Hidden {
+                *vis = Visibility::Hidden;
+            }
+        }
+    }
+    let mut free_pos = 0usize;
+    let mut instances: Vec<(Mut<GroundDetail>, Mut<Transform>, Mut<Visibility>)> =
+        q.iter_mut().filter(|(d, _, _)| d.cell.is_none()).collect();
+    for (i, w) in wanted.iter().enumerate() {
+        if still[i] {
+            continue;
+        }
+        // The first parked instance of this model. Linear, over a pool of a few hundred.
+        let Some(k) = instances[free_pos..]
+            .iter()
+            .position(|(d, _, _)| d.variant == w.1)
+            .map(|k| k + free_pos)
+        else {
+            continue; // the pool ran out of this model — that cell stays bare this pass
+        };
+        instances.swap(free_pos, k);
+        let (d, tf, vis) = &mut instances[free_pos];
+        free_pos += 1;
+        d.cell = Some(w.0);
         d.epoch = epoch;
-        let h = detail_hash(cell);
-        // Density gate: only ~45% of cells carry detail, so it scatters instead of
-        // reading as a rigid grid.
-        if (h & 0xff) as f32 / 255.0 > 0.45 {
-            *vis = Visibility::Hidden;
-            continue;
-        }
-        let (scene, base) = &kit.scenes[((h >> 8) as usize) % kit.scenes.len()];
-        root.0 = scene.clone();
-        let jx = ((h >> 16) & 0xffff) as f32 / 65535.0;
-        let jz = ((h >> 32) & 0xffff) as f32 / 65535.0;
-        let yaw = ((h >> 24) & 0xff) as f32 / 255.0 * std::f32::consts::TAU;
-        let sc = base * (0.7 + ((h >> 48) & 0xff) as f32 / 255.0 * 0.7);
-        let (wx, wz) = ((cell.x as f32 + jx) * DETAIL_CELL, (cell.y as f32 + jz) * DETAIL_CELL);
-        // Nothing grows on the sea.
-        if nothing_grows_here(&frame, state.get(), wx, wz) {
-            *vis = Visibility::Hidden;
-            continue;
-        }
-        tf.translation = Vec3::new(wx, terrain_height(wx, wz), wz);
-        tf.rotation = Quat::from_rotation_y(yaw);
-        tf.scale = Vec3::splat(sc);
-        *vis = Visibility::Inherited;
+        tf.translation = w.2;
+        tf.rotation = Quat::from_rotation_y(w.3);
+        tf.scale = Vec3::splat(w.4);
+        **vis = Visibility::Inherited;
     }
 }
 
@@ -4240,7 +4303,9 @@ pub(crate) fn apply_sky(
         Visibility::Hidden
     };
     for mut v in &mut stars {
-        *v = star_vis;
+        if *v != star_vis {
+            *v = star_vis;
+        }
     }
 
     if let Some(sm) = skymats {

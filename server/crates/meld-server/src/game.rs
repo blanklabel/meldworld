@@ -837,6 +837,56 @@ fn unlock_inventory(
     }
 }
 
+/// A chunk grid over a STATIC list, rebuilt only when the list's length changes — the same
+/// invalidation `Arena::blockers` uses, and correct for the same reason: obstacles are only
+/// ever appended (a section streams in) or replaced wholesale (a Shift re-scatters), and
+/// both move the length. Cell size is `world.chunk_size`, like the interest grid.
+#[derive(Default)]
+struct StaticGrid {
+    len: usize,
+    cell: f64,
+    cells: HashMap<(i32, i32), Vec<u32>>,
+}
+
+impl StaticGrid {
+    fn refresh(&mut self, items: &[meld_world::Obstacle], cell: f64) -> &Self {
+        if self.len != items.len() || self.cell != cell {
+            self.len = items.len();
+            self.cell = cell;
+            self.cells.clear();
+            for (i, o) in items.iter().enumerate() {
+                self.cells
+                    .entry(chunk_key(o.position.x, o.position.y, cell))
+                    .or_default()
+                    .push(i as u32);
+            }
+        }
+        self
+    }
+
+    /// Every index in a cell some viewer's disc touches — a superset the caller narrows
+    /// with the exact distance test. Sorted and deduplicated, so the output order is the
+    /// list order whatever the viewers' order is (CANON §S: nothing about a snapshot may
+    /// depend on hash iteration).
+    fn candidates(&self, viewers: &[(Position, f64)]) -> Vec<u32> {
+        let mut out: Vec<u32> = Vec::new();
+        for (p, r) in viewers {
+            let (x0, y0) = chunk_key(p.x - r, p.y - r, self.cell);
+            let (x1, y1) = chunk_key(p.x + r, p.y + r, self.cell);
+            for cx in x0..=x1 {
+                for cy in y0..=y1 {
+                    if let Some(v) = self.cells.get(&(cx, cy)) {
+                        out.extend_from_slice(v);
+                    }
+                }
+            }
+        }
+        out.sort_unstable();
+        out.dedup();
+        out
+    }
+}
+
 /// What one delta-snapshot session was last sent: entity id → (content stamp, the tick it
 /// was last visible), and the tick of the last snapshot sent at all.
 #[derive(Default)]
@@ -1400,6 +1450,11 @@ struct WorldActor {
     /// tick of their last snapshot so a gap — a battle, a dungeon — forces a full one.
     delta_players: HashSet<String>,
     snap_baseline: HashMap<String, SnapBaseline>,
+    /// The obstacles bucketed by chunk, rebuilt only when the obstacle list changes (a
+    /// section streams in, a Shift re-scatters). The pre-cull used to test every obstacle in
+    /// the world against every viewer each tick — 109,496 of them at d1269, for ~1,000 in
+    /// anyone's reach — and the world streams outward without bound.
+    obstacle_grid: StaticGrid,
     run: InstanceRun,
     /// Every battle currently running in the instance. Independent parties fight
     /// separate encounters at the same time; each is one [`BattleSlot`].
@@ -2662,8 +2717,21 @@ impl WorldActor {
         }
         // Impassable biome terrain, tagged `obstacle:<kind>:<radius>` so the client
         // renders each feature at its true size (static, but sent with the snapshot
-        // like the other world entities — pragmatic for the slice).
-        for o in self.arena.obstacles.iter().filter(|o| cull.sees(&o.position)) {
+        // like the other world entities — pragmatic for the slice). Through the chunk
+        // grid, so the scan is over the cells the audience can reach rather than over
+        // every obstacle the world has ever streamed.
+        let cell = self.balance.world.chunk_size.max(1) as f64;
+        let grid = self.obstacle_grid.refresh(&self.arena.obstacles, cell);
+        let candidates: Vec<u32> = if cull.unbounded {
+            (0..self.arena.obstacles.len() as u32).collect()
+        } else {
+            grid.candidates(&cull.viewers)
+        };
+        for o in candidates
+            .iter()
+            .map(|&i| &self.arena.obstacles[i as usize])
+            .filter(|o| cull.sees(&o.position))
+        {
             entities.push(wm::SnapshotEntity {
                 entity_id: o.entity_id.clone(),
                 position: o.position,
@@ -5561,6 +5629,7 @@ impl GameState {
                 prof: crate::prof::Prof::from_env(),
                 delta_players: HashSet::new(),
                 snap_baseline: HashMap::new(),
+                obstacle_grid: StaticGrid::default(),
                 run: InstanceRun::new(instance_id, departure_hub_distance, &balance, now_ms()),
                 battles: Vec::new(),
                 hero_hp: HashMap::new(),
@@ -13270,6 +13339,7 @@ mod shifting_lands_tests {
                 prof: crate::prof::Prof::from_env(),
                 delta_players: HashSet::new(),
                 snap_baseline: HashMap::new(),
+                obstacle_grid: StaticGrid::default(),
             run: InstanceRun::new("w".into(), 0, &balance, 0),
             battles: Vec::new(),
             hero_hp: HashMap::new(),

@@ -7,3 +7,4 @@
 # creature keys to PixelLab character ids from one account's run, so committing it would
 # hand the next person ids they cannot fetch and make their run skip work they never did.
 /client/scripts/.creature_sprites_state.json
+client/target-check/

@@ -1582,6 +1582,7 @@ pub(crate) fn sync_overworld_sprites(
     mut predict: ResMut<Predict>,
     dungeon: Res<world_render::DungeonSceneRes>,
     mut q: Query<(Entity, &WorldEntity, &mut Transform)>,
+    mut last_epoch: Local<u64>,
 ) {
     let _t = crate::world_render::Spike::new("sync_overworld_sprites");
     let Some(wa) = wa else { return };
@@ -1687,11 +1688,17 @@ pub(crate) fn sync_overworld_sprites(
     let exempt = |id: &str| id == my_id.as_str() || id == "portal";
     let dist_from_me = |x: f32, y: f32| me_pos.map(|(mx, my)| (x - mx).hypot(y - my));
     let mut seen = HashSet::new();
+    // The height field's version: when it moves (a section streamed in, a Shift re-cut the
+    // ground) every standing thing is re-grounded once, whether or not it walked.
+    let epoch = crate::world_render::terrain_epoch();
+    let ground_moved = *last_epoch != epoch;
+    *last_epoch = epoch;
     for (entity, we, mut tf) in &mut q {
         let Some(e) = world.entities.get(&we.0) else {
             commands.entity(entity).despawn();
             continue;
         };
+        let before_xz = (tf.translation.x, tf.translation.z);
         // Render-unload: drop entities that have fallen far behind (past the fog wall)
         // so render + memory stay bounded as you dive deep. The server keeps tracking
         // and simulating them — this is purely what the client chooses to draw.
@@ -1819,8 +1826,18 @@ pub(crate) fn sync_overworld_sprites(
         }
         // Ride the rolling ground: discrete terrace level + the continuous heightmap
         // under the just-updated xz. Matches `world_pos` so spawn and per-frame agree.
-        tf.translation.y = e.level as f32 * STEP_HEIGHT
-            + crate::world_render::terrain_height(tf.translation.x, tf.translation.z);
+        //
+        // Only when the feet MOVED (or the ground did): `terrain_height` walks every peak,
+        // range, strait, lobe and bridge in the world, and most of what is on screen is a
+        // tree that has not moved since it was spawned. Per entity per frame that was the
+        // largest CPU cost on the overworld after the snapshot itself.
+        if ground_moved
+            || (tf.translation.x - before_xz.0).abs() > 1e-4
+            || (tf.translation.z - before_xz.1).abs() > 1e-4
+        {
+            tf.translation.y = e.level as f32 * STEP_HEIGHT
+                + crate::world_render::terrain_height(tf.translation.x, tf.translation.z);
+        }
     }
     for (id, e) in &world.entities {
         if seen.contains(id) {

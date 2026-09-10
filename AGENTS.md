@@ -1245,6 +1245,50 @@ reports `next_power_of_two` of the TRUE demand, since the GPU counts what it nee
 of what the buffer could hold, so one warning from a tiny start answers outright instead of a
 ladder of doublings.
 
+**THE TICK HAS A CLOCK NOW, AND A BENCH.** `MELD_TICK_STATS=1` logs per-phase mean/max every
+five seconds (`meld_server::prof`, `target: meld_tick`); `cargo test --release -p meld-server
+-- --ignored --nocapture tick_budget_at_depth` is the standing benchmark (a d1269 world, one
+walking player, 200 ticks, phase costs, the inner `meld_world::profile` counters, and the
+snapshot's wire size). Every change to the loop gets its before/after from there, not from a
+comment. On this box read means AND maxes with the load average beside them: at load 130 the
+same code drifted 2x run to run, and a 100 ms max is usually the scheduler, not the code.
+
+**A CREATURE NOBODY CAN SEE STEPS AT A WALKING PACE.** `[ai] creature_active_radius` (240) /
+`creature_far_slices` (10): near any avatar a creature steps every tick; further out it steps
+once every ten ticks with the accumulated `dt` and only WANDERS — no skirmish, no player to
+chase. The skirmish grids and the clash index cover only the near set. Measured at d1269
+this took the creature step from 44.8 ms to 3.5 ms a tick. A world with no avatars keeps the
+full rate, so the world-gen tests that step a world still measure what they always did.
+⚠️ Keep the active radius above `interest_radius_chunks × chunk_size` plus the widest perk
+reveal, or something a player can see moves in ten-tick hops.
+
+**THE CLIENT RECEIVES DELTA SNAPSHOTS; THE HARNESSES RECEIVE FULL ONES.** The Bevy client
+sends `movement.snapshot_mode {delta: true}` on `session.authenticated`, after which each
+`world.snapshot` carries only new or changed rows plus `removed` ids (`wm::Snapshot::delta`);
+the first snapshot after any gap — a battle, a dungeon, a connection — is always full. QA
+bots and `mcp/` never ask and parse full snapshots as before. Measured: 70.9 KB → 3.6 KB a
+tick at d1269. A new snapshot consumer that wants deltas has to keep the map itself.
+
+**UI REDRAWS ON CHANGE, NOT ON FRAME.** Thirteen panels tore their node trees down and
+rebuilt them every frame (layout plus glyph shaping, for text that changes ten times a
+second at most). The pattern is `is_changed()` on every input at the top of the system —
+and a resource that is aged every frame has to be touched only when something is live
+(`advance_hit_fx`, `advance_atb_flash`), or its flag is always on. A plate that FOLLOWS
+something (the action HUD, a mob nameplate) keeps a content key and is moved in place;
+`glass::redraw_key` hashes the inputs. Write a `Transform`, `Visibility` or material only
+when the value moved — a `DerefMut` write flags it changed whether or not it did, and every
+flagged transform is re-propagated and re-extracted.
+
+**A GLB INSTANCE KEEPS ITS MODEL FOR LIFE.** Reassigning a `WorldAssetRoot` despawns and
+re-instantiates the hierarchy. The ground-detail pool used to do that per cell crossing, a
+whole row of the window at a time — the "p90 425 ms, worst 3,732 ms" hitches. Deal cells to
+parked instances of the right model instead (`tile_ground_detail`).
+
+**`terrain_height` MUST NOT ALLOCATE.** It runs per entity that moved, per detail cell, per
+grass blade, and per minimap tile; every landform table behind it is an `Arc<Vec<_>>`
+(`shore_data()` is seven refcount bumps). A caller that needs an owned, sorted copy clones
+the `Arc`'s contents explicitly (`(*ridges()).clone()`) so the cost is visible at the site.
+
 ⚠️ **Autoplay takes no onboarding, and that is load-bearing for this loop.** The town
 tour and the "Before You Dive" card are modal, nothing presses their buttons for you, and
 `city_input` returns early while a tour step is open — so autoplay used to sit in the hub
