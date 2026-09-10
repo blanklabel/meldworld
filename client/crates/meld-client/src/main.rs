@@ -2306,7 +2306,17 @@ struct MoveClock {
 struct Predict {
     seq: u32,
     pending: std::collections::VecDeque<(u32, Vec2)>,
+    /// The ack from the last snapshot, so a stalled one can be recognised.
+    last_ack: u32,
+    /// Consecutive snapshots that did not move `last_ack` while inputs were outstanding.
+    stale: u8,
 }
+
+/// Snapshots the ack may fail to advance before the history is abandoned as desynced.
+/// ~1 s at the 10 Hz snapshot rate. This is the ONLY thing that clears the queue early:
+/// releasing the key must not, because a sent intent is still going to be applied and
+/// dropping it snaps the avatar backwards (see `emit_move`).
+const PREDICT_STALE_SNAPSHOTS: u8 = 10;
 
 /// Most intents that may be replayed at once. A stalled connection must not fling the
 /// avatar across the map: past this the honest thing is to stop predicting and let the
