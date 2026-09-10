@@ -1303,6 +1303,14 @@ MELD_AUTOPLAY=1 MELD_BIOME=forest MELD_SEED=424242 MELD_START_LEVEL=45 \
 touch /tmp/meld-game-shot-request      # → /tmp/meld-game-latest.png
 ```
 
+⚠️ **TWENTY AGENTS SHARE `/tmp`, SO THE REQUEST FILE IS ANSWERED BY WHOEVER POLLS FIRST.**
+Every running client watches the same three paths, and a capture you asked for can be
+another agent's Join screen — byte-identical run after run, which reads as your own change
+having broken the renderer. `MELD_SHOT_CHANNEL=<dir>` moves the look file, the request and
+the capture into a directory of your own; use it for every measurement, and `pgrep -fl
+meld-client` before believing a frame. Also check `pmset -g log | grep "Display is turned"`
+— with the display off every capture is black whatever the code does.
+
 `/tmp/meld-game-look.json` sets the survey camera (`cam_pitch`, `cam_dist`, `fog_start`,
 `fog_end`, `orbit`) so a whole stretch of the maze is in frame rather than the
 over-the-shoulder default. `client/scripts/view_biome.sh <biome> [seed] [frames]` wraps

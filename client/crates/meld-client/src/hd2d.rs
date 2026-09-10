@@ -116,6 +116,28 @@ fn billboard_shadows_default() -> bool {
 /// look-dev's request file so a running look-dev window doesn't answer the game's
 /// captures (and vice-versa) when both watch the disk at once.
 pub const SHOT_REQ: &str = "/tmp/meld-game-shot-request";
+
+/// **THE FILE CHANNEL IS PER PROCESS WHEN ASKED.** `MELD_SHOT_CHANNEL=<dir>` moves all three
+/// files — the look, the request and the capture — into that directory. Up to twenty agents
+/// run this game on one box, and every one of them watching `/tmp` means a request touched
+/// by one is answered by whichever instance polls first: a capture of somebody else's Join
+/// screen, byte-identical run after run, that reads as your own change having broken the
+/// renderer. Default unchanged, so `client/scripts/*.sh` and the docs still hold.
+fn channel_path(name: &str, default: &'static str) -> String {
+    match std::env::var("MELD_SHOT_CHANNEL") {
+        Ok(dir) if !dir.is_empty() => format!("{}/{name}", dir.trim_end_matches('/')),
+        _ => default.to_string(),
+    }
+}
+pub fn look_file() -> String {
+    channel_path("meld-game-look.json", LOOK_FILE)
+}
+pub fn shot_req() -> String {
+    channel_path("meld-game-shot-request", SHOT_REQ)
+}
+pub fn auto_shot() -> String {
+    channel_path("meld-game-latest.png", AUTO_SHOT)
+}
 /// Where the requested capture lands — a plain PNG on disk.
 pub const AUTO_SHOT: &str = "/tmp/meld-game-latest.png";
 
@@ -469,7 +491,8 @@ pub fn seed_look_file(look: &Look) {
     // the developer saying "these are the numbers now". Hand-tuning between runs still
     // persists, which is the whole point of the file — it just stops surviving the rebuild
     // that was meant to replace it.
-    let stale = match (std::fs::metadata(LOOK_FILE), std::env::current_exe()) {
+    let look_path = look_file();
+    let stale = match (std::fs::metadata(&look_path), std::env::current_exe()) {
         (Ok(f), Ok(exe)) => match (f.modified(), std::fs::metadata(&exe).and_then(|m| m.modified())) {
             (Ok(file_t), Ok(exe_t)) => exe_t > file_t,
             _ => false,
@@ -480,24 +503,25 @@ pub fn seed_look_file(look: &Look) {
     };
     if stale {
         if let Ok(s) = serde_json::to_string_pretty(look) {
-            let _ = std::fs::write(LOOK_FILE, s);
+            let _ = std::fs::write(&look_path, s);
         }
     }
 }
 
 /// Reload `Look` from [`LOOK_FILE`] when it changes on disk; returns true if it did.
 pub fn reload_look(look: &mut Look, watch: &mut LookWatch) -> bool {
-    if let Ok(meta) = std::fs::metadata(LOOK_FILE) {
+    let look_path = look_file();
+    if let Ok(meta) = std::fs::metadata(&look_path) {
         let mtime = meta.modified().ok();
         if mtime != watch.0 {
             watch.0 = mtime;
-            if let Ok(s) = std::fs::read_to_string(LOOK_FILE) {
+            if let Ok(s) = std::fs::read_to_string(&look_path) {
                 match serde_json::from_str::<Look>(&s) {
                     Ok(new) => {
                         *look = new;
                         return true;
                     }
-                    Err(e) => warn!("bad {LOOK_FILE}: {e}"),
+                    Err(e) => warn!("bad {look_path}: {e}"),
                 }
             }
         }
@@ -507,11 +531,12 @@ pub fn reload_look(look: &mut Look, watch: &mut LookWatch) -> bool {
 
 /// Capture the window to [`AUTO_SHOT`] if a screenshot was requested via [`SHOT_REQ`].
 pub fn maybe_screenshot(commands: &mut Commands) {
-    if std::fs::metadata(SHOT_REQ).is_ok() {
-        let _ = std::fs::remove_file(SHOT_REQ);
+    let req = shot_req();
+    if std::fs::metadata(&req).is_ok() {
+        let _ = std::fs::remove_file(&req);
         commands
             .spawn(Screenshot::primary_window())
-            .observe(save_to_disk(AUTO_SHOT));
+            .observe(save_to_disk(auto_shot()));
     }
 }
 
