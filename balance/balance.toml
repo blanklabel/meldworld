@@ -3100,6 +3100,22 @@ chest_regrow_ticks = 18000       # 30 min: treasure is the one thing farming mus
 # dormant did not happen. That is the same gap a server restart already has, and it is
 # what `advance_to` closes. Keep this generous until then.
 dormant_after_ticks = 6000       # 10 min empty at the shipped tick
+# SC-3 — how many SHIFTS a waking world actually replays.
+#
+# A dormant world catches up in CLOSED FORM, never by replaying ticks: at 100 ms a tick
+# and a measured 15.8 ms creature step at d1300, one dormant hour would be ~9.5 min of
+# CPU and a week ~26 h, on the one task that owns everything. Almost nothing needs
+# stepping — regrowth is `regrow(target)` in a single call, and creature mending is
+# rate x elapsed and SATURATES (a full heal in 100 s), so past ~2 min it is a fixed point
+# rather than an approximation.
+#
+# The Shift is the one subsystem that genuinely iterates, and it MUST: `shift_region`
+# picks the least-recently-disturbed span half the time, so the order is history and
+# cannot be collapsed. ⚠️ The GENERATION counter still advances over every Shift that
+# landed — the schedule stays a pure function of the seed (§W5) — and only the last N are
+# APPLIED. An older Shift's re-scatter is largely overwritten by the newer ones on top of
+# it anyway, so this bounds the work without desynchronising the schedule.
+max_catchup_shifts = 64          # ~a week of dormancy at the shipped cadence [TUNABLE]
 
 # =============================================================================
 # Player-built structures (CANON D21 / §W3) — one primitive, many functions.

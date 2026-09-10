@@ -866,6 +866,10 @@ pub struct WorldPersist {
     /// A world outliving its divers is the point; ticking forever is a leak, because the
     /// creature step costs the same whether or not anyone is watching.
     pub dormant_after_ticks: u64,
+    /// SC-3 — how many Shifts a WAKING world replays. The generation counter still
+    /// advances over every one that landed (the schedule is a pure function of the seed);
+    /// only the last N are applied.
+    pub max_catchup_shifts: usize,
 }
 
 #[derive(Debug, Clone, Deserialize)]
