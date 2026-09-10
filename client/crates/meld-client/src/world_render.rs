@@ -3,6 +3,7 @@
 //! Extracted from `main.rs` during the module reorg.
 
 use std::collections::HashMap;
+use std::sync::RwLock;
 
 use bevy::gltf::GltfAssetLabel;
 use bevy::light::NotShadowCaster;
@@ -535,6 +536,63 @@ pub(crate) fn boss_keys() -> impl Iterator<Item = &'static str> {
 // now holds every dungeon to it).
 use meld_proto::bosses::DUNGEON_SPRITES;
 
+/// Boss/elite encounter clip sets (PixelLab, `bosses/<key>/`). Frame counts are
+/// per-clip: template `walk` cycles are 6f for humanoids / 8f for quadrupeds; the
+/// v3 attack + ability clips are 8f. miredrowned's two abilities + ashenleviathan's
+/// `eruption` weren't generated (PixelLab credit cap) — they're simply absent.
+/// `(clip, frames, drawn-for-all-eight-facings)`. The flag exists because a dungeon
+/// sprite may be drawn only from the south — declaring such a clip as directional asks
+/// the loader for seven folders nobody made, which is 56 missing-asset errors a launch.
+fn boss_clips(key: &str) -> &'static [(&'static str, usize, bool)] {
+    match key {
+        "gloamhound" => &[("walk", 8, true), ("attack", 8, true), ("howl", 8, true), ("pounce", 8, true)],
+        "rustfang" => &[("walk", 8, true), ("attack", 8, true), ("slam", 8, true), ("overcharge", 8, true)],
+        "choirmother" => &[("walk", 6, true), ("attack", 8, true), ("wail", 8, true), ("grasp", 8, true)],
+        "pyrewarden" => &[("walk", 6, true), ("attack", 8, true), ("furnace_slam", 8, true), ("ember_burst", 8, true)],
+        "sepulcher" => &[("walk", 8, true), ("attack", 8, true), ("rend", 8, true), ("phantom", 8, true)],
+        "hollowbishop" => &[("walk", 6, true), ("attack", 8, true), ("soulfire", 8, true), ("bone_nova", 8, true)],
+        "ironmaw" => &[("walk", 8, true), ("attack", 8, true), ("devour", 8, true), ("reactor_roar", 8, true)],
+        "weepingcolossus" => &[("walk", 6, true), ("attack", 8, true), ("chain_sweep", 8, true), ("sorrow_quake", 8, true)],
+        "miredrowned" => &[("walk", 6, true), ("attack", 8, true)],
+        "ashenleviathan" => &[("walk", 8, true), ("attack", 8, true), ("cinder_charge", 8, true)],
+        // The barrow's fae court: walk + attack, no ability art yet, so its kit
+        // falls through to the attack clip.
+        "briarlord" => &[("walk", 8, true), ("attack", 8, true)],
+        // The Ocean Palace's guardian. A dungeon `sprite`, deliberately NOT one of
+        // the named bosses (`meld_proto::bosses`) — it draws no name plate. Its walk
+        // is still to be made, so it declares the attack only: naming a clip with no
+        // frames behind it is asset errors on every launch.
+        // Its attack is drawn SOUTH-ONLY; its walk is not drawn at all yet.
+        "twingolem" => &[("attack", 8, false)],
+        // ⚠️ THE WORLD BOSSES DO NOT WALK, so they declare an IDLE and nothing else.
+        // The fallback below asks for `walk` and `attack` across all eight facings —
+        // sixteen folders nobody drew, which is a wall of missing-asset errors every
+        // launch. Their idle is drawn SOUTH-ONLY (they are met head-on, in an arena,
+        // and never seen from behind), hence the `false`.
+        "termina" | "nestiph" | "slake" | "ometus" | "velvetmaw" | "cogwright"
+        | "vatmother" => &[("idle", 8, false)],
+        // The All-Father is an OBJECT rather than a character: eight rotations and no
+        // clips at all, because a mountain has no animation to give.
+        "allfather" => &[],
+        _ => &[("walk", 8, true), ("attack", 8, true)],
+    }
+}
+
+/// Townsfolk clips. Eighteen of the twenty-three never fight, so only the armed ones
+/// have an attack — `load_creature_clips` is told which clips exist rather than assuming.
+fn npc_clips(key: &str) -> &'static [(&'static str, usize, bool)] {
+    let armed = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("assets/npcs")
+        .join(key)
+        .join("animations/attack")
+        .is_dir();
+    if armed {
+        &[("walk", 8, true), ("attack", 8, false)]
+    } else {
+        &[("walk", 8, true)]
+    }
+}
+
 /// Creature species whose animated sprite set is INSTALLED under `assets/creatures/`.
 /// A species listed here stops being a single frozen 32px billboard and starts turning,
 /// walking and swinging like everything else in the world.
@@ -746,7 +804,9 @@ pub(crate) struct WorldAssets {
     /// (`gloamhound`, `ironmaw`, …). Each has `walk` + `attack` + its ability clips
     /// (see [`boss_keys`]). Look up via [`Self::boss_frames`]. Used by scripted
     /// encounters (gameplay wiring lands separately) + the `MELD_BOSS` preview.
-    pub(crate) boss_chars: HashMap<String, CharacterFrames>,
+    ///
+    /// **Filled ON FIRST SIGHTING, not at startup** — see [`Self::boss_frames`].
+    boss_chars: RwLock<HashMap<String, CharacterFrames>>,
     /// Bespoke HD-2D pixel-art billboards (PixelLab) for world props, keyed by full
     /// prop key: `obstacle_<kind>`, `resource_<kind>`, `connector_<kind>`,
     /// `item_<name>`, `marker_<name>`. Preferred over the 3D `prop_scenes`/primitives
@@ -767,9 +827,26 @@ pub(crate) struct WorldAssets {
     /// `<kind>_pack_leader` for the one leading it. Absent for a species whose art has
     /// not landed, which keeps it
     /// on the old single-png billboard rather than on missing-asset errors.
-    pub(crate) creature_chars: HashMap<String, CharacterFrames>,
+    ///
+    /// **Filled ON FIRST SIGHTING, not at startup** — see [`Self::creature_frames`].
+    creature_chars: RwLock<HashMap<String, CharacterFrames>>,
     /// Townsfolk sprite sets (`assets/npcs/<key>/`), keyed by [`NPC_CHARS`] entry.
-    pub(crate) npc_chars: HashMap<String, CharacterFrames>,
+    ///
+    /// **Filled UP FRONT, unlike the two above.** `CITY_FOLK` is a fixed roster and all of
+    /// them stand in the city every time you are there, so deferring saves nothing and costs
+    /// twenty sets landing at once on arrival. Behind the same lock only so one accessor
+    /// shape serves all three.
+    npc_chars: RwLock<HashMap<String, CharacterFrames>>,
+    /// A handle on the asset server, so a species' art can be REQUESTED the first time
+    /// something actually needs it. Cheap to hold: `AssetServer` is an `Arc` inside.
+    ///
+    /// ⚠️ **This is what makes the three maps above lazy, and it is the whole point.**
+    /// Loading every creature, boss and townsfolk at startup put 2.85 GB of
+    /// uncompressed RGBA8 into a 4 GB card — measured 3554/4096 MiB resident, 18 s of
+    /// stall, and the frames after it thrashing what would not fit. A dive visits one
+    /// biome and meets a handful of species; the other hundred are paid for and never
+    /// drawn.
+    server: AssetServer,
     pub(crate) monster_pool: Vec<Handle<Image>>,
     /// Real 3D prop models (Kenney Nature Kit, CC0) keyed by terrain-obstacle kind →
     /// several `(scene, baked_scale)` variants (picked per-entity by id hash), so the
@@ -832,25 +909,68 @@ impl WorldAssets {
     /// colours; deeper bands push it hotter and darker, so meeting the Choirmother
     /// at distance 2000 reads as a worse Choirmother before it takes a turn.
     /// Applied as a material tint rather than new art — one boss, four moods.
-    pub(crate) fn boss_frames(&self, key: &str) -> Option<&CharacterFrames> {
-        self.boss_chars.get(key)
+    pub(crate) fn boss_frames(&self, key: &str) -> Option<CharacterFrames> {
+        if !boss_keys().any(|k| k == key) {
+            return None;
+        }
+        Some(self.lazy(&self.boss_chars, key, || {
+            hd2d::load_creature_clips(&self.server, &format!("bosses/{key}"), boss_clips(key))
+        }))
     }
 
     /// The animated set for a creature, or `None` if this species is still on the old
     /// static billboard. `minion` picks the runt's own art and FALLS BACK to the
     /// species' — a species may get its leader art before its minion art, and half a pack
     /// rendering as nothing at all is worse than half a pack sharing one sprite.
-    pub(crate) fn creature_frames(&self, kind: &str, leader: bool) -> Option<&CharacterFrames> {
+    pub(crate) fn creature_frames(&self, kind: &str, leader: bool) -> Option<CharacterFrames> {
         let installed: Vec<&str> = CREATURE_CHARS.iter().map(|(k, _)| *k).collect();
         let key = creature_art_key(kind, leader, &installed)?;
-        self.creature_chars.get(&key)
+        // The walk's length comes from the SET, not a constant — six frames from the
+        // stock template, eight from a custom clip.
+        let walk_frames = CREATURE_CHARS.iter().find(|(k, _)| *k == key).map(|(_, n)| *n)?;
+        Some(self.lazy(&self.creature_chars, &key, || {
+            hd2d::load_creature_clips(
+                &self.server,
+                &format!("creatures/{key}"),
+                &[("walk", walk_frames, true), ("attack", 8, false)],
+            )
+        }))
     }
 
     /// A townsfolk's sprite set. Keyed by name, not pooled by prefix like a creature:
     /// an NPC is one PERSON, and the innkeeper standing at the inn has to be the
     /// innkeeper every time rather than whichever townsfolk the hash landed on.
-    pub(crate) fn npc_frames(&self, key: &str) -> Option<&CharacterFrames> {
-        self.npc_chars.get(key)
+    pub(crate) fn npc_frames(&self, key: &str) -> Option<CharacterFrames> {
+        if !NPC_CHARS.contains(&key) {
+            return None;
+        }
+        Some(self.lazy(&self.npc_chars, key, || {
+            hd2d::load_creature_clips(&self.server, &format!("npcs/{key}"), npc_clips(key))
+        }))
+    }
+
+    /// Read a lazily-populated sprite map, loading the entry on the FIRST ask.
+    ///
+    /// The read lock is taken and RELEASED before `load` runs — a loader that ran while
+    /// holding it would block every other sprite lookup for the duration of the request,
+    /// and `load_creature_clips` queues ~150 handles. Two threads racing the same key
+    /// both build one; the second's insert wins and both get an equivalent set of
+    /// handles to the same paths, which is harmless (`AssetServer::load` de-duplicates
+    /// by path) and cheaper than holding a write lock across the load.
+    fn lazy(
+        &self,
+        map: &RwLock<HashMap<String, CharacterFrames>>,
+        key: &str,
+        load: impl FnOnce() -> CharacterFrames,
+    ) -> CharacterFrames {
+        if let Some(hit) = map.read().expect("sprite map lock").get(key) {
+            return hit.clone();
+        }
+        let frames = load();
+        map.write()
+            .expect("sprite map lock")
+            .insert(key.to_string(), frames.clone());
+        frames
     }
 
     pub(crate) fn class_frames(&self, class: &str) -> &CharacterFrames {
@@ -1261,98 +1381,29 @@ pub(crate) fn setup(
         })
         .collect();
 
-    // Boss/elite encounter clip sets (PixelLab, `bosses/<key>/`). Frame counts are
-    // per-clip: template `walk` cycles are 6f for humanoids / 8f for quadrupeds; the
-    // v3 attack + ability clips are 8f. miredrowned's two abilities + ashenleviathan's
-    // `eruption` weren't generated (PixelLab credit cap) — they're simply absent.
-    // `(clip, frames, drawn-for-all-eight-facings)`. The flag exists because a dungeon
-    // sprite may be drawn only from the south — declaring such a clip as directional asks
-    // the loader for seven folders nobody made, which is 56 missing-asset errors a launch.
-    fn boss_clips(key: &str) -> &'static [(&'static str, usize, bool)] {
-        match key {
-            "gloamhound" => &[("walk", 8, true), ("attack", 8, true), ("howl", 8, true), ("pounce", 8, true)],
-            "rustfang" => &[("walk", 8, true), ("attack", 8, true), ("slam", 8, true), ("overcharge", 8, true)],
-            "choirmother" => &[("walk", 6, true), ("attack", 8, true), ("wail", 8, true), ("grasp", 8, true)],
-            "pyrewarden" => &[("walk", 6, true), ("attack", 8, true), ("furnace_slam", 8, true), ("ember_burst", 8, true)],
-            "sepulcher" => &[("walk", 8, true), ("attack", 8, true), ("rend", 8, true), ("phantom", 8, true)],
-            "hollowbishop" => &[("walk", 6, true), ("attack", 8, true), ("soulfire", 8, true), ("bone_nova", 8, true)],
-            "ironmaw" => &[("walk", 8, true), ("attack", 8, true), ("devour", 8, true), ("reactor_roar", 8, true)],
-            "weepingcolossus" => &[("walk", 6, true), ("attack", 8, true), ("chain_sweep", 8, true), ("sorrow_quake", 8, true)],
-            "miredrowned" => &[("walk", 6, true), ("attack", 8, true)],
-            "ashenleviathan" => &[("walk", 8, true), ("attack", 8, true), ("cinder_charge", 8, true)],
-            // The barrow's fae court: walk + attack, no ability art yet, so its kit
-            // falls through to the attack clip.
-            "briarlord" => &[("walk", 8, true), ("attack", 8, true)],
-            // The Ocean Palace's guardian. A dungeon `sprite`, deliberately NOT one of
-            // the named bosses (`meld_proto::bosses`) — it draws no name plate. Its walk
-            // is still to be made, so it declares the attack only: naming a clip with no
-            // frames behind it is asset errors on every launch.
-            // Its attack is drawn SOUTH-ONLY; its walk is not drawn at all yet.
-            "twingolem" => &[("attack", 8, false)],
-            // ⚠️ THE WORLD BOSSES DO NOT WALK, so they declare an IDLE and nothing else.
-            // The fallback below asks for `walk` and `attack` across all eight facings —
-            // sixteen folders nobody drew, which is a wall of missing-asset errors every
-            // launch. Their idle is drawn SOUTH-ONLY (they are met head-on, in an arena,
-            // and never seen from behind), hence the `false`.
-            "termina" | "nestiph" | "slake" | "ometus" | "velvetmaw" | "cogwright"
-            | "vatmother" => &[("idle", 8, false)],
-            // The All-Father is an OBJECT rather than a character: eight rotations and no
-            // clips at all, because a mountain has no animation to give.
-            "allfather" => &[],
-            _ => &[("walk", 8, true), ("attack", 8, true)],
-        }
-    }
-    let boss_chars: HashMap<String, CharacterFrames> = boss_keys()
-        .map(|key| {
-            (
-                key.to_string(),
-                hd2d::load_creature_clips(&assets, &format!("bosses/{key}"), boss_clips(key)),
-            )
-        })
-        .collect();
-
-    // Creature sets. Walk + attack only — a creature has no ability art, so its clips
-    // fall through to the attack the way a newly-drawn class's do. The WALK is drawn for
-    // all eight facings because the overworld shows a creature from every angle; the
-    // ATTACK is south-only because it is only ever seen in the arena, which faces the
-    // party. See `hd2d::load_creature_clips`.
-    let creature_chars: HashMap<String, CharacterFrames> = CREATURE_CHARS
-        .iter()
-        .map(|&(key, walk_frames)| {
-            (
-                key.to_string(),
-                hd2d::load_creature_clips(
-                    &assets,
-                    &format!("creatures/{key}"),
-                    // The walk's length comes from the SET, not a constant — six frames
-                    // from the stock template, eight from a custom clip.
-                    &[("walk", walk_frames, true), ("attack", 8, false)],
-                ),
-            )
-        })
-        .collect();
-
-    // Townsfolk. Eighteen of the twenty-three never fight, so only the armed ones have
-    // an attack — `load_creature_clips` is told which clips exist rather than assuming.
+    // ⚠️ **THE TOWNSFOLK ARE LOADED UP FRONT, AND THE OTHER TWO ARE NOT — THE ROSTER IS
+    // WHAT DECIDES IT.** Deferring art pays only when most of a set goes unused: a dive
+    // meets a handful of the 110 creature species and almost no bosses, so those wait until
+    // something asks. `CITY_FOLK` is a FIXED roster and every one of them stands in the city
+    // every time you are there, so there is nothing to save — and deferring them made
+    // entering town load twenty sets at once (~2,000 frames on a 4-core box), which was
+    // reported from play as the town being very slow to load "at first". Lazily, once, is
+    // exactly when a first visit pays for all of it.
     let npc_chars: HashMap<String, CharacterFrames> = NPC_CHARS
         .iter()
         .map(|&key| {
-            let armed = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("assets/npcs")
-                .join(key)
-                .join("animations/attack")
-                .is_dir();
-            let clips: &[(&str, usize, bool)] = if armed {
-                &[("walk", 8, true), ("attack", 8, false)]
-            } else {
-                &[("walk", 8, true)]
-            };
             (
                 key.to_string(),
-                hd2d::load_creature_clips(&assets, &format!("npcs/{key}"), clips),
+                hd2d::load_creature_clips(&assets, &format!("npcs/{key}"), npc_clips(key)),
             )
         })
         .collect();
+
+    // ⚠️ **THE BOSS AND CREATURE SETS ARE NOT BUILT HERE.** They are
+    // filled on first sighting instead (`WorldAssets::boss_frames` / `creature_frames` /
+    // `npc_frames`); see the note on `WorldAssets::server` for why. The CLASS sets above
+    // stay eager on purpose — a party of heroes is on screen from the first frame, so
+    // nothing is saved by deferring the one set that is always needed.
 
     let prop_sprites: HashMap<String, Handle<Image>> = PROP_KEYS
         .iter()
@@ -1361,9 +1412,10 @@ pub(crate) fn setup(
 
     commands.insert_resource(WorldAssets {
         class_chars,
-        creature_chars,
-        npc_chars,
-        boss_chars,
+        creature_chars: RwLock::new(HashMap::new()),
+        npc_chars: RwLock::new(npc_chars),
+        boss_chars: RwLock::new(HashMap::new()),
+        server: assets.clone(),
         prop_sprites,
         // Cylindrical normals so the sun models the flat sprite (HD-2D depth).
         sprite_quad: meshes.add(hd2d::cyl_billboard_mesh(2.2, 2.2, 12, 60.0)),
@@ -3034,6 +3086,7 @@ pub(crate) fn update_ground_biome_rings(
     clock: Res<Time>,
     frame: Res<crate::WorldFrame>,
     dungeon: Res<DungeonSceneRes>,
+    look: Res<hd2d::Look>,
     ground_q: Query<&MeshMaterial3d<GroundMat>, With<WorldGround>>,
     mut mats: ResMut<Assets<GroundMat>>,
 ) {
@@ -3104,6 +3157,54 @@ pub(crate) fn update_ground_biome_rings(
         .map(|e| (e.x, e.y))
         .unwrap_or((0.0, 0.0));
 
+    // ⚠️ **THE SLOT COUNTS ARE A CEILING, NOT A BUDGET — CULL TO WHAT IS VISIBLE FIRST
+    // (`WG-11`).** Every window below sorts nearest-first and then truncates to its SLOT
+    // count, so a mire uploads all sixteen basins when only the near handful can be on
+    // screen. The shader pays for the count, not for what it draws: `ground_biome.wgsl`
+    // loops every uploaded landform for EVERY GROUND FRAGMENT, so a slot filled with
+    // something behind the fog wall costs a full iteration across most of the screen and
+    // draws nothing at all.
+    //
+    // Everything past `fog_end` is pure fog colour (see `hd2d::Look::fog_end`), so a
+    // landform out there cannot be seen — and for a ridge it is stronger than that:
+    // `terrain::ridge_height` returns zero past `half_width`, so one culled here
+    // contributes *nothing* rather than merely nothing visible.
+    //
+    // Measured from the player, whose position centres every window — but the CAMERA is
+    // what the fog is measured from, and it sits `cam_dist` back. The far edge of what a
+    // player can see is therefore `fog_end + cam_dist` from the player, and using
+    // `fog_end` alone would cull a band the camera can still see over their shoulder.
+    //
+    // `None` when the fog is OFF: with no fog wall the distance is genuinely visible, and
+    // culling to it would pop landforms in and out at 500 units. A debug toggle must not
+    // silently change what the world IS.
+    //
+    // ⚠️⚠️ **ONLY LANDFORMS THAT ADD TO THE GROUND MAY BE CULLED — NEVER ONES THAT DECIDE
+    // LAND FROM WATER.** This is the line the first cut of `WG-11` walked straight over, and
+    // the failure is total rather than subtle: the world renders as open sea in the water's
+    // own light blue, with nothing to stand on and nowhere to go.
+    //
+    // - **Cullable** (peaks, ridges, basins, rivers): each ADDS height or water at a place.
+    //   Drop one and that ground is merely flatter or drier — and past the fog wall, unseen.
+    // - **Never cullable** (straits, lobes, bridges): each DECIDES whether there is land at
+    //   all. Drop one and the land itself is gone.
+    //
+    // The trap is that TRUNCATION never exposed the difference. Each of those three fits
+    // inside its slot count in every world built so far, so the window has never once
+    // dropped one — while a distance cull can drop the entire set at a stroke, the moment
+    // the player stands further than the fog wall from all of them.
+    // `MELD_LANDFORM_CULL=0` turns the cull OFF, which is the whole point: this is a change
+    // to how many iterations the ground costs, and `WG-11`'s standing rule is that a number
+    // taken without an A/B on the same build is not evidence. Cross-session comparison is
+    // what produced (and then retracted) a "92 ms baseline" that was contention on a busy
+    // box. Flip this, same build, same spot, `MELD_VSYNC=0`.
+    let cull_off = std::env::var("MELD_LANDFORM_CULL").is_ok_and(|v| v == "0");
+    let cull_far: Option<f32> =
+        (!cull_off && look.fog_on).then(|| look.fog_end + look.cam_dist);
+    // Distance from the player to the nearest point of a disc-shaped landform
+    // (`[cx, cz, radius, _]`) — negative inside it.
+    let disc_near = |q: &[f32; 4]| (q[0] - px).hypot(q[1] - pz) - q[2];
+
     // THE AUTHORED PEAKS — **nearest-first**, for exactly the reason the ranges below are.
     //
     // ⚠️ **THIS WAS THE LAST FLAT TRUNCATION, AND IT MADE EVERYTHING FLY.** `PEAKS`
@@ -3119,10 +3220,10 @@ pub(crate) fn update_ground_biome_rings(
     // written before the pattern existed**, and left alone when the ranges were corrected.
     // `every_windowed_landform_is_sorted_nearest_first` is why they cannot be missed again.
     let mut peaks = peaks_snapshot();
-    peaks.sort_by(|a, b| {
-        let d = |q: &[f32; 4]| (q[0] - px).hypot(q[1] - pz) - q[2];
-        d(a).total_cmp(&d(b))
-    });
+    if let Some(far) = cull_far {
+        peaks.retain(|q| disc_near(q) <= far);
+    }
+    peaks.sort_by(|a, b| disc_near(a).total_cmp(&disc_near(b)));
     let n = peaks.len().min(PEAK_SLOTS);
     for (i, slot) in mat.extension.params.peaks.iter_mut().enumerate() {
         *slot = if i < n {
@@ -3146,6 +3247,11 @@ pub(crate) fn update_ground_biome_rings(
         meld_proto::coast::dist_to_segment_pub(px, pz, s[0], s[1], s[2], s[3])
     };
     let mut rg = ridges();
+    // A ridge is a capsule: `half_width` (`r[4]`) past the segment its height is already
+    // zero, so this cull drops only ranges that contribute nothing to any visible fragment.
+    if let Some(far) = cull_far {
+        rg.retain(|r| near_first(r) - r[4] <= far);
+    }
     rg.sort_by(|a, b| near_first(a).total_cmp(&near_first(b)));
     let rn = rg.len().min(RIDGE_SLOTS / 2);
     for (i, slot) in mat.extension.params.ridges.iter_mut().enumerate() {
@@ -3164,6 +3270,11 @@ pub(crate) fn update_ground_biome_rings(
         meld_proto::coast::dist_to_segment_pub(px, pz, s[0], s[1], s[2], s[3])
     };
     let mut bg = bridges();
+    // ⚠️ **NOR ARE BRIDGES CULLED.** A bridge is *forced LAND* spanning water, which puts it
+    // in the same category as the straits and lobes rather than with the ridges: culling one
+    // does not flatten a span, it drowns it. There are at most `MAX_BRIDGES` (8) of them
+    // against sixteen basins and forty river nodes, so the iterations saved would not have
+    // paid for the risk even if it were safe.
     bg.sort_by(|a, b| span_near_first(a).total_cmp(&span_near_first(b)));
     let bn = bg.len().min(BRIDGE_SLOTS / 2);
     for (i, slot) in mat.extension.params.bridges.iter_mut().enumerate() {
@@ -3182,6 +3293,15 @@ pub(crate) fn update_ground_biome_rings(
     // on screen are the ones near the player's own ring, and a flat truncation would drop
     // the coast you are standing on in favour of one back at the hub.
     let mut near: Vec<meld_proto::coast::Strait> = straits_snapshot();
+    // ⚠️ **STRAITS ARE NEVER CULLED, AND THAT IS NOT AN OVERSIGHT.** A strait does not ADD
+    // something to the ground the way a peak or a ridge does — it is the WG-7 continent
+    // definition, the rule that says where land is at all. Culling one does not drop
+    // detail, it drops the land: a first cut of `WG-11` dropped every strait once the
+    // player stood further than the fog wall from all of their rings, and the world
+    // rendered as open sea, horizon to horizon, with nothing to stand on.
+    //
+    // Truncation never exposed this because there are fewer straits than `MAX_STRAITS`, so
+    // the window has never actually dropped one. A distance cull can drop them ALL.
     near.sort_by(|a, b| (a[0] - pr).abs().total_cmp(&(b[0] - pr).abs()));
     near.truncate(meld_proto::coast::MAX_STRAITS);
     for (i, slot) in mat.extension.params.straits.iter_mut().enumerate() {
@@ -3196,6 +3316,9 @@ pub(crate) fn update_ground_biome_rings(
     // …and the coast's lobes, windowed the same way and for the same reason.
     let mut near_lobes: Vec<meld_proto::coast::Lobe> =
         LOBES.read().map(|l| l.clone()).unwrap_or_default();
+    // ⚠️ **NOR ARE LOBES CULLED** — a lobe is a BAY or an ISLE, so like the straits above it
+    // decides land from water rather than decorating either. See the note on the straits:
+    // dropping these is what painted the whole world the sea's own light blue.
     near_lobes.sort_by(|a, b| {
         let da = (a[0].hypot(a[1]) - pr).abs();
         let db = (b[0].hypot(b[1]) - pr).abs();
@@ -3215,6 +3338,12 @@ pub(crate) fn update_ground_biome_rings(
     // contiguous run around the player's own ring instead.
     let water = shore_data();
     let mut near_basins = water.basins.clone();
+    // `[cx, cz, radius, level]` — a disc, culled by true distance to its rim for the same
+    // reason as the lobes. The radius is a BOUND on how far the water may spread, so this
+    // is conservative: a basin is never wider than the disc this test keeps.
+    if let Some(far) = cull_far {
+        near_basins.retain(|b| disc_near(b) <= far);
+    }
     near_basins.sort_by(|a, b| {
         let da = (a[0].hypot(a[1]) - pr).abs();
         let db = (b[0].hypot(b[1]) - pr).abs();
@@ -3246,7 +3375,22 @@ pub(crate) fn update_ground_biome_rings(
             .unwrap_or(0);
         mid.saturating_sub(RIVER_SLOTS / 2).min(nodes.len() - RIVER_SLOTS)
     };
-    let window = &nodes[start..(start + RIVER_SLOTS).min(nodes.len())];
+    let mut window = &nodes[start..(start + RIVER_SLOTS).min(nodes.len())];
+    // ⚠️ **A RIVER CULLS FROM THE ENDS ONLY — dropping a node from the MIDDLE would join
+    // its neighbours and draw a channel across whatever lies between them.** The window is
+    // already centred on the node nearest the player, so the ones past the fog wall are at
+    // its ends; trimming there keeps the run contiguous and the chain honest. A node is
+    // `[x, z, half_width, chain_start]`, so `disc_near` reads it as a disc for free, and
+    // the loop below still forces the surviving first node to start a chain.
+    if let Some(far) = cull_far {
+        window = match (
+            window.iter().position(|n| disc_near(n) <= far),
+            window.iter().rposition(|n| disc_near(n) <= far),
+        ) {
+            (Some(first), Some(last)) => &window[first..=last],
+            _ => &window[..0],
+        };
+    }
     for (i, slot) in mat.extension.params.rivers.iter_mut().enumerate() {
         *slot = match window.get(i) {
             // The first node of a window always starts a chain: the segment joining it to

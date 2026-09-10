@@ -268,7 +268,7 @@ pub(crate) fn spawn_enemy_actor(
     } else {
         let kind = crate::overworld::creature_kind(&c.name);
         let leader = c.statuses.iter().any(|s| s == "pack:leader");
-        wa.creature_frames(&kind, leader).cloned()
+        wa.creature_frames(&kind, leader)
     };
     // A pack's leader and its minions are the SAME species at 1.7x and 0.45x HP, so
     // drawing them identically made a 3.8x health gap look broken. Size is the read the
@@ -300,7 +300,7 @@ pub(crate) fn spawn_enemy_actor(
         Transform::from_translation(root),
         Visibility::default(),
     ));
-    if let Some(frames) = boss_frames.cloned().or(creature_frames).as_ref() {
+    if let Some(frames) = boss_frames.or(creature_frames).as_ref() {
         // Animated boss/creature actor: same CharSprite pattern spawn_hero_actor uses,
         // driven by the same generic `hd2d::animate_chars` system.
         let mat = mats.add(hd2d::sprite_material(base_tint, frames.idle[0].clone()));

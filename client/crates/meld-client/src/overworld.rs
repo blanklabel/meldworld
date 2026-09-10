@@ -1783,7 +1783,7 @@ pub(crate) fn sync_overworld_sprites(
                     } else {
                         Color::srgb(1.25, 1.12, 1.06) // looming, faintly warm
                     };
-                    spawn_boss_char(&mut commands, &mut mats, &wa, id, e, frames, scale, tint);
+                    spawn_boss_char(&mut commands, &mut mats, &wa, id, e, &frames, scale, tint);
                     continue;
                 }
                 // An ordinary creature with an installed sprite set renders the way a
@@ -1796,7 +1796,7 @@ pub(crate) fn sync_overworld_sprites(
                 // ordinary creature (a lone spawn, or a pack's minions); only the leader
                 // reaches for a set of its own.
                 let leader = e.encounter_class.as_deref() == Some("leader");
-                if let Some(frames) = wa.creature_frames(&kind, leader).cloned() {
+                if let Some(frames) = wa.creature_frames(&kind, leader) {
                     let scale = 2.0 * pack_scale_for(e.encounter_class.as_deref());
                     let tint = if e.battling {
                         Color::srgb(1.4, 0.75, 0.55)

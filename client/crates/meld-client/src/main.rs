@@ -84,7 +84,6 @@ fn raise_open_file_limit() {
     let _ = rlimit::increase_nofile_limit(u64::MAX);
 }
 
-/// The window mode at launch: borderless-fullscreen, which is big and readable.
 /// `MELD_WIN=<w>x<h>` — the fill-rate A/B's window size, if asked for. `None` means
 /// fullscreen at the monitor's own resolution (the normal way to play).
 fn win_size() -> Option<(u32, u32)> {
@@ -93,8 +92,18 @@ fn win_size() -> Option<(u32, u32)> {
     Some((w.parse().ok()?, h.parse().ok()?))
 }
 
+/// The window mode at launch: borderless-fullscreen, which is big and readable.
+///
+/// `MELD_WINDOWED=1` forces a normal windowed mode instead — a workaround for
+/// `MonitorSelection::Current` failing to resolve a monitor on some Windows setups
+/// ("Can't select current monitor on window creation"), which produces a window that
+/// opens but never renders anything: a black screen that looks exactly like a hang.
 fn default_window_mode() -> bevy::window::WindowMode {
-    bevy::window::WindowMode::BorderlessFullscreen(bevy::window::MonitorSelection::Current)
+    if std::env::var("MELD_WINDOWED").is_ok_and(|v| v != "0") {
+        bevy::window::WindowMode::Windowed
+    } else {
+        bevy::window::WindowMode::BorderlessFullscreen(bevy::window::MonitorSelection::Current)
+    }
 }
 
 /// Frame-time logging, on only when `MELD_FPS` is set — see the call site.
