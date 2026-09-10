@@ -77,10 +77,37 @@ qa/                         headless bot framework + Postgres-backed conformance
 ```
 
 The authoritative game loop is [`meld-server/src/game.rs`](server/crates/meld-server/src/game.rs):
-one Tokio task owns all ephemeral state (sessions + the active `MazeInstance`), is fed
+one Tokio task owns all ephemeral state (sessions + every live world), is fed
 `ServerEvent`s over an mpsc channel, advances the ATB on the 100 ms tick, and fans
 authoritative `*.*` messages back per session. **Exactly one task touches the state, so
 there are no locks** (CANON §S).
+
+**THERE ARE MANY WORLDS, AND A WORLD'S NAME IS ITS SEED** (`SC-3`, CANON §W1). `GameState`
+is the **Router** — sessions, lobbies, routing — and `worlds: HashMap<String, WorldActor>`
+is the shard table; a world's key is its seed in decimal, and a guided corridor is the same
+seed in its own namespace (`tutorial:<seed>`) so onboarding and a persistent world can never
+collide on one key. Still ONE task: it ticks N worlds, so the no-locks invariant is untouched.
+⚠️ **An UNNAMED dive is a matchmaking request, not a request for solitude.** `choose_world`
+packs unnamed divers into the fullest world with room; only a NAMED seed shards. Rolling a
+private world per unnamed diver compiles, passes every isolation test, and quietly stops the
+game being multiplayer for everyone who has not been told seeds exist — which is every `qa/`
+bot that meets another one.
+⚠️ **Reach a world through `world_of` / `world_of_mut`, never by picking one out of the
+map.** "The world" stopped being a thing that exists the moment there were two, and a
+handler that grabs an arbitrary entry is a player acting on somebody else's world. The
+routing entry is `Session.world: Option<String>` — it was `in_instance: bool`, which was
+honest with one world and is a routing bug with two, since every world-bound handler would
+have to guess which world the caller meant. It is also what scopes party chat: the `Party`
+channel filtered on `in_instance == in_instance` ("are we both in some run"), so two parties
+in different seeds heard each other.
+⚠️ **Anything that reads the world from a player id needs that player's SESSION to still
+exist.** The `Disconnected` arm removed the session before doing its world work, which was
+free while the world was a field on the Router and silently skipped the abandoned-run
+ephemeral burn once it was not.
+A world **outlives its divers** (§W1) but not forever: an empty one hibernates out of memory
+after `[world_persist] dormant_after_ticks`, because the creature step is the expensive half
+of a tick and does not care whether anybody is watching. ⚠️ Its clock STOPS while dormant —
+the closed-form `advance_to` catch-up is what closes that.
 
 ## How to run
 

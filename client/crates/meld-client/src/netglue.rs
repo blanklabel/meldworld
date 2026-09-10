@@ -333,9 +333,10 @@ pub(crate) fn pump_net(
                     announce.tutorial_run.step = None;
                 }
             }
-            ServerMsg::LobbyState { code, host, members } => {
+            ServerMsg::LobbyState { code, host, members, seed } => {
                 lobby.in_lobby = true;
                 lobby.code = code;
+                lobby.seed = seed;
                 lobby.my_ready = members
                     .iter()
                     .find(|(id, _, _)| id == &session.player_id)
@@ -351,6 +352,7 @@ pub(crate) fn pump_net(
                 lobby.in_lobby = false;
                 lobby.members.clear();
                 lobby.code.clear();
+                lobby.seed = None;
             }
             ServerMsg::Snapshot { entities, last_input_seq, delta, removed } => {
                 world.last_input_seq = last_input_seq;

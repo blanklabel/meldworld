@@ -26,6 +26,12 @@ battle_reentry_grace_ms = 5000   # after winning/losing/fleeing a fight, how lon
                                   # player is immune to being touched into a new one —
                                   # covers the victory/loot summary and gives a fled
                                   # player a real window to walk away [TUNABLE]
+# SC-3 — how many divers one WORLD holds at once. Worlds are capped and scale is MANY
+# worlds (CANON §W1): a world holds unique player structures, so a full one can never be
+# auto-forked the way a stateless instance could. ⚠️ CANON says a full world QUEUES; there
+# is no queue yet, so a full world REFUSES with a "pick another" error. Refusing is the
+# honest placeholder — a fake queue that never dequeues is worse than a clear no.
+max_divers_per_world = 16        # [TUNABLE] — 4 parties, the raid-merge cap
 
 [runs]
 # base_run_level(hub) = round(1 + hub.distance * base_run_level_per_distance)
@@ -3042,6 +3048,19 @@ save_every_ticks = 600           # once a minute at the shipped tick
 creature_regrow_ticks = 1800     # 3 min at the shipped tick
 node_regrow_ticks = 3000         # 5 min — ore is slower to come back than a fight
 chest_regrow_ticks = 18000       # 30 min: treasure is the one thing farming must not print
+# SC-3 — how long an EMPTY world keeps ticking before it hibernates out of memory.
+#
+# A world outliving its divers is the point (§W1), but "outlives" cannot mean "ticks
+# forever": the creature step is the expensive half of a tick (measured 15.8 ms at d1300)
+# and it does not care whether anybody is watching, so N idle deep worlds would eat the
+# budget N times over. An evicted world is SAVED on the way out and stood back up on the
+# next dive into it.
+#
+# ⚠️ Until the closed-form catch-up lands, an evicted world's clock STOPS: it wakes at the
+# tick it slept at rather than at "now", so Shifts and regrowth it should have had while
+# dormant did not happen. That is the same gap a server restart already has, and it is
+# what `advance_to` closes. Keep this generous until then.
+dormant_after_ticks = 6000       # 10 min empty at the shipped tick
 
 # =============================================================================
 # Player-built structures (CANON D21 / §W3) — one primitive, many functions.
