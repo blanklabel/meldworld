@@ -77,7 +77,10 @@ Seamless per-biome ground tiles extracted from PixelLab top-down Wang tilesets
 (`tileset_*.png` kept alongside), tiled across the ground plane by the `GroundBiome`
 shader.
 
-## `landscape/Tree01`, `landscape/Tree02`
+## `landscape/` — REMOVED
 
-Pre-existing rendered tree billboards (provenance predates this work; **no longer
-used** — the 3D Nature Kit trees replaced them).
+Pre-existing rendered tree billboards, replaced by the 3D Nature Kit trees and kept
+around unused afterwards. 370 files, 83 MB on disk — and because
+`bevy_embedded_assets` bakes the whole assets folder into the binary, every one of
+them shipped inside it. Nothing ever loaded them, so they cost binary size rather
+than VRAM; deleted rather than left as a trap for whoever next measures the build.

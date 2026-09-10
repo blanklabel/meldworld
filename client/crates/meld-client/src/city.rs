@@ -948,20 +948,25 @@ pub(crate) fn city_scene(
                         intensity: MONOLITH_LIGHT,
                         range: MONOLITH_REACH,
                         radius: 0.5,
-                        // ⚠️ **A LIGHT THAT CASTS NO SHADOW DOES NOT LIGHT A STREET, IT
-                        // TINTS ONE.** Every building and every prop in the plaza stayed
-                        // evenly lit from all sides at night, so the monoliths read as
-                        // glowing decorations rather than as the things the town sees by.
-                        // The hero's own carried lamp has cast a real shadow all along;
-                        // these are the fixed lights beside it and must match.
+                        // ⚠️⚠️ **NO SHADOW MAPS ON THE MONOLITHS — THEY MADE THE TOWN
+                        // UNPLAYABLE, AND THE REASON IS MEASURED, NOT GUESSED.** `#379` turned
+                        // on the plaza four (`i < 4`) to make the street read as lit rather than
+                        // tinted. A shadow-mapped point light is SIX full scene passes — one per
+                        // cube face — and every sprite casts (`#349`), so each face writes all
+                        // ~9,200 town entities. Four of them, plus the hero's lamp, is ~30 extra
+                        // passes per frame. A Chrome trace of the town on an i5-10300H/RTX 3050
+                        // laptop put the frame at ~107 ms ON AC POWER (~200 ms on battery), of
+                        // which ~36 ms was `write_binned_instance_buffers<Shadow>` alone, with
+                        // the GPU sitting at `Idle` 210 MHz — the CPU could not feed it.
+                        // Reported from play as five-minute loads and a town that was
+                        // unplayable.
                         //
-                        // Only the PLAZA four, though. A shadow-mapped point light is six
-                        // faces of render, and the street lamps line spokes the camera is
-                        // rarely looking down — so the ones that pay for themselves are the
-                        // four standing where the player actually is.
-                        // Off since the point-light shadow pass was measured: six faces
-                        // per light over the plaza, four lights, for a shadow the sun's
-                        // cascades already draw.
+                        // `#351` — the change that gave the carried lamps their shadows, and was
+                        // confirmed good in play — put the rule in writing: shadows on the lights
+                        // the player moves with, and **"city district lights: off — static, and
+                        // the town is not what this is for"**. This restores that line. If the
+                        // plaza ever needs a real shadow again, ONE light near the player, gated
+                        // to night like the carried lamps (`illuminate_players`), is the budget.
                         shadow_maps_enabled: false,
                         ..default()
                     },
@@ -1617,11 +1622,16 @@ pub(crate) fn city_vault_text(inv: &InventoryData) -> String {
         return "The Vault-Deep is being tallied...".to_string();
     }
     let mat_count: i32 = inv.materials.iter().map(|(_, n)| *n).sum();
+    // ⚠️ **THE BANNER COUNTS WHAT IS ON THE SHELF, NOT WHAT THE VAULT HAS EVER HELD.**
+    // `inv.gear` is every row the account owns, EQUIPPED PIECES INCLUDED — so a party in
+    // full kit read as dozens of pieces "in the Vault" while the stash itself might be
+    // empty. Beside chits and materials, which are both quantities you can spend right now,
+    // a number you cannot act on is the wrong number: this line answers "what is here for me
+    // to use", so a piece someone is wearing is not it.
+    let spare_gear = inv.gear.iter().filter(|g| g.equipped_hero_slot.is_none()).count();
     format!(
         "The Vault-Deep:  {} chits    {} materials    {} gear     [V] open",
-        inv.chits,
-        mat_count,
-        inv.gear.len()
+        inv.chits, mat_count, spare_gear
     )
 }
 
@@ -4001,7 +4011,7 @@ pub(crate) fn party_panel(
     }
     let slots = (unlocks.party_slots.max(1) as usize).min(4);
     let sprite = |key: &str| -> Handle<Image> {
-        wa.as_ref().map(|w| w.class_frames(key).idle[0].clone()).unwrap_or_default()
+        wa.as_ref().map(|w| w.class_portrait(key)).unwrap_or_default()
     };
     let focus = class_info(if city.yard_focus.is_empty() {
         session.party.first().map(|s| s.as_str()).unwrap_or("explorer")
@@ -4348,7 +4358,7 @@ pub(crate) fn party_picker_panel(
     let Some(slot) = want else { return };
     let pool = fieldable_classes(&unlocks);
     let sprite = |key: &str| -> Handle<Image> {
-        wa.as_ref().map(|w| w.class_frames(key).idle[0].clone()).unwrap_or_default()
+        wa.as_ref().map(|w| w.class_portrait(key)).unwrap_or_default()
     };
     let hero = hero_names
         .names
@@ -4881,7 +4891,7 @@ pub(crate) fn party_panel_refresh(
     // before the class art has finished loading, and a card that stayed blank until
     // it was rebuilt is the bug that reads as "the portraits don't work".
     let Some(wa) = wa else { return };
-    let img = |key: &str| wa.class_frames(key).idle[0].clone();
+    let img = |key: &str| wa.class_portrait(key);
     for (tag, mut node) in &mut slot_sprites {
         if let Some(k) = session.party.get(tag.0) {
             node.image = img(k);

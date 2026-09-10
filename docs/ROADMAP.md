@@ -2553,12 +2553,12 @@ design for this epic: [`proposals/worldgen-wg.md`](proposals/worldgen-wg.md).
 - [ ] **WG-11 — The client render budget, and the instrument to see it.** 🟡 *Opened by
   `#337`, which raised two of these numbers without being able to measure the effect.*
 
-  ⚠️ **THERE IS NO FRAME-TIME INSTRUMENT IN THE CLIENT AT ALL** — no
-  `FrameTimeDiagnosticsPlugin`, no FPS overlay, nothing. So every performance question is
-  currently answered with arithmetic. **Add it first, behind a `MELD_` flag**, before any
-  further render tuning. This repo has already paid twice for tuning through a broken
-  instrument (`MELD_GEAR_TIER` inert for a release while conclusions were drawn through it;
-  the MCP harness reporting an empty backpack whatever you carried).
+  ⚠️ **NOTHING HERE MAY BE TUNED THROUGH AN INSTRUMENT THAT HAS NOT BEEN CHECKED.** This
+  repo has now paid FOUR times for exactly that (`MELD_GEAR_TIER` inert for a release while
+  conclusions were drawn through it; the MCP harness reporting an empty backpack whatever
+  you carried; and both render flags below). The instruments exist now — see the ✅ item —
+  but the standing rule is the one that survived: **uncap, verify the flag moves something,
+  and prefer a same-process A/B** before believing a number.
 
 
   - ✅ **The instrument exists now, and TWO-THIRDS OF IT WAS LYING.** `MELD_FPS=1` had

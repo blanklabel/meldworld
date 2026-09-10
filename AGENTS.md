@@ -138,6 +138,28 @@ make stop         # stop the local server (Postgres left running, reused across 
 make help         # list every task
 ```
 
+### On Windows
+
+- **`make play` needs `MELD_PGSOCK` set to a native Windows path**, e.g.
+  `MELD_PGSOCK=C:/code/meldworld/target/pg-sock make play`. `serve.sh` defaults the Postgres
+  socket directory to `/tmp/meldworld-pg`, and that path sits inside the `-o "-p … -k …"`
+  argument handed to `pg_ctl`, so Git Bash never translates it and native `postgres.exe`
+  fails with *could not create lock file "/tmp/meldworld-pg/.s.PGSQL.5433.lock"*.
+- **Never force the DX12 backend (`WGPU_BACKEND=dx12`).** Without `dxcompiler.dll` beside
+  the game, Bevy falls back to the **FXC** shader compiler, which compiles this game's
+  pipelines for **about two minutes on every launch**, with nothing cached between runs:
+  black screen, then sky only, then the world popping in piece by piece, the ground last.
+  Measured on an i5-10300H/RTX 3050 laptop, same build: DX12 still had not drawn the
+  ground at +115 s and ran at ~15 FPS; the default, **Vulkan**, drew the whole world by
+  +8 s and ran at ~75 FPS with no stalls. Leave the backend alone and wgpu picks Vulkan.
+  (DX12 had been forced to dodge a Vulkan "Out of Memory" crash; that was VRAM exhausted
+  by the whole art library loading at startup, and is fixed.)
+- **Don't build while a Postgres-backed game is running.** A heavy compile has taken the
+  throwaway Postgres down mid-session with `0xC0000142` (`STATUS_DLL_INIT_FAILED`), after
+  which every login is an internal server error. Stop it first
+  (`pg_ctl -D target/pg stop -m fast`); `serve.sh` restarts it on the next `make play`.
+- **`Can't select current monitor on window creation` is harmless** and fires every launch.
+
 ### Self-contained QA / demo binary (`make dist` / `make play-solo`)
 
 For handing the game to someone who just wants to *play it* — remote QA, a
@@ -251,10 +273,25 @@ patched client that skips the mask still learns nothing. `check_touch` runs off 
 regardless, so **you walk into what you cannot see and the fight starts anyway**. Any future
 "you cannot see X" condition belongs in that cull, never in the renderer alone.
 
-⚠️ **Afflictions were BATTLE-scoped and now are not.** `timed_statuses` still lives on the
-`Fighter`, which is rebuilt per fight — so the RUN remembers instead (`hero_afflictions`, beside
-`hero_hp`), harvested when a battle ends and re-applied when the next starts. That is what makes
-"until cured" mean something on the road, where venom bites per step and bindings drag a march.
+⚠️ **AN AFFLICTION ENDS WITH THE FIGHT IT WAS TAKEN IN, AND THIS FILE TWICE SAID OTHERWISE.**
+`timed_statuses` lives on the `Fighter`, which is rebuilt per fight, so a condition dies with the
+battle unless something carries it. Nothing does any more: the end-of-battle harvest into
+`hero_afflictions` is gone (owner's call, after play). Wounds still carry — `hero_hp` is written
+back exactly as before — and so does everything else the run remembers; it is CONDITIONS that
+stop at the bell.
+
+The rule it replaces ("no free cleanse between fights any more than a free heal") reads well and
+played badly: take venom in a fight you won, walk out with no antidote in the bag, and the hero
+dies on the road with nothing you can do. **A condition with no reachable answer is not a
+decision, it is a delayed loss** — and the cures meant to answer it (Poultice, Sanctuary,
+Panacea) are not reliably in reach at the depth where venom starts to bite. Note the tension with
+"outlasting a debuff by standing still is not a decision" above: both cannot be fully true, and
+the one that survives contact with play wins.
+
+`hero_afflictions` itself STAYS — it is what a cure writes through, and what a lingering
+dungeon-trap venom would use. It is simply no longer fed from the end of a battle, and it is
+CLEARED there rather than left stale, or a hero who walked out of a poisoned fight would be
+re-poisoned at the start of the next one.
 
 **A condition repaints the readout.** Statuses are not just icons: a hero's cell and a
 creature's HP bar take the condition's colour, from a palette named after things rather than

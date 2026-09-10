@@ -3,6 +3,7 @@
 //! Extracted from `main.rs` during the module reorg.
 
 use std::collections::HashMap;
+use std::sync::RwLock;
 
 use bevy::gltf::GltfAssetLabel;
 use bevy::light::NotShadowCaster;
@@ -618,6 +619,103 @@ pub(crate) fn boss_keys() -> impl Iterator<Item = &'static str> {
 // now holds every dungeon to it).
 use meld_proto::bosses::DUNGEON_SPRITES;
 
+/// Boss/elite encounter clip sets (PixelLab, `bosses/<key>/`). Frame counts are
+/// per-clip: template `walk` cycles are 6f for humanoids / 8f for quadrupeds; the
+/// v3 attack + ability clips are 8f. miredrowned's two abilities + ashenleviathan's
+/// `eruption` weren't generated (PixelLab credit cap) — they're simply absent.
+/// `(clip, frames, drawn-for-all-eight-facings)`. The flag exists because a dungeon
+/// sprite may be drawn only from the south — declaring such a clip as directional asks
+/// the loader for seven folders nobody made, which is 56 missing-asset errors a launch.
+fn boss_clips(key: &str) -> &'static [(&'static str, usize, bool)] {
+    match key {
+        "gloamhound" => &[("walk", 8, true), ("attack", 8, true), ("howl", 8, true), ("pounce", 8, true)],
+        "rustfang" => &[("walk", 8, true), ("attack", 8, true), ("slam", 8, true), ("overcharge", 8, true)],
+        "choirmother" => &[("walk", 6, true), ("attack", 8, true), ("wail", 8, true), ("grasp", 8, true)],
+        "pyrewarden" => &[("walk", 6, true), ("attack", 8, true), ("furnace_slam", 8, true), ("ember_burst", 8, true)],
+        "sepulcher" => &[("walk", 8, true), ("attack", 8, true), ("rend", 8, true), ("phantom", 8, true)],
+        "hollowbishop" => &[("walk", 6, true), ("attack", 8, true), ("soulfire", 8, true), ("bone_nova", 8, true)],
+        "ironmaw" => &[("walk", 8, true), ("attack", 8, true), ("devour", 8, true), ("reactor_roar", 8, true)],
+        "weepingcolossus" => &[("walk", 6, true), ("attack", 8, true), ("chain_sweep", 8, true), ("sorrow_quake", 8, true)],
+        "miredrowned" => &[("walk", 6, true), ("attack", 8, true)],
+        "ashenleviathan" => &[("walk", 8, true), ("attack", 8, true), ("cinder_charge", 8, true)],
+        // The barrow's fae court: walk + attack, no ability art yet, so its kit
+        // falls through to the attack clip.
+        "briarlord" => &[("walk", 8, true), ("attack", 8, true)],
+        // The Ocean Palace's guardian. A dungeon `sprite`, deliberately NOT one of
+        // the named bosses (`meld_proto::bosses`) — it draws no name plate. Its walk
+        // is still to be made, so it declares the attack only: naming a clip with no
+        // frames behind it is asset errors on every launch.
+        // Its attack is drawn SOUTH-ONLY; its walk is not drawn at all yet.
+        "twingolem" => &[("attack", 8, false)],
+        // ⚠️ THE WORLD BOSSES DO NOT WALK, so they declare an IDLE and nothing else.
+        // The fallback below asks for `walk` and `attack` across all eight facings —
+        // sixteen folders nobody drew, which is a wall of missing-asset errors every
+        // launch. Their idle is drawn SOUTH-ONLY (they are met head-on, in an arena,
+        // and never seen from behind), hence the `false`.
+        "termina" | "nestiph" | "slake" | "ometus" | "velvetmaw" | "cogwright"
+        | "vatmother" => &[("idle", 8, false)],
+        // The All-Father is an OBJECT rather than a character: eight rotations and no
+        // clips at all, because a mountain has no animation to give.
+        "allfather" => &[],
+        _ => &[("walk", 8, true), ("attack", 8, true)],
+    }
+}
+
+/// Per-class hero sprites (PixelLab v3, 8-directional): idle rotations + a `walk` clip plus
+/// battle `attack` and one clip per special ability, loaded into `CharacterFrames::clips`
+/// and played in battle via `CharSprite::action`.
+fn class_clips(class: &str) -> &'static [(&'static str, usize)] {
+    match class {
+        "shifter" => &[
+            ("walk", 8), ("attack", 8), ("backstab", 8), ("flicker", 8), ("ransack", 8),
+        ],
+        // The Explorer's own kit has no bespoke ABILITY art yet, so its abilities
+        // fall back to the attack clip; the martial animations moved with the kit to
+        // the Hunter.
+        "explorer" => &[("walk", 8), ("attack", 8)],
+        "hunter" => &[
+            ("walk", 8), ("attack", 8), ("power_strike", 8), ("second_wind", 8),
+            ("snare", 8), ("frenzy", 8),
+        ],
+        "psyker" => &[
+            ("walk", 8), ("attack", 8), ("gravity_well", 8), ("kinetic_aegis", 8),
+            ("mind_spike", 8), ("temporal_anchor", 8),
+        ],
+        "resonant" => &[
+            ("walk", 8), ("attack", 8), ("transfuse", 8), ("regen_boon", 8), ("ward", 8),
+        ],
+        "phoenix_guard" => &[
+            ("walk", 8), ("attack", 8), ("silvered_strike", 8), ("rite_of_rest", 8),
+            ("holy_censure", 8), ("purging_light", 8),
+        ],
+        // The four newest orders have idle rotations, a walk cycle and a battle
+        // attack, and nothing else yet — their abilities fall through to the attack.
+        // Declare only what is ON DISK: a clip named here with no frames beside it is
+        // 64 asset-loader errors a launch, which is exactly what the Explorer shipped
+        // the moment it stopped being a copy of the Hunter's folder and lost the five
+        // martial clips it had been borrowing.
+        "smithwright" | "keeper" | "iron_hull" | "rift_knight" => {
+            &[("walk", 8), ("attack", 8)]
+        }
+        _ => &[("walk", 8)],
+    }
+}
+
+/// Townsfolk clips. Eighteen of the twenty-three never fight, so only the armed ones
+/// have an attack — `load_creature_clips` is told which clips exist rather than assuming.
+fn npc_clips(key: &str) -> &'static [(&'static str, usize, bool)] {
+    let armed = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("assets/npcs")
+        .join(key)
+        .join("animations/attack")
+        .is_dir();
+    if armed {
+        &[("walk", 8, true), ("attack", 8, false)]
+    } else {
+        &[("walk", 8, true)]
+    }
+}
+
 /// Creature species whose animated sprite set is INSTALLED under `assets/creatures/`.
 /// A species listed here stops being a single frozen 32px billboard and starts turning,
 /// walking and swinging like everything else in the world.
@@ -824,12 +922,29 @@ pub(crate) struct WorldAssets {
     /// `characters/<class>/`), keyed by `CharacterClass` wire key ("explorer", "psyker",
     /// "resonant", "shifter", "phoenix_guard"). Look up via [`Self::class_frames`], which
     /// falls back to the Explorer for any unknown key.
+    /// ⚠️ **EAGER, AND A LAZY VERSION WAS TRIED AND REVERTED — DO NOT REDO IT NAIVELY.**
+    /// All eight sets at startup is ~327 MB of uncompressed RGBA8, so deferring them looks
+    /// like the same win the creatures and bosses gave. It is not, for two reasons found in
+    /// play:
+    ///
+    /// 1. **The saving is not there.** The Drill Yard's class palette shows EVERY class, so
+    ///    opening the party screen asks for all eight anyway — which is the first thing a
+    ///    player does in town.
+    /// 2. **The lookup is on a UI path, not a spawn path.** A lazy map cannot hand out
+    ///    borrows, so `class_frames` had to return an owned clone — ~400 handle clones, a
+    ///    `HashMap` and eight `Vec`s per call — on panels that rebuild whenever a hover
+    ///    changes. Reported from play as the town becoming "very chuggy".
+    ///
+    /// A future attempt has to solve the borrow problem (an arena/`Arc<CharacterFrames>`, so
+    /// a hit is a pointer copy) AND find a screen that does not want the whole roster.
     pub(crate) class_chars: HashMap<String, CharacterFrames>,
     /// Boss/elite encounter sprites (PixelLab, `bosses/<key>/`), keyed by boss id
     /// (`gloamhound`, `ironmaw`, …). Each has `walk` + `attack` + its ability clips
     /// (see [`boss_keys`]). Look up via [`Self::boss_frames`]. Used by scripted
     /// encounters (gameplay wiring lands separately) + the `MELD_BOSS` preview.
-    pub(crate) boss_chars: HashMap<String, CharacterFrames>,
+    ///
+    /// **Filled ON FIRST SIGHTING, not at startup** — see [`Self::boss_frames`].
+    boss_chars: RwLock<HashMap<String, CharacterFrames>>,
     /// Bespoke HD-2D pixel-art billboards (PixelLab) for world props, keyed by full
     /// prop key: `obstacle_<kind>`, `resource_<kind>`, `connector_<kind>`,
     /// `item_<name>`, `marker_<name>`. Preferred over the 3D `prop_scenes`/primitives
@@ -850,9 +965,26 @@ pub(crate) struct WorldAssets {
     /// `<kind>_pack_leader` for the one leading it. Absent for a species whose art has
     /// not landed, which keeps it
     /// on the old single-png billboard rather than on missing-asset errors.
-    pub(crate) creature_chars: HashMap<String, CharacterFrames>,
+    ///
+    /// **Filled ON FIRST SIGHTING, not at startup** — see [`Self::creature_frames`].
+    creature_chars: RwLock<HashMap<String, CharacterFrames>>,
     /// Townsfolk sprite sets (`assets/npcs/<key>/`), keyed by [`NPC_CHARS`] entry.
-    pub(crate) npc_chars: HashMap<String, CharacterFrames>,
+    ///
+    /// **Filled UP FRONT, unlike the two above.** `CITY_FOLK` is a fixed roster and all of
+    /// them stand in the city every time you are there, so deferring saves nothing and costs
+    /// twenty sets landing at once on arrival. Behind the same lock only so one accessor
+    /// shape serves all three.
+    npc_chars: RwLock<HashMap<String, CharacterFrames>>,
+    /// A handle on the asset server, so a species' art can be REQUESTED the first time
+    /// something actually needs it. Cheap to hold: `AssetServer` is an `Arc` inside.
+    ///
+    /// ⚠️ **This is what makes the three maps above lazy, and it is the whole point.**
+    /// Loading every creature, boss and townsfolk at startup put 2.85 GB of
+    /// uncompressed RGBA8 into a 4 GB card — measured 3554/4096 MiB resident, 18 s of
+    /// stall, and the frames after it thrashing what would not fit. A dive visits one
+    /// biome and meets a handful of species; the other hundred are paid for and never
+    /// drawn.
+    server: AssetServer,
     pub(crate) monster_pool: Vec<Handle<Image>>,
     /// Real 3D prop models (Kenney Nature Kit, CC0) keyed by terrain-obstacle kind →
     /// several `(scene, baked_scale)` variants (picked per-entity by id hash), so the
@@ -915,25 +1047,68 @@ impl WorldAssets {
     /// colours; deeper bands push it hotter and darker, so meeting the Choirmother
     /// at distance 2000 reads as a worse Choirmother before it takes a turn.
     /// Applied as a material tint rather than new art — one boss, four moods.
-    pub(crate) fn boss_frames(&self, key: &str) -> Option<&CharacterFrames> {
-        self.boss_chars.get(key)
+    pub(crate) fn boss_frames(&self, key: &str) -> Option<CharacterFrames> {
+        if !boss_keys().any(|k| k == key) {
+            return None;
+        }
+        Some(self.lazy(&self.boss_chars, key, || {
+            hd2d::load_creature_clips(&self.server, &format!("bosses/{key}"), boss_clips(key))
+        }))
     }
 
     /// The animated set for a creature, or `None` if this species is still on the old
     /// static billboard. `minion` picks the runt's own art and FALLS BACK to the
     /// species' — a species may get its leader art before its minion art, and half a pack
     /// rendering as nothing at all is worse than half a pack sharing one sprite.
-    pub(crate) fn creature_frames(&self, kind: &str, leader: bool) -> Option<&CharacterFrames> {
+    pub(crate) fn creature_frames(&self, kind: &str, leader: bool) -> Option<CharacterFrames> {
         let installed: Vec<&str> = CREATURE_CHARS.iter().map(|(k, _)| *k).collect();
         let key = creature_art_key(kind, leader, &installed)?;
-        self.creature_chars.get(&key)
+        // The walk's length comes from the SET, not a constant — six frames from the
+        // stock template, eight from a custom clip.
+        let walk_frames = CREATURE_CHARS.iter().find(|(k, _)| *k == key).map(|(_, n)| *n)?;
+        Some(self.lazy(&self.creature_chars, &key, || {
+            hd2d::load_creature_clips(
+                &self.server,
+                &format!("creatures/{key}"),
+                &[("walk", walk_frames, true), ("attack", 8, false)],
+            )
+        }))
     }
 
     /// A townsfolk's sprite set. Keyed by name, not pooled by prefix like a creature:
     /// an NPC is one PERSON, and the innkeeper standing at the inn has to be the
     /// innkeeper every time rather than whichever townsfolk the hash landed on.
-    pub(crate) fn npc_frames(&self, key: &str) -> Option<&CharacterFrames> {
-        self.npc_chars.get(key)
+    pub(crate) fn npc_frames(&self, key: &str) -> Option<CharacterFrames> {
+        if !NPC_CHARS.contains(&key) {
+            return None;
+        }
+        Some(self.lazy(&self.npc_chars, key, || {
+            hd2d::load_creature_clips(&self.server, &format!("npcs/{key}"), npc_clips(key))
+        }))
+    }
+
+    /// Read a lazily-populated sprite map, loading the entry on the FIRST ask.
+    ///
+    /// The read lock is taken and RELEASED before `load` runs — a loader that ran while
+    /// holding it would block every other sprite lookup for the duration of the request,
+    /// and `load_creature_clips` queues ~150 handles. Two threads racing the same key
+    /// both build one; the second's insert wins and both get an equivalent set of
+    /// handles to the same paths, which is harmless (`AssetServer::load` de-duplicates
+    /// by path) and cheaper than holding a write lock across the load.
+    fn lazy(
+        &self,
+        map: &RwLock<HashMap<String, CharacterFrames>>,
+        key: &str,
+        load: impl FnOnce() -> CharacterFrames,
+    ) -> CharacterFrames {
+        if let Some(hit) = map.read().expect("sprite map lock").get(key) {
+            return hit.clone();
+        }
+        let frames = load();
+        map.write()
+            .expect("sprite map lock")
+            .insert(key.to_string(), frames.clone());
+        frames
     }
 
     pub(crate) fn class_frames(&self, class: &str) -> &CharacterFrames {
@@ -941,6 +1116,12 @@ impl WorldAssets {
             .get(class)
             .or_else(|| self.class_chars.get("explorer"))
             .expect("explorer class sprite always loaded")
+    }
+
+    /// A class's standing portrait — the ONE frame every menu, roster row and party card
+    /// wants. A borrow away from the map, so asking for it costs a single handle clone.
+    pub(crate) fn class_portrait(&self, class: &str) -> Handle<Image> {
+        self.class_frames(class).idle[0].clone()
     }
 }
 
@@ -1292,48 +1473,11 @@ pub(crate) fn setup(
     .map(|(k, v)| (k.to_string(), v))
     .collect();
 
-    // Per-class hero sprites (PixelLab v3, 8-directional): idle rotations + a `walk`
-    // clip plus battle `attack` and one clip per special ability, loaded into
-    // `CharacterFrames::clips` and played in battle via `CharSprite::action`.
-    fn class_clips(class: &str) -> &'static [(&'static str, usize)] {
-        match class {
-            "shifter" => &[
-                ("walk", 8), ("attack", 8), ("backstab", 8), ("flicker", 8), ("ransack", 8),
-            ],
-            // The Explorer's own kit has no bespoke ABILITY art yet, so its abilities
-            // fall back to the attack clip; the martial animations moved with the kit to
-            // the Hunter.
-            "explorer" => &[("walk", 8), ("attack", 8)],
-            "hunter" => &[
-                ("walk", 8), ("attack", 8), ("power_strike", 8), ("second_wind", 8),
-                ("snare", 8), ("frenzy", 8),
-            ],
-            "psyker" => &[
-                ("walk", 8), ("attack", 8), ("gravity_well", 8), ("kinetic_aegis", 8),
-                ("mind_spike", 8), ("temporal_anchor", 8),
-            ],
-            "resonant" => &[
-                ("walk", 8), ("attack", 8), ("transfuse", 8), ("regen_boon", 8), ("ward", 8),
-            ],
-            "phoenix_guard" => &[
-                ("walk", 8), ("attack", 8), ("silvered_strike", 8), ("rite_of_rest", 8),
-                ("holy_censure", 8), ("purging_light", 8),
-            ],
-            // The four newest orders have idle rotations, a walk cycle and a battle
-            // attack, and nothing else yet — their abilities fall through to the attack.
-            // Declare only what is ON DISK: a clip named here with no frames beside it is
-            // 64 asset-loader errors a launch, which is exactly what the Explorer shipped
-            // the moment it stopped being a copy of the Hunter's folder and lost the five
-            // martial clips it had been borrowing.
-            "smithwright" | "keeper" | "iron_hull" | "rift_knight" => {
-                &[("walk", 8), ("attack", 8)]
-            }
-            _ => &[("walk", 8)],
-        }
-    }
     // Every class the client can muster, off the client's own roster — a hand-written
     // list here is a class whose art silently never loads, and the Smithwright and the
     // Keeper spent a release wearing the Explorer's coat because of exactly that.
+    // EAGER on purpose; see `WorldAssets::class_chars` for why a lazy version was tried
+    // and taken back out.
     let class_chars: HashMap<String, CharacterFrames> = crate::screens::CLASS_INFO
         .iter()
         .map(|c| c.key)
@@ -1345,98 +1489,29 @@ pub(crate) fn setup(
         })
         .collect();
 
-    // Boss/elite encounter clip sets (PixelLab, `bosses/<key>/`). Frame counts are
-    // per-clip: template `walk` cycles are 6f for humanoids / 8f for quadrupeds; the
-    // v3 attack + ability clips are 8f. miredrowned's two abilities + ashenleviathan's
-    // `eruption` weren't generated (PixelLab credit cap) — they're simply absent.
-    // `(clip, frames, drawn-for-all-eight-facings)`. The flag exists because a dungeon
-    // sprite may be drawn only from the south — declaring such a clip as directional asks
-    // the loader for seven folders nobody made, which is 56 missing-asset errors a launch.
-    fn boss_clips(key: &str) -> &'static [(&'static str, usize, bool)] {
-        match key {
-            "gloamhound" => &[("walk", 8, true), ("attack", 8, true), ("howl", 8, true), ("pounce", 8, true)],
-            "rustfang" => &[("walk", 8, true), ("attack", 8, true), ("slam", 8, true), ("overcharge", 8, true)],
-            "choirmother" => &[("walk", 6, true), ("attack", 8, true), ("wail", 8, true), ("grasp", 8, true)],
-            "pyrewarden" => &[("walk", 6, true), ("attack", 8, true), ("furnace_slam", 8, true), ("ember_burst", 8, true)],
-            "sepulcher" => &[("walk", 8, true), ("attack", 8, true), ("rend", 8, true), ("phantom", 8, true)],
-            "hollowbishop" => &[("walk", 6, true), ("attack", 8, true), ("soulfire", 8, true), ("bone_nova", 8, true)],
-            "ironmaw" => &[("walk", 8, true), ("attack", 8, true), ("devour", 8, true), ("reactor_roar", 8, true)],
-            "weepingcolossus" => &[("walk", 6, true), ("attack", 8, true), ("chain_sweep", 8, true), ("sorrow_quake", 8, true)],
-            "miredrowned" => &[("walk", 6, true), ("attack", 8, true)],
-            "ashenleviathan" => &[("walk", 8, true), ("attack", 8, true), ("cinder_charge", 8, true)],
-            // The barrow's fae court: walk + attack, no ability art yet, so its kit
-            // falls through to the attack clip.
-            "briarlord" => &[("walk", 8, true), ("attack", 8, true)],
-            // The Ocean Palace's guardian. A dungeon `sprite`, deliberately NOT one of
-            // the named bosses (`meld_proto::bosses`) — it draws no name plate. Its walk
-            // is still to be made, so it declares the attack only: naming a clip with no
-            // frames behind it is asset errors on every launch.
-            // Its attack is drawn SOUTH-ONLY; its walk is not drawn at all yet.
-            "twingolem" => &[("attack", 8, false)],
-            // ⚠️ THE WORLD BOSSES DO NOT WALK, so they declare an IDLE and nothing else.
-            // The fallback below asks for `walk` and `attack` across all eight facings —
-            // sixteen folders nobody drew, which is a wall of missing-asset errors every
-            // launch. Their idle is drawn SOUTH-ONLY (they are met head-on, in an arena,
-            // and never seen from behind), hence the `false`.
-            "termina" | "nestiph" | "slake" | "ometus" | "velvetmaw" | "cogwright"
-            | "vatmother" => &[("idle", 8, false)],
-            // The All-Father is an OBJECT rather than a character: eight rotations and no
-            // clips at all, because a mountain has no animation to give.
-            "allfather" => &[],
-            _ => &[("walk", 8, true), ("attack", 8, true)],
-        }
-    }
-    let boss_chars: HashMap<String, CharacterFrames> = boss_keys()
-        .map(|key| {
-            (
-                key.to_string(),
-                hd2d::load_creature_clips(&assets, &format!("bosses/{key}"), boss_clips(key)),
-            )
-        })
-        .collect();
-
-    // Creature sets. Walk + attack only — a creature has no ability art, so its clips
-    // fall through to the attack the way a newly-drawn class's do. The WALK is drawn for
-    // all eight facings because the overworld shows a creature from every angle; the
-    // ATTACK is south-only because it is only ever seen in the arena, which faces the
-    // party. See `hd2d::load_creature_clips`.
-    let creature_chars: HashMap<String, CharacterFrames> = CREATURE_CHARS
-        .iter()
-        .map(|&(key, walk_frames)| {
-            (
-                key.to_string(),
-                hd2d::load_creature_clips(
-                    &assets,
-                    &format!("creatures/{key}"),
-                    // The walk's length comes from the SET, not a constant — six frames
-                    // from the stock template, eight from a custom clip.
-                    &[("walk", walk_frames, true), ("attack", 8, false)],
-                ),
-            )
-        })
-        .collect();
-
-    // Townsfolk. Eighteen of the twenty-three never fight, so only the armed ones have
-    // an attack — `load_creature_clips` is told which clips exist rather than assuming.
+    // ⚠️ **THE TOWNSFOLK ARE LOADED UP FRONT, AND THE OTHER TWO ARE NOT — THE ROSTER IS
+    // WHAT DECIDES IT.** Deferring art pays only when most of a set goes unused: a dive
+    // meets a handful of the 110 creature species and almost no bosses, so those wait until
+    // something asks. `CITY_FOLK` is a FIXED roster and every one of them stands in the city
+    // every time you are there, so there is nothing to save — and deferring them made
+    // entering town load twenty sets at once (~2,000 frames on a 4-core box), which was
+    // reported from play as the town being very slow to load "at first". Lazily, once, is
+    // exactly when a first visit pays for all of it.
     let npc_chars: HashMap<String, CharacterFrames> = NPC_CHARS
         .iter()
         .map(|&key| {
-            let armed = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("assets/npcs")
-                .join(key)
-                .join("animations/attack")
-                .is_dir();
-            let clips: &[(&str, usize, bool)] = if armed {
-                &[("walk", 8, true), ("attack", 8, false)]
-            } else {
-                &[("walk", 8, true)]
-            };
             (
                 key.to_string(),
-                hd2d::load_creature_clips(&assets, &format!("npcs/{key}"), clips),
+                hd2d::load_creature_clips(&assets, &format!("npcs/{key}"), npc_clips(key)),
             )
         })
         .collect();
+
+    // ⚠️ **THE BOSS AND CREATURE SETS ARE NOT BUILT HERE.** They are
+    // filled on first sighting instead (`WorldAssets::boss_frames` / `creature_frames` /
+    // `npc_frames`); see the note on `WorldAssets::server` for why. The CLASS sets above
+    // stay eager on purpose — a party of heroes is on screen from the first frame, so
+    // nothing is saved by deferring the one set that is always needed.
 
     let prop_sprites: HashMap<String, Handle<Image>> = PROP_KEYS
         .iter()
@@ -1445,9 +1520,10 @@ pub(crate) fn setup(
 
     commands.insert_resource(WorldAssets {
         class_chars,
-        creature_chars,
-        npc_chars,
-        boss_chars,
+        creature_chars: RwLock::new(HashMap::new()),
+        npc_chars: RwLock::new(npc_chars),
+        boss_chars: RwLock::new(HashMap::new()),
+        server: assets.clone(),
         prop_sprites,
         // Cylindrical normals so the sun models the flat sprite (HD-2D depth).
         sprite_quad: meshes.add(hd2d::cyl_billboard_mesh(2.2, 2.2, 12, 60.0)),
@@ -3325,6 +3401,31 @@ pub(crate) fn update_ground_biome_rings(
     // per fragment and per vertex, so this is the cheapest fragment work there is to remove.
     let horizon = if look.fog_on { look.fog_end + 60.0 } else { f32::INFINITY };
 
+    // ⚠️ **A DISTANCE CULL OF THE LANDFORM UPLOADS WAS TRIED HERE AND TAKEN BACK OUT — DO
+    // NOT RE-ADD IT WITHOUT A MEASUREMENT FIRST.**
+    //
+    // The idea is `WG-11`'s own and still sound on paper: these windows sort nearest-first
+    // and then truncate to the SLOT count, so the shader pays a per-fragment iteration for
+    // landforms sitting behind the fog wall. Dropping those first should be free speed.
+    //
+    // In the hand it cost two total-loss regressions and bought nothing measurable:
+    //
+    // 1. Culling straits/lobes/bridges rendered the world as OPEN SEA. Those three do not
+    //    add to the ground, they decide whether there IS ground — and truncation had never
+    //    exposed the difference, because all three fit inside their slot counts, so the
+    //    window has never once dropped one. A distance cull drops the whole set at a stroke.
+    // 2. Culling only the additive four (peaks, ridges, basins, rivers) drowned the world
+    //    AGAIN on the next play. A peak or a range is what lifts ground above sea level, so
+    //    removing one does not merely flatten that ground — it can submerge it.
+    //
+    // And the speed it was supposed to buy was never demonstrated: the one comparison that
+    // suggested a win turned out to be contention on a loaded box, the same way this item
+    // already records a "92 ms uncapped baseline" being pure contamination.
+    //
+    // The real end state is the one `WG-11` names: move the landform tables to a STORAGE
+    // BUFFER, which removes the slot counts entirely and with them the whole class of bug —
+    // rather than trying to guess from a distance which of them the ground still needs.
+
     // THE AUTHORED PEAKS — **nearest-first**, for exactly the reason the ranges below are.
     //
     // ⚠️ **THIS WAS THE LAST FLAT TRUNCATION, AND IT MADE EVERYTHING FLY.** `PEAKS`
@@ -3406,6 +3507,15 @@ pub(crate) fn update_ground_biome_rings(
     // on screen are the ones near the player's own ring, and a flat truncation would drop
     // the coast you are standing on in favour of one back at the hub.
     let mut near: Vec<meld_proto::coast::Strait> = (*straits_snapshot()).clone();
+    // ⚠️ **STRAITS ARE NEVER CULLED, AND THAT IS NOT AN OVERSIGHT.** A strait does not ADD
+    // something to the ground the way a peak or a ridge does — it is the WG-7 continent
+    // definition, the rule that says where land is at all. Culling one does not drop
+    // detail, it drops the land: a first cut of `WG-11` dropped every strait once the
+    // player stood further than the fog wall from all of their rings, and the world
+    // rendered as open sea, horizon to horizon, with nothing to stand on.
+    //
+    // Truncation never exposed this because there are fewer straits than `MAX_STRAITS`, so
+    // the window has never actually dropped one. A distance cull can drop them ALL.
     near.sort_by(|a, b| (a[0] - pr).abs().total_cmp(&(b[0] - pr).abs()));
     near.truncate(meld_proto::coast::MAX_STRAITS);
     for (i, slot) in mat.extension.params.straits.iter_mut().enumerate() {
@@ -3420,6 +3530,9 @@ pub(crate) fn update_ground_biome_rings(
     // …and the coast's lobes, windowed the same way and for the same reason.
     let mut near_lobes: Vec<meld_proto::coast::Lobe> =
         LOBES.read().map(|l| (**l).clone()).unwrap_or_default();
+    // A lobe is a BAY or an ISLE, so like the straits it decides land from water. It is safe
+    // to cull at the horizon below only because it is a real disc measured by true distance to
+    // its rim: past the fog it has nothing on screen. The straits are NOT culled — see above.
     near_lobes.sort_by(|a, b| {
         let da = (a[0].hypot(a[1]) - pr).abs();
         let db = (b[0].hypot(b[1]) - pr).abs();

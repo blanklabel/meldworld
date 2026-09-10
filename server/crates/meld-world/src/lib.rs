@@ -4402,9 +4402,37 @@ impl Arena {
         // a range that does not exist yet.
         let ridges = self.ridges.clone();
         let off = self.terrain_off;
+        // ⚠️ **AND NOTHING STANDS ON THE ONE WAY HOME.** The western approach is the only
+        // span between the world and Last City's gate, so a prop on its deck stands in the
+        // single doorway the whole game funnels through. Reported from play as trees
+        // blocking the bridge back into town, and reproduced as six of them across the deck
+        // on seed 424242 — a `push_prop_walls` boundary line, swung west of the hub by the
+        // arc, where no section is laid and nothing was looking.
+        //
+        // Nothing above catches it, and could not: a bridge is FORCED LAND, so
+        // `shore.is_land` answers yes on the deck (which is what makes it a bridge), and the
+        // route tests know the OUTWARD corridor and its web — the crossing home is neither.
+        // It is the third rule this function's own header predicted, and it belongs here for
+        // the reason given there: the scatter passes work in corridor space and the approach
+        // is world-space, so only a pass that runs AFTER the bend can see it. A guard in
+        // `clear_of_routes` was tried first and did nothing — the corridor round-trip is
+        // lossy this close to the hub, so the point it tested was not the point that landed.
+        let approach = meld_proto::coast::approach_bridge(meld_proto::coast::RETURN_BORDER_REACH);
+        let off_the_approach = |o: &Obstacle| {
+            meld_proto::coast::dist_to_segment_pub(
+                o.position.x as f32,
+                o.position.y as f32,
+                approach[0],
+                approach[1],
+                approach[2],
+                approach[3],
+            ) as f64
+                > approach[4] as f64 + o.radius
+        };
         self.obstacles.retain(|o| {
             dist_to_path(&o.position, &path) > clear_r + o.radius
                 && dist_to_web(&o.position, &web) > web_r + o.radius
+                && off_the_approach(o)
                 && shore.is_land(o.position.x as f32, o.position.y as f32)
                 && meld_proto::terrain::landform_slope(
                     o.position.x as f32,
@@ -14291,6 +14319,57 @@ mod tests {
             "only {} of {total} chests are on the through-route — a player who dives straight \
              out should still find something without solving the maze",
             total - rich
+        );
+    }
+
+    /// **THE ONE WAY HOME MUST STAY WALKABLE.** The western approach is the only span
+    /// between the world and Last City's gate, so anything standing on its deck is standing
+    /// in the single doorway the whole game funnels through — reported from play as trees
+    /// blocking the bridge back into town.
+    ///
+    /// Nothing stops it: a bridge is *forced land* (`coast::is_ocean` answers LAND on the
+    /// deck), so every "can I place here?" test in the scatter says yes, and the only guard
+    /// the scatter has is `clear_of_routes` — which knows the outward corridor and its web,
+    /// and has never heard of the western crossing.
+    #[test]
+    fn nothing_blocks_the_western_approach_into_town() {
+        let b = Balance::load_default().unwrap();
+        let mut a = Arena::generate(&b, 424242, false);
+        let mut reach = 0.0_f64;
+        while reach < 400.0 {
+            reach += 40.0;
+            a.ensure_frontier(&b, reach);
+        }
+        let deck = meld_proto::coast::approach_bridge(meld_proto::coast::RETURN_BORDER_REACH);
+        // How far into the deck a thing of `radius` reaches — negative when it is clear of it.
+        let intrudes = |p: &Position, radius: f64| -> f64 {
+            let d = meld_proto::coast::dist_to_segment_pub(
+                p.x as f32, p.y as f32, deck[0], deck[1], deck[2], deck[3],
+            ) as f64;
+            (deck[4] as f64 + radius) - d
+        };
+        let on_deck: Vec<String> = a
+            .obstacles
+            .iter()
+            .filter(|o| intrudes(&o.position, o.radius) > 0.0)
+            .map(|o| {
+                format!(
+                    "[{}] {} r={:.1} at ({:.1}, {:.1}) — {:.1} into the deck",
+                    o.entity_id,
+                    o.kind,
+                    o.radius,
+                    o.position.x,
+                    o.position.y,
+                    intrudes(&o.position, o.radius)
+                )
+            })
+            .collect();
+        assert!(
+            on_deck.is_empty(),
+            "{} thing(s) stand on the western approach — the ONLY way back into Last City \
+             on foot:\n    {}",
+            on_deck.len(),
+            on_deck.join("\n    ")
         );
     }
 
