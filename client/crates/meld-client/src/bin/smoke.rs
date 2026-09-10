@@ -68,6 +68,9 @@ fn main() {
                 ServerMsg::Reinforcements { .. } => {}
                 // A teleport matters to a renderer, not to a bot reading the snapshot.
                 ServerMsg::PositionCorrection { .. } => {}
+                // Which world-generation pass the server is on: a loading screen the bot
+                // does not have. It waits on `RunStarted` like everything else.
+                ServerMsg::Generating { .. } => {}
                 ServerMsg::Loadouts { .. } => {}
                 ServerMsg::Pouches { .. } => {}
                 ServerMsg::Connected { player_id } => {

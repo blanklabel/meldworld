@@ -277,6 +277,7 @@ fn main() {
             started: false,
         })
         .init_resource::<Session>()
+        .init_resource::<screens::Descent>()
         .insert_resource(Sky::opening(&crate::feel::WorldFeel::from_flags()))
         .init_resource::<Ashfall>()
         .init_resource::<DungeonSceneRes>()

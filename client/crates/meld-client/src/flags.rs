@@ -38,6 +38,27 @@ pub(crate) fn descend_preview_flag() -> bool {
     std::env::var("MELD_DESCEND").is_ok()
 }
 
+/// **Pin the descent screen to one generation PASS** — `MELD_DESCEND=section` (or `maze` /
+/// `bend` / `route` / `restart`).
+///
+/// ⚠️ Holding the screen is not enough to look at it. The passes are real
+/// (`run.generating`), so what survives on a held screen is whichever arrived LAST — the
+/// route walk, with no biome and a full bar. The one frame worth judging, a section mid-chain
+/// naming its own country, is unreachable without this. Same argument as `MELD_OPENING`
+/// staging an ambush and `MELD_TALLY` holding a haul: a state you cannot put on screen on
+/// demand cannot be developed, only guessed at.
+///
+/// While it is set the live messages are IGNORED rather than merged, or the pinned frame would
+/// be overwritten a tick later by the real thing.
+pub(crate) fn descend_stage_flag() -> Option<String> {
+    let v = std::env::var("MELD_DESCEND").ok()?;
+    let v = v.trim();
+    meld_proto::realtime::run::Generating::STEPS
+        .iter()
+        .find(|s| **s == v)
+        .map(|s| s.to_string())
+}
+
 /// Open the Apothecary's shelf on arrival (with `MELD_CITY`) — a stable frame for
 /// screenshotting the shop without walking to the district. Native: `MELD_SHOP`.
 ///

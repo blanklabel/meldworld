@@ -2637,11 +2637,26 @@ design for this epic: [`proposals/worldgen-wg.md`](proposals/worldgen-wg.md).
     re-rolls the terrain offset up to twelve times looking for a feasible world. Worth
     measuring what a cold enter actually costs before choosing between caching the generated
     sections and making feasibility structural enough not to need re-rolls.
-  - **Say something while it happens.** A static string is indistinguishable from a hang —
-    which is exactly how the frozen-game-loop bug in `#332` presented, and why it was
-    reported as a WebSocket error. A progress signal on the wire (sections generated /
-    expected) would make both legible.
-  ⚠️ **NOT INVESTIGATED AT ALL.** Recorded from the report; no measurement behind it yet.
+  - [x] **Say something while it happens.** ✅ **DONE.** A static string is indistinguishable
+    from a hang — which is exactly how the frozen-game-loop bug in `#332` presented, and why
+    it was reported as a WebSocket error. `run.generating` is that progress signal:
+    `Arena::generate_reporting` hands each real pass (`maze` / `section i of n` / `bend` /
+    `route` / `restart`, with the section's own biome) to an observer, and the server puts it
+    on the wire *as it happens* — `emit_now`, not the loop's dispatch, because the loop is
+    blocked solid through generation and anything batched would arrive beside `run.started`
+    saying nothing. The descent screen names the pass, one clause on what that pass does, and
+    an **honest** bar driven by the section count rather than a timer. Two guards: the
+    narrated world must be byte-identical to the quiet one (the callback is the caller's I/O
+    and cannot touch a draw), and every step in `Generating::STEPS` must have words on the
+    client.
+  - **MEASURED, which this item said nobody had done:** the initial eight-section chain is
+    **3.4–4.2 s in RELEASE** (seeds 424242 / 1 / 7, on a loaded box), and `generate_with`
+    re-rolls the whole world up to **twelve** times looking for a feasible route — so the
+    worst case is a multiple of that. This is the number the "do not regenerate" half above
+    has to beat.
+  - The first half is still open: a cold enter still regenerates from the seed and still
+    re-rolls for feasibility. What changed is that the wait is now legible, and a re-draw
+    says so instead of looking like the first attempt hanging.
 
 - [ ] **WG-10 — Scatter that makes sense, and nodes that sit somewhere.** 🟡 *Backlog —
   owner's direction, alongside `WG-9`.* Three parts; the status differs sharply between

@@ -110,6 +110,7 @@ pub(crate) fn pump_net(
             ResMut<crate::ShiftTell>,
             ResMut<crate::battle_fx::BattleFx>,
             ResMut<crate::battle::BattleOpening>,
+            ResMut<crate::screens::Descent>,
         ),
     ),
     mut roster: ResMut<PartyRoster>,
@@ -117,7 +118,7 @@ pub(crate) fn pump_net(
     state: Res<State<Screen>>,
     mut next: ResMut<NextState<Screen>>,
 ) {
-    let (world_path, world_frame, terrain, report, perks, hero_names, loadouts, run_gear, world_web, dungeon_scene, vanguard, shop, notice, clock, craft, (explored, station, heat, pops, hunts, bounties, tell, battle_fx, opening_card)) = &mut world_res;
+    let (world_path, world_frame, terrain, report, perks, hero_names, loadouts, run_gear, world_web, dungeon_scene, vanguard, shop, notice, clock, craft, (explored, station, heat, pops, hunts, bounties, tell, battle_fx, opening_card, descent)) = &mut world_res;
     net.0.poll();
     while let Some(msg) = net.0.try_recv() {
         match msg {
@@ -675,6 +676,14 @@ pub(crate) fn pump_net(
                 if announce.tutorial_run.step.is_some() && !announce.tutorial_run.chest_explained {
                     announce.tutorial_run.chest_explained = true;
                     announce.tutorial_run.chest_explain = true;
+                }
+            }
+            ServerMsg::Generating { step, index, total, biome, attempt } => {
+                // Straight onto the descent screen's resource. Kept even if we are no
+                // longer on that screen: the messages are cheap, and dropping them would
+                // mean the readout depended on which frame the screen switch landed in.
+                if crate::flags::descend_stage_flag().is_none() {
+                    **descent = crate::screens::Descent { step, index, total, biome, attempt };
                 }
             }
             ServerMsg::ChannelStarted { fill_ms, method, .. } => {

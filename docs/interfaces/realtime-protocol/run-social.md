@@ -525,6 +525,47 @@ What the smith did, or why they would not — one line, already written for the 
 
 ---
 
+### `run.generating` (S2C)
+
+**The world is being drawn, and this is the pass it is on** (`WG-12`).
+
+Generating a world is one blocking call in the game loop: measured in RELEASE, the initial
+`[worldgen] area_count` chain takes **3.4–4.2 s**, and a world whose guaranteed route does not
+hold is discarded and drawn again from scratch (up to twelve attempts). Before this message the
+client was sent nothing at all until `run.started`, so the descent screen could only offer an
+elapsed clock — which reads as a hang rather than as work.
+
+These reach the diver **while the work is happening**, because the game loop and each session's
+outbound writer are separate Tokio tasks on a multi-threaded runtime: the loop is blocked solid
+through generation, but the writer is polled on another worker. A message batched into the
+loop's ordinary dispatch would arrive beside `run.started` and say nothing.
+
+Sent to every player enrolled in the dive that created the world. A **re-dive into a world that
+already exists sends none of these** (the server builds one world per instance), and a
+**restored** world is replayed from its seed in one un-narrated call — an absence of these
+messages is a real case, not a failure, and the client falls back to its clock.
+
+| field | meaning |
+|---|---|
+| `step` | `maze` \| `section` \| `bend` \| `route` \| `restart` — the enumerated list is `Generating::STEPS`, read by both sides |
+| `index`, `total` | for `section`, which one (1-based) of how many; both `0` when the pass has no count |
+| `biome` | the section's own representative theme, when the pass has one |
+| `attempt` | which attempt, 1-based — a re-draw is otherwise indistinguishable from the first one hanging |
+
+Structured rather than a sentence: the words are presentation and belong to the client, and
+`index`/`total` is what makes an **honest** progress bar possible (the old screen refused to
+draw one, correctly, because a bar that fills on a timer is a lie).
+
+```json
+{"type": "run.generating", "seq": 12, "ts": 1783729000040, "payload": {"step": "maze", "index": 0, "total": 0, "attempt": 1}}
+```
+
+```json
+{"type": "run.generating", "seq": 15, "ts": 1783729001120, "payload": {"step": "section", "index": 3, "total": 8, "biome": "mire", "attempt": 1}}
+```
+
+---
+
 ### `run.channel_started` (S2C)
 
 A channel began; the channeling avatar is visible and vulnerable for the duration. Covers

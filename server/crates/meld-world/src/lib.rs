@@ -3395,6 +3395,30 @@ impl SpotGrid {
     }
 }
 
+/// One pass of world generation, handed to [`Arena::generate_reporting`]'s observer as it
+/// starts (a section reports as it FINISHES, so the theme it names is real ground).
+///
+/// These are the actual passes [`Arena::build_with`] runs, in the order it runs them — the
+/// point is a readout that cannot drift from the work, which is what a hand-written list of
+/// flavour lines beside the generator would eventually be.
+#[derive(Debug, Clone, Copy)]
+pub enum GenStage {
+    /// The topology is being decided — which cell boundaries are walls and which are passes.
+    /// Everything after this only raises ground where the maze already said "wall".
+    Maze { attempt: u32 },
+    /// A section of the chain is down: its terrain, ranges, water, guaranteed route, props,
+    /// wildlife and chests. `index` is 1-based.
+    Section { index: usize, total: usize, biome: &'static str, attempt: u32 },
+    /// The flat corridor is being bent into the radial fan (WG-4).
+    Bend { attempt: u32 },
+    /// The guaranteed way out is being walked, honestly, end to end. Fail it and the world
+    /// is drawn again.
+    Route { attempt: u32 },
+    /// It failed: this world is discarded and the next attempt starts. `attempt` is the new
+    /// one, 1-based.
+    Restart { attempt: u32 },
+}
+
 impl Arena {
     /// Generate a fresh world from `seed`. Deterministic: same seed ⇒ same areas,
     /// creatures, terraces, and portals (world-generation.md determinism invariant).
@@ -3631,17 +3655,46 @@ impl Arena {
         tutorial: bool,
         force_biome: Option<&'static str>,
     ) -> Self {
+        Self::generate_reporting(balance, seed, tutorial, force_biome, &mut |_| {})
+    }
+
+    /// [`Arena::generate_with`], reporting each pass to `on` as it starts.
+    ///
+    /// ⚠️ **THE CALLBACK IS THE CALLER'S I/O, NOT THIS CRATE'S.** `meld-world` stays pure:
+    /// nothing here reads a clock, a global RNG or a socket, and `on` cannot influence the
+    /// world it observes — the same world comes out whether it is a sink or a sender. That
+    /// is the only way generation can be *narrated* at all: it is one blocking call several
+    /// seconds long (measured 3.4-4.2 s in release for the initial chain), so the server has
+    /// nothing to say about it from outside.
+    pub fn generate_reporting(
+        balance: &Balance,
+        seed: u64,
+        tutorial: bool,
+        force_biome: Option<&'static str>,
+        on: &mut dyn FnMut(GenStage),
+    ) -> Self {
         let mut off = hub_terrain_offset(seed);
         for attempt in 0..12u64 {
-            let mut arena = Self::build_with(balance, seed, tutorial, force_biome, off);
+            let pass = attempt as u32 + 1;
+            if attempt > 0 {
+                // A world whose route did not hold is thrown away whole. Say so: it is the
+                // one thing that can make a dive take several times as long, and silently
+                // it is indistinguishable from the first attempt hanging.
+                on(GenStage::Restart { attempt: pass });
+            }
+            let mut arena = Self::build_with(balance, seed, tutorial, force_biome, off, pass, on);
+            on(GenStage::Route { attempt: pass });
             if arena.backbone_feasible() {
                 return arena;
             }
             off = hub_terrain_offset(seed ^ (attempt + 1).wrapping_mul(0x2545_F491_4F6C_DD1D));
         }
         // Nothing clean found (extremely rare): the un-shifted hand-tuned field is known
-        // feasible, so fall back to it rather than ship a pinched world.
-        Self::build_with(balance, seed, tutorial, force_biome, (0.0, 0.0))
+        // feasible, so fall back to it rather than ship a pinched world. It is reported as one
+        // more attempt because that is what it costs the player — a thirteenth world drawn.
+        const FALLBACK_ATTEMPT: u32 = 13;
+        on(GenStage::Restart { attempt: FALLBACK_ATTEMPT });
+        Self::build_with(balance, seed, tutorial, force_biome, (0.0, 0.0), FALLBACK_ATTEMPT, on)
     }
 
     /// Can a walker actually follow the initial-chain clear path from the hub to the deep
@@ -3705,6 +3758,8 @@ impl Arena {
         tutorial: bool,
         force_biome: Option<&'static str>,
         terrain_off: (f32, f32),
+        attempt: u32,
+        on: &mut dyn FnMut(GenStage),
     ) -> Self {
         let wg = &balance.worldgen;
         let mut arena = Arena {
@@ -3800,6 +3855,7 @@ impl Arena {
         // the topology up front makes a range something raised only where a wall is WANTED,
         // and a gap left only where the maze says pass.
         let (grid, arc_half) = (arena.regions, arena.radial_half as f32);
+        on(GenStage::Maze { attempt });
         arena.maze = crate::maze::build(&grid, seed, wg.maze_horizon, wg.maze_braid, &|c| {
             crate::maze::cell_holds_land(&grid, arc_half, c)
         });
@@ -3807,6 +3863,14 @@ impl Arena {
         let count = wg.area_count.max(1);
         for i in 0..count {
             arena.push_section(balance, i);
+            // Reported AFTER the pass, so the theme named is the ground actually laid
+            // rather than a guess at what the next roll will be.
+            on(GenStage::Section {
+                index: i + 1,
+                total: count,
+                biome: arena.areas.last().map(|a| a.biome).unwrap_or(""),
+                attempt,
+            });
         }
         // A single fixed extraction portal, deep at the end of the initial chain.
         arena.portal = arena
@@ -3819,6 +3883,7 @@ impl Arena {
         // directly, so the unbent trail is already where streaming expects it.
         // WG-4: bend the whole (flat) corridor into a radial arc around the hub, so
         // the world fans out in every direction but the western city sliver.
+        on(GenStage::Bend { attempt });
         arena.radialize(wg.radial_arc_degrees);
         // Water laid during generation can flood ground a creature was already standing on —
         // a cell's wet share floods a whole cell, and a cell spans sections. Asked here, after
@@ -14646,7 +14711,7 @@ mod tests {
         // Un-seeded terrain: asserts area SIZING + the portal-in-bounds invariant, which a
         // per-run mesa nudging the portal shouldn't perturb (terrain variety is tested by
         // the walker sweep). Deterministic structure only.
-        let arena = Arena::build_with(&b, 7, true, None, (0.0, 0.0));
+        let arena = Arena::build_with(&b, 7, true, None, (0.0, 0.0), 1, &mut |_| {});
         assert_eq!(arena.areas.len(), b.worldgen.area_count);
         assert!(!arena.monsters.is_empty());
         // Every area has a portal past its creatures and at least one creature.

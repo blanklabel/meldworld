@@ -682,6 +682,59 @@ fn world_seed() -> u64 {
     seed
 }
 
+/// One generation pass, in wire terms. The mapping lives on this side because the STAGE is
+/// the world's fact and the message is the protocol's — `meld-world` names its own passes and
+/// knows nothing about a socket.
+fn generating_msg(stage: meld_world::GenStage) -> wr::Generating {
+    use meld_world::GenStage as G;
+    let (step, index, total, biome, attempt) = match stage {
+        G::Maze { attempt } => ("maze", 0, 0, None, attempt),
+        G::Section { index, total, biome, attempt } => (
+            "section",
+            index as u32,
+            total as u32,
+            (!biome.is_empty()).then(|| biome.to_string()),
+            attempt,
+        ),
+        G::Bend { attempt } => ("bend", 0, 0, None, attempt),
+        G::Route { attempt } => ("route", 0, 0, None, attempt),
+        G::Restart { attempt } => ("restart", 0, 0, None, attempt),
+    };
+    debug_assert!(
+        wr::Generating::STEPS.contains(&step),
+        "a pass the client has no words for: {step}"
+    );
+    wr::Generating { step: step.to_string(), index, total, biome, attempt }
+}
+
+/// **Put a message on the wire NOW, without going through the loop's own dispatch.**
+///
+/// The one thing this is for is narrating world generation (`run.generating`). Generation is
+/// a single blocking call several seconds long inside the game loop, so anything returned as
+/// `Outgoing` is dispatched only once the world is finished and arrives beside `run.started`,
+/// saying nothing. The loop and each session's writer are **separate tasks** and the runtime
+/// is multi-threaded, so a `try_send` here is picked up by the writer on another worker while
+/// this thread is still generating — which is why the readout is live rather than a replay.
+///
+/// ⚠️ **It still takes `seq_out`**, because the wire contract is one monotonically-increasing
+/// `seq` per session (CANON §I) and a message that skipped it would renumber everything after
+/// it. Dropping a full buffer here is deliberately silent: a diver whose socket is already
+/// backed up is dealt with by [`GameLoop::dispatch`] on the next real message, and losing a
+/// progress line is not worth a disconnect.
+fn emit_now(sessions: &mut HashMap<String, Session>, ids: &[String], msg_type: &str, payload: &str) {
+    let ts = now_ms();
+    for id in ids {
+        if let Some(s) = sessions.get_mut(id) {
+            let env = format!(
+                "{{\"type\":\"{msg_type}\",\"seq\":{},\"ts\":{ts},\"payload\":{payload}}}",
+                s.seq_out,
+            );
+            s.seq_out = s.seq_out.wrapping_add(1);
+            let _ = s.out.try_send(env);
+        }
+    }
+}
+
 struct Session {
     username: String,
     out: mpsc::Sender<String>,
@@ -5429,13 +5482,37 @@ impl GameState {
                 tracing::info!(seed = save.seed, "world.persist: standing the saved world back up");
             }
             self.last_world_save = restored.as_ref().map(|s| s.tick_count as u64).unwrap_or(0);
+            // **THE WORLD IS DRAWN HERE, AND THE DIVERS ARE TOLD WHAT IT IS DOING.**
+            //
+            // Hoisted out of the `WorldActor` literal below for one reason: the reporter
+            // needs `&mut self.sessions` while this runs, and a closure holding that cannot
+            // sit inside a struct expression that also borrows `self`. Everything it needs
+            // is already in locals (`balance`, `seed`, `tutorial`, `force_biome`).
+            //
+            // See `emit_now` for why these reach the socket at all: this call blocks the
+            // loop for seconds, so its lines cannot travel as ordinary `Outgoing`.
+            let sessions = &mut self.sessions;
+            let arena = match &restored {
+                // A restore is one shot with no passes to narrate — the seed is regenerated
+                // and the Shift log replayed inside `restore_world`, which reports nothing.
+                Some(save) => restore_world(&balance, save),
+                None => Arena::generate_reporting(
+                    &balance,
+                    seed,
+                    tutorial,
+                    force_biome,
+                    &mut |stage| {
+                        let msg = generating_msg(stage);
+                        if let Ok(p) = serde_json::to_string(&msg) {
+                            emit_now(sessions, &party_ids, wr::Generating::TYPE, &p);
+                        }
+                    },
+                ),
+            };
             self.world = Some(WorldActor {
                 balance: balance.clone(),
                 db_writes: self.db_writes.clone(),
-                arena: match &restored {
-                    Some(save) => restore_world(&balance, save),
-                    None => Arena::generate_with(&balance, seed, tutorial, force_biome),
-                },
+                arena,
                 pending_frontier: None,
                 run: InstanceRun::new(instance_id, departure_hub_distance, &balance, now_ms()),
                 battles: Vec::new(),

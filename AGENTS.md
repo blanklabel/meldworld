@@ -1045,6 +1045,25 @@ the cap) and deep fights are 4.4-creature packs, so a *continuous* expedition re
 (~127 hours). The inn is what makes that a ladder instead of a wall — the session boundary
 was the problem, not the curve's shape.
 
+**A WAIT NOBODY NARRATES READS AS A HANG.** Entering the world is the longest pause in the
+game — measured, **3.4-4.2 s in RELEASE** for the initial `area_count` chain, and up to twelve
+whole re-draws when the guaranteed route does not hold — and the client used to be sent nothing
+at all until `run.started`, so the descent screen could only tick an elapsed clock. It is
+narrated now (`run.generating`, `WG-12`): `Arena::generate_reporting` hands each REAL pass to an
+observer (the maze decided, each section with its own biome, the bend, the route walk, a
+restart) and the screen names the pass, what that pass does, and an **honest** bar driven by the
+section count. ⚠️ **It cannot travel as an ordinary `Outgoing`**: the loop is blocked solid
+through generation, so anything batched into `dispatch` arrives beside `run.started` and says
+nothing. `emit_now` puts it on the session's own writer, which is a SEPARATE task on a
+multi-threaded runtime and therefore flushes while this thread is still generating — the only
+reason a blocking call can be reported live at all. ⚠️ And the callback is the CALLER's I/O:
+`meld-world` stays pure, so the narrated world must be byte-identical to the quiet one
+(`narrating_generation_does_not_change_the_world`), or generation stops being replayable from
+its seed and §W5 persistence goes with it. Absence of these messages is a real case, not a
+failure — one world is built per instance, so a re-dive narrates nothing and a restored world is
+replayed in one un-narrated call; the clock is what covers those. `MELD_DESCEND=<step>` pins one
+pass, because a held screen only ever shows whichever arrived last.
+
 **There is no hotkey for going home.** A Town Portal is an *item*, so spending one is an
 explicit choice on the menu's **Map** column ("Return to town", enabled only while you
 hold one) — the primary way out of a dive belongs somewhere a player can find, not on a
