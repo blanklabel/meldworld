@@ -1528,14 +1528,19 @@ pub(crate) fn emit_move(
 ) {
     if steer.0 == Vec2::ZERO {
         clock.acc = 0.0;
-        // ⚠️ **NOT STEERING MEANS NOTHING OF OURS IS IN FLIGHT.** Draining here rather
-        // than waiting for the acks to arrive does two jobs: it removes the overshoot at
-        // the end of every walk by construction (the same reason the old extrapolation
-        // keyed off `Steer`), and it is the resync if `seq` ever parts company with the
-        // net worker's counter — a reconnect rebuilds the worker and restarts its
-        // `input_seq` at 0, and without this the avatar would sit permanently ahead of
-        // itself by the replay cap.
-        predict.pending.clear();
+        // ⚠️ **DO NOT CLEAR THE HISTORY HERE — releasing the key is not a cancellation.**
+        // The first cut did, carrying over a guard that belonged to the mechanism this
+        // replaced: time-based extrapolation held a VELOCITY, which glides forever, so
+        // dropping it the instant `Steer` hit zero was what stopped a stopped player
+        // coasting. Input replay cannot glide — the queue is finite and the acks drain it.
+        //
+        // Clearing it is actively wrong, because the intents in it have been SENT and the
+        // server is still going to apply them. Throwing them away moves the target from
+        // `e + still-in-flight` back to a bare `e` that is ~3 intents (~0.9 units) behind
+        // where the avatar already legitimately is, so the avatar slides BACKWARDS and
+        // then forwards again as `e` catches up. Reported from play as "walking and then
+        // suddenly pulling the world along" — and because `Steer` is zero on every frame
+        // the key is not held, the smallest gap in input fired it.
         return;
     }
     let step = 1.0 / MOVE_INTENT_HZ;
@@ -1603,6 +1608,23 @@ pub(crate) fn sync_overworld_sprites(
     // previous), so remote sprites can lerp between the two most recent samples.
     if interp.seen_seq != world.seq {
         interp.seen_seq = world.seq;
+        // ⚠️ **THE ONE CASE THAT MAY ABANDON THE PREDICTION: the ack stopped moving.**
+        // A reconnect rebuilds the net worker and restarts its `input_seq` at 0, so our
+        // queue would hold seqs the server will never acknowledge and the avatar would
+        // sit permanently ahead of itself at the replay cap. Packet loss does the same
+        // thing for a shorter while. Detected rather than assumed — the old guard cleared
+        // on every key release, which threw away intents that were merely in flight.
+        if world_last_input_seq != predict.last_ack {
+            predict.last_ack = world_last_input_seq;
+            predict.stale = 0;
+        } else if !predict.pending.is_empty() {
+            predict.stale = predict.stale.saturating_add(1);
+        }
+        if predict.stale >= PREDICT_STALE_SNAPSHOTS || world_last_input_seq > predict.seq {
+            predict.pending.clear();
+            predict.seq = world_last_input_seq;
+            predict.stale = 0;
+        }
         // The local player's own pace, smoothed, BEFORE the buffer rolls — the sample
         // about to be overwritten is the one this needs. `dt` is clamped to a plausible
         // band of tick intervals so a jittered receipt cannot report a sprint or a stop;
