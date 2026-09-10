@@ -5064,6 +5064,37 @@ only the things that can't be class-gated.
     and agreed. `every_party_edge_is_drawn_looking_at_the_fight` asks the mapping instead.
     Hero 1 still faces the camera while it awaits your order (`face_cam`, unchanged).
 
+- [x] **UX-12 — The anvil is clickable, and the bench is a row per service.** Reported
+  from play as *"I can't actually click on anything at the Forge & Alembic counter"*.
+  `craft_view` draws its recipe book and then pushes the anvil and the bench as rows
+  *past* the end of it, while `commit_counter_pick` resolved a picked row by looking its
+  index up in `craft.recipes` — so every one of those rows picked, raised a Confirm
+  button, found nothing, and silently cleared the pick. `[F] forge from <stock>` is the
+  row that earns the **Smithwright** (`CL-1`'s `GearForged` milestone), so an unlock was
+  keyboard-only and looked like a dead button. The bench was worse: one line advertising
+  four keys, pasted in from `bench_line`, which is the FIELD forge's status strip — where
+  there are no rows to tap.
+  - *Shipped:* a row NAMES its own action (`CounterRow::action`) and the counter's commit
+    arm resolves it by name, so a tier that hides `[P] repair` cannot shift what a click
+    on the row above it means — the index arithmetic is never reproduced. `[S]`, `[C]`
+    and the bench cursor are **switches** (`instant`): they spend nothing and another
+    press undoes them, so they act on the press rather than asking for a confirm, while
+    everything that spends keeps it. The bench is now a row per service — the piece, then
+    `[R] reroll` and `[P] repair` when the tier can take them — so repair and reroll are
+    tappable for the first time. `run_craft_action` is the ONE implementation, reached by
+    the key and by the button; the keyboard arms of `city_input` were it, which is why the
+    two halves could disagree about what exists at all.
+    `every_actionable_row_at_the_forge_names_its_own_action` holds the invariant.
+  - *And it took a rule down to one copy on the way out.* `bench_line` had exactly one
+    caller, so replacing it left a dead function — and that was the tell: which services
+    a tier can take was written THREE times (that strip, the new rows, and the overworld
+    station, which builds its own line and had the rule inline). `bench_services` is the
+    one answer both surfaces ask, so a tier added to `Insurance` cannot reach the city
+    bench and miss the field forge.
+  - *Still keyboard-shaped:* the Forge's three nav chips ("Recipes", "Anvil", "Bench") are
+    legends rather than tabs — all three sections are in `main` at once — and
+    `counter_click`'s nav arm is gated on `city.shop_open`, so pressing one does nothing.
+
 - [ ] **UX-1 — Last City minimap & compass (town-only).** A minimap and compass
   **for Last City itself** so players can navigate the hub — locate the districts
   (Vault-Deep, Market, Forge/Alembic, Bounty Board, Drill Yard, Vanguard Wall),

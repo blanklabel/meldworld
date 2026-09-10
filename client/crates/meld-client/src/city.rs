@@ -1312,11 +1312,11 @@ pub(crate) fn city_input(
             return;
         }
         if keys.just_pressed(KeyCode::KeyS) {
-            craft.slot = (craft.slot + 1) % FORGE_SLOTS.len();
+            run_craft_action(&net, &mut craft, &inv, "slot");
             return;
         }
         if keys.just_pressed(KeyCode::KeyC) {
-            craft.catalyze = !craft.catalyze;
+            run_craft_action(&net, &mut craft, &inv, "quench");
             return;
         }
         // Left/right walk the bench; [R] and [P] are the smith's two services on
@@ -1331,67 +1331,16 @@ pub(crate) fn city_input(
             craft.bench = (craft.bench + bench_n - 1) % bench_n;
             return;
         }
-        // Both services go over the REALTIME channel rather than straight to HTTP,
-        // because smithing is a heat now: the server answers with a bar to strike and
-        // grades the blows. The HTTP endpoints stay for API callers.
         if keys.just_pressed(KeyCode::KeyP) {
-            match bench_gear(&craft, &inv) {
-                Some(g) => {
-                    craft.last = format!("heating {}...", g.name);
-                    net.0.send(ClientCmd::SmithRequest {
-                        entity_id: String::new(),
-                        gear_id: g.gear_id.clone(),
-                        service: "repair".into(),
-                        material: String::new(),
-                        recipe: String::new(),
-                    });
-                }
-                None => craft.last = "nothing on the bench".to_string(),
-            }
+            run_craft_action(&net, &mut craft, &inv, "repair");
             return;
         }
         if keys.just_pressed(KeyCode::KeyR) {
-            let piece = bench_gear(&craft, &inv).map(|g| (g.gear_id.clone(), g.name.clone()));
-            match (piece, best_stock(&inv, meld_proto::materials::MaterialClass::Refined)) {
-                (Some((gear_id, name)), Some(material)) => {
-                    craft.last = format!("heating {name}...");
-                    net.0.send(ClientCmd::SmithRequest {
-                        entity_id: String::new(),
-                        gear_id,
-                        service: "reroll".into(),
-                        material,
-                        recipe: String::new(),
-                    });
-                }
-                (None, _) => craft.last = "nothing on the bench".to_string(),
-                (_, None) => {
-                    craft.last = "a reroll needs refined stock - smelt an ore first".to_string();
-                }
-            }
+            run_craft_action(&net, &mut craft, &inv, "reroll");
             return;
         }
         if keys.just_pressed(KeyCode::KeyF) {
-            // The anvil takes REFINED stock, so pick the best the Vault holds rather
-            // than making the player name it; same for the trophy if a quench is armed.
-            match best_stock(&inv, meld_proto::materials::MaterialClass::Refined) {
-                Some(material) => {
-                    let catalyst = craft
-                        .catalyze
-                        .then(|| best_stock(&inv, meld_proto::materials::MaterialClass::Trophy))
-                        .flatten();
-                    if craft.catalyze && catalyst.is_none() {
-                        craft.last = "no trophy in the Vault to quench it in".to_string();
-                    } else {
-                        let slot = FORGE_SLOTS[craft.slot];
-                        craft.last = format!("forging a {slot}...");
-                        net.0.forge(slot.to_string(), material, catalyst);
-                    }
-                }
-                None => {
-                    craft.last =
-                        "the anvil needs refined stock - smelt an ore first".to_string();
-                }
-            }
+            run_craft_action(&net, &mut craft, &inv, "forge");
             return;
         }
     }
@@ -2240,6 +2189,21 @@ pub(crate) struct CounterRow {
     pub(crate) max_qty: i32,
     /// The word on the button that commits it: `"Buy"`, `"Sell"`, `"Forge"`.
     pub(crate) verb: String,
+    /// What this row DOES, named, for a counter whose rows are not all the same kind of
+    /// thing. The Forge's `main` column is a recipe book with the anvil and the bench as
+    /// rows beside it, and a commit path that re-derived their positions would drift the
+    /// moment a row is added or a tier hides one.
+    ///
+    /// That is not hypothetical: it is exactly how the anvil shipped **unclickable**.
+    /// `commit_counter_pick` looked every picked index up in `craft.recipes`, so the four
+    /// rows past the end of the book — including `[F] forge from`, the one row that earns
+    /// the Smithwright — picked, raised a Confirm button, and silently did nothing.
+    pub(crate) action: Option<&'static str>,
+    /// A row that spends nothing and is undone by another press acts ON the press. The
+    /// pick-then-confirm two-step exists so a mis-tap cannot spend chits or materials
+    /// unread; a switch has nothing to read and nothing to spend, so confirming one is
+    /// two clicks for no decision.
+    pub(crate) instant: bool,
 }
 
 impl CounterRow {
@@ -2255,6 +2219,8 @@ impl CounterRow {
             countable: false,
             max_qty: 1,
             verb: "Confirm".into(),
+            action: None,
+            instant: false,
         }
     }
     fn of(mut self, kind: impl Into<String>) -> Self {
@@ -2285,6 +2251,16 @@ impl CounterRow {
     fn committed_by(mut self, verb: &str) -> Self {
         self.verb = verb.into();
         self
+    }
+    /// What committing it runs, for the counter's own commit arm to resolve.
+    fn doing(mut self, action: &'static str) -> Self {
+        self.action = Some(action);
+        self
+    }
+    /// A switch: the same action, run on the press rather than on a confirm.
+    fn flipping(mut self, action: &'static str) -> Self {
+        self.instant = true;
+        self.doing(action)
     }
 }
 
@@ -2825,6 +2801,86 @@ pub(crate) fn best_stock(
         .map(|(_, kind)| kind)
 }
 
+/// Run one of the Forge & Alembic's actions, named by the row that offers it.
+///
+/// ONE implementation, reached by the key AND by the row's Confirm button. It used to be
+/// the keyboard's alone — the `[S]`/`[C]`/`[F]` arms of `city_input` — while the rows those
+/// keys are printed on were spawned as buttons that picked and then committed into
+/// `craft.recipes`, where an index past the book resolves to nothing. So the anvil and the
+/// bench were keyboard-only, silently, and `[F]` is the row that earns the Smithwright.
+///
+/// Every refusal is the SERVER's: this only refuses what it cannot even address (an empty
+/// Vault, no refined stock), and says so on `craft.last` where every other reply lands.
+fn run_craft_action(net: &NetRes, craft: &mut CraftData, inv: &InventoryData, action: &str) {
+    match action {
+        "slot" => craft.slot = (craft.slot + 1) % FORGE_SLOTS.len(),
+        "quench" => craft.catalyze = !craft.catalyze,
+        "bench_next" => {
+            if !inv.gear.is_empty() {
+                craft.bench = (craft.bench + 1) % inv.gear.len();
+            }
+        }
+        "forge" => {
+            // The anvil takes REFINED stock, so pick the best the Vault holds rather
+            // than making the player name it; same for the trophy if a quench is armed.
+            match best_stock(inv, meld_proto::materials::MaterialClass::Refined) {
+                Some(material) => {
+                    let catalyst = craft
+                        .catalyze
+                        .then(|| best_stock(inv, meld_proto::materials::MaterialClass::Trophy))
+                        .flatten();
+                    if craft.catalyze && catalyst.is_none() {
+                        craft.last = "no trophy in the Vault to quench it in".to_string();
+                    } else {
+                        let slot = FORGE_SLOTS[craft.slot];
+                        craft.last = format!("forging a {slot}...");
+                        net.0.forge(slot.to_string(), material, catalyst);
+                    }
+                }
+                None => {
+                    craft.last = "the anvil needs refined stock - smelt an ore first".to_string();
+                }
+            }
+        }
+        // Both services go over the REALTIME channel rather than straight to HTTP,
+        // because smithing is a heat now: the server answers with a bar to strike and
+        // grades the blows. The HTTP endpoints stay for API callers.
+        "repair" => match bench_gear(craft, inv) {
+            Some(g) => {
+                craft.last = format!("heating {}...", g.name);
+                net.0.send(ClientCmd::SmithRequest {
+                    entity_id: String::new(),
+                    gear_id: g.gear_id.clone(),
+                    service: "repair".into(),
+                    material: String::new(),
+                    recipe: String::new(),
+                });
+            }
+            None => craft.last = "nothing on the bench".to_string(),
+        },
+        "reroll" => {
+            let piece = bench_gear(craft, inv).map(|g| (g.gear_id.clone(), g.name.clone()));
+            match (piece, best_stock(inv, meld_proto::materials::MaterialClass::Refined)) {
+                (Some((gear_id, name)), Some(material)) => {
+                    craft.last = format!("heating {name}...");
+                    net.0.send(ClientCmd::SmithRequest {
+                        entity_id: String::new(),
+                        gear_id,
+                        service: "reroll".into(),
+                        material,
+                        recipe: String::new(),
+                    });
+                }
+                (None, _) => craft.last = "nothing on the bench".to_string(),
+                (_, None) => {
+                    craft.last = "a reroll needs refined stock - smelt an ore first".to_string();
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
 /// The Forge & Alembic: the recipe book with the cursor on one row, then the anvil and the
 /// bench as rows of their own. The server owns every gate, so a locked row says the level it
 /// wants and an unaffordable one says what it is missing — before a keypress is spent on it.
@@ -2898,10 +2954,75 @@ pub(crate) fn craft_view(craft: &CraftData, inv: &InventoryData) -> CounterView 
     let stock = best_stock(inv, meld_proto::materials::MaterialClass::Refined);
     let anvil = stock.as_deref().unwrap_or("nothing refined");
     let quench = if craft.catalyze { "on" } else { "off" };
-    v.rows.push(CounterRow::new("S", format!("slot: {}", FORGE_SLOTS[craft.slot])));
-    v.rows.push(CounterRow::new("C", format!("quench: {quench}")));
-    v.rows.push(CounterRow::new("F", format!("forge from {anvil}")).of(anvil));
-    v.rows.push(CounterRow::new("left/right", bench_line(craft, inv).trim().to_string()));
+    v.rows.push(
+        CounterRow::new("S", format!("slot: {}", FORGE_SLOTS[craft.slot])).flipping("slot"),
+    );
+    v.rows.push(CounterRow::new("C", format!("quench: {quench}")).flipping("quench"));
+    v.rows.push(
+        CounterRow::new("F", format!("forge from {anvil}"))
+            .of(anvil)
+            // No magnitudes: the costs are `[forge]` tunables and the client has no
+            // balance.toml, so the server prices it and answers in its own words.
+            .saying(vec![
+                format!("Forge a {} from refined stock.", FORGE_SLOTS[craft.slot]),
+                format!("The anvil would take {anvil}."),
+                "Spends stock and chits; the Forging skill sets the tier.".into(),
+            ])
+            .committed_by("Forge")
+            .doing("forge"),
+    );
+    // The bench is a ROW PER SERVICE, not one line advertising four keys. It read as a
+    // status line because it WAS one, lifted from the field forge's strip — where the
+    // player has no rows to tap — and pasted into a column, which left the smith's two
+    // services reachable by keyboard alone.
+    match bench_gear(craft, inv) {
+        None => v.rows
+            .push(CounterRow::new("left/right", "bench: nothing in the Vault to work on").dim()),
+        Some(g) => {
+            let ins = meld_proto::enums::Insurance::from_wire(&g.insurance);
+            v.rows.push(
+                CounterRow::new(
+                    "left/right",
+                    format!(
+                        "bench: {} T{} {}  ({}/{} dur, {} affix)",
+                        g.name,
+                        g.tier,
+                        ins.map(|i| i.label()).unwrap_or("?"),
+                        g.max_durability,
+                        g.base_max_durability,
+                        g.affixes.len(),
+                    ),
+                )
+                // Keyed by SLOT like every other gear row: the icon table answers for a
+                // kind, and a piece's rolled NAME is not one.
+                .of(g.slot.clone())
+                .flipping("bench_next"),
+            );
+            let (rerollable, repairable) = bench_services(g);
+            if rerollable {
+                v.rows.push(
+                    CounterRow::new("R", format!("reroll ({} stock)", g.reroll_cost))
+                        .saying(vec![
+                            "Another draw on this piece's affixes.".into(),
+                            format!("Spends {} refined stock.", g.reroll_cost),
+                        ])
+                        .committed_by("Reroll")
+                        .doing("reroll"),
+                );
+            }
+            if repairable {
+                v.rows.push(
+                    CounterRow::new("P", "repair".to_string())
+                        .saying(vec!["Buy back the durability a death chewed off.".into()])
+                        .committed_by("Repair")
+                        .doing("repair"),
+                );
+            }
+            if !rerollable && !repairable {
+                v.rows.push(CounterRow::new("", "nothing a smith can do with this").dim());
+            }
+        }
+    }
     // The detail column belongs to whatever the cursor is on: which materials, how many of
     // each are already in the Vault, and what comes out. "1/2 dune_iron" is the whole
     // answer to "why is this row greyed out", and it needs room a status line never had.
@@ -2928,38 +3049,19 @@ pub(crate) fn craft_view(craft: &CraftData, inv: &InventoryData) -> CounterView 
     v
 }
 
-/// The smith's other half: the two things they do to a piece you already own —
-/// another draw on its affixes, and durability bought back. Both need a CHOSEN piece,
-/// so the anvil keeps one on the bench and left/right walk the Vault.
-pub(crate) fn bench_line(craft: &CraftData, inv: &InventoryData) -> String {
-    let Some(g) = bench_gear(craft, inv) else {
-        return "  BENCH  nothing in the Vault to work on\n".to_string();
-    };
-    // Only advertise the service the piece can actually take: repair buys back the
-    // max durability a death chewed off, which only INSURED gear ever loses, and a
-    // reroll on ephemeral gear would burn with it on the walk home. Offering a key
-    // that is certain to be refused is worse than not offering it.
+/// Which of the smith's two services a piece can actually take, as `(reroll, repair)`.
+///
+/// ONE answer, asked by the city counter's rows and by the field forge's strip. Repair
+/// buys back the max durability a death chewed off, which only INSURED gear ever loses,
+/// and a reroll on ephemeral gear would burn with it on the walk home — so a key certain
+/// to be refused is worse than no key at all. The rule had drifted into three copies (the
+/// counter's old status line, its rows, and the overworld station), so a tier added to
+/// `Insurance` would have had to be remembered at each of them.
+pub(crate) fn bench_services(g: &GearLine) -> (bool, bool) {
     let ins = meld_proto::enums::Insurance::from_wire(&g.insurance);
-    let mut keys = Vec::new();
-    if ins != Some(meld_proto::enums::Insurance::Ephemeral) {
-        keys.push(format!("[R] reroll ({} stock)", g.reroll_cost));
-    }
-    if ins == Some(meld_proto::enums::Insurance::Insured) {
-        keys.push("[P] repair".to_string());
-    }
-    let offer = if keys.is_empty() {
-        "nothing a smith can do with this".to_string()
-    } else {
-        keys.join("   ")
-    };
-    format!(
-        "  BENCH  <-/-> {} T{} {}  ({}/{} dur, {} affix)   {offer}\n",
-        g.name,
-        g.tier,
-        ins.map(|i| i.label()).unwrap_or("?"),
-        g.max_durability,
-        g.base_max_durability,
-        g.affixes.len()
+    (
+        ins != Some(meld_proto::enums::Insurance::Ephemeral),
+        ins == Some(meld_proto::enums::Insurance::Insured),
     )
 }
 
@@ -3401,18 +3503,97 @@ mod shop_tests {
         assert_eq!(bench_gear(&craft, &inv).unwrap().name, "Worn Warblade");
     }
 
+    /// EVERY row the Forge draws past its recipe book has to name what it does, because
+    /// the commit path resolves an action by NAME rather than by counting rows. Which is
+    /// the bug this test exists for: the anvil and the bench were drawn as buttons while
+    /// `commit_counter_pick` looked every picked index up in `craft.recipes`, so `[S]`,
+    /// `[C]`, `[F]` and the bench all picked, raised a Confirm button and did nothing —
+    /// leaving the one row that earns the Smithwright reachable by keyboard alone.
+    ///
+    /// A dimmed row is exempt: it is telling you why there is nothing to press.
+    #[test]
+    fn every_actionable_row_at_the_forge_names_its_own_action() {
+        let craft = CraftData {
+            loaded: true,
+            recipes: vec![recipe("Bloom Salve", 1, true, &[("bloom_herb", 2)])],
+            ..Default::default()
+        };
+        for gear in [vec![], vec![bench_piece("g1", "Worn Warblade", 6, 10)]] {
+            let inv = InventoryData {
+                gear,
+                materials: vec![("peat_ingot".to_string(), 9)],
+                ..Default::default()
+            };
+            let view = craft_view(&craft, &inv);
+            for (i, r) in view.rows.iter().enumerate().skip(craft.recipes.len()) {
+                assert!(
+                    r.action.is_some() || !r.enabled,
+                    "row {i} ({:?}) is pressable and resolves to nothing",
+                    r.label
+                );
+            }
+        }
+    }
+
+    /// The anvil's two switches and the bench cursor act ON the press: they spend nothing
+    /// and another press undoes them, so the pick-then-confirm step that protects a
+    /// purchase would just be a second click. Everything that SPENDS keeps the confirm.
+    #[test]
+    fn the_anvil_flips_on_the_press_and_forges_on_a_confirm() {
+        let craft = CraftData {
+            loaded: true,
+            recipes: vec![recipe("Bloom Salve", 1, true, &[("bloom_herb", 2)])],
+            ..Default::default()
+        };
+        let inv = InventoryData {
+            gear: vec![
+                bench_piece("g1", "Worn Warblade", 6, 10),
+                bench_piece("g2", "Issued Cuirass", 10, 10),
+            ],
+            materials: vec![("peat_ingot".to_string(), 9)],
+            ..Default::default()
+        };
+        let by_key = |key: &str| -> CounterRow {
+            craft_view(&craft, &inv)
+                .rows
+                .into_iter()
+                .find(|r| r.key == key)
+                .unwrap_or_else(|| panic!("the forge has no [{key}] row"))
+        };
+        for key in ["S", "C", "left/right"] {
+            assert!(by_key(key).instant, "[{key}] is a switch and should not want a confirm");
+        }
+        for (key, verb) in [("F", "Forge"), ("R", "Reroll"), ("P", "Repair")] {
+            let row = by_key(key);
+            assert!(!row.instant, "[{key}] spends something and must be confirmed");
+            assert_eq!(row.verb, verb, "[{key}] commits under the wrong word");
+        }
+
+        // And the switches really do move the state the view is built from.
+        let net = NetRes(crate::net::start("http://127.0.0.1:1".into()));
+        let mut craft = craft;
+        run_craft_action(&net, &mut craft, &inv, "slot");
+        assert_eq!(craft.slot, 1, "[S] did not cycle the slot the anvil would make");
+        run_craft_action(&net, &mut craft, &inv, "quench");
+        assert!(craft.catalyze, "[C] did not arm the quench");
+        run_craft_action(&net, &mut craft, &inv, "bench_next");
+        assert_eq!(bench_gear(&craft, &inv).unwrap().name, "Issued Cuirass");
+    }
+
     // A smith's two services do not apply to every tier, and a key that is certain to
     // be refused is worse than no key at all. Repair buys back max durability, which
     // only INSURED gear ever loses; a reroll on ephemeral gear would burn with it on
-    // the walk home.
+    // the walk home. Asked of the ROWS, because the rows are what a player presses —
+    // the strip this used to read is the field forge's, one scene over.
     #[test]
     fn the_bench_offers_only_the_service_the_tier_can_take() {
         let craft = CraftData { loaded: true, recipes: vec![], ..Default::default() };
+        let rows = |inv: &InventoryData| -> String { craft_view(&craft, inv).flat() };
         let mut inv = InventoryData {
             gear: vec![bench_piece_of("insured", 2, "g", "Wearing Blade", 8, 12)],
             ..Default::default()
         };
-        let insured = bench_line(&craft, &inv);
+        let insured = rows(&inv);
         assert!(insured.contains("Insured"), "{insured}");
         assert!(insured.contains("[R] reroll (7 stock)"), "{insured}");
         assert!(insured.contains("[P] repair"), "{insured}");
@@ -3420,16 +3601,25 @@ mod shop_tests {
         // Standard never degrades, so there is nothing to mend — but it is yours, so
         // it is worth re-drawing.
         inv.gear = vec![bench_piece_of("standard", 0, "g", "Issued Blade", 20, 20)];
-        let standard = bench_line(&craft, &inv);
+        let standard = rows(&inv);
         assert!(standard.contains("[R] reroll (3 stock)"), "{standard}");
         assert!(!standard.contains("[P] repair"), "{standard}");
 
         // Ephemeral burns on the walk home: neither service is worth a chit.
         inv.gear = vec![bench_piece_of("ephemeral", 4, "g", "Cinderglass Edge", 30, 30)];
-        let ephemeral = bench_line(&craft, &inv);
+        let ephemeral = rows(&inv);
         assert!(!ephemeral.contains("[R] reroll"), "{ephemeral}");
         assert!(!ephemeral.contains("[P] repair"), "{ephemeral}");
         assert!(ephemeral.contains("nothing a smith can do"), "{ephemeral}");
+
+        // And the one rule both surfaces ask, directly: the field forge builds its own
+        // strip and must offer the same two services on the same tiers.
+        for (insurance, want) in
+            [("insured", (true, true)), ("standard", (true, false)), ("ephemeral", (false, false))]
+        {
+            let g = bench_piece_of(insurance, 1, "g", "Blade", 4, 8);
+            assert_eq!(bench_services(&g), want, "{insurance} offers the wrong services");
+        }
     }
 
     #[test]
@@ -5434,6 +5624,21 @@ pub(crate) fn counter_click(
         if *interaction != Interaction::Pressed {
             continue;
         }
+        // A SWITCH is the exception: the anvil's slot, its quench and which piece is on the
+        // bench cost nothing and are undone by another press, so confirming one would be two
+        // clicks for no decision.
+        if city.craft_open {
+            let flip = craft_view(&craft, &inv)
+                .rows
+                .get(btn.0)
+                .filter(|r| r.instant)
+                .and_then(|r| r.action);
+            if let Some(action) = flip {
+                run_craft_action(&net, &mut craft, &inv, action);
+                pick.clear();
+                return;
+            }
+        }
         // A row PICKS. Every counter used to act on the press — buying, selling and forging
         // all fired on the tap — so nothing could tell you what a thing did before you owned
         // it, and a mis-tap spent chits or materials with no way back. The detail column
@@ -5495,6 +5700,16 @@ fn commit_counter_pick(
                 net.0.craft(r.recipe.clone());
                 craft.last = format!("working {}...", r.name);
             }
+            pick.clear();
+            return;
+        }
+        // Past the book stand the anvil and the bench, and each of those rows NAMES what
+        // it does — a tier that hides `[P] repair` must not shift what a click on the row
+        // above it means. This arm used to be the recipe lookup alone, so every one of
+        // them picked, raised a Confirm button and then quietly cleared the pick.
+        let action = craft_view(craft, inv).rows.get(idx).and_then(|r| r.action);
+        if let Some(action) = action {
+            run_craft_action(net, craft, inv, action);
         }
         pick.clear();
         return;

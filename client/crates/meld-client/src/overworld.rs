@@ -4760,11 +4760,14 @@ pub(crate) fn station_line(
         return Some(format!("{head}   nothing in your Vault to work on   [E] leave"));
     };
     let ins = meld_proto::enums::Insurance::from_wire(&g.insurance);
+    // Which services this piece can take is the COUNTER's rule, asked rather than
+    // re-stated: the city bench offers the same two on the same tiers.
+    let (rerollable, repairable) = crate::city::bench_services(g);
     let mut keys = Vec::new();
-    if ins != Some(meld_proto::enums::Insurance::Ephemeral) {
+    if rerollable {
         keys.push(format!("[R] reroll ({} stock)", g.reroll_cost));
     }
-    if ins == Some(meld_proto::enums::Insurance::Insured) {
+    if repairable {
         keys.push("[P] repair".to_string());
     }
     if keys.is_empty() {
