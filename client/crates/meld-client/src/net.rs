@@ -764,7 +764,7 @@ pub enum ServerMsg {
         pouches: Vec<Vec<(String, i32)>>,
         capacity: i32,
     },
-    Snapshot { entities: Vec<EntityView> },
+    Snapshot { entities: Vec<EntityView>, last_input_seq: u32 },
     BattleStarted {
         battle_id: String,
         your_combatant_id: String,
@@ -3074,7 +3074,10 @@ impl Inner {
                             }
                         })
                         .collect();
-                    self.out.push_back(ServerMsg::Snapshot { entities });
+                    self.out.push_back(ServerMsg::Snapshot {
+                        entities,
+                        last_input_seq: s.last_input_seq,
+                    });
                 }
             }
             "world.terrain_section" => {

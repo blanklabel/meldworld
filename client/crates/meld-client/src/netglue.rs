@@ -351,7 +351,8 @@ pub(crate) fn pump_net(
                 lobby.members.clear();
                 lobby.code.clear();
             }
-            ServerMsg::Snapshot { entities } => {
+            ServerMsg::Snapshot { entities, last_input_seq } => {
+                world.last_input_seq = last_input_seq;
                 world.entities.clear();
                 for e in entities {
                     world.entities.insert(
@@ -1002,6 +1003,33 @@ mod landform_delivery {
     /// Nothing failed. The server-side suite is green because a bridge is *generated*
     /// correctly; the client half was never asserted. So assert the WIRING, by reading this
     /// file — the same trick `the_region_decomposition_matches_the_shader` uses on the WGSL.
+        /// **THE ACK HAS TO REACH THE PREDICTION, or the avatar renders at the server's
+    /// position again and every input costs a round trip.** `Snapshot::last_input_seq`
+    /// is the whole basis of local prediction: the client drops the intents the server
+    /// confirms and replays the rest. If this arm stops storing it, `world.last_input_seq`
+    /// sits at 0 forever, every sent intent looks unacknowledged, and the replay pins
+    /// itself at `PREDICT_MAX_REPLAY` — an avatar permanently running ahead of itself.
+    ///
+    /// Source-read for the same reason as the landform test below: this repo has shipped
+    /// a whole water feature, a `pack:` token and a `boss_kind` that were generated
+    /// correctly and consumed nowhere, and none of their suites noticed.
+    #[test]
+    fn the_movement_ack_reaches_the_client() {
+        let src = include_str!("netglue.rs");
+        let start = src.find("ServerMsg::Snapshot {").expect("the snapshot arm moved");
+        // Just this arm: from its head to the next one, so a mention in a comment or in
+        // another handler cannot satisfy it.
+        let rest = &src[start + 1..];
+        let end = rest.find("ServerMsg::").expect("no following arm");
+        let body = &src[start..start + 1 + end];
+        assert!(
+            body.contains("world.last_input_seq = last_input_seq"),
+            "the snapshot arm no longer stores `last_input_seq` — local movement \
+             prediction has no ack to reconcile against and the overworld goes back to \
+             costing a full round trip per input"
+        );
+    }
+
     #[test]
     fn every_streamed_landform_is_consumed() {
         let src = include_str!("netglue.rs");
