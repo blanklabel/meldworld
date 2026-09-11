@@ -100,6 +100,16 @@ honest with one world and is a routing bug with two, since every world-bound han
 have to guess which world the caller meant. It is also what scopes party chat: the `Party`
 channel filtered on `in_instance == in_instance` ("are we both in some run"), so two parties
 in different seeds heard each other.
+**A FULL WORLD QUEUES; IT DOES NOT REFUSE** (CANON §W1) — a world holds unique
+player-built structures, so it can never be auto-forked into a second copy under the same
+name. ⚠️ Three rules the queue only works because of: `fits` counts the people already
+WAITING against the cap (a fresh arrival that checked only live occupancy would walk past
+the line into the seat it was waiting for); the head of the line either goes in or nobody
+does (skipping a party of four to admit a solo starves the big group on a world with solo
+churn); and **only a NAMED world queues**, because an unnamed dive already overflowed into
+a world with room and putting them in a line for one particular place answers a question
+they did not ask. `drain_queue` is the ONLY admission path once a seat frees.
+
 ⚠️ **Anything that reads the world from a player id needs that player's SESSION to still
 exist.** The `Disconnected` arm removed the session before doing its world work, which was
 free while the world was a field on the Router and silently skipped the abandoned-run

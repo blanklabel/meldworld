@@ -801,6 +801,56 @@ pub mod run {
         const TYPE: &'static str = "run.enter_maze";
     }
 
+    /// S2C — **you asked for a full world, and you are in line for it** (`SC-3`,
+    /// CANON §W1).
+    ///
+    /// Worlds are capped and horizontal scale is MANY worlds, but a world holds unique
+    /// player-built structures, so a full one can never be auto-forked into a second copy
+    /// under the same name — it QUEUES. This is the only place in the game where waiting
+    /// is the answer, so it says how long the line is rather than only that there is one:
+    /// a wait with no position is indistinguishable from a hang.
+    ///
+    /// Re-sent whenever the caller's position changes, so the number on screen is never
+    /// stale. `run.started` arrives when they are admitted; nothing else is needed to
+    /// enter, and the client must not re-send `run.enter_maze` while queued.
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct Queued {
+        /// The world being waited for — its seed, its name (CANON §W1).
+        pub world_seed: u64,
+        /// 1-based place in line. `1` means next.
+        pub position: usize,
+        /// Divers that have to leave before this group fits. Distinct from `position`
+        /// because the queue holds GROUPS: a party of four waits for four places, so
+        /// being second in line can mean waiting longer than being first implies.
+        pub seats_needed: usize,
+    }
+    impl Message for Queued {
+        const TYPE: &'static str = "run.queued";
+    }
+
+    /// C2S — give up waiting for a full world.
+    #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+    pub struct LeaveQueue {}
+    impl Message for LeaveQueue {
+        const TYPE: &'static str = "run.leave_queue";
+    }
+
+    /// S2C — you are no longer in line, and why. Sent on an explicit `leave_queue` and
+    /// whenever the server drops a group (the world went away, the host left).
+    ///
+    /// A separate message from [`Queued`] rather than a `position: 0`: leaving a queue is
+    /// a state change the client has to act on (close the waiting screen), and encoding
+    /// it as a sentinel inside the progress message is how a client ends up waiting
+    /// forever on a line it is no longer in.
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct QueueLeft {
+        /// `left` (they asked), `world_gone`, or `party_left`.
+        pub reason: String,
+    }
+    impl Message for QueueLeft {
+        const TYPE: &'static str = "run.queue_left";
+    }
+
     /// S2C — authoritative run/instance state at entry.
     #[derive(Debug, Clone, Serialize, Deserialize)]
     pub struct Started {

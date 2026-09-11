@@ -5556,10 +5556,34 @@ Directly underpins CR-4 (sim budget), MON-2 (persistent camps/instances), and LC
       budget N times over. Evicted worlds are saved and stood back up on the next dive,
       through the same `restore` path a server restart uses — `Db::list_worlds` reads them
       all at boot rather than the one key somebody thought to ask for.
-    - ⚠️ **A full world REFUSES; CANON §W1 says it should QUEUE.** The cap
-      (`[world] max_divers_per_world`) is real and held by test, but there is no queue —
-      a fake one that never dequeues is worse than a clear "pick another seed". That is
-      the honest remaining gap in this slice.
+    - ✅ **A full world QUEUES** (CANON §W1). A world holds unique player-built
+      structures, so it can never be auto-forked into a second copy under the same name;
+      waiting is the only honest answer, and this is the one place in the game where it
+      is the answer at all. `run.queued` carries the position AND `seats_needed`, because
+      the queue holds GROUPS — being second in line behind a party of four is a longer
+      wait than being second implies — and `run.leave_queue` gets you out.
+      - ⚠️ **A queue that can be jumped is not a queue.** `fits` counts the people
+        already WAITING against the cap, not just the ones seated: a fresh arrival that
+        only checked live occupancy would walk straight past the line into the seat it
+        was waiting for.
+      - ⚠️ **The head of the line either goes in or nobody does.** Skipping a party of
+        four to admit a solo behind them is the unfairness that gets noticed, and on a
+        world with steady solo churn it starves the big group forever.
+      - ⚠️ **Only a NAMED world queues.** An unnamed dive is a matchmaking request, and
+        `choose_world` has already overflowed it into a world with room — putting
+        somebody who asked for "anywhere" in a line for one particular place would be
+        answering a question they did not ask.
+      - ⚠️ **ADMISSION AND ARRIVAL ARE DIFFERENT QUESTIONS, and conflating them LIVELOCKS.**
+        `form_run` takes an `admitting` flag: on an arrival the queue counts against you,
+        on an admission out of `drain_queue` nobody waiting is ahead of you — you ARE the
+        head, and the cap was checked before you were popped. Asking the arrival question
+        on an admission re-queues the popped group at the BACK, the loop pops the next one
+        and does the same, forever. It was found by `a_latecomer_cannot_jump_the_line`
+        HANGING rather than failing, which is the tell worth remembering.
+      - `drain_queue` is the ONLY admission path once a seat frees, so a freed seat
+        cannot be taken by a fresh arrival that never queued. Disconnecting drops you
+        out of the line and moves everyone behind you up — a position nobody restates is
+        a position that goes stale on screen.
     - ⚠️ **An UNNAMED dive is a matchmaking request, not a request for solitude.**
       `choose_world` packs unnamed divers into the FULLEST world with room (packed, not
       spread — a shared world with people in it is the thing worth having); only a NAMED
@@ -5573,8 +5597,8 @@ Directly underpins CR-4 (sim budget), MON-2 (persistent camps/instances), and LC
       test alone passes perfectly if `seed` is parsed and ignored and every diver gets a
       private world.
     **Remaining:** the b1-B boundary (spawn `WorldActor` as its own task so it never calls
-    `GameState` methods), the admission queue, and hub handoff. *(The dormancy catch-up
-    below has since landed, so an evicted world no longer wakes with a stopped clock.)*
+    `GameState` methods) and hub handoff. *(The admission queue and the dormancy catch-up
+    below have since landed.)*
   - ✅ **BUILT — a dormant world catches up in CLOSED FORM, never by replaying ticks.**
     `WorldActor::advance_to(target)`, called the moment a world is stood back up (off
     disk, or after `dormant_after_ticks` evicted it). Measured: a simulated DAY of
