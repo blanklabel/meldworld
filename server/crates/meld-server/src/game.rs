@@ -687,24 +687,30 @@ fn world_seed() -> u64 {
 /// knows nothing about a socket.
 fn generating_msg(stage: meld_world::GenStage) -> wr::Generating {
     use meld_world::GenStage as G;
-    let (step, index, total, biome, attempt) = match stage {
-        G::Maze { attempt } => ("maze", 0, 0, None, attempt),
-        G::Section { index, total, biome, attempt } => (
-            "section",
-            index as u32,
-            total as u32,
-            (!biome.is_empty()).then(|| biome.to_string()),
-            attempt,
-        ),
-        G::Bend { attempt } => ("bend", 0, 0, None, attempt),
-        G::Route { attempt } => ("route", 0, 0, None, attempt),
-        G::Restart { attempt } => ("restart", 0, 0, None, attempt),
-    };
+    match stage {
+        G::Maze { attempt } => gen_step("maze", 0, 0, attempt),
+        G::Section { index, total, biome, attempt } => wr::Generating {
+            biome: (!biome.is_empty()).then(|| biome.to_string()),
+            ..gen_step("section", index as u32, total as u32, attempt)
+        },
+        G::Bend { attempt } => gen_step("bend", 0, 0, attempt),
+        G::Route { attempt } => gen_step("route", 0, 0, attempt),
+        G::Restart { attempt } => gen_step("restart", 0, 0, attempt),
+    }
+}
+
+/// One narrated pass, checked against the list the client is held to covering.
+///
+/// The assert lives HERE rather than in `generating_msg` because `restore_world` reports two
+/// passes of its own (`stream`, `shift`) that no `GenStage` produces — they are the server's
+/// work, not the generator's — and a guard only one of the two producers passes through is a
+/// guard the next producer is written around.
+fn gen_step(step: &'static str, index: u32, total: u32, attempt: u32) -> wr::Generating {
     debug_assert!(
         wr::Generating::STEPS.contains(&step),
         "a pass the client has no words for: {step}"
     );
-    wr::Generating { step: step.to_string(), index, total, biome, attempt }
+    wr::Generating { step: step.to_string(), index, total, biome: None, attempt }
 }
 
 /// **Put a message on the wire NOW, without going through the loop's own dispatch.**
@@ -1948,8 +1954,25 @@ fn entrance_anchor(
     }
 }
 
-fn restore_world(balance: &Balance, save: &meld_db::WorldSave) -> Arena {
-    let mut arena = Arena::generate_with(balance, save.seed as u64, false, None);
+/// Rebuild a persisted world from the four integers and the small delta §W5 keeps.
+///
+/// ⚠️ **THIS IS THE LONGEST WAIT IN THE GAME, AND IT USED TO BE THE SILENT ONE.** It runs
+/// the whole generator (`WG-12`'s measured 3.4-4.2 s in release, times up to twelve
+/// feasibility re-rolls) and *then* walks the frontier back out and replays the Shift log —
+/// strictly more work than a fresh draw. It reported none of it, so a re-dive into a
+/// persisted seed showed the descent screen's wordless fallback from the first frame to the
+/// last: the exact case where "is this hung?" is most reasonable to ask. `on` is the same
+/// observer a fresh draw narrates through, and the baseline pass is forwarded to it verbatim
+/// because it is literally the same passes doing the same work.
+fn restore_world(
+    balance: &Balance,
+    save: &meld_db::WorldSave,
+    on: &mut dyn FnMut(wr::Generating),
+) -> Arena {
+    let mut arena =
+        Arena::generate_reporting(balance, save.seed as u64, false, None, &mut |stage| {
+            on(generating_msg(stage))
+        });
     let want = save.sections.max(0) as usize;
     // `ensure_frontier` streams a bounded few per call (a teleport must not explode one
     // tick's work), so ask repeatedly rather than once with a huge reach.
@@ -1958,9 +1981,17 @@ fn restore_world(balance: &Balance, save: &meld_db::WorldSave) -> Arena {
         guard += 1;
         let reach = arena.areas.last().map(|a| a.end_x).unwrap_or(0.0);
         arena.ensure_frontier(balance, reach + 1.0);
+        // Reported from INSIDE the loop and off `areas.len()` rather than off `guard`: a
+        // call streams a bounded few, so the honest count is how much world exists, not how
+        // many times we have asked for more.
+        on(gen_step("stream", arena.areas.len().min(want) as u32, want as u32, 1));
     }
     let delta: WorldDelta = serde_json::from_str(&save.delta).unwrap_or_default();
-    for &(generation, first, last) in &delta.shifts {
+    let shifts = delta.shifts.len() as u32;
+    for (i, &(generation, first, last)) in delta.shifts.iter().enumerate() {
+        // Counted before the skip, or a log full of shifts past the streamed end stalls the
+        // bar on a number it will never leave.
+        on(gen_step("shift", i as u32 + 1, shifts, 1));
         if first >= arena.areas.len() {
             continue;
         }
@@ -5941,21 +5972,22 @@ impl GameState {
             // See `emit_now` for why these reach the socket at all: this call blocks the
             // loop for seconds, so its lines cannot travel as ordinary `Outgoing`.
             let sessions = &mut self.sessions;
+            let mut say = |msg: wr::Generating| {
+                if let Ok(p) = serde_json::to_string(&msg) {
+                    emit_now(sessions, &party_ids, wr::Generating::TYPE, &p);
+                }
+            };
             let arena = match &restored {
-                // A restore is one shot with no passes to narrate — the seed is regenerated
-                // and the Shift log replayed inside `restore_world`, which reports nothing.
-                Some(save) => restore_world(&balance, save),
+                // A restore narrates too, and has MORE to say than a fresh draw: it runs the
+                // same generator and then streams the frontier back out and replays the
+                // Shift log on top.
+                Some(save) => restore_world(&balance, save, &mut say),
                 None => Arena::generate_reporting(
                     &balance,
                     seed,
                     tutorial,
                     force_biome,
-                    &mut |stage| {
-                        let msg = generating_msg(stage);
-                        if let Ok(p) = serde_json::to_string(&msg) {
-                            emit_now(sessions, &party_ids, wr::Generating::TYPE, &p);
-                        }
-                    },
+                    &mut |stage| say(generating_msg(stage)),
                 ),
             };
             let world = WorldActor {
@@ -13990,7 +14022,7 @@ mod shifting_lands_tests {
         assert!(!w.shift_log.is_empty(), "nothing shifted, so nothing is being tested");
 
         let save = w.world_save();
-        let back = restore_world(&w.balance, &save);
+        let back = restore_world(&w.balance, &save, &mut |_| {});
 
         assert_eq!(back.areas.len(), w.arena.areas.len(), "the frontier did not come back");
         assert_eq!(
@@ -14049,7 +14081,7 @@ mod shifting_lands_tests {
         w.arena.structures[0].hp -= 40;
         let (hp, max_hp) = (w.arena.structures[0].hp, w.arena.structures[0].max_hp);
 
-        let back = restore_world(&w.balance, &w.world_save());
+        let back = restore_world(&w.balance, &w.world_save(), &mut |_| {});
         let s = back
             .structures
             .iter()

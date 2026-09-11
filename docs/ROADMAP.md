@@ -2697,6 +2697,23 @@ design for this epic: [`proposals/worldgen-wg.md`](proposals/worldgen-wg.md).
   - The first half is still open: a cold enter still regenerates from the seed and still
     re-rolls for feasibility. What changed is that the wait is now legible, and a re-draw
     says so instead of looking like the first attempt hanging.
+  - ⚠️ **AND "LEGIBLE" WAS ONLY TRUE OF A WORLD NOBODY HAD SAVED.** Reported from play at
+    **135 s** on the wordless fallback. `restore_world` passed `None` for the observer, so
+    the narration reached only a *fresh* world — while a **restored** one does strictly more
+    work (the whole generator, re-rolls included, then the frontier streamed back out and
+    the Shift log replayed) and said nothing through all of it. Once §W5 is on that is most
+    dives. Both extra passes carry a count and are narrated now (`stream`, `shift`, added to
+    `Generating::STEPS`), the baseline is forwarded verbatim because it is the same passes,
+    and the bar keys on whether a pass HAS a count rather than on the literal `"section"` —
+    named, it left the two longest passes in the game pinned at zero. Two smaller edges with
+    it: the silent state printed the static subtitle back at the player verbatim, at a
+    smaller size over an empty bar (which is the whole of what a restore ever showed), and
+    `MELD_DESCEND` could only stage a count for `section`, so the new frames were
+    unreachable for a screenshot. All three are held by test.
+  - **The 135 s itself is the first half's, not this one's.** Narrating a wait does not
+    shorten it; it only stops it reading as a hang. Worth measuring where a restore actually
+    spends that time — the twelve-re-roll feasibility loop, or `ensure_frontier`'s
+    `want * 4 + 64` bounded calls — before choosing what to cache.
 
 - [ ] **WG-10 — Scatter that makes sense, and nodes that sit somewhere.** 🟡 *Backlog —
   owner's direction, alongside `WG-9`.* Three parts; the status differs sharply between

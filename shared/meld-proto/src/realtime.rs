@@ -1021,7 +1021,16 @@ pub mod run {
         /// without reaching the client). The keys live here so the client can be held to
         /// covering all of them by test, rather than to whatever the server happened to send
         /// the day someone last looked.
-        pub const STEPS: [&'static str; 5] = ["maze", "section", "bend", "route", "restart"];
+        ///
+        /// ⚠️ **A RESTORE IS NOT A QUIETER BUILD — IT IS A LONGER ONE.** The last four keys
+        /// are the passes of a fresh draw; `stream` and `shift` are the two a RESTORED world
+        /// adds on top of them, because §W5 keeps only a seed and a small delta and rebuilding
+        /// from that runs the whole generator and *then* walks the frontier back out and
+        /// replays the Shift log. That path used to report nothing at all, so every re-dive
+        /// into a persisted seed — which is most of them — sat on the descent screen's
+        /// wordless fallback for the entire wait, the one case where the wait is longest.
+        pub const STEPS: [&'static str; 7] =
+            ["maze", "section", "bend", "route", "restart", "stream", "shift"];
     }
 
     /// One of the caller's heroes, for the party/roster panel: persistent name,
