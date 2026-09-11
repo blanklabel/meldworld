@@ -425,6 +425,22 @@ pub struct DepthLine {
 /// The board records HOW a run got deep, not only how far, and the endpoint has always sent
 /// all of it — the client kept three fields, so the Wall was a list of names and numbers with
 /// nothing to look at when you clicked one.
+/// SC-9 — one world on the browser. A world's identity is its SEED (CANON §W1), so this
+/// is what you type into the lobby's World field to go there.
+#[derive(Clone, Debug, Default)]
+pub struct WorldLine {
+    pub seed: u64,
+    pub players: i32,
+    pub queued: i32,
+    /// Standing up right now. A DORMANT world is not a worse world — it wakes at *now*
+    /// when somebody dives in — but joining people and starting alone are different
+    /// things to choose, so the browser says which.
+    pub live: bool,
+    /// How far the world has been streamed. The closest thing to "how explored is this
+    /// place" that does not require reading anyone's run.
+    pub reach: i32,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct VanguardLine {
     pub rank: i32,
@@ -947,6 +963,10 @@ pub enum ServerMsg {
     /// snapshot exponentially for responsiveness, so a teleport has to say so or it
     /// renders as sliding across the map for a second.
     PositionCorrection { x: f64, y: f64 },
+    /// SC-9 — the worlds you can dive into, from `GET /v1/worlds`.
+    WorldList {
+        worlds: Vec<WorldLine>,
+    },
     VanguardBoard {
         season: i32,
         entries: Vec<VanguardLine>,
@@ -1013,6 +1033,7 @@ struct Inner {
     heroes_rx: Option<mpsc::Receiver<(Vec<String>, Vec<String>)>>,
     loadouts_rx: Option<mpsc::Receiver<Vec<LoadoutLine>>>,
     vanguard_rx: Option<mpsc::Receiver<(i32, Vec<VanguardLine>, Option<i32>)>>,
+    worlds_rx: Option<mpsc::Receiver<Vec<WorldLine>>>,
     hunts_rx: Option<mpsc::Receiver<Vec<HuntLine>>>,
     bounties_rx: Option<mpsc::Receiver<BountyBoard>>,
     shop_rx: Option<mpsc::Receiver<(String, Vec<ShopLine>)>>,
@@ -1062,6 +1083,7 @@ pub fn start(base: String) -> Net {
         heroes_rx: None,
         loadouts_rx: None,
         vanguard_rx: None,
+            worlds_rx: None,
         hunts_rx: None,
         bounties_rx: None,
         shop_rx: None,
@@ -1241,6 +1263,11 @@ impl Net {
         self.0.borrow_mut().claim_hunt(key);
     }
 
+    /// SC-9 — kick off a GET of the world list (→ `WorldList`), for the browser.
+    pub fn fetch_worlds(&self) {
+        self.0.borrow_mut().fetch_worlds();
+    }
+
     /// Kick off an authenticated GET of the live Vanguard Board
     /// (→ `VanguardBoard`) — the Vanguard Wall in Last City.
     pub fn fetch_vanguard(&self) {
@@ -1367,6 +1394,12 @@ impl Inner {
             if let Ok(text) = rx.try_recv() {
                 self.vault_rx = None;
                 self.out.push_back(ServerMsg::VaultNotice { text });
+            }
+        }
+        if let Some(rx) = &self.worlds_rx {
+            if let Ok(worlds) = rx.try_recv() {
+                self.worlds_rx = None;
+                self.out.push_back(ServerMsg::WorldList { worlds });
             }
         }
         if let Some(rx) = &self.vanguard_rx {
@@ -2026,6 +2059,37 @@ impl Inner {
             let _ = tx.send(hunt_claim_text(&res));
             spawn_hunts_fetch(base.clone(), token.clone(), htx);
             spawn_inventory_fetch(base, token, itx);
+        });
+    }
+
+    /// GET `/v1/worlds` — **the worlds you can SEE** (`SC-9`).
+    ///
+    /// No token: which worlds exist is not private, and requiring a session would mean a
+    /// player cannot see where their friends are before logging in — which is exactly
+    /// when you want to know.
+    fn fetch_worlds(&mut self) {
+        let (tx, rx) = mpsc::channel();
+        self.worlds_rx = Some(rx);
+        let req = ehttp::Request::get(format!("{}/v1/worlds", self.base));
+        ehttp::fetch(req, move |res| {
+            let mut worlds = Vec::new();
+            if let Ok(resp) = &res {
+                if let Some(v) = resp.text().and_then(|t| serde_json::from_str::<Value>(t).ok()) {
+                    for w in v.as_array().into_iter().flatten() {
+                        worlds.push(WorldLine {
+                            // `as_u64`, never `as_f64`: a seed is a full u64 and f64 loses
+                            // every bit past 2^53, which would hand the player a number
+                            // that regenerates a DIFFERENT world than the one listed.
+                            seed: w["seed"].as_u64().unwrap_or(0),
+                            players: w["players"].as_i64().unwrap_or(0) as i32,
+                            queued: w["queued"].as_i64().unwrap_or(0) as i32,
+                            live: w["live"].as_bool().unwrap_or(false),
+                            reach: w["reach"].as_i64().unwrap_or(0) as i32,
+                        });
+                    }
+                }
+            }
+            let _ = tx.send(worlds);
         });
     }
 

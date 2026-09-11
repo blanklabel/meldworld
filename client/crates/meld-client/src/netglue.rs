@@ -112,6 +112,7 @@ pub(crate) fn pump_net(
             ResMut<crate::battle::BattleOpening>,
             ResMut<crate::screens::Descent>,
             ResMut<crate::world_render::Sky>,
+            ResMut<WorldListData>,
         ),
     ),
     mut roster: ResMut<PartyRoster>,
@@ -119,7 +120,7 @@ pub(crate) fn pump_net(
     state: Res<State<Screen>>,
     mut next: ResMut<NextState<Screen>>,
 ) {
-    let (world_path, world_frame, terrain, report, perks, hero_names, loadouts, run_gear, world_web, dungeon_scene, vanguard, shop, notice, clock, craft, (explored, station, heat, pops, hunts, bounties, tell, battle_fx, opening_card, descent, sky)) = &mut world_res;
+    let (world_path, world_frame, terrain, report, perks, hero_names, loadouts, run_gear, world_web, dungeon_scene, vanguard, shop, notice, clock, craft, (explored, station, heat, pops, hunts, bounties, tell, battle_fx, opening_card, descent, sky, world_list)) = &mut world_res;
     net.0.poll();
     while let Some(msg) = net.0.try_recv() {
         match msg {
@@ -818,6 +819,7 @@ pub(crate) fn pump_net(
                 // a craft that changed a level or a stack invalidates them.
                 net.0.fetch_recipes();
             }
+            ServerMsg::WorldList { worlds } => world_list.worlds = worlds,
             ServerMsg::VanguardBoard { season, entries, you } => {
                 vanguard.season = season;
                 vanguard.entries = entries;

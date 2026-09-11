@@ -425,12 +425,12 @@ async fn run_db_writer(db: Db, balance: Arc<Balance>, mut rx: mpsc::UnboundedRec
 }
 
 /// Spawn the game loop; returns a handle for the gateway.
-pub fn spawn(balance: Arc<Balance>, db: Db) -> GameHandle {
+pub fn spawn(balance: Arc<Balance>, db: Db, worlds: meld_api::WorldBoard) -> GameHandle {
     let (tx, rx) = mpsc::channel(1024);
     let (db_tx, db_rx) = mpsc::unbounded_channel::<DbWrite>();
     tokio::spawn(run_db_writer(db.clone(), balance.clone(), db_rx));
     tokio::spawn(async move {
-        GameState::new(balance, db, db_tx).run(rx).await;
+        GameState::new(balance, db, db_tx, worlds).run(rx).await;
     });
     GameHandle { tx }
 }
@@ -4751,10 +4751,19 @@ struct GameState {
     pending_hero_load: Vec<String>,
     /// Fire-and-forget persistence sink, drained by [`run_db_writer`] off the loop.
     db_writes: mpsc::UnboundedSender<DbWrite>,
+    /// SC-9 — where this loop publishes who is in which world, for `GET /v1/worlds` to
+    /// read. Write-only from here: it is a snapshot for a browser, never a thing the loop
+    /// asks a question of.
+    board: meld_api::WorldBoard,
 }
 
 impl GameState {
-    fn new(balance: Arc<Balance>, db: Db, db_writes: mpsc::UnboundedSender<DbWrite>) -> Self {
+    fn new(
+        balance: Arc<Balance>,
+        db: Db,
+        db_writes: mpsc::UnboundedSender<DbWrite>,
+        board: meld_api::WorldBoard,
+    ) -> Self {
         GameState {
             balance,
             db,
@@ -4773,7 +4782,35 @@ impl GameState {
             next_job: 0,
             pending_hero_load: Vec::new(),
             db_writes,
+            board,
         }
+    }
+
+    /// Publish who is in which world, for the browser (`SC-9`).
+    ///
+    /// One row per LIVE world — not per player — so this is a handful of small structs
+    /// however many people are online. A tutorial corridor is never listed: it is
+    /// onboarding rather than a place, and a browser offering to put you in somebody
+    /// else's walkthrough is offering the wrong thing.
+    fn publish_worlds(&self) {
+        let rows: Vec<meld_proto::http::WorldRow> = self
+            .worlds
+            .values()
+            .filter(|w| !w.tutorial && !is_tutorial_key(&w.key))
+            .map(|w| meld_proto::http::WorldRow {
+                seed: w.arena.seed,
+                players: w.run.runs.len() as i64,
+                queued: self
+                    .queues
+                    .get(&w.key)
+                    .map_or(0, |q| q.iter().map(|g| g.party.len()).sum::<usize>())
+                    as i64,
+                live: true,
+                reach: w.arena.areas.last().map_or(0, |a| a.end_x as i64),
+                updated_at: now_ms() as i64,
+            })
+            .collect();
+        self.board.publish(rows);
     }
 
     /// **The world this player is in, if any.** THE routing lookup — every world-bound
@@ -5056,6 +5093,9 @@ impl GameState {
             }
             self.dispatch(channels);
             self.hibernate_worlds();
+            // Cheap (one small row per live world) and it has to be after the tick, or a
+            // world stood up this pass is invisible to the browser until the next one.
+            self.publish_worlds();
         }
     }
 
@@ -15790,7 +15830,7 @@ mod sharding_tests {
         let (tx, _rx) = mpsc::unbounded_channel();
         // `Db` is only touched by the async flush paths; nothing here reaches Postgres.
         let db = Db::connect("memory://sharding", 4).await.unwrap();
-        let mut g = GameState::new(balance(), db, tx);
+        let mut g = GameState::new(balance(), db, tx, meld_api::WorldBoard::new());
         let (mut rxs, mut ids) = (Vec::new(), Vec::new());
         for i in 0..n {
             let pid = format!("p{i}");
@@ -16131,6 +16171,60 @@ mod sharding_tests {
             g.dive_as(vec![ids[1].clone()], &ids[1], false, Some(6));
         }
         assert_eq!(g.queues["6"].len(), 1, "three asks, one place");
+    }
+
+    /// **SC-9 — the browser sees what the loop sees.** The world list is the one thing in
+    /// the game rendered from a COPY of authoritative state, so the copy has to be right:
+    /// occupancy is the only reason to open a browser at all, and a list of seeds with no
+    /// numbers beside them is the list of numbers this item exists to replace.
+    #[tokio::test]
+    async fn the_world_board_publishes_what_the_loop_holds() {
+        let (mut g, _rx, ids) = router(3).await;
+        g.dive_as(vec![ids[0].clone(), ids[1].clone()], &ids[0], false, Some(21));
+        g.dive_as(vec![ids[2].clone()], &ids[2], false, Some(22));
+        g.publish_worlds();
+
+        let rows = g.board.live();
+        assert_eq!(rows.len(), 2, "both live worlds should be listed");
+        let busy = rows.iter().find(|r| r.seed == 21).expect("world 21");
+        let quiet = rows.iter().find(|r| r.seed == 22).expect("world 22");
+        assert_eq!(busy.players, 2, "occupancy is the point of the list");
+        assert_eq!(quiet.players, 1);
+        assert!(busy.live && quiet.live);
+        assert_eq!(busy.queued, 0);
+    }
+
+    /// A queued group is visible on the board, because "this world is full and N are
+    /// waiting" is exactly the fact that should send you to a different seed.
+    #[tokio::test]
+    async fn the_board_shows_who_is_waiting() {
+        let mut b = Balance::load_default().unwrap();
+        b.world.max_divers_per_world = 1;
+        let (mut g, _rx, ids) = router(2).await;
+        g.balance = Arc::new(b);
+        g.dive_as(vec![ids[0].clone()], &ids[0], false, Some(30));
+        g.dive_as(vec![ids[1].clone()], &ids[1], false, Some(30));
+        g.publish_worlds();
+
+        let rows = g.board.live();
+        let w = rows.iter().find(|r| r.seed == 30).expect("world 30");
+        assert_eq!(w.players, 1);
+        assert_eq!(w.queued, 1, "a full world has to say how long the line is");
+    }
+
+    /// ⚠️ **A tutorial corridor is never listed.** It is onboarding rather than a place,
+    /// and a browser offering to put you into somebody else's walkthrough is offering the
+    /// wrong thing entirely.
+    #[tokio::test]
+    async fn a_tutorial_corridor_is_not_a_destination() {
+        let (mut g, _rx, ids) = router(2).await;
+        g.dive_as(vec![ids[0].clone()], &ids[0], true, Some(40));
+        g.dive_as(vec![ids[1].clone()], &ids[1], false, Some(41));
+        g.publish_worlds();
+
+        let rows = g.board.live();
+        assert_eq!(rows.len(), 1, "only the real world is a destination");
+        assert_eq!(rows[0].seed, 41);
     }
 
     /// A tutorial world is onboarding rather than a place — it is never persisted and

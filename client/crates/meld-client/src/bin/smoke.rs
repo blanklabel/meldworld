@@ -56,6 +56,8 @@ fn main() {
                 ServerMsg::Harvested { .. } => {}
                 // …and no sky to derive from the world clock (FS-5).
                 ServerMsg::SkyTick { .. } => {}
+                // …and no browser to render the world list into (SC-9).
+                ServerMsg::WorldList { .. } => {}
                 ServerMsg::VaultNotice { .. } => {}
                 ServerMsg::HuntBoard { .. }
                 | ServerMsg::HuntProgress { .. }

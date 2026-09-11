@@ -100,6 +100,14 @@ honest with one world and is a routing bug with two, since every world-bound han
 have to guess which world the caller meant. It is also what scopes party chat: the `Party`
 channel filtered on `in_instance == in_instance` ("are we both in some run"), so two parties
 in different seeds heard each other.
+**THE WORLDS ARE BROWSABLE, AND OCCUPANCY IS WHY** (`SC-9`). `GET /v1/worlds` merges the
+live worlds with the hibernated ones; the lobby screen lists them and a number key fills
+the World field. The loop publishes occupancy into `meld_api::WorldBoard`
+(`Arc<RwLock<..>>`) each tick and the HTTP handler reads it — a SNAPSHOT, never a query,
+because answering an HTTP request by asking the loop would put a round-trip on the task
+that must never wait. ⚠️ **It is a cache and may be a tick stale**: fine for choosing a
+world, never for a decision the loop owns. Admission goes through `form_run`, always.
+
 **A FULL WORLD QUEUES; IT DOES NOT REFUSE** (CANON §W1) — a world holds unique
 player-built structures, so it can never be auto-forked into a second copy under the same
 name. ⚠️ Three rules the queue only works because of: `fits` counts the people already
