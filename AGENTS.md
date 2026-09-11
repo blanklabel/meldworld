@@ -1147,18 +1147,39 @@ whole re-draws when the guaranteed route does not hold — and the client used t
 at all until `run.started`, so the descent screen could only tick an elapsed clock. It is
 narrated now (`run.generating`, `WG-12`): `Arena::generate_reporting` hands each REAL pass to an
 observer (the maze decided, each section with its own biome, the bend, the route walk, a
-restart) and the screen names the pass, what that pass does, and an **honest** bar driven by the
-section count. ⚠️ **It cannot travel as an ordinary `Outgoing`**: the loop is blocked solid
+restart) and the screen names the pass, what that pass does, and an **honest** bar driven by
+whatever the pass counts. ⚠️ **It cannot travel as an ordinary `Outgoing`**: the loop is blocked solid
 through generation, so anything batched into `dispatch` arrives beside `run.started` and says
 nothing. `emit_now` puts it on the session's own writer, which is a SEPARATE task on a
 multi-threaded runtime and therefore flushes while this thread is still generating — the only
 reason a blocking call can be reported live at all. ⚠️ And the callback is the CALLER's I/O:
 `meld-world` stays pure, so the narrated world must be byte-identical to the quiet one
 (`narrating_generation_does_not_change_the_world`), or generation stops being replayable from
-its seed and §W5 persistence goes with it. Absence of these messages is a real case, not a
-failure — one world is built per instance, so a re-dive narrates nothing and a restored world is
-replayed in one un-narrated call; the clock is what covers those. `MELD_DESCEND=<step>` pins one
-pass, because a held screen only ever shows whichever arrived last.
+its seed and §W5 persistence goes with it.
+
+⚠️ **A RESTORE IS THE LONGEST WAIT IN THE GAME, AND THIS FILE USED TO CALL ITS SILENCE
+CORRECT** — "a restored world is replayed in one un-narrated call; the clock is what covers
+those". It is not one call and the clock did not cover it. `restore_world` runs the WHOLE
+generator (every pass above, re-rolls included) and *then* walks the frontier back out and
+replays the Shift log — strictly more work than a fresh draw — so every re-dive into a
+persisted seed, which is most dives once §W5 is on, sat on the descent screen's wordless
+fallback from the first frame to the last. Both extra passes carry a count and are narrated
+(`stream`, `shift`); the observer is the same one a fresh draw uses, and the baseline is
+forwarded verbatim because it is the same work. The remaining silent case is the honest one:
+a re-dive into a world already LIVE in memory builds nothing, so there is nothing to say and
+nothing to wait for.
+
+⚠️ **AND THE SILENT STATE MUST NOT ECHO THE SUBTITLE.** With nothing reported the screen
+stacks its static line over `pass_words("")`, and those were the same sentence at two sizes
+over an empty bar — which is what the whole restore wait looked like, and reads as a
+half-built screen rather than as a wait
+(`the_wordless_state_does_not_repeat_the_subtitle`). For the same reason the bar keys on
+whether a pass HAS a count rather than on the literal `"section"`: named, it left the two
+longest passes in the game pinned at zero.
+
+`MELD_DESCEND=<step>` pins one pass, because a held screen only ever shows whichever arrived
+last — and every counted pass stages with a count, or the frame the layout has to survive is
+unreachable.
 
 **There is no hotkey for going home.** A Town Portal is an *item*, so spending one is an
 explicit choice on the menu's **Map** column ("Return to town", enabled only while you

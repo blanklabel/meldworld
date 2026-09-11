@@ -540,15 +540,23 @@ outbound writer are separate Tokio tasks on a multi-threaded runtime: the loop i
 through generation, but the writer is polled on another worker. A message batched into the
 loop's ordinary dispatch would arrive beside `run.started` and say nothing.
 
-Sent to every player enrolled in the dive that created the world. A **re-dive into a world that
-already exists sends none of these** (the server builds one world per instance), and a
-**restored** world is replayed from its seed in one un-narrated call — an absence of these
-messages is a real case, not a failure, and the client falls back to its clock.
+Sent to every player enrolled in the dive that created the world. A **re-dive into a world
+that is already live in memory sends none of these** (the server builds one world per
+instance) — an absence of these messages is a real case, not a failure, and the client falls
+back to its clock. There is nothing to wait for in that case, which is what makes the silence
+honest.
+
+A **restored** world is narrated too, and has *more* to say than a fresh draw rather than
+less. Rebuilding from the seed and delta §W5 keeps runs the whole generator — every pass
+below, re-rolls included — and then walks the frontier back out (`stream`) and replays the
+Shift log (`shift`). It is the longest wait the game has, and it used to report nothing at
+all, so a re-dive into a persisted seed showed the descent screen's wordless fallback from
+the first frame to the last.
 
 | field | meaning |
 |---|---|
-| `step` | `maze` \| `section` \| `bend` \| `route` \| `restart` — the enumerated list is `Generating::STEPS`, read by both sides |
-| `index`, `total` | for `section`, which one (1-based) of how many; both `0` when the pass has no count |
+| `step` | `maze` \| `section` \| `bend` \| `route` \| `restart` \| `stream` \| `shift` — the enumerated list is `Generating::STEPS`, read by both sides. The last two are a RESTORE's own passes and follow the others |
+| `index`, `total` | for a counted pass (`section`, `stream`, `shift`), which one (1-based) of how many; both `0` when the pass has no count |
 | `biome` | the section's own representative theme, when the pass has one |
 | `attempt` | which attempt, 1-based — a re-draw is otherwise indistinguishable from the first one hanging |
 
@@ -562,6 +570,12 @@ draw one, correctly, because a bar that fills on a timer is a lie).
 
 ```json
 {"type": "run.generating", "seq": 15, "ts": 1783729001120, "payload": {"step": "section", "index": 3, "total": 8, "biome": "mire", "attempt": 1}}
+```
+
+A restored world, putting back how far anyone had reached:
+
+```json
+{"type": "run.generating", "seq": 31, "ts": 1783729006400, "payload": {"step": "stream", "index": 22, "total": 40, "attempt": 1}}
 ```
 
 ---

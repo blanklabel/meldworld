@@ -631,11 +631,49 @@ fn pass_words(d: &Descent) -> (String, &'static str) {
             "the route did not hold".into(),
             "this world is discarded, and another is drawn from scratch",
         ),
+        // A world §W5 persisted is rebuilt, not loaded: the generator runs in full and then
+        // these two passes put back what players changed. Both carry their own count, so
+        // they drive the bar exactly as sections do.
+        "stream" => (
+            "the frontier is walked back out".into(),
+            "as far as anyone had reached, because a world remembers how far it got",
+        ),
+        "shift" => (
+            "the Shifts are replayed".into(),
+            "every turn of the weather this world has already lived through, in order",
+        ),
+        // ⚠️ **NOTHING HAS SPOKEN YET, AND THIS ARM MUST NOT SAY WHAT THE SUBTITLE SAYS.**
+        // It used to read "the world is being drawn" — verbatim the static line above it, at
+        // a smaller size, so the screen's whole silent state was one sentence printed twice
+        // and an empty bar. That is what the wait looked like for every re-dive into a
+        // persisted seed until the restore path started narrating, and it is still what the
+        // first instant of any dive looks like.
         "" => (
-            "the world is being drawn".into(),
-            "the maze decided, its ranges raised, its rivers walked downhill",
+            "the threshold is opening".into(),
+            "a world already drawn is entered without a word — only a new one has passes to name",
         ),
         other => (other.to_string(), "the world is being drawn"),
+    }
+}
+
+/// How full the honest bar is, 0-100.
+///
+/// ANY pass that carries a count drives it — sections, and a restore's streamed frontier and
+/// replayed Shifts. This keyed on the literal `"section"`, which was right while that was the
+/// only counted pass and would silently have left the two LONGEST passes in the game at zero.
+/// The passes with no count of their own are pinned to the ends they sit at — the maze before
+/// any ground, the bend and the route walk after all of it — which is a fact about the order,
+/// not a guess about the clock.
+///
+/// Extracted from the render system purely so the rule can be held by test; a bar that is a
+/// lie is the one thing `WG-12` set out not to ship.
+fn descent_fill_pct(d: &Descent) -> f32 {
+    if d.total > 0 {
+        100.0 * d.index as f32 / d.total as f32
+    } else if matches!(d.step.as_str(), "bend" | "route") {
+        100.0
+    } else {
+        0.0
     }
 }
 
@@ -674,15 +712,20 @@ pub(crate) fn descending_ui(mut commands: Commands, mut descent: ResMut<Descent>
     // A previous dive's last pass is not this one's first. Forget it, or a re-dive opens on
     // "the way out is walked" for a world nobody is drawing.
     *descent = match crate::flags::descend_stage_flag() {
-        // `MELD_DESCEND=<step>` stages one pass for a screenshot; a section gets a count and
-        // a country, since that is the frame the layout has to survive.
-        Some(step) => Descent {
-            index: if step == "section" { 3 } else { 0 },
-            total: if step == "section" { 8 } else { 0 },
-            biome: (step == "section").then(|| "amber_wood".to_string()),
-            attempt: if step == "restart" { 2 } else { 1 },
-            step,
-        },
+        // `MELD_DESCEND=<step>` stages one pass for a screenshot. Every COUNTED pass gets a
+        // count — a section, and a restore's streamed frontier and replayed Shifts — since a
+        // part-filled bar with a number beside it is the frame the layout has to survive.
+        // A section gets a country too.
+        Some(step) => {
+            let counted = matches!(step.as_str(), "section" | "stream" | "shift");
+            Descent {
+                index: if counted { 3 } else { 0 },
+                total: if counted { 8 } else { 0 },
+                biome: (step == "section").then(|| "amber_wood".to_string()),
+                attempt: if step == "restart" { 2 } else { 1 },
+                step,
+            }
+        }
         None => Descent::default(),
     };
     commands
@@ -814,18 +857,7 @@ pub(crate) fn render_descending(
         **d = clause.to_string();
     }
     if let Ok(mut f) = fill.single_mut() {
-        // Sections are the only pass with a count of its own, so they are the only thing
-        // this measures. The passes on either side of them are pinned to the ends they sit
-        // at — the maze before any ground, the bend and the route walk after all of it —
-        // which is a fact about the order, not a guess about the clock.
-        let pct = match descent.step.as_str() {
-            "section" if descent.total > 0 => {
-                100.0 * descent.index as f32 / descent.total as f32
-            }
-            "bend" | "route" => 100.0,
-            _ => 0.0,
-        };
-        f.width = Val::Percent(pct);
+        f.width = Val::Percent(descent_fill_pct(&descent));
     }
 }
 
@@ -1352,6 +1384,34 @@ mod tests {
             assert!(
                 name.len() > step.len() && clause.len() > 20,
                 "the `{step}` pass has no readable line: {name:?} / {clause:?}"
+            );
+        }
+    }
+
+    /// **THE SILENT STATE MUST NOT ECHO THE LINE ABOVE IT.** Before the server has said
+    /// anything the screen shows its static subtitle *and* `pass_words("")`, stacked — and
+    /// those two were the same sentence at two sizes, with an empty bar under them. It read
+    /// as a half-built screen rather than as a wait, and until the restore path started
+    /// narrating it was the ONLY thing a re-dive into a persisted seed ever showed.
+    #[test]
+    fn the_wordless_state_does_not_repeat_the_subtitle() {
+        let (name, clause) = pass_words(&Descent::default());
+        let subtitle = "The world is being drawn.";
+        let same = |a: &str| a.trim_end_matches('.').eq_ignore_ascii_case(subtitle.trim_end_matches('.'));
+        assert!(!same(&name), "the silent state prints the subtitle back at the player: {name:?}");
+        assert!(!same(clause), "the silent state's clause is the subtitle: {clause:?}");
+    }
+
+    /// Every pass that carries a count fills the bar, and the two a RESTORE adds are the
+    /// longest ones in the game — keying the fill on the literal `"section"` left them at
+    /// zero for the whole wait they exist to measure.
+    #[test]
+    fn every_counted_pass_can_fill_the_bar() {
+        for step in ["section", "stream", "shift"] {
+            let d = Descent { step: step.to_string(), index: 3, total: 8, ..Descent::default() };
+            assert!(
+                descent_fill_pct(&d) > 0.0,
+                "the `{step}` pass carries a count and still cannot move the bar"
             );
         }
     }
