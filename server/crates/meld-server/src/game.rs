@@ -4684,6 +4684,30 @@ struct QueuedGroup {
     seed: u64,
 }
 
+/// **One completed extraction, harvested by the world and handed to the Router**
+/// (`SC-3` b1-B).
+///
+/// The world owns the run state — the backpack, the pouches, the looted gear — and the
+/// Router owns Postgres. So the world takes the haul off the run (which is pure state
+/// mutation it can do on its own task) and the Router banks it (which awaits). That is
+/// the same split `WorldEffect::SmithJob` already makes, and it is what lets extraction
+/// survive the world moving off the Router's task.
+struct Banked {
+    player_id: String,
+    run_id: String,
+    items: Vec<ItemStack>,
+    chits: i64,
+    gear: Vec<LootGear>,
+    deepest: i32,
+    /// **The roster of the extractor's OWN world**, captured at harvest rather than read
+    /// globally. Who is told that somebody came home is a property of the world they came
+    /// home from; a Router-wide member list would announce one seed's extraction to every
+    /// other seed's divers.
+    members: Vec<String>,
+    /// Same reason: whose durability was charged is that world's bookkeeping.
+    world_key: String,
+}
+
 /// A pre-maze co-op lobby: a group forming up before diving together.
 struct Lobby {
     code: String,
@@ -7297,6 +7321,66 @@ impl WorldActor {
     ///
     /// Deliberately NOT here: anything about the world itself. Cleared ground, spent nodes,
     /// standing structures and the Shift schedule are the world's, not the diver's (§W1).
+    /// **Take the haul off every run whose extraction channel has elapsed** (`SC-3`
+    /// b1-B). Pure world-state mutation: the backpack, the pouches and the looted gear
+    /// come off the run and leave as [`Banked`], which the Router turns into Vault rows.
+    ///
+    /// The world does this half because it owns the run; the Router does the other half
+    /// because it owns Postgres and may await. Nothing here touches the DB or a session.
+    fn harvest_extractions(&mut self, now: u64) -> Vec<Banked> {
+        let done: Vec<(String, String)> = self
+            .extraction
+            .iter()
+            .filter(|(_, e)| e.completes_at <= now)
+            .map(|(p, e)| (p.clone(), e.method.clone()))
+            .collect();
+        if done.is_empty() {
+            return Vec::new();
+        }
+        // Captured before anybody is resolved: who is told that somebody came home is the
+        // roster of the world they came home from, as it stood when they left it.
+        let members: Vec<String> = self.run.runs.iter().map(|r| r.player_id.clone()).collect();
+        let mut banks = Vec::new();
+        for (pid, method) in &done {
+            self.extraction.remove(pid);
+            if let Some(a) = self.arena.avatar_mut(pid) {
+                a.state = "active".to_string();
+            }
+            let Some(r) = self.run.runs.iter_mut().find(|r| &r.player_id == pid) else {
+                continue;
+            };
+            if r.result.is_some() {
+                continue;
+            }
+            // A town-portal extraction spends one Town Portal item; it is consumed,
+            // not banked.
+            if method == "town_portal" {
+                if let Some(slot) = r.backpack.iter_mut().find(|i| i.item_kind == TOWN_PORTAL) {
+                    slot.quantity -= 1;
+                }
+                r.backpack.retain(|i| i.quantity > 0);
+            }
+            // A pouch comes home too: it is carried loot like anything in the bag, just
+            // held by a hero instead of the party.
+            let mut items = std::mem::take(&mut r.backpack);
+            for pouch in std::mem::take(&mut r.pouches) {
+                items.extend(pouch);
+            }
+            banks.push(Banked {
+                player_id: pid.clone(),
+                run_id: r.run_id.clone(),
+                items,
+                chits: std::mem::replace(&mut r.chits, 0),
+                gear: std::mem::take(&mut r.looted_gear),
+                deepest: r.max_distance_reached,
+                members: members.clone(),
+                world_key: self.key.clone(),
+            });
+            r.result = Some(RunResult::Extracted);
+        }
+        banks
+    }
+
     fn forget_player(&mut self, player_id: &str) {
         self.arena.avatars.retain(|a| a.player_id != player_id);
         self.run.runs.retain(|r| r.player_id != player_id);
@@ -11005,75 +11089,15 @@ impl GameState {
     /// into the Vault (Postgres) and finalize the run as `extracted`.
     async fn complete_extractions(&mut self) -> Vec<Outgoing> {
         let now = now_ms();
-        struct Banked {
-            player_id: String,
-            run_id: String,
-            items: Vec<ItemStack>,
-            chits: i64,
-            gear: Vec<LootGear>,
-            deepest: i32,
-            /// **The roster of the extractor's OWN world**, captured here rather than
-            /// read globally. Who is told that somebody came home is a property of the
-            /// world they came home from; a single Router-wide member list would
-            /// announce one seed's extraction to every other seed's divers.
-            members: Vec<String>,
-            /// Same reason: whose durability was charged is that world's bookkeeping.
-            world_key: String,
-        }
+        // **THE WORLD TAKES THE HAUL OFF THE RUN; THE ROUTER BANKS IT** (`SC-3` b1-B).
+        // Harvesting is pure state mutation the world can do on its own task, and
+        // banking awaits Postgres, which the Router owns. Splitting them here is what
+        // lets extraction survive the world moving off this task — the same split
+        // `WorldEffect::SmithJob` already makes.
         let banks: Vec<Banked> = {
             let mut banks = Vec::new();
-            for (world_key, inst) in self.worlds.iter_mut() {
-            let done: Vec<(String, String)> = inst
-                .extraction
-                .iter()
-                .filter(|(_, e)| e.completes_at <= now)
-                .map(|(p, e)| (p.clone(), e.method.clone()))
-                .collect();
-            if done.is_empty() {
-                continue;
-            }
-            let members: Vec<String> =
-                inst.run.runs.iter().map(|r| r.player_id.clone()).collect();
-            for (pid, method) in &done {
-                inst.extraction.remove(pid);
-                if let Some(a) = inst.arena.avatar_mut(pid) {
-                    a.state = "active".to_string();
-                }
-                if let Some(r) = inst.run.runs.iter_mut().find(|r| &r.player_id == pid) {
-                    if r.result.is_some() {
-                        continue;
-                    }
-                    // A town-portal extraction spends one Town Portal item; it is
-                    // consumed, not banked.
-                    if method == "town_portal" {
-                        if let Some(slot) =
-                            r.backpack.iter_mut().find(|i| i.item_kind == TOWN_PORTAL)
-                        {
-                            slot.quantity -= 1;
-                        }
-                        r.backpack.retain(|i| i.quantity > 0);
-                    }
-                    // A pouch comes home too: it is carried loot like anything in the
-                    // bag, just held by a hero instead of the party.
-                    let mut items = std::mem::take(&mut r.backpack);
-                    for pouch in std::mem::take(&mut r.pouches) {
-                        items.extend(pouch);
-                    }
-                    let gear = std::mem::take(&mut r.looted_gear);
-                    let chits = std::mem::replace(&mut r.chits, 0);
-                    r.result = Some(RunResult::Extracted);
-                    banks.push(Banked {
-                        player_id: pid.clone(),
-                        run_id: r.run_id.clone(),
-                        items,
-                        chits,
-                        gear,
-                        deepest: r.max_distance_reached,
-                        members: members.clone(),
-                        world_key: world_key.clone(),
-                    });
-                }
-            }
+            for inst in self.worlds.values_mut() {
+                banks.extend(inst.harvest_extractions(now));
             }
             if banks.is_empty() {
                 return Vec::new();

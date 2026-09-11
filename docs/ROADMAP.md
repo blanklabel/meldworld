@@ -5630,9 +5630,24 @@ Directly underpins CR-4 (sim budget), MON-2 (persistent camps/instances), and LC
       divers who left. `the_routers_roster_matches_the_worlds_own` walks a mixed sequence
       and holds the two answers together at each step, including the reverse direction (a
       roster entry for a world that no longer exists).
-    **Remaining for b1-B:** the task spawn itself — worlds tick, save and publish
-    themselves, and extraction completions come back as effects rather than the Router
-    reaching in to bank them. Plus hub handoff. *(The admission queue and the dormancy catch-up
+  - 🟡 **b1-B, step 2a: the world takes the haul off the run; the Router banks it.**
+    `WorldActor::harvest_extractions` does the pure state mutation (backpack, pouches,
+    looted gear come off the run and leave as `Banked`); the Router turns that into Vault
+    rows because it owns Postgres and may await. The same split
+    `WorldEffect::SmithJob` already makes, and the second of the two hard Router→world
+    reaches removed. Verified by the real `qa/extraction` bot against Postgres
+    (`extraction_banks_loot_into_the_vault`), not just unit tests — the code moved is
+    exactly the path that puts loot in the Vault, and `qa/` is not in CI.
+    **Remaining for b1-B — and NONE of it pays off until all of it is done**, which is
+    why it wants to be one deliberate piece rather than the tail of a long session:
+    - `form_run` builds the world and then reads it back to compose `run.started`. Under
+      a task boundary the world composes it and it returns as an ordinary `Outgoing`.
+    - The tick, `hibernate_worlds` and `publish_worlds` move INTO the world: it ticks,
+      saves and publishes its own row.
+    - `handle_client` becomes send-only; replies arrive later on the effect channel.
+      Ordering is preserved by one channel per world.
+    - Two small synchronous reads remain (`abandoned` on disconnect, `open_heat_tier`).
+    Plus hub handoff. *(The admission queue and the dormancy catch-up
     below have since landed.)*
   - ✅ **BUILT — a dormant world catches up in CLOSED FORM, never by replaying ticks.**
     `WorldActor::advance_to(target)`, called the moment a world is stood back up (off
