@@ -4602,6 +4602,86 @@ struct LobbyMember {
     ready: bool,
 }
 
+/// **One request to start a dive.** Bundled rather than eight loose arguments, which is
+/// what `form_run` had grown to: the seed, the tutorial flag and `admitting` are each a
+/// different *kind* of thing (a world choice, a world property, a caller mode) and at
+/// that width a call site is a row of positional `false, None, Some(x), false` nobody can
+/// read. Clippy's arity lint is the honest messenger here, not something to silence.
+struct Dive {
+    party: Vec<String>,
+    initiator: String,
+    client_seq: Option<u32>,
+    tutorial: bool,
+    /// The departure hub the initiator asked for (PG-2), if any. Clamped by `form_run`.
+    hub: Option<String>,
+    /// **Which world** (SC-3) — a seed, the world's own identity. `None` rolls a fresh
+    /// one, which is what every dive did while there was exactly one world. A REQUEST:
+    /// the world actually entered rides back on `Started.world_seed`.
+    seed: Option<u64>,
+    /// ⚠️ **ARRIVAL or ADMISSION, and they are NOT the same question.**
+    ///
+    /// For an ARRIVAL the queue counts against you: everyone already waiting is ahead of
+    /// you, which is what stops a latecomer walking past the line. For an ADMISSION out
+    /// of `drain_queue` nobody waiting is ahead of you — you ARE the head — and the cap
+    /// was checked before you were popped.
+    ///
+    /// Asking the arrival question on an admission is a LIVELOCK rather than a slow path:
+    /// the popped group fails `fits` because of the groups still behind it, is re-queued
+    /// at the BACK, and the loop pops the next one and does the same forever. Found by
+    /// `a_latecomer_cannot_jump_the_line` HANGING rather than failing.
+    admitting: bool,
+}
+
+impl Dive {
+    /// Destructure into the names `form_run`'s body has always used. A shim rather than a
+    /// rename of every use inside a long function: the bundle exists to fix the CALL
+    /// sites, which is where eight positional arguments were actually unreadable.
+    #[allow(clippy::type_complexity)]
+    fn into_parts(
+        self,
+    ) -> (Vec<String>, String, Option<u32>, bool, Option<String>, Option<u64>, bool) {
+        (
+            self.party,
+            self.initiator,
+            self.client_seq,
+            self.tutorial,
+            self.hub,
+            self.seed,
+            self.admitting,
+        )
+    }
+
+    /// A plain arrival: somebody pressed dive. Test-only — every production call site
+    /// spells the bundle out, because each one sets something different and a default
+    /// that hides which fields a real dive cares about is the unreadability again.
+    #[cfg(test)]
+    fn arriving(party: Vec<String>, initiator: &str) -> Self {
+        Dive {
+            party,
+            initiator: initiator.to_string(),
+            client_seq: None,
+            tutorial: false,
+            hub: None,
+            seed: None,
+            admitting: false,
+        }
+    }
+}
+
+/// One group waiting for a full world (`SC-3`). Everything `form_run` will need when a
+/// seat opens, captured at the moment they got in line — so admitting them later is the
+/// same call it would have been at the time, rather than a second construction site.
+struct QueuedGroup {
+    party: Vec<String>,
+    initiator: String,
+    tutorial: bool,
+    /// The world they are waiting for, by seed. Held here as well as in the map key so
+    /// admission goes through the ordinary NAMED path and cannot be matchmade somewhere
+    /// else at the last moment — the whole reason they waited is that they wanted THIS
+    /// world.
+    seed: u64,
+}
+
 /// A pre-maze co-op lobby: a group forming up before diving together.
 struct Lobby {
     code: String,
@@ -4636,6 +4716,14 @@ struct GameState {
     /// *built* in one place, and restoring is that build reading its seed and its delta
     /// from disk instead of from a fresh roll.
     restore: HashMap<String, meld_db::WorldSave>,
+    /// **Groups waiting for a full world** (`SC-3`, CANON §W1), keyed by world key and
+    /// held in arrival order. A world at cap queues rather than auto-forking, because it
+    /// holds unique player-built structures that cannot be cloned.
+    ///
+    /// Keyed by GROUPS rather than players: a lobby arrives together and admitting half
+    /// of it is worse than admitting none, which is the same reason the cap check counts
+    /// arrivals as a block.
+    queues: HashMap<String, Vec<QueuedGroup>>,
     /// Open co-op lobbies, keyed by join code.
     lobbies: HashMap<String, Lobby>,
     /// player_id -> the lobby code they're in.
@@ -4674,6 +4762,7 @@ impl GameState {
             order: Vec::new(),
             worlds: HashMap::new(),
             restore: HashMap::new(),
+            queues: HashMap::new(),
             lobbies: HashMap::new(),
             player_lobby: HashMap::new(),
             pending_gear_load: Vec::new(),
@@ -4735,6 +4824,157 @@ impl GameState {
                     .then_with(|| b.key.cmp(&a.key))
             })
             .map(|w| w.key.clone())
+    }
+
+    /// Does this world have room for `arriving` more divers right now?
+    ///
+    /// ⚠️ **A queue AHEAD of you counts against you.** Seats freed by a leaver belong to
+    /// whoever has been waiting, so a fresh arrival that only checked the live occupancy
+    /// would walk straight past the line — and a queue that can be jumped is not a queue,
+    /// it is a lottery with extra steps.
+    fn fits(&self, world_key: &str, arriving: usize) -> bool {
+        let seated = self.worlds.get(world_key).map_or(0, |w| w.run.runs.len());
+        let waiting: usize =
+            self.queues.get(world_key).map_or(0, |q| q.iter().map(|g| g.party.len()).sum());
+        seated + waiting + arriving <= self.balance.world.max_divers_per_world
+    }
+
+    /// Put a group in line for a full world and tell them where they stand.
+    fn enqueue(
+        &mut self,
+        world_key: String,
+        party: Vec<String>,
+        initiator: &str,
+        tutorial: bool,
+    ) -> Vec<Outgoing> {
+        // A group already waiting is re-stated rather than doubled: a client that
+        // re-sends `run.enter_maze` while queued must not take a second place in line.
+        self.dequeue(&party, None);
+        let seed = self
+            .worlds
+            .get(&world_key)
+            .map(|w| w.arena.seed)
+            .unwrap_or_else(|| world_key.parse().unwrap_or(0));
+        self.queues.entry(world_key.clone()).or_default().push(QueuedGroup {
+            party,
+            initiator: initiator.to_string(),
+            tutorial,
+            seed,
+        });
+        self.queue_positions(&world_key)
+    }
+
+    /// Drop `party` from every line they are in. `notify` sends `run.queue_left` with
+    /// that reason to whoever was actually removed.
+    fn dequeue(&mut self, party: &[String], notify: Option<&str>) -> Vec<Outgoing> {
+        let mut out = Vec::new();
+        let mut touched: Vec<String> = Vec::new();
+        for (key, groups) in self.queues.iter_mut() {
+            let before = groups.len();
+            groups.retain(|g| {
+                let mine = g.party.iter().any(|p| party.contains(p));
+                if mine {
+                    if let Some(reason) = notify {
+                        for pid in &g.party {
+                            out.push(out_msg(pid, &wr::QueueLeft { reason: reason.to_string() }));
+                        }
+                    }
+                }
+                !mine
+            });
+            if groups.len() != before {
+                touched.push(key.clone());
+            }
+        }
+        self.queues.retain(|_, g| !g.is_empty());
+        // Everyone behind them moved up, and a position nobody restates is a position
+        // that goes stale on screen.
+        for key in touched {
+            out.extend(self.queue_positions(&key));
+        }
+        out
+    }
+
+    /// Tell everyone waiting on `world_key` where they stand.
+    fn queue_positions(&self, world_key: &str) -> Vec<Outgoing> {
+        let Some(groups) = self.queues.get(world_key) else { return Vec::new() };
+        let cap = self.balance.world.max_divers_per_world;
+        let seated = self.worlds.get(world_key).map_or(0, |w| w.run.runs.len());
+        let mut out = Vec::new();
+        // Seats the groups ahead of you will take when they go in. This is why the wire
+        // carries it separately from `position`: the queue holds GROUPS, so being second
+        // in line behind a party of four is a longer wait than being second implies.
+        let mut ahead = 0usize;
+        for (i, g) in groups.iter().enumerate() {
+            let needed = (seated + ahead + g.party.len()).saturating_sub(cap);
+            for pid in &g.party {
+                out.push(out_msg(
+                    pid,
+                    &wr::Queued {
+                        world_seed: g.seed,
+                        position: i + 1,
+                        seats_needed: needed,
+                    },
+                ));
+            }
+            ahead += g.party.len();
+        }
+        out
+    }
+
+    /// A seat opened on `world_key` — admit whoever has been waiting longest and fits.
+    ///
+    /// ⚠️ **Strictly in order: the head of the line either goes in or nobody does.**
+    /// Skipping a party of four to admit a solo behind them is what makes a queue
+    /// unfair in exactly the way that gets noticed, and it can starve a big group
+    /// forever on a world with steady solo churn.
+    fn drain_queue(&mut self, world_key: &str) -> Vec<Outgoing> {
+        let cap = self.balance.world.max_divers_per_world;
+        let mut out = Vec::new();
+        // A belt to the `admitting` brace: this loop pops, so anything that put a group
+        // back would spin it. Bounded by the line's own length, so a regression costs a
+        // dropped admission and a log line rather than a hung game loop.
+        let mut guard = self.queues.get(world_key).map_or(0, |q| q.len()) + 1;
+        loop {
+            guard = guard.saturating_sub(1);
+            if guard == 0 {
+                tracing::error!(key = %world_key, "world.queue: drain did not terminate");
+                break;
+            }
+            let seated = self.worlds.get(world_key).map_or(0, |w| w.run.runs.len());
+            let Some(next) = self.queues.get(world_key).and_then(|q| q.first()) else { break };
+            if seated + next.party.len() > cap {
+                break;
+            }
+            let group = self.queues.get_mut(world_key).and_then(|q| {
+                if q.is_empty() {
+                    None
+                } else {
+                    Some(q.remove(0))
+                }
+            });
+            let Some(group) = group else { break };
+            // Anyone who disconnected while waiting is simply gone; a group with nobody
+            // left in it is dropped rather than admitted as an empty run.
+            let party: Vec<String> =
+                group.party.into_iter().filter(|p| self.sessions.contains_key(p)).collect();
+            if party.is_empty() {
+                continue;
+            }
+            out.extend(self.form_run(Dive {
+                party,
+                initiator: group.initiator,
+                client_seq: None,
+                tutorial: group.tutorial,
+                hub: None,
+                seed: Some(group.seed),
+                // The head of the line, past the cap check above: admit, never re-queue.
+                admitting: true,
+            }));
+        }
+        self.queues.retain(|_, g| !g.is_empty());
+        out.extend(self.queue_positions(world_key));
+        out
     }
 
     /// Is this player in a run? Derived from the routing entry rather than stored beside
@@ -4963,7 +5203,11 @@ impl GameState {
                 // the abandoned-run burn would silently not fire and the leaver would
                 // stay enrolled in a world nothing could ever drop them from. It was safe
                 // in the other order only while "the world" was a field on the Router.
-                let out = self.leave_lobby(&player_id);
+                let mut out = self.leave_lobby(&player_id);
+                // …and out of any line they were standing in. No `run.queue_left` for
+                // the leaver — their socket is gone — but everyone behind them moves up
+                // and has to be told.
+                out.extend(self.dequeue(std::slice::from_ref(&player_id), None));
                 // A disconnect that drops a still-unresolved run ends it
                 // `abandoned` — the other red-burning end (spec §5): any
                 // equipped Vault-owned red gear is permanently deleted.
@@ -5035,6 +5279,11 @@ impl GameState {
                 inst.empty_since = Some(inst.tick_count);
             }
         }
+        // A seat just opened. Anyone waiting for THIS world moves up, and the head of
+        // the line goes in if it now fits — `drain_queue` is the only admission path, so
+        // a freed seat cannot be taken by a fresh arrival that never queued.
+        let admitted = self.drain_queue(&key);
+        self.dispatch(admitted);
     }
 
     /// A player's run has ended (extracted or died): release them so they can
@@ -5298,6 +5547,13 @@ impl GameState {
                 },
             )],
             wr::EnterMaze::TYPE => self.handle_enter_maze(player_id, raw),
+            // Giving up on a full world. Scoped to the CALLER only — a lobby member who
+            // walks away does not drag the rest of their party out of the line with
+            // them; the group simply needs one seat fewer, which `queue_positions`
+            // re-states on the way out.
+            wr::LeaveQueue::TYPE => {
+                self.dequeue(&[player_id.to_string()], Some("left"))
+            }
             wl::Create::TYPE => self.handle_lobby_create(player_id, raw),
             wl::Join::TYPE => self.handle_lobby_join(player_id, raw),
             wl::Ready::TYPE => self.handle_lobby_ready(player_id, raw),
@@ -5739,26 +5995,39 @@ impl GameState {
         // SC-3: which world. A request, not a fact — `Started.world_seed` says where
         // they actually landed, and a full world refuses rather than silently forking.
         let wants_seed = req.as_ref().and_then(|e| e.seed);
-        self.form_run(party_ids, player_id, Some(client_seq), wants_tutorial, wants_hub, wants_seed)
+        self.form_run(Dive {
+            party: party_ids,
+            initiator: player_id.to_string(),
+            client_seq: Some(client_seq),
+            tutorial: wants_tutorial,
+            hub: wants_hub,
+            seed: wants_seed,
+            admitting: false,
+        })
     }
 
     /// Enroll `party_ids` into a shared MazeInstance and emit `run.started` to
     /// each. The initiator's `run.started` echoes `client_seq`. Every enrolled
     /// player's session must already carry its `character_class` / `party_comp`.
-    fn form_run(
+    /// Test-only shorthand for a plain ARRIVAL. Keeps the call sites readable: the
+    /// bundle exists so nobody reads `false, None, Some(x), false` positionally, and a
+    /// test that spells out seven fields to say "somebody pressed dive" has just moved
+    /// the unreadability rather than fixed it.
+    #[cfg(test)]
+    fn dive_as(
         &mut self,
-        party_ids: Vec<String>,
-        initiator: &str,
-        client_seq: Option<u32>,
-        wants_tutorial: bool,
-        // The departure hub the initiator asked for (PG-2), if any. Clamped below.
-        wants_hub: Option<String>,
-        // **Which world the initiator asked for** (SC-3) — a seed, the world's own
-        // identity. `None` rolls a fresh one, which is what every dive did while there
-        // was exactly one world. A REQUEST: the world actually entered rides back on
-        // `Started.world_seed`.
-        wants_seed: Option<u64>,
+        party: Vec<String>,
+        who: &str,
+        tutorial: bool,
+        seed: Option<u64>,
     ) -> Vec<Outgoing> {
+        self.form_run(Dive { tutorial, seed, ..Dive::arriving(party, who) })
+    }
+
+    fn form_run(&mut self, dive: Dive) -> Vec<Outgoing> {
+        let (party_ids, initiator, client_seq, wants_tutorial, wants_hub, wants_seed, admitting) =
+            dive.into_parts();
+        let initiator = initiator.as_str();
         // PG-2 — where this dive departs from, and therefore what level its heroes start
         // at (`meld_run::base_run_level`). This was hard-coded to the Center Hub, which is
         // why every hero started every dive at level 1 and the ladder above roughly level
@@ -5887,18 +6156,19 @@ impl GameState {
             },
         };
         // A world is CAPPED and scale is many worlds (CANON §W1) — it holds unique
-        // player-built structures, so a full one can never be auto-forked. ⚠️ CANON says
-        // it queues; there is no queue yet, so it refuses. The check counts the divers
-        // ALREADY there plus the ones arriving, because a lobby arrives as a group and
-        // admitting half of it is worse than admitting none.
-        let seated = self.worlds.get(&world_key).map_or(0, |w| w.run.runs.len());
-        if seated + party_ids.len() > self.balance.world.max_divers_per_world {
-            return vec![error(
-                initiator,
-                ErrorCode::InvalidState,
-                "That world is full — pick another seed.",
-                client_seq,
-            )];
+        // player-built structures, so a full one can never be auto-forked into a second
+        // copy under the same name. A full one QUEUES.
+        //
+        // The check counts the divers ALREADY there plus the ones arriving, because a
+        // lobby arrives as a group and admitting half of it is worse than admitting
+        // none — which is also why the queue holds groups rather than players.
+        //
+        // ⚠️ **Only a NAMED world queues.** An unnamed dive is a matchmaking request and
+        // `choose_world` has already overflowed it into a world with room; putting
+        // somebody who asked for "anywhere" in a line for one particular place would be
+        // answering a question they did not ask.
+        if !admitting && !self.fits(&world_key, party_ids.len()) {
+            return self.enqueue(world_key, party_ids, initiator, wants_tutorial);
         }
 
         // Build the world on the first entry into it.
@@ -6921,7 +7191,15 @@ impl GameState {
         // first-load onboarding — never the shared lobby path).
         // A co-op dive departs from the INITIATOR's deepest hub — the lobby leader is the
         // one whose record the run is scoped to, and `form_run` clamps it anyway.
-        self.form_run(ids, player_id, Some(seq), false, None, seed)
+        self.form_run(Dive {
+            party: ids,
+            initiator: player_id.to_string(),
+            client_seq: Some(seq),
+            tutorial: false,
+            hub: None,
+            seed,
+            admitting: false,
+        })
     }
 
 }
@@ -15555,8 +15833,8 @@ mod sharding_tests {
     #[tokio::test]
     async fn two_seeds_are_two_worlds() {
         let (mut g, _rx, ids) = router(2).await;
-        g.form_run(vec![ids[0].clone()], &ids[0], None, false, None, Some(111));
-        g.form_run(vec![ids[1].clone()], &ids[1], None, false, None, Some(222));
+        g.dive_as(vec![ids[0].clone()], &ids[0], false, Some(111));
+        g.dive_as(vec![ids[1].clone()], &ids[1], false, Some(222));
 
         assert_eq!(g.worlds.len(), 2, "two seeds should have built two worlds");
         assert_eq!(g.sessions[&ids[0]].world.as_deref(), Some("111"));
@@ -15580,40 +15858,13 @@ mod sharding_tests {
     #[tokio::test]
     async fn one_seed_is_one_world() {
         let (mut g, _rx, ids) = router(2).await;
-        g.form_run(vec![ids[0].clone()], &ids[0], None, false, None, Some(777));
-        g.form_run(vec![ids[1].clone()], &ids[1], None, false, None, Some(777));
+        g.dive_as(vec![ids[0].clone()], &ids[0], false, Some(777));
+        g.dive_as(vec![ids[1].clone()], &ids[1], false, Some(777));
 
         assert_eq!(g.worlds.len(), 1, "one seed should be one place");
         let w = &g.worlds["777"];
         assert!(w.run.runs.iter().any(|r| r.player_id == ids[0]));
         assert!(w.run.runs.iter().any(|r| r.player_id == ids[1]));
-    }
-
-    /// A world is CAPPED and scale is many worlds (CANON §W1) — it holds unique
-    /// player-built structures, so a full one can never be auto-forked into a second copy
-    /// under the same name. ⚠️ CANON says it queues; there is no queue yet, so it refuses,
-    /// and the test holds the property that matters either way: **the cap is never
-    /// exceeded, and the world the group asked for is not silently duplicated.**
-    #[tokio::test]
-    async fn a_full_world_refuses_rather_than_forking() {
-        let mut b = Balance::load_default().unwrap();
-        b.world.max_divers_per_world = 2;
-        let (mut g, _keep, ids) = router(3).await;
-        g.balance = Arc::new(b);
-
-        for pid in ids.iter().take(2) {
-            g.form_run(vec![pid.clone()], pid, None, false, None, Some(9));
-        }
-        assert_eq!(g.worlds["9"].run.runs.len(), 2);
-
-        let out = g.form_run(vec![ids[2].clone()], &ids[2], None, false, None, Some(9));
-        assert_eq!(g.worlds.len(), 1, "a refused dive must not have built a second world");
-        assert_eq!(g.worlds["9"].run.runs.len(), 2, "the cap was exceeded");
-        assert!(g.sessions[&ids[2]].world.is_none(), "a refused diver must not be routed anywhere");
-        assert!(
-            out.iter().any(|o| o.msg_type == ws::Error::TYPE),
-            "a full world should say so rather than failing silently"
-        );
     }
 
     /// **A dormant world wakes at NOW, in closed form** (`SC-3`). The whole claim: it
@@ -15622,7 +15873,7 @@ mod sharding_tests {
     #[tokio::test]
     async fn a_dormant_world_wakes_up_at_now() {
         let (mut g, _rx, ids) = router(1).await;
-        g.form_run(vec![ids[0].clone()], &ids[0], None, false, None, Some(4242));
+        g.dive_as(vec![ids[0].clone()], &ids[0], false, Some(4242));
         let key = g.sessions[&ids[0]].world.clone().unwrap();
         assert_eq!(g.worlds[&key].tick_count, 0);
 
@@ -15652,7 +15903,7 @@ mod sharding_tests {
         b.world_persist.max_catchup_shifts = 2;
         let (mut g, _rx, ids) = router(1).await;
         g.balance = Arc::new(b);
-        g.form_run(vec![ids[0].clone()], &ids[0], None, false, None, Some(77));
+        g.dive_as(vec![ids[0].clone()], &ids[0], false, Some(77));
         let key = g.sessions[&ids[0]].world.clone().unwrap();
 
         let target = 500_000;
@@ -15680,7 +15931,7 @@ mod sharding_tests {
     #[tokio::test]
     async fn the_saturating_half_settles_rather_than_approximating() {
         let (mut g, _rx, ids) = router(1).await;
-        g.form_run(vec![ids[0].clone()], &ids[0], None, false, None, Some(31337));
+        g.dive_as(vec![ids[0].clone()], &ids[0], false, Some(31337));
         let key = g.sessions[&ids[0]].world.clone().unwrap();
 
         // Wound everything, then sleep past every horizon.
@@ -15712,6 +15963,176 @@ mod sharding_tests {
         assert!(w.arena.fallen.is_empty(), "everything felled should have regrown by now");
     }
 
+    /// **A full world QUEUES, it does not refuse** (CANON §W1). A world holds unique
+    /// player-built structures, so it can never be auto-forked into a second copy under
+    /// the same name — waiting is the only honest answer, and this is the one place in
+    /// the game where it is the answer at all.
+    #[tokio::test]
+    async fn a_full_world_queues_rather_than_refusing() {
+        let mut b = Balance::load_default().unwrap();
+        b.world.max_divers_per_world = 2;
+        let (mut g, _rx, ids) = router(3).await;
+        g.balance = Arc::new(b);
+
+        for pid in ids.iter().take(2) {
+            g.dive_as(vec![pid.clone()], pid, false, Some(9));
+        }
+        let out = g.dive_as(vec![ids[2].clone()], &ids[2], false, Some(9));
+
+        assert_eq!(g.worlds["9"].run.runs.len(), 2, "the cap still holds");
+        assert_eq!(
+            g.worlds.len(),
+            1,
+            "a world at cap is never auto-forked into a second copy under the same name: \
+             it holds unique player-built structures (CANON §W1), which is the whole \
+             reason waiting is the answer rather than making another one"
+        );
+        assert!(g.sessions[&ids[2]].world.is_none(), "a queued diver is not in a world yet");
+        assert!(
+            !out.iter().any(|o| o.msg_type == ws::Error::TYPE),
+            "waiting is not an error"
+        );
+        assert!(
+            out.iter().any(|o| o.msg_type == wr::Queued::TYPE && o.player_id == ids[2]),
+            "they should have been told where they stand"
+        );
+        assert_eq!(g.queues["9"].len(), 1);
+    }
+
+    /// …and the line DRAINS: the seat a leaver frees goes to whoever was waiting.
+    /// Without this the queue is just a nicer-sounding refusal.
+    #[tokio::test]
+    async fn a_freed_seat_admits_the_head_of_the_line() {
+        let mut b = Balance::load_default().unwrap();
+        b.world.max_divers_per_world = 1;
+        let (mut g, _rx, ids) = router(2).await;
+        g.balance = Arc::new(b);
+
+        g.dive_as(vec![ids[0].clone()], &ids[0], false, Some(12));
+        g.dive_as(vec![ids[1].clone()], &ids[1], false, Some(12));
+        assert_eq!(g.queues["12"].len(), 1, "the second diver is waiting");
+
+        g.release_from_run(&ids[0]);
+        assert_eq!(g.sessions[&ids[1]].world.as_deref(), Some("12"), "the waiter went in");
+        assert!(!g.queues.contains_key("12"), "and the line is empty");
+        assert_eq!(g.worlds["12"].run.runs.len(), 1);
+    }
+
+    /// **A queue that can be jumped is not a queue.** A fresh arrival must count the
+    /// people already waiting against the cap, or it walks straight past the line into
+    /// the seat they were waiting for.
+    #[tokio::test]
+    async fn a_latecomer_cannot_jump_the_line() {
+        let mut b = Balance::load_default().unwrap();
+        b.world.max_divers_per_world = 1;
+        let (mut g, _rx, ids) = router(3).await;
+        g.balance = Arc::new(b);
+
+        g.dive_as(vec![ids[0].clone()], &ids[0], false, Some(5));
+        g.dive_as(vec![ids[1].clone()], &ids[1], false, Some(5)); // queues
+        g.dive_as(vec![ids[2].clone()], &ids[2], false, Some(5)); // queues behind
+        assert_eq!(g.queues["5"].len(), 2);
+
+        g.release_from_run(&ids[0]);
+        assert_eq!(
+            g.sessions[&ids[1]].world.as_deref(),
+            Some("5"),
+            "the FIRST waiter takes the seat"
+        );
+        assert!(g.sessions[&ids[2]].world.is_none(), "the second one is still waiting");
+        assert_eq!(g.queues["5"].len(), 1);
+    }
+
+    /// The head of the line either goes in or nobody does. Skipping a big party to admit
+    /// a solo behind them is the unfairness that gets noticed, and on a world with steady
+    /// solo churn it starves the big group forever.
+    #[tokio::test]
+    async fn a_big_group_is_not_skipped_for_a_small_one() {
+        let mut b = Balance::load_default().unwrap();
+        b.world.max_divers_per_world = 3;
+        let (mut g, _rx, ids) = router(5).await;
+        g.balance = Arc::new(b);
+
+        // Three seated, then a pair waiting, then a solo behind them.
+        for pid in ids.iter().take(3) {
+            g.dive_as(vec![pid.clone()], pid, false, Some(3));
+        }
+        g.dive_as(vec![ids[3].clone(), ids[4].clone()], &ids[3], false, Some(3));
+        assert_eq!(g.queues["3"][0].party.len(), 2);
+
+        // One seat opens — not enough for the pair at the head of the line.
+        g.release_from_run(&ids[0]);
+        assert!(g.sessions[&ids[3]].world.is_none(), "the pair does not fit yet");
+        assert_eq!(g.queues["3"].len(), 1, "and nobody behind them was let past");
+
+        // A second opens, and now they go in together.
+        g.release_from_run(&ids[1]);
+        assert_eq!(g.sessions[&ids[3]].world.as_deref(), Some("3"));
+        assert_eq!(g.sessions[&ids[4]].world.as_deref(), Some("3"));
+    }
+
+    /// ⚠️ **Only a NAMED world queues.** An unnamed dive is a matchmaking request —
+    /// "put me somewhere" — and `choose_world` overflows it into a world with room.
+    /// Putting somebody who asked for anywhere into a line for one particular place
+    /// would be answering a question they did not ask.
+    #[tokio::test]
+    async fn an_unnamed_diver_is_never_queued() {
+        let mut b = Balance::load_default().unwrap();
+        b.world.max_divers_per_world = 1;
+        let (mut g, _rx, ids) = router(2).await;
+        g.balance = Arc::new(b);
+
+        for pid in &ids {
+            g.dive_as(vec![pid.clone()], pid, false, None);
+        }
+        assert!(g.queues.is_empty(), "nobody who asked for 'anywhere' should be waiting");
+        assert_eq!(g.worlds.len(), 2, "they overflowed into a second world instead");
+        assert!(ids.iter().all(|p| g.sessions[p].world.is_some()));
+    }
+
+    /// Giving up, and disconnecting, both take you out of the line — and everyone behind
+    /// you is told they moved up, because a position nobody restates goes stale on screen.
+    #[tokio::test]
+    async fn leaving_the_queue_moves_everyone_behind_you_up() {
+        let mut b = Balance::load_default().unwrap();
+        b.world.max_divers_per_world = 1;
+        let (mut g, _rx, ids) = router(3).await;
+        g.balance = Arc::new(b);
+
+        g.dive_as(vec![ids[0].clone()], &ids[0], false, Some(8));
+        g.dive_as(vec![ids[1].clone()], &ids[1], false, Some(8));
+        g.dive_as(vec![ids[2].clone()], &ids[2], false, Some(8));
+        assert_eq!(g.queues["8"].len(), 2);
+
+        let out = g.dequeue(&[ids[1].clone()], Some("left"));
+        assert_eq!(g.queues["8"].len(), 1, "the middle of the line left");
+        assert!(
+            out.iter().any(|o| o.msg_type == wr::QueueLeft::TYPE && o.player_id == ids[1]),
+            "the leaver is told they are out"
+        );
+        let moved: Vec<&Outgoing> = out
+            .iter()
+            .filter(|o| o.msg_type == wr::Queued::TYPE && o.player_id == ids[2])
+            .collect();
+        assert!(!moved.is_empty(), "the one behind them must be told they moved up");
+    }
+
+    /// A client that re-sends `run.enter_maze` while queued must not take a second place
+    /// in line — and must not lose the one it has.
+    #[tokio::test]
+    async fn asking_twice_does_not_take_two_places() {
+        let mut b = Balance::load_default().unwrap();
+        b.world.max_divers_per_world = 1;
+        let (mut g, _rx, ids) = router(2).await;
+        g.balance = Arc::new(b);
+
+        g.dive_as(vec![ids[0].clone()], &ids[0], false, Some(6));
+        for _ in 0..3 {
+            g.dive_as(vec![ids[1].clone()], &ids[1], false, Some(6));
+        }
+        assert_eq!(g.queues["6"].len(), 1, "three asks, one place");
+    }
+
     /// A tutorial world is onboarding rather than a place — it is never persisted and
     /// dies with its divers — but it is still a world people can SHARE, so it is its own
     /// NAMESPACE over the same seeds rather than a private key. Sharing one namespace
@@ -15720,8 +16141,8 @@ mod sharding_tests {
     #[tokio::test]
     async fn a_tutorial_world_is_its_own_namespace() {
         let (mut g, _rx, ids) = router(2).await;
-        g.form_run(vec![ids[0].clone()], &ids[0], None, true, None, Some(5));
-        g.form_run(vec![ids[1].clone()], &ids[1], None, false, None, Some(5));
+        g.dive_as(vec![ids[0].clone()], &ids[0], true, Some(5));
+        g.dive_as(vec![ids[1].clone()], &ids[1], false, Some(5));
 
         assert_eq!(g.worlds.len(), 2, "seed 5 guided and seed 5 for real are two worlds");
         let guided = g.sessions[&ids[0]].world.clone().unwrap();
@@ -15741,7 +16162,7 @@ mod sharding_tests {
     async fn unnamed_divers_are_put_together() {
         let (mut g, _rx, ids) = router(3).await;
         for pid in &ids {
-            g.form_run(vec![pid.clone()], pid, None, false, None, None);
+            g.dive_as(vec![pid.clone()], pid, false, None);
         }
         assert_eq!(g.worlds.len(), 1, "three unnamed divers should have met");
         assert_eq!(g.worlds.values().next().unwrap().run.runs.len(), 3);
@@ -15758,7 +16179,7 @@ mod sharding_tests {
         let (mut g, _rx, ids) = router(3).await;
         g.balance = Arc::new(b);
         for pid in &ids {
-            g.form_run(vec![pid.clone()], pid, None, false, None, None);
+            g.dive_as(vec![pid.clone()], pid, false, None);
         }
         assert_eq!(g.worlds.len(), 2, "the third diver should have opened a second world");
         let mut sizes: Vec<usize> = g.worlds.values().map(|w| w.run.runs.len()).collect();
@@ -15773,8 +16194,8 @@ mod sharding_tests {
     #[tokio::test]
     async fn a_world_outlives_its_diver_but_a_tutorial_does_not() {
         let (mut g, _rx, ids) = router(2).await;
-        g.form_run(vec![ids[0].clone()], &ids[0], None, false, None, Some(31));
-        g.form_run(vec![ids[1].clone()], &ids[1], None, true, None, None);
+        g.dive_as(vec![ids[0].clone()], &ids[0], false, Some(31));
+        g.dive_as(vec![ids[1].clone()], &ids[1], true, None);
         let tutorial_key = g.sessions[&ids[1]].world.clone().unwrap();
 
         g.release_from_run(&ids[0]);
@@ -15800,8 +16221,8 @@ mod sharding_tests {
     #[tokio::test]
     async fn party_chat_does_not_cross_worlds() {
         let (mut g, _rx, ids) = router(3).await;
-        g.form_run(vec![ids[0].clone()], &ids[0], None, false, None, Some(41));
-        g.form_run(vec![ids[1].clone()], &ids[1], None, false, None, Some(42));
+        g.dive_as(vec![ids[0].clone()], &ids[0], false, Some(41));
+        g.dive_as(vec![ids[1].clone()], &ids[1], false, Some(42));
         // ids[2] never dives: they are in town.
 
         let say = |channel: &str, seq: u32| RawEnvelope {
