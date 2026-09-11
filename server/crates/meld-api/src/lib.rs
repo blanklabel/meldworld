@@ -22,7 +22,7 @@ use meld_proto::limits;
 use meld_proto::materials as mat;
 use uuid::Uuid;
 
-pub use tokens::{Sessions, Tickets};
+pub use tokens::{Sessions, Tickets, WorldBoard};
 
 /// Shared HTTP state. Cheap to clone (pool handle + Arc stores).
 #[derive(Clone)]
@@ -41,6 +41,8 @@ pub struct ApiState {
     /// so a client cannot buy something the vendor does not sell by naming it.
     /// Injected by the server from `[consumable]` balance.
     pub shop_prices: Vec<(String, i64)>,
+    /// SC-9 — the game loop's published occupancy snapshot, for `GET /v1/worlds`.
+    pub worlds: WorldBoard,
 }
 
 pub fn router(state: ApiState) -> Router {
@@ -79,6 +81,7 @@ pub fn router(state: ApiState) -> Router {
         .route("/v1/hunts/:key/claim", post(claim_hunt))
         .route("/v1/bounties", get(bounty_board))
         .route("/v1/bounties/:bounty_id/claim", post(claim_bounty))
+        .route("/v1/worlds", get(world_list))
         .route("/v1/leaderboards/vanguard", get(vanguard_board))
         .route("/v1/leaderboards/vanguard/me", get(vanguard_me))
         .route("/v1/leaderboards/vanguard/:season", get(vanguard_season))
@@ -177,6 +180,70 @@ async fn meld_skills(State(st): State<ApiState>, headers: HeaderMap) -> Result<R
 /// the top 100 instances, so 100 is the meaningful board depth; the paginated
 /// envelope lands with AD-6's full board suite.
 const VANGUARD_BOARD_LIMIT: i64 = 100;
+
+/// `GET /v1/worlds` — **the worlds you can see, rather than the codes you have to be
+/// told** (`SC-9`).
+///
+/// A world's identity is its seed (CANON §W1), and until this there was no way to
+/// enumerate them: you could only reach a world somebody read a number out to you for.
+///
+/// Two sources, one list, and the merge is the point:
+///
+/// - **LIVE** worlds come from the game loop's published snapshot, because occupancy is
+///   the only thing that makes this worth opening — "3 divers on this seed" is what makes
+///   one world a different proposition from another.
+/// - **HIBERNATED** worlds come from Postgres. A world outlives its divers (§W1) and
+///   sleeps when empty; it is a real place with real player-built structures in it, and
+///   omitting it would hide most of the game's worlds from the only screen that lists
+///   them. It wakes at *now* when somebody dives in, so it is a smaller decision than it
+///   looks — but the browser still says which, because joining people and starting alone
+///   are different things to choose.
+///
+/// A world that is live is listed from the LIVE row: the loop's occupancy is current
+/// while the saved row's is a snapshot of whenever it was last flushed. Ordered live
+/// first, busiest first — a browser sorted by seed is a list of numbers again.
+///
+/// Open to anyone: which worlds exist is not private, and requiring a session to read it
+/// would mean a player cannot see where their friends are before logging in.
+async fn world_list(State(st): State<ApiState>) -> Result<Response, ApiReject> {
+    let mut rows = st.worlds.live();
+    let live: std::collections::HashSet<u64> = rows.iter().map(|r| r.seed).collect();
+    match st.db.list_worlds().await {
+        Ok(saved) => {
+            for w in saved {
+                // A tutorial corridor is onboarding rather than a place, and is never
+                // persisted — but the key namespace is the thing that says so, so filter
+                // on it rather than trusting that no such row can exist.
+                if w.world_key.starts_with("tutorial:") {
+                    continue;
+                }
+                let seed = w.seed as u64;
+                if live.contains(&seed) {
+                    continue;
+                }
+                rows.push(meld_proto::http::WorldRow {
+                    seed,
+                    players: 0,
+                    queued: 0,
+                    live: false,
+                    reach: 0,
+                    updated_at: w.updated_at_ms,
+                });
+            }
+        }
+        // A browser that shows the live worlds is far better than one that 500s because
+        // the archive was unreadable — and the live half is the half people act on.
+        Err(e) => tracing::error!("world list: reading hibernated worlds failed: {e}"),
+    }
+    rows.sort_by(|a, b| {
+        b.live
+            .cmp(&a.live)
+            .then(b.players.cmp(&a.players))
+            .then(b.updated_at.cmp(&a.updated_at))
+            .then(a.seed.cmp(&b.seed))
+    });
+    Ok(Json(rows).into_response())
+}
 
 /// `GET /v1/leaderboards/vanguard` — the live board for the open season
 /// (http-api/leaderboards.md; roadmap P1-1's basic cut).

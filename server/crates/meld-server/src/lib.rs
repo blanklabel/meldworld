@@ -10,7 +10,7 @@ pub mod prof;
 
 use axum::routing::get;
 use axum::Router;
-use meld_api::{ApiState, Sessions, Tickets};
+use meld_api::{ApiState, Sessions, Tickets, WorldBoard};
 use meld_db::Db;
 use tower_http::cors::CorsLayer;
 
@@ -34,6 +34,10 @@ pub async fn build(config: &Config) -> Result<Built, String> {
 
     let tickets = Tickets::new(balance.session.realtime_ticket_ttl_ms);
     let sessions = Sessions::new();
+    // SC-9 — the loop publishes its occupancy here and `GET /v1/worlds` reads it. Built
+    // before both so the same handle reaches the API state and the game loop; a snapshot
+    // rather than a query, because the loop must never wait on an HTTP request.
+    let worlds = WorldBoard::new();
 
     // HTTP API (auth, players/me, healthz).
     let api = meld_api::router(ApiState {
@@ -51,10 +55,11 @@ pub async fn build(config: &Config) -> Result<Built, String> {
             .iter()
             .filter_map(|k| balance.consumable.price(k).map(|p| ((*k).to_string(), p)))
             .collect(),
+        worlds: worlds.clone(),
     });
 
     // Realtime gateway.
-    let game = game::spawn(balance.clone(), db.clone());
+    let game = game::spawn(balance.clone(), db.clone(), worlds);
     let gateway_state = gateway::GatewayState {
         db: db.clone(),
         tickets,

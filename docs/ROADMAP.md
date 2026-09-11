@@ -5495,12 +5495,31 @@ Directly underpins CR-4 (sim budget), MON-2 (persistent camps/instances), and LC
     `lobby.create { seed }` name a world, the lobby shows it to every member, and
     `Started.world_seed` reports the one you actually entered. "Play seed 424242 with me"
     is sayable — by typing it into the lobby's World field.
-  - 🟡 **A listing.** `Db::list_worlds` reads every hibernated world (the Router already
-    uses it at boot). Still nothing under `/v1/` enumerates them, so there is no list to
-    RENDER — that plus live occupancy is the browser's remaining half.
+  - ✅ **A listing.** `GET /v1/worlds` merges the LIVE worlds (from the loop's published
+    snapshot) with the HIBERNATED ones (`Db::list_worlds`). Open to anyone: which worlds
+    exist is not private, and requiring a session would mean you cannot see where your
+    friends are before logging in — which is exactly when you want to know. A tutorial
+    corridor is never listed; it is onboarding rather than a place.
+  - ✅ **Occupancy.** `meld_api::WorldBoard` is an `Arc<RwLock<Vec<WorldRow>>>` the game
+    loop publishes to each tick and the HTTP handler reads. A SNAPSHOT rather than a
+    query: answering an HTTP request by asking the loop would put a round-trip on the one
+    task that must never wait, to produce a number that is a tick old either way.
+    ⚠️ **It is a cache and it is allowed to be a tick stale** — fine for choosing a world,
+    and never to be read for a decision the loop owns. Admission still goes through
+    `form_run`, always.
+  - ✅ **The browser.** The lobby screen lists the worlds under the two entry fields —
+    seed, `N divers` / `empty` / `asleep`, and `N waiting` when there is a queue — and a
+    number key fills the World field with that seed. It FILLS rather than dives: you still
+    pick your party and still press ENTER, so a mis-key costs a keystroke rather than a
+    dive. A full world says so on the list rather than at the moment you are refused,
+    which is the point of having a browser at all.
+    ⚠️ The list is re-asked each time the screen opens, never cached for the session: a
+    world list frozen at whatever it was the first time you looked is worse than no list,
+    because it reads as current.
   - **Occupancy.** Nothing counts players per world. "3 divers on this seed" is the single
     line that makes a browser worth opening rather than a list of numbers.
-  - **A per-world board.** The Vanguard Wall shows the GLOBAL seasonal leaderboard
+  - 🔴 **A per-world board** — the one part of this item still open. The Vanguard Wall
+    shows the GLOBAL seasonal leaderboard
     (`/v1/leaderboards/vanguard`); `VanguardEntry` has no world or seed field. A
     per-instance table is a different query, and arguably the better one — a board scoped
     to the world you are standing in is a reason to keep diving THAT world.

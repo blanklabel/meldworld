@@ -135,6 +135,35 @@ pub struct LoginResponse {
     pub player: Player,
 }
 
+/// One world on the browser (`GET /v1/worlds`) — `SC-9`.
+///
+/// A world's identity is its SEED (CANON §W1), so this is what you need to decide which
+/// one to dive into and what to type into the lobby's World field to get there.
+///
+/// ⚠️ **Occupancy is the whole reason this endpoint is worth opening.** A list of numbers
+/// is not a browser; "3 divers on this seed" is what makes one world a different
+/// proposition from another, and it is the one fact nothing before this could answer.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorldRow {
+    /// The world's name. Type it into the lobby's World field to go there.
+    pub seed: u64,
+    /// Divers in it right now. `0` for a hibernated world — one that outlived its divers
+    /// and is asleep in Postgres, which is a real world you can wake by diving into it.
+    pub players: i64,
+    /// Groups waiting for a seat. Non-zero means the world is at cap and you will queue.
+    pub queued: i64,
+    /// Whether the world is standing up in memory right now. A dormant world is not a
+    /// worse world — it wakes at *now* when somebody dives in — but it is the difference
+    /// between joining people and starting alone, so the browser has to say which.
+    pub live: bool,
+    /// How far the world has been streamed, as a distance. The closest thing to "how
+    /// explored is this place" that does not require reading anyone's run.
+    pub reach: i64,
+    /// Server time (unix millis) the world was last saved. For a dormant world this is
+    /// how long ago anybody was in it.
+    pub updated_at: i64,
+}
+
 /// One ranked row on the Vanguard Board (`GET /v1/vanguard[/:season]`) —
 /// the seasonal deepest-distance leaderboard (behaviors/endgame-seasons.md,
 /// roadmap P1-1). Rank is 1-based and assigned by the server.

@@ -111,3 +111,39 @@ mod tests {
         assert_eq!(s.resolve("mw-sess-nope"), None);
     }
 }
+
+/// **WHO IS IN WHICH WORLD, FOR THE BROWSER** (`SC-9`).
+///
+/// The game loop owns every world and nothing else may touch them (CANON §S), but the
+/// HTTP handler that renders a world list is a different task entirely — so the loop
+/// PUBLISHES a read-only snapshot here each tick and the handler reads it. A snapshot
+/// rather than a query: answering an HTTP request by asking the loop would put a
+/// round-trip on the one task that must never wait for anything, to produce a number
+/// that is a tick old either way.
+///
+/// ⚠️ **It is a cache, and it is allowed to be a tick stale.** Occupancy is a fact about
+/// a moving world; a browser showing "3 divers" a tenth of a second late is correct
+/// enough to choose by, and treating it as authoritative for anything — admission, the
+/// cap, the queue — would be reading a copy to make a decision the loop owns. Admission
+/// goes through `form_run`, always.
+#[derive(Clone, Default)]
+pub struct WorldBoard {
+    inner: Arc<RwLock<Vec<meld_proto::http::WorldRow>>>,
+}
+
+impl WorldBoard {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Replace the published snapshot. Called by the game loop; cheap because the vector
+    /// is one row per LIVE world, not per player.
+    pub fn publish(&self, rows: Vec<meld_proto::http::WorldRow>) {
+        *self.inner.write().unwrap() = rows;
+    }
+
+    /// The live worlds, as of the last publish.
+    pub fn live(&self) -> Vec<meld_proto::http::WorldRow> {
+        self.inner.read().unwrap().clone()
+    }
+}

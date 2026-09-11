@@ -861,7 +861,12 @@ pub(crate) fn render_descending(
     }
 }
 
-pub(crate) fn lobby_ui(mut commands: Commands) {
+pub(crate) fn lobby_ui(mut commands: Commands, mut worlds: ResMut<WorldListData>) {
+    // SC-9 — re-ask each time the screen opens. `asked` exists to stop a per-frame
+    // request storm, not to cache the list for the session: occupancy is the whole point
+    // of the browser, and a world list frozen at whatever it was the first time you
+    // looked is worse than no list, because it reads as current.
+    worlds.asked = false;
     commands
         .spawn((
             LobbyRoot,
@@ -969,8 +974,16 @@ pub(crate) fn lobby_input(
     net: NonSend<NetRes>,
     session: Res<Session>,
     mut lobby: ResMut<LobbyData>,
+    mut worlds: ResMut<WorldListData>,
     mut next: ResMut<NextState<Screen>>,
 ) {
+    // SC-9 — ask for the world list once on arrival. Once, not per frame: a browser that
+    // refires on every redraw is a request storm against an endpoint whose answer changes
+    // on a human timescale.
+    if !worlds.asked {
+        worlds.asked = true;
+        net.0.fetch_worlds();
+    }
     if !lobby.in_lobby {
         // ⚠️ **ESC GETS YOU OUT BEFORE YOU HAVE JOINED ANYTHING, TOO.** Escape used to be
         // handled only in the in-lobby branch below, and this one early-`return`s — so a
@@ -1015,6 +1028,32 @@ pub(crate) fn lobby_input(
                 lobby.seed_input.pop();
             } else {
                 lobby.code_input.pop();
+            }
+        }
+        // **Picking a world off the browser** (`SC-9`) — the whole reason the list is on
+        // screen. It fills the World field rather than diving immediately: you still
+        // choose your party and still press ENTER, so a mis-key costs a keystroke rather
+        // than a dive. Checked BEFORE the character-entry loop below, or the digit would
+        // be typed into whichever field has focus instead of selecting a world.
+        if !worlds.worlds.is_empty() {
+            for (i, w) in worlds.worlds.iter().take(9).enumerate() {
+                let key = match i {
+                    0 => KeyCode::Digit1,
+                    1 => KeyCode::Digit2,
+                    2 => KeyCode::Digit3,
+                    3 => KeyCode::Digit4,
+                    4 => KeyCode::Digit5,
+                    5 => KeyCode::Digit6,
+                    6 => KeyCode::Digit7,
+                    7 => KeyCode::Digit8,
+                    _ => KeyCode::Digit9,
+                };
+                if keys.just_pressed(key) {
+                    lobby.seed_input = w.seed.to_string();
+                    // Focus follows the pick, so the next keystroke edits what you chose.
+                    lobby.editing_seed = true;
+                    return;
+                }
             }
         }
         for key in keys.get_just_pressed() {
@@ -1086,6 +1125,7 @@ pub(crate) fn lobby_button_visible(act: LobbyAct, in_lobby: bool, host_is_me: bo
 
 pub(crate) fn render_lobby(
     lobby: Res<LobbyData>,
+    worlds: Res<WorldListData>,
     session: Res<Session>,
     mut q: Query<&mut Text, With<LobbyText>>,
     mut btns: Query<(&LobbyButton, &mut Node), Without<LobbyText>>,
@@ -1107,8 +1147,40 @@ pub(crate) fn render_lobby(
         } else {
             format!("world {}", lobby.seed_input)
         };
+        // **SC-9 — THE WORLDS YOU CAN SEE.** Before this the only way to reach a world
+        // was for somebody to read its seed out to you, which is why the mental model
+        // people arrive with ("browse the worlds, see who is on each") kept reading as a
+        // broken version of the join code. Occupancy is the whole reason it is worth
+        // showing: a list of bare numbers is the thing this replaces.
+        let mut browser = String::new();
+        if worlds.worlds.is_empty() {
+            browser.push_str("\n(no worlds yet - ENTER with no code starts a new one)");
+        } else {
+            browser.push_str("\nWorlds:");
+            for (i, w) in worlds.worlds.iter().take(9).enumerate() {
+                let who = match (w.live, w.players) {
+                    (false, _) => "asleep".to_string(),
+                    (true, 0) => "empty".to_string(),
+                    (true, 1) => "1 diver".to_string(),
+                    (true, n) => format!("{n} divers"),
+                };
+                // A full world says so HERE rather than at the moment you are refused:
+                // the browser exists so the choice is made before you commit to it.
+                if w.queued > 0 {
+                    browser.push_str(&format!(
+                        "\n  [{}] {}  -  {who}, {} waiting",
+                        i + 1,
+                        w.seed,
+                        w.queued
+                    ));
+                } else {
+                    browser.push_str(&format!("\n  [{}] {}  -  {who}", i + 1, w.seed));
+                }
+            }
+            browser.push_str("\n  (press a number to pick one)");
+        }
         **t = format!(
-            "Join code: {}{code_caret}\n     World: {}{seed_caret}   ({world})\n\n             [TAB] switch field\n\ntype a code + ENTER to join someone,\n             or ENTER with no code to create a lobby\n\n[ESC] back to the city",
+            "Join code: {}{code_caret}\n     World: {}{seed_caret}   ({world})\n\n             [TAB] switch field\n\ntype a code + ENTER to join someone,\n             or ENTER with no code to create a lobby\n{browser}\n\n[ESC] back to the city",
             lobby.code_input, lobby.seed_input,
         );
         return;

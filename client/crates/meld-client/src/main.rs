@@ -386,6 +386,7 @@ fn main() {
         .init_resource::<ProgressData>()
         .init_resource::<AccountHeroNames>()
         .init_resource::<VanguardBoardData>()
+        .init_resource::<WorldListData>()
         .init_resource::<HuntBoardData>()
         .init_resource::<BountyData>()
         .init_resource::<ShopData>()
@@ -2347,6 +2348,17 @@ pub(crate) struct HuntBoardData {
     pub loaded: bool,
     /// Which row the detail column is describing.
     pub cursor: usize,
+}
+
+/// SC-9 — the worlds you can dive into, as last read from `GET /v1/worlds`.
+///
+/// The whole point of the browser is that you no longer need somebody to read a seed out
+/// to you: the list IS the discovery. `asked` keeps the lobby screen from re-fetching
+/// every frame — a browser that refires on each redraw is a request storm.
+#[derive(Resource, Default)]
+pub(crate) struct WorldListData {
+    pub(crate) worlds: Vec<crate::net::WorldLine>,
+    pub(crate) asked: bool,
 }
 
 #[derive(Resource, Default)]
