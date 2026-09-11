@@ -5448,6 +5448,23 @@ Directly underpins CR-4 (sim budget), MON-2 (persistent camps/instances), and LC
   - `drown_proof` built an occupancy grid of every creature in the world once per pack in the
     band, wet or dry (packs × creatures, per section, growing with depth); dry packs are skipped
     before the grid is built.
+- [x] **SC-10 — A material is written when it moves, not every frame.** A `trace_chrome`
+  profile of a night walk (the first per-system profile of the client) put 6.0 ms a frame —
+  25 ms worst — into `prepare_erased_assets<StandardMaterial>` on the RENDER thread, which is
+  the frame's critical path: every `Assets::get_mut` flags the asset modified and the render
+  world rebuilds its bind group. Six systems did that per frame with nothing changed —
+  `animate_chars` re-set the same texture on every character in view, `pulse_collectibles`
+  and `update_reach_halo` breathed a continuous emissive/alpha into every node part and halo,
+  `animate_battle_actors` rewrote every arena sprite's tint and glow, `update_condition_rims`
+  its rims, and the sky system the one cloud. All read before they write; the continuous
+  pulses are quantised (1/40 of emissive strength, 1/64 of alpha, 1/256 of the day) so a slow
+  breathe lands a few writes a second per material rather than sixty.
+  - **And a night fight rendered THIRTY-SEVEN views a frame.** `illuminate_players` enabled a
+    cube shadow map on every lit lamp, and a night battle holds six (four heroes, a boss, a
+    leader) — 36 extra scene passes, 187 command buffers a frame. The strongest lit lamp is the
+    one caster now (`shadow_point_light_0`, six faces, beside the sun's two cascades). Measured
+    on the `MELD_BATTLE=1` night fixture, render-thread time per frame **18.6 ms → 3.0 ms**,
+    and the arena's material writes went with it.
 - [ ] **SC-2 — Sim/IO split (in-process).** The instance task publishes an
   immutable `Arc<WorldSnapshot>` per tick; a worker pool does cull + serialize +
   send in parallel across cores. Decouples sim cadence from snapshot cadence

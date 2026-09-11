@@ -4606,10 +4606,17 @@ pub(crate) fn apply_sky(
     }
 
     if let Some(sm) = skymats {
-        if let Some(mut m) = mats.get_mut(&sm.cloud) {
-            let g = (0.14 + day * 0.86) * (1.0 - rain * 0.25);
-            m.emissive = LinearRgba::rgb(0.72 * g, 0.75 * g, 0.82 * g);
-            m.base_color = Color::srgba(1.0, 1.0, 1.0, (0.72 + day * 0.28) * (1.0 - rain * 0.2));
+        // Quantised inputs and a read before the write, so the cloud material is re-uploaded
+        // when the sky actually moved a step rather than on every frame of a slow dusk.
+        let (qd, qr) = ((day * 256.0).round() / 256.0, (rain * 256.0).round() / 256.0);
+        let g = (0.14 + qd * 0.86) * (1.0 - qr * 0.25);
+        let want_em = LinearRgba::rgb(0.72 * g, 0.75 * g, 0.82 * g);
+        let want_base = Color::srgba(1.0, 1.0, 1.0, (0.72 + qd * 0.28) * (1.0 - qr * 0.2));
+        if mats.get(&sm.cloud).is_some_and(|m| m.emissive != want_em || m.base_color != want_base) {
+            if let Some(mut m) = mats.get_mut(&sm.cloud) {
+                m.emissive = want_em;
+                m.base_color = want_base;
+            }
         }
     }
 

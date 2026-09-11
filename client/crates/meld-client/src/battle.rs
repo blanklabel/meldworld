@@ -817,14 +817,16 @@ pub(crate) fn animate_battle_actors(
         let glow = LinearRgba::rgb(ef, ef * 0.9, ef * 0.7);
         // KO: gray the sprite, drop any hit motion — reads as "downed".
         if battle.view(&s.id).map(|c| c.hp <= 0).unwrap_or(false) {
-            if let Some(mut m) = mats.get_mut(&s.mat) {
-                let c = s.base.to_srgba();
-                let lum = 0.3 * c.red + 0.5 * c.green + 0.2 * c.blue;
-                m.base_color = Color::srgb(lum * 0.45, lum * 0.45, lum * 0.5);
-                // Half the glow: a downed hero still has to be FINDABLE at night, and
-                // reading dimmer than the ones still standing is the point.
-                m.emissive = LinearRgba::rgb(glow.red * 0.5, glow.green * 0.5, glow.blue * 0.5);
-            }
+            let c = s.base.to_srgba();
+            let lum = 0.3 * c.red + 0.5 * c.green + 0.2 * c.blue;
+            // Half the glow: a downed hero still has to be FINDABLE at night, and
+            // reading dimmer than the ones still standing is the point.
+            set_sprite_colors(
+                &mut mats,
+                &s.mat,
+                Color::srgb(lum * 0.45, lum * 0.45, lum * 0.5),
+                LinearRgba::rgb(glow.red * 0.5, glow.green * 0.5, glow.blue * 0.5),
+            );
             tf.translation.x = 0.0;
             tf.translation.z = 0.0;
             continue;
@@ -910,19 +912,34 @@ pub(crate) fn animate_battle_actors(
             .clamp(0.0, 1.0);
         // White impact flash on the instant of a hit (brighter than base → blooms);
         // otherwise the base tint, warmed toward angry red by the rage fraction.
-        if let Some(mut m) = mats.get_mut(&s.mat) {
-            if hit_age < feel.white_ttl {
-                m.base_color =
-                    lerp_color(s.base, Color::srgb(2.6, 2.6, 2.6), 1.0 - hit_age / feel.white_ttl);
-                m.emissive = glow;
-            } else {
-                m.base_color = lerp_color(s.base, Color::srgb(1.9, 0.5, 0.35), rage * 0.55);
-                m.emissive = LinearRgba::rgb(
-                    glow.red + 0.5 * rage,
-                    glow.green + 0.04 * rage,
-                    glow.blue,
-                );
-            }
+        let (base, emissive) = if hit_age < feel.white_ttl {
+            (
+                lerp_color(s.base, Color::srgb(2.6, 2.6, 2.6), 1.0 - hit_age / feel.white_ttl),
+                glow,
+            )
+        } else {
+            (
+                lerp_color(s.base, Color::srgb(1.9, 0.5, 0.35), rage * 0.55),
+                LinearRgba::rgb(glow.red + 0.5 * rage, glow.green + 0.04 * rage, glow.blue),
+            )
+        };
+        set_sprite_colors(&mut mats, &s.mat, base, emissive);
+    }
+}
+
+/// Write a sprite material's colours only when they moved. `get_mut` alone flags the asset
+/// modified and the render world rebuilds its bind group — for every actor in the arena,
+/// every frame — while the rage tint and the night glow hold still for whole turns.
+fn set_sprite_colors(
+    mats: &mut Assets<StandardMaterial>,
+    handle: &Handle<StandardMaterial>,
+    base: Color,
+    emissive: LinearRgba,
+) {
+    if mats.get(handle).is_some_and(|m| m.base_color != base || m.emissive != emissive) {
+        if let Some(mut m) = mats.get_mut(handle) {
+            m.base_color = base;
+            m.emissive = emissive;
         }
     }
 }
@@ -2760,7 +2777,8 @@ pub(crate) fn update_condition_rims(
     // Slower and gentler than the reach rim, and it never drops out: a condition is a
     // state you are IN, so it should sit there breathing rather than blink for attention.
     let phase = (time.elapsed_secs() * std::f32::consts::TAU / 2.6).sin();
-    let alpha = 0.46 + 0.22 * phase;
+    // Quantised: the rim material below is then written a few times a second, not every frame.
+    let alpha = ((0.46 + 0.22 * phase) * 64.0).round() / 64.0;
 
     for (quad, sq, kids) in &quads {
         let want = battle
@@ -2782,8 +2800,11 @@ pub(crate) fn update_condition_rims(
                         commands.entity(e).despawn();
                     }
                     if let Ok((_, mm)) = rims.get(held) {
-                        if let Some(mut m) = mats.get_mut(&mm.0) {
-                            m.base_color = colour.with_alpha(alpha);
+                        let want = colour.with_alpha(alpha);
+                        if mats.get(&mm.0).is_some_and(|m| m.base_color != want) {
+                            if let Some(mut m) = mats.get_mut(&mm.0) {
+                                m.base_color = want;
+                            }
                         }
                     }
                     continue;

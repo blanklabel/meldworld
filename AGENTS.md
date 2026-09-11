@@ -1429,7 +1429,14 @@ and a resource that is aged every frame has to be touched only when something is
 something (the action HUD, a mob nameplate) keeps a content key and is moved in place;
 `glass::redraw_key` hashes the inputs. Write a `Transform`, `Visibility` or material only
 when the value moved — a `DerefMut` write flags it changed whether or not it did, and every
-flagged transform is re-propagated and re-extracted.
+flagged transform is re-propagated and re-extracted. **A material most of all**: `Assets::
+get_mut` flags the asset modified and the render thread rebuilds its bind group, so a system
+that re-sets the same texture or tint on every sprite in view every frame costs the frame
+6 ms (measured, `SC-10`). Read with `get` first and take `get_mut` only when the value moved;
+a continuous pulse gets quantised so its writes land a few times a second. **And ONE cube
+shadow map per scene**: a shadowed point light is six scene passes a frame, so `illuminate_players`
+lets only the strongest lit lamp cast — a night fight with six lamps ran 37 views a frame and
+18.6 ms of render thread, 3.0 ms with one caster.
 
 **A GLB INSTANCE KEEPS ITS MODEL FOR LIFE.** Reassigning a `WorldAssetRoot` despawns and
 re-instantiates the hierarchy. The ground-detail pool used to do that per cell crossing, a

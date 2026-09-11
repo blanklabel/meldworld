@@ -2280,23 +2280,31 @@ pub(crate) fn pulse_collectibles(
     // myrrh from peat iron matters more than a glow.
     const GLOW_FLOOR: f32 = 0.125;
     const GLOW_SWING: f32 = 0.55;
+    // Quantised, and written only when the step changes: a material written every frame is
+    // a bind group rebuilt every frame on the render thread, per part of every node in view.
+    // At 0.4 Hz these steps land ~18 times a second per material instead of 60, and a 3.5%
+    // brightness step on a slow breathe is not visible.
+    const GLOW_STEP: f32 = 0.025;
     let phase = (time.elapsed_secs() * std::f32::consts::TAU * 0.4).sin() * 0.5 + 0.5;
-    let strength = GLOW_FLOOR + GLOW_SWING * phase;
+    let strength = ((GLOW_FLOOR + GLOW_SWING * phase) / GLOW_STEP).round() * GLOW_STEP;
     for root in &roots {
         for e in std::iter::once(root).chain(child_q.iter_descendants::<Children>(root)) {
             let Ok(mm) = mat_of.get(e) else { continue };
-            let Some(mut m) = mats.get_mut(&mm.0) else {
+            let Some(cur) = mats.get(&mm.0) else {
                 continue;
             };
-            if m.base_color_texture.is_some() {
+            let want = if cur.base_color_texture.is_some() {
                 // A sprite shows itself. Make sure nothing is washing it out.
-                if m.emissive != LinearRgba::BLACK {
-                    m.emissive = LinearRgba::BLACK;
+                LinearRgba::BLACK
+            } else {
+                let c = cur.base_color.to_linear();
+                LinearRgba::rgb(c.red * strength, c.green * strength, c.blue * strength)
+            };
+            if cur.emissive != want {
+                if let Some(mut m) = mats.get_mut(&mm.0) {
+                    m.emissive = want;
                 }
-                continue;
             }
-            let c = m.base_color.to_linear();
-            m.emissive = LinearRgba::rgb(c.red * strength, c.green * strength, c.blue * strength);
         }
     }
 }
@@ -2971,7 +2979,7 @@ pub(crate) fn illuminate_players(
         &MeshMaterial3d<StandardMaterial>,
         (With<PlayerGlowSprite>, Without<crate::battle::SpriteQuad>),
     >,
-    mut lamps: Query<(&mut PointLight, &NightLamp)>,
+    mut lamps: Query<(Entity, &mut PointLight, &NightLamp)>,
 ) {
     let night = (1.0 - sky.day).clamp(0.0, 1.0);
     // Self-illumination: warm glow keyed off each sprite's own texture colours.
@@ -2993,12 +3001,29 @@ pub(crate) fn illuminate_players(
     }
     // Each hero's lamp, scaled by nightfall and its own strength (the Explorer's is far
     // brighter — its class feature — while the rest stay a soft fill).
-    for (mut light, lamp) in &mut lamps {
+    //
+    // **ONE CUBE SHADOW MAP PER SCENE.** A shadow-mapped point light is six full scene
+    // passes a frame, and every lit lamp used to cast: four heroes plus a boss's and a
+    // leader's is six lamps, and a night fight profiled at THIRTY-SEVEN `Core3d` runs a
+    // frame (`SC-10`) — the render thread spent more on lantern shadows than on the arena.
+    // The strongest lit lamp casts (the Explorer's, when there is one — its class feature)
+    // and the rest are fills, which is also what the eye reads: one set of shadows from the
+    // brightest light, not six faint overlapping sets.
+    let caster = if night > LAMP_SHADOW_NIGHT {
+        lamps
+            .iter()
+            .filter(|(_, _, l)| l.strength > 0.0)
+            .max_by(|a, b| a.2.strength.total_cmp(&b.2.strength))
+            .map(|(e, _, _)| e)
+    } else {
+        None
+    };
+    for (e, mut light, lamp) in &mut lamps {
         let want = night * lamp.strength;
         if light.intensity != want {
             light.intensity = want;
         }
-        let shadows = lamp.strength > 0.0 && night > LAMP_SHADOW_NIGHT;
+        let shadows = caster == Some(e);
         if light.shadow_maps_enabled != shadows {
             light.shadow_maps_enabled = shadows;
         }
@@ -5841,7 +5866,8 @@ pub(crate) fn update_reach_halo(
     // between breaths and the swell is linear rather than squared. Still slow, so it reads
     // as something the object is doing rather than a blinking UI element.
     let phase = (time.elapsed_secs() * std::f32::consts::TAU / 3.0).sin().max(0.0);
-    let alpha = 0.34 + 0.66 * phase;
+    // Quantised so the material below is written a few times a second, not every frame.
+    let alpha = ((0.34 + 0.66 * phase) * 64.0).round() / 64.0;
 
     let Some(id) = want else {
         // Nothing in reach: clear any halo still standing.
@@ -5863,11 +5889,16 @@ pub(crate) fn update_reach_halo(
     for (e, parent, mm, light) in &mut halos {
         if parent.parent() == root {
             found = true;
-            if let Some(mut m) = mats.get_mut(&mm.0) {
-                m.base_color = m.base_color.with_alpha(alpha);
+            if mats.get(&mm.0).is_some_and(|m| m.base_color.alpha() != alpha) {
+                if let Some(mut m) = mats.get_mut(&mm.0) {
+                    m.base_color = m.base_color.with_alpha(alpha);
+                }
             }
             if let Some(mut light) = light {
-                light.intensity = REACH_LAMP_LUMENS * alpha;
+                let want = REACH_LAMP_LUMENS * alpha;
+                if light.intensity != want {
+                    light.intensity = want;
+                }
             }
         } else {
             commands.entity(e).despawn();
