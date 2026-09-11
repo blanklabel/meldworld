@@ -3244,6 +3244,8 @@ pub struct Arena {
     anchor_pin_radius: f64,
     road_speed_mult: f64,
     world_margin: f64,
+    /// `[worldgen] frontier_hold_margin` — how far inside `cursor` a radial walk is held.
+    frontier_hold_margin: f64,
     // Creature-AI tunables (snapshot from balance).
     wander_speed: f64,
     wander_leg_seconds: f64,
@@ -3842,6 +3844,7 @@ impl Arena {
             anchor_pin_radius: balance.building.anchor_pin_radius,
             road_speed_mult: balance.building.road_speed_mult,
             world_margin: wg.world_margin,
+            frontier_hold_margin: wg.frontier_hold_margin,
             wander_speed: balance.ai.wander_speed,
             wander_leg_seconds: balance.ai.wander_leg_seconds,
             wander_arrive_radius: balance.ai.wander_arrive_radius,
@@ -4029,6 +4032,15 @@ impl Arena {
             }
         }
         for (_, members) in packs {
+            // Dry packs — nearly all of them — are skipped BEFORE the grid is built: this
+            // rebuilt an occupancy map of every creature in the world once per pack in the
+            // band, wet or not, which is packs × creatures per section and grew with depth.
+            let wet = members
+                .iter()
+                .any(|&i| !self.on_land(self.monsters[i].position.x, self.monsters[i].position.y));
+            if !wet {
+                continue;
+            }
             let occupied = occupancy(&self.monsters);
             let crowds = |q: Position, mine: &[usize]| -> bool {
                 let (kx, kz) =
@@ -4045,12 +4057,6 @@ impl Arena {
                 }
                 false
             };
-            let wet = members
-                .iter()
-                .any(|&i| !self.on_land(self.monsters[i].position.x, self.monsters[i].position.y));
-            if !wet {
-                continue;
-            }
             // Candidates ALONG THE ARC first (radius preserved to a hair), widening; only
             // then a free ring, which may move a creature's depth and so its difficulty.
             let anchor = self.monsters[members[0]].position;
@@ -4528,9 +4534,16 @@ impl Arena {
     }
 
     pub fn ensure_frontier(&mut self, balance: &Balance, reach: f64) -> Vec<usize> {
+        self.ensure_frontier_budgeted(balance, reach, 4)
+    }
+
+    /// [`Self::ensure_frontier`] with an explicit cap on sections per call. The loop's
+    /// synchronous fallback passes 1: a stall it cannot avoid (a teleport past the streamed
+    /// edge) is then one section long, and the rest arrive one per tick.
+    pub fn ensure_frontier_budgeted(&mut self, balance: &Balance, reach: f64, budget: u32) -> Vec<usize> {
         let lookahead = balance.worldgen.stream_lookahead;
         // Cap growth per call so a teleport can't explode work in one tick.
-        let mut budget = 4;
+        let mut budget = budget;
         // WG-4 radial world: stream new content **rings** outward. The frontier lives
         // in corridor space (`cursor` = the ring's radius, since `radialize` maps
         // corridor x → radius), and `reach` is the player's RADIUS (`hypot(pos−hub)`).
@@ -10276,9 +10289,25 @@ impl Arena {
 
         // A candidate is acceptable iff it clears obstacles AND is level-permitted:
         // same level, or a connector joins the current & destination levels.
+        // **THE GENERATED EDGE IS A WALL UNTIL THE NEXT SECTION LANDS.** In the radial world
+        // `cursor` is the streamed radius. A step past it used to be allowed, and the loop then
+        // generated the missing section synchronously on the tick — every player, battle and
+        // message frozen for however long that took (measured up to 971 ms a section, four
+        // sections a call). Refusing the step here holds ONE player for a beat at the frontier
+        // while the prefetch thread finishes; the slide below lets them walk along the edge.
+        let frontier = if self.radial_half > 0.0 {
+            Some(self.cursor - self.frontier_hold_margin)
+        } else {
+            None
+        };
         let accept = |cand: Position| -> Option<u8> {
             if obstacles.blocks(&cand, pr) {
                 return None;
+            }
+            if let Some(edge) = frontier {
+                if cand.x.hypot(cand.y) > edge && cand.x.hypot(cand.y) > cur.x.hypot(cur.y) {
+                    return None;
+                }
             }
             // Biome seams NO LONGER wall the world — that full-width barrier-with-a-gap
             // funnelled you through a single pass (the "corridor"). You cross biome
@@ -11461,6 +11490,43 @@ mod bd1_structural_stock {
 
 #[cfg(test)]
 mod tests {
+    /// **THE GENERATED EDGE HOLDS A WALKER; IT DOES NOT FREEZE THE TICK.** `apply_move_with`
+    /// refuses a radial step past `cursor - frontier_hold_margin`, so `reach` can never pass
+    /// `cursor` on foot and the loop's synchronous fallback is left to placements alone.
+    #[test]
+    fn a_walker_is_held_at_the_streamed_edge() {
+        let b = Balance::load_default().unwrap();
+        let mut a = Arena::generate(&b, 424242, false);
+        assert!(a.radial_half > 0.0, "the fixture must be a radial world");
+        let edge = a.cursor() - b.worldgen.frontier_hold_margin;
+        a.add_avatar("p".into(), b.world.avatar_speed_tiles_per_sec);
+        // Somewhere on the ring just inside the edge where an outward step is open ground.
+        let mut walked_from: Option<f64> = None;
+        for k in 0..72 {
+            let th = (k as f64) * std::f64::consts::TAU / 72.0;
+            let r0 = edge - 3.0;
+            let from = Position::new(r0 * th.cos(), r0 * th.sin());
+            a.avatar_mut("p").unwrap().position = from;
+            let mut best = r0;
+            for _ in 0..200 {
+                let Some(p) = a.apply_move("p", th.cos(), th.sin(), 1) else { break };
+                best = best.max(p.x.hypot(p.y));
+            }
+            assert!(
+                best <= edge + 1e-6,
+                "a walk reached radius {best:.3} past the held edge {edge:.3} at bearing {k}"
+            );
+            if best > r0 + 1.0 {
+                walked_from = Some(best);
+                break;
+            }
+        }
+        assert!(
+            walked_from.is_some(),
+            "no bearing let the avatar walk outward at all — the fixture is blocked, not held"
+        );
+    }
+
     use super::*;
 
     /// What the dungeon snapshot DRAWS is what the battle BUILDS. Both ask
