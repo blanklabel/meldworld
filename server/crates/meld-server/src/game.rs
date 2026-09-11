@@ -240,10 +240,14 @@ enum DbWrite {
     /// A bounty's mark was felled: (player, bounty id). The reward is still taken at the
     /// board — this only records that the contract is finished.
     BountyFelled(String, String),
-    /// Post a new deepest distance to the Vanguard Board: (player, distance).
+    /// Post a new deepest distance to the Vanguard Board: (player, stamp, world key).
+    ///
+    /// ⚠️ **One event, BOTH boards** (`SC-9`). The seasonal Wall and the per-world board
+    /// are different queries over the same fact, so they are posted from the same write
+    /// rather than from two call sites that could drift about which run it was.
     /// Sent only when the run's record actually grows, so the board write rate is
     /// bounded by *progress*, not by movement (P1-1).
-    Vanguard(String, wr::VanguardStamp),
+    Vanguard(String, wr::VanguardStamp, String),
     /// THE END FIGHT is down: the same posting, plus the wood star and the clear time.
     WorldEnd(String, wr::VanguardStamp, i64),
     /// Clear a player's pending-backpack queue: its contents were just drained
@@ -363,7 +367,7 @@ async fn run_db_writer(db: Db, balance: Arc<Balance>, mut rx: mpsc::UnboundedRec
                     }
                 }
             }
-            DbWrite::Vanguard(pid, stamp) => {
+            DbWrite::Vanguard(pid, stamp, world_key) => {
                 if let Ok(uid) = Uuid::parse_str(&pid) {
                     let season = meld_db::current_season();
                     if let Err(e) = db
@@ -378,6 +382,26 @@ async fn run_db_writer(db: Db, balance: Arc<Balance>, mut rx: mpsc::UnboundedRec
                         .await
                     {
                         tracing::error!("vanguard post failed for {pid}: {e}");
+                    }
+                    // …and the board for the world it happened in (SC-9). A separate
+                    // failure: a world board that cannot be written is not a reason to
+                    // lose the seasonal posting, which is the one with a season riding
+                    // on it.
+                    if let Err(e) = db
+                        .record_world_vanguard(
+                            uid,
+                            season,
+                            &world_key,
+                            meld_db::Posting {
+                                distance: stamp.distance,
+                                at_level: stamp.level,
+                                fights: stamp.fights,
+                                flees: stamp.flees,
+                            },
+                        )
+                        .await
+                    {
+                        tracing::error!("world-board post failed for {pid} in {world_key}: {e}");
                     }
                 }
             }
@@ -7655,7 +7679,7 @@ impl WorldActor {
         };
         let _ = self
             .db_writes
-            .send(DbWrite::Vanguard(player_id.to_string(), stamp));
+            .send(DbWrite::Vanguard(player_id.to_string(), stamp, self.key.clone()));
         // A depth hunt rides the same high-water mark, so it is asked once per new
         // deepest tile rather than on every step of the walk out — and so does the
         // Pacifist, which is the same question asked of the same moment.

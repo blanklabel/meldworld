@@ -447,6 +447,39 @@ impl Db {
         )
         .execute(pool)
         .await?;
+        // **THE PER-WORLD BOARD** (`SC-9`) — deepest reached in ONE world.
+        //
+        // A separate table rather than a `world_key` column on `vanguard`, for two
+        // reasons. The seasonal board's primary key is `(season, player_id)` — one best
+        // per player — and a per-world board needs one best per player PER WORLD, so
+        // folding them together means changing that key, which is a migration rather
+        // than an additive column. And they are genuinely different boards: the Wall
+        // ranks a season across the whole game, while this ranks the place you are
+        // standing in, which is the thing that makes one seed worth diving again.
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS vanguard_world (
+                season       INTEGER NOT NULL,
+                world_key    TEXT NOT NULL,
+                player_id    UUID NOT NULL REFERENCES players(player_id),
+                max_distance INTEGER NOT NULL,
+                at_level     INTEGER NOT NULL DEFAULT 0,
+                fights       INTEGER NOT NULL DEFAULT 0,
+                flees        INTEGER NOT NULL DEFAULT 0,
+                achieved_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+                PRIMARY KEY (season, world_key, player_id)
+            )
+            "#,
+        )
+        .execute(pool)
+        .await?;
+        // Same read shape as the seasonal board, one world at a time.
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_vanguard_world_rank
+             ON vanguard_world(season, world_key, max_distance DESC, achieved_at ASC)",
+        )
+        .execute(pool)
+        .await?;
         // The Hunt Board (roadmap AD-4): one row per hunt a player has made progress
         // on. `progress` is capped at the hunt's target by every writer, so "complete"
         // is `progress >= target` read against the registry rather than a second column
@@ -673,6 +706,159 @@ impl Db {
                     }
                 }
                 Ok(false)
+            }
+        }
+    }
+
+}
+
+/// **How a run got deep** — the four numbers a board records about a posting.
+///
+/// Bundled because they travel together everywhere and because eight positional
+/// arguments is a call site nobody can read: `(uid, season, key, 900, 40, 10, 0)` gives
+/// no clue which number is the level and which the flees. Clippy's arity lint is the
+/// honest messenger here rather than something to silence.
+pub struct Posting {
+    pub distance: i32,
+    pub at_level: i32,
+    pub fights: i32,
+    pub flees: i32,
+}
+
+impl Db {
+    /// **Post a deepest-in-THIS-WORLD distance** (`SC-9`).
+    ///
+    /// Same personal-best semantics as the seasonal board — the `WHERE` makes a
+    /// shallower post a true no-op, so neither the distance nor the timestamp moves —
+    /// but scoped to one world, so a player carries one best per world they have dived.
+    /// Returns whether the row actually moved.
+    pub async fn record_world_vanguard(
+        &self,
+        player_id: Uuid,
+        season: i32,
+        world_key: &str,
+        p: Posting,
+    ) -> Result<bool, DbError> {
+        let Posting { distance, at_level, fights, flees } = p;
+        if distance <= 0 {
+            return Ok(false);
+        }
+        match &self.backend {
+            Backend::Pg(pool) => {
+                let res = sqlx::query(
+                    "INSERT INTO vanguard_world
+                         (season, world_key, player_id, max_distance, at_level, fights, flees)
+                     VALUES ($1, $2, $3, $4, $5, $6, $7)
+                     ON CONFLICT (season, world_key, player_id) DO UPDATE
+                       SET max_distance = $4, at_level = $5, fights = $6, flees = $7,
+                           achieved_at = now()
+                       WHERE vanguard_world.max_distance < $4",
+                )
+                .bind(season)
+                .bind(world_key)
+                .bind(player_id)
+                .bind(distance)
+                .bind(at_level)
+                .bind(fights)
+                .bind(flees)
+                .execute(pool)
+                .await?;
+                Ok(res.rows_affected() > 0)
+            }
+            Backend::Mem(m) => {
+                let mut m = m.lock().unwrap();
+                let key = (season, world_key.to_string(), player_id);
+                let beats = m.vanguard_world.get(&key).is_none_or(|v| v.distance < distance);
+                if beats {
+                    m.vanguard_world.insert(
+                        key,
+                        MemVanguard {
+                            distance,
+                            at: Utc::now(),
+                            at_level,
+                            fights,
+                            flees,
+                            star: false,
+                            clear_ms: None,
+                        },
+                    );
+                }
+                Ok(beats)
+            }
+        }
+    }
+
+    /// **The board for ONE world**, best-first, capped at `limit` rows (`SC-9`).
+    ///
+    /// Same ranking as the seasonal board — distance, then earliest to the frontier,
+    /// then player id as the deterministic tie-break — so the two read alike.
+    pub async fn world_vanguard_board(
+        &self,
+        season: i32,
+        world_key: &str,
+        limit: i64,
+    ) -> Result<Vec<VanguardRow>, DbError> {
+        match &self.backend {
+            Backend::Pg(pool) => {
+                let rows = sqlx::query(
+                    "SELECT v.player_id, p.username, v.max_distance, v.achieved_at,
+                            v.at_level, v.fights, v.flees
+                       FROM vanguard_world v JOIN players p USING (player_id)
+                      WHERE v.season = $1 AND v.world_key = $2
+                      ORDER BY v.max_distance DESC, v.achieved_at ASC, v.player_id ASC
+                      LIMIT $3",
+                )
+                .bind(season)
+                .bind(world_key)
+                .bind(limit)
+                .fetch_all(pool)
+                .await?;
+                Ok(rows
+                    .iter()
+                    .map(|r| VanguardRow {
+                        player_id: r.get("player_id"),
+                        username: r.get("username"),
+                        max_distance: r.get("max_distance"),
+                        achieved_at: r.get::<DateTime<Utc>, _>("achieved_at"),
+                        at_level: r.get("at_level"),
+                        fights: r.get("fights"),
+                        flees: r.get("flees"),
+                        // The end fight is a GLOBAL milestone, not a per-world one: it is
+                        // one encounter at the end of the world, so a per-world board has
+                        // nothing to say about it.
+                        star: None,
+                        clear_ms: None,
+                    })
+                    .collect())
+            }
+            Backend::Mem(m) => {
+                let m = m.lock().unwrap();
+                let mut rows: Vec<VanguardRow> = m
+                    .vanguard_world
+                    .iter()
+                    .filter(|((s, w, _), _)| *s == season && w == world_key)
+                    .filter_map(|((_, _, pid), v)| {
+                        m.players.get(pid).map(|p| VanguardRow {
+                            player_id: *pid,
+                            username: p.username.clone(),
+                            max_distance: v.distance,
+                            achieved_at: v.at,
+                            at_level: v.at_level,
+                            fights: v.fights,
+                            flees: v.flees,
+                            star: None,
+                            clear_ms: None,
+                        })
+                    })
+                    .collect();
+                rows.sort_by(|a, b| {
+                    b.max_distance
+                        .cmp(&a.max_distance)
+                        .then(a.achieved_at.cmp(&b.achieved_at))
+                        .then(a.player_id.cmp(&b.player_id))
+                });
+                rows.truncate(limit.max(0) as usize);
+                Ok(rows)
             }
         }
     }
@@ -3981,6 +4167,9 @@ struct Mem {
     worlds: HashMap<String, WorldSave>,
     /// vanguard (max_distance, achieved_at), keyed by (season, player_id).
     vanguard: HashMap<(i32, Uuid), MemVanguard>,
+    /// SC-9 — the per-WORLD board, keyed by (season, world_key, player_id). One best per
+    /// player per world, where `vanguard` above holds one best per player per season.
+    vanguard_world: HashMap<(i32, String, Uuid), MemVanguard>,
     /// hunts (progress, claimed), keyed by (player_id, hunt_key).
     /// `(progress, claimed, accepted)`. Accepted last because it arrived last — a hunt is
     /// something you TAKE now, and only a taken hunt tracks.
@@ -4819,6 +5008,47 @@ mod tests {
             HuntCredit { progress: 3, completed: false }
         );
         assert_eq!(db.get_vault(p).await.unwrap().0, 500);
+    }
+
+    /// **A WORLD'S BOARD IS THAT WORLD'S** (`SC-9`). The Wall ranks a season across the
+    /// whole game; this ranks the place you are standing in, and that is only a reason to
+    /// keep diving one seed if a deep run somewhere ELSE does not appear on it.
+    ///
+    /// Also holds the half that makes it a per-world board rather than a per-player one:
+    /// the same player carries an independent best in each world they have dived, where
+    /// the seasonal board keeps one best per player full stop.
+    #[tokio::test]
+    async fn a_worlds_board_ranks_only_that_world() {
+        let db = mem().await;
+        let pw = Uuid::new_v4().to_string();
+        let a = db.register("wb_a", &pw).await.unwrap();
+        let b = db.register("wb_b", &pw).await.unwrap();
+        let season = current_season();
+
+        // `a` went deep in world 1 and shallow in world 2; `b` only dived world 2.
+        assert!(db.record_world_vanguard(a.player_id, season, "1", Posting { distance: 900, at_level: 40, fights: 10, flees: 0 }).await.unwrap());
+        assert!(db.record_world_vanguard(a.player_id, season, "2", Posting { distance: 100, at_level: 9, fights: 1, flees: 0 }).await.unwrap());
+        assert!(db.record_world_vanguard(b.player_id, season, "2", Posting { distance: 400, at_level: 20, fights: 5, flees: 0 }).await.unwrap());
+
+        let w1 = db.world_vanguard_board(season, "1", 50).await.unwrap();
+        assert_eq!(w1.len(), 1, "only the diver who went there is on world 1's board");
+        assert_eq!(w1[0].max_distance, 900);
+
+        let w2 = db.world_vanguard_board(season, "2", 50).await.unwrap();
+        assert_eq!(w2.len(), 2);
+        assert_eq!(w2[0].username, "wb_b", "deepest IN THIS WORLD leads, not deepest overall");
+        assert_eq!(w2[0].max_distance, 400);
+        assert_eq!(w2[1].max_distance, 100, "…and a's 900 elsewhere does not follow them here");
+
+        // A world nobody has dived is an empty board, not an error: the world exists.
+        assert!(db.world_vanguard_board(season, "999", 50).await.unwrap().is_empty());
+
+        // Personal-best semantics, per world: a shallower return trip changes nothing.
+        assert!(!db.record_world_vanguard(a.player_id, season, "1", Posting { distance: 500, at_level: 30, fights: 8, flees: 0 }).await.unwrap());
+        assert_eq!(db.world_vanguard_board(season, "1", 50).await.unwrap()[0].max_distance, 900);
+        // …and a deeper one does.
+        assert!(db.record_world_vanguard(a.player_id, season, "1", Posting { distance: 1200, at_level: 45, fights: 12, flees: 0 }).await.unwrap());
+        assert_eq!(db.world_vanguard_board(season, "1", 50).await.unwrap()[0].max_distance, 1200);
     }
 
     #[tokio::test]
