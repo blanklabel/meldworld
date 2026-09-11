@@ -876,8 +876,10 @@ pub(crate) fn animate_battle_actors(
         // facing, not about who hit you — and the attacker's aim is not a fact the victim's
         // sprite has any access to.
         let off = toward * lunge - s.forward * recoil + perp * shake;
-        tf.translation.x = off.x;
-        tf.translation.z = off.z;
+        if tf.translation.x != off.x || tf.translation.z != off.z {
+            tf.translation.x = off.x;
+            tf.translation.z = off.z;
+        }
 
         // RAGE REDDENS. Two sources, and the hotter wins:
         //

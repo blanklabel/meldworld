@@ -575,7 +575,14 @@ pub(crate) fn react_to_conditions(
         // Ease rather than snap, so a boon landing is a beat instead of a pop.
         let now = tf.scale.x;
         let k = (feel.buff_ease * dt).clamp(0.0, 1.0);
-        tf.scale = Vec3::splat(now + (want - now) * k);
+        let next = now + (want - now) * k;
+        // Written only when it moves: this is the actor ROOT, and a `DerefMut` write flags
+        // it changed every frame for every body in the arena — which is what the projected
+        // panels (`render_enemy_panel`, `render_status_icons`) watch to decide whether to
+        // rebuild. A converged swell that kept writing kept them rebuilding every frame.
+        if (next - now).abs() > 1e-4 {
+            tf.scale = Vec3::splat(next);
+        }
     }
 }
 

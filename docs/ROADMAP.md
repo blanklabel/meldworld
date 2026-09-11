@@ -2638,6 +2638,20 @@ design for this epic: [`proposals/worldgen-wg.md`](proposals/worldgen-wg.md).
       and the corner map's offscreen camera renders only while a map is on screen — it drew its
       5,184 tiles every frame in every state.
 
+  - ✅ **MEASURED ON A QUIET BOX (Sep 11, load 7-15, M3 Pro, 3200x2000 px, `MELD_VSYNC=0`).**
+    Walking the night forest: **mean 17-19 ms, p95 22 ms**; the day forest **mean 20.6 ms,
+    p95 33 ms, worst 35 ms, no `SPIKE` lines** over a two-minute walk. The same-process look
+    A/B (`LOOK_FILE` toggles, 25 s each, baseline re-taken at the end) puts every toggle
+    inside 2 ms: billboard shadows ~2, bloom ~2, fog ~2, DoF ~1.5, `fog_end` 500→300 ~2 —
+    and the two baselines differ by 1.5 ms, so none of those is a lever any more. The frame
+    is broadly distributed now rather than owned by one system; the next step, if 60 Hz at
+    full retina is ever short, is the storage-buffer landform tables below, not a toggle.
+    The static battle mockup (`MELD_BATTLE=1`) reads mean 29 ms at load 15 — the four hero
+    lamps plus the arena's post stack at full resolution — which is the one scene still
+    above a 60 Hz frame on this GPU.
+  - Server, same box: `tick_budget_at_depth` **2.8 ms mean** at d1269 with one player
+    (creatures 2.1 ms, snapshot 0.6 ms, 3.6 KB per tick), from 77 ms before the pass.
+
   **The known cost.** The ground shader runs SEVEN landform loops per fragment (bridges,
   ridges, peaks, basins, rivers, straits, lobes), each iteration doing distance math, over
   most of the screen. `#337` took the worst case from ~106 to ~124 iterations per ground
