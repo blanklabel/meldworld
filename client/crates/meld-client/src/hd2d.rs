@@ -990,6 +990,17 @@ pub fn animate_chars(
         } else {
             cs.frames.idle[dir].clone()
         };
+        // Read before write: `get_mut` alone flags the material modified and the render
+        // world rebuilds its bind group — for EVERY character in view, every frame, whether
+        // or not the frame moved. Measured while walking: 6 ms a frame of
+        // `prepare_erased_assets<StandardMaterial>` on the render thread, which is the
+        // frame's critical path.
+        let moved = mats.get(&cs.mat).is_some_and(|m| {
+            m.base_color_texture.as_ref() != Some(&tex) || m.emissive_texture.as_ref() != Some(&tex)
+        });
+        if !moved {
+            continue;
+        }
         if let Some(mut m) = mats.get_mut(&cs.mat) {
             // The emissive layer is the SAME frame, set in the same breath. Mirroring it
             // from `illuminate_players` instead means a system in a different tuple, with
