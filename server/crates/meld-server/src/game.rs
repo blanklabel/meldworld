@@ -10980,16 +10980,34 @@ impl WorldActor {
                 // has actually reached the frontier, the world is generated here and now. A
                 // player must never walk off the edge because a thread was slow — the stall is
                 // a performance bug, and an unreachable world is a broken one.
+                // ⚠️ **A WALKING PLAYER CANNOT REACH THIS ARM ANY MORE.** `Arena::apply_move_with`
+                // holds a radial walk `frontier_hold_margin` inside the streamed radius, so the
+                // only way `reach` passes `cursor` is a placement — a deep start, a rescue, a
+                // dungeon exit. Those still generate here, ONE section a tick rather than four,
+                // so the stall they cost is one section long and everything else keeps ticking
+                // between them.
                 if self.arena.cursor() < reach {
                     self.pending_frontier = None;
-                    let made = self.arena.ensure_frontier(&balance, reach);
+                    let t = std::time::Instant::now();
+                    let made = self.arena.ensure_frontier_budgeted(&balance, reach, 1);
+                    tracing::warn!(
+                        sections = made.len(),
+                        ms = t.elapsed().as_millis(),
+                        "frontier generated on the tick: a placement outran the prefetch"
+                    );
                     created_sections.extend(made);
-                } else if self.pending_frontier.is_none() && self.arena.cursor() < reach + lookahead
+                } else if self.pending_frontier.is_none()
+                    && self.arena.cursor() < reach + 2.0 * lookahead
                 {
-                    // Room to work ahead: hand a CLONE to a blocking thread.
+                    // Room to work ahead: hand a CLONE to a blocking thread. TWO lookaheads,
+                    // not one: the job is kicked while the player still has a whole lookahead
+                    // of streamed ground to cross, so one slow section (measured up to 5.5 s
+                    // at cap 72 against a 10 s walk across the lookahead) no longer reaches the
+                    // hold above. Generation is faster than walking per unit (0.092 s against
+                    // 0.167 s), so a deeper horizon buys burst tolerance at no sustained cost.
                     let mut clone = self.arena.clone();
                     let b = balance.clone();
-                    let want = reach + lookahead;
+                    let want = reach + 2.0 * lookahead;
                     let (tx, rx) = tokio::sync::oneshot::channel();
                     tokio::task::spawn_blocking(move || {
                         clone.ensure_frontier(&b, want);

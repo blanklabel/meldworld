@@ -1320,6 +1320,9 @@ pub struct WorldGen {
     pub player_radius: f64,
     /// How far ahead of the frontier player the world streams new sections in.
     pub stream_lookahead: f64,
+    /// Movement stops this far inside the streamed radius while the frontier is still
+    /// being generated — see `Arena::apply_move_with`.
+    pub frontier_hold_margin: f64,
     /// Probability a procedural section's CLEAR PATH climbs onto a mid-segment
     /// plateau (up a ramp, across, back down) — the "path itself is a maze" knob.
     /// Endpoints stay on level 0, so feasibility is preserved.

@@ -5416,6 +5416,24 @@ Directly underpins CR-4 (sim budget), MON-2 (persistent camps/instances), and LC
   `tick_budget_at_depth` (`cargo test --release -p meld-server -- --ignored --nocapture
   tick_budget_at_depth`) is the standing benchmark every loop change gets its before/after
   from: a d1269 world, one walking player, 200 ticks, phase costs and snapshot bytes.
+- [x] **SC-9 — The frontier holds a walker; it does not freeze the tick.** `WG-11` stage 9 moved
+  world generation onto a prefetch thread and kept a synchronous fallback for the case where a
+  player reaches the streamed edge before the job lands — which generated up to four sections
+  INLINE on the 100 ms tick (measured 971 ms a section, 5.5 s worst advance at cap 72), freezing
+  every player, battle and message in the world for that long. Three changes:
+  - **`Arena::apply_move_with` refuses a radial step past `cursor - [worldgen]
+    frontier_hold_margin`** (the slide lets a walker move along the edge). So `reach` cannot
+    pass `cursor` on foot, and the one player who outran generation waits a beat at the edge
+    while everyone else keeps playing. `a_walker_is_held_at_the_streamed_edge` holds it.
+  - **The prefetch is kicked two lookaheads out**, not one, so a slow section is absorbed while
+    the player still has a whole lookahead of streamed ground to cross. Generation is faster than
+    walking per unit (0.092 s against 0.167 s), so the deeper horizon costs nothing sustained.
+  - **The fallback that remains — a placement past the edge (a deep start, a rescue, a dungeon
+    exit) — generates ONE section a tick** (`ensure_frontier_budgeted`) and logs a `warn` with
+    its cost, so a stall is a single section long and is visible in the log.
+  - `drown_proof` built an occupancy grid of every creature in the world once per pack in the
+    band, wet or dry (packs × creatures, per section, growing with depth); dry packs are skipped
+    before the grid is built.
 - [ ] **SC-2 — Sim/IO split (in-process).** The instance task publishes an
   immutable `Arc<WorldSnapshot>` per tick; a worker pool does cull + serialize +
   send in parallel across cores. Decouples sim cadence from snapshot cadence

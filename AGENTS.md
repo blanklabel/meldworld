@@ -1406,6 +1406,14 @@ full rate, so the world-gen tests that step a world still measure what they alwa
 ⚠️ Keep the active radius above `interest_radius_chunks × chunk_size` plus the widest perk
 reveal, or something a player can see moves in ten-tick hops.
 
+**THE STREAMED EDGE IS A WALL, NOT A STALL.** `Arena::apply_move_with` refuses a radial step
+past `cursor - [worldgen] frontier_hold_margin`, so a player can never outwalk generation on
+foot: they are held for a beat at the edge while the prefetch thread (kicked two lookaheads
+out) finishes. The synchronous fallback in the tick still exists for PLACEMENTS past the edge
+(a deep start, a rescue), generates one section a tick, and logs a `warn` with its cost — a
+`frontier generated on the tick` line in a play session is something to look at, not a
+normal event.
+
 **THE CLIENT RECEIVES DELTA SNAPSHOTS; THE HARNESSES RECEIVE FULL ONES.** The Bevy client
 sends `movement.snapshot_mode {delta: true}` on `session.authenticated`, after which each
 `world.snapshot` carries only new or changed rows plus `removed` ids (`wm::Snapshot::delta`);
