@@ -82,6 +82,9 @@ pub fn router(state: ApiState) -> Router {
         .route("/v1/bounties", get(bounty_board))
         .route("/v1/bounties/:bounty_id/claim", post(claim_bounty))
         .route("/v1/worlds", get(world_list))
+        // ⚠️ `:seed`, not `{seed}` — this is axum 0.7, where the braces form is not a
+        // path parameter at all and the route silently 404s with an empty body.
+        .route("/v1/leaderboards/world/:seed", get(world_board))
         .route("/v1/leaderboards/vanguard", get(vanguard_board))
         .route("/v1/leaderboards/vanguard/me", get(vanguard_me))
         .route("/v1/leaderboards/vanguard/:season", get(vanguard_season))
@@ -243,6 +246,51 @@ async fn world_list(State(st): State<ApiState>) -> Result<Response, ApiReject> {
             .then(a.seed.cmp(&b.seed))
     });
     Ok(Json(rows).into_response())
+}
+
+/// `GET /v1/leaderboards/world/:seed` — **the board for ONE world** (`SC-9`).
+///
+/// The Vanguard Wall ranks a season across the whole game; this ranks the place you are
+/// standing in. That is the half worth having for a browsable world list: "deepest anyone
+/// has got here" is a reason to keep diving THIS seed rather than a number about the game.
+///
+/// Public for the same reason the seasonal board is: it is a leaderboard, and the world
+/// browser that links to it is reachable before anybody logs in.
+///
+/// A world nobody has posted in returns an empty board rather than a 404 — the world
+/// exists (you can dive into it), it simply has no history yet, and 404 would read as
+/// "no such world".
+async fn world_board(
+    State(st): State<ApiState>,
+    Path(seed): Path<String>,
+) -> Result<Response, ApiReject> {
+    let season = meld_db::current_season();
+    let rows = st
+        .db
+        .world_vanguard_board(season, &seed, VANGUARD_BOARD_LIMIT)
+        .await
+        .map_err(ApiReject::internal)?;
+    let data: Vec<VanguardEntry> = rows
+        .into_iter()
+        .enumerate()
+        .map(|(i, r)| VanguardEntry {
+            rank: i as i32 + 1,
+            player_id: r.player_id.to_string(),
+            username: r.username,
+            max_distance: r.max_distance,
+            achieved_at: r.achieved_at.timestamp_millis(),
+            at_level: r.at_level,
+            fights: r.fights,
+            flees: r.flees,
+            star: r.star.clone(),
+            clear_ms: r.clear_ms,
+        })
+        .collect();
+    Ok((
+        StatusCode::OK,
+        Json(serde_json::json!({ "seed": seed, "season": season, "data": data })),
+    )
+        .into_response())
 }
 
 /// `GET /v1/leaderboards/vanguard` — the live board for the open season

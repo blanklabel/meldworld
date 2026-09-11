@@ -5518,7 +5518,28 @@ Directly underpins CR-4 (sim budget), MON-2 (persistent camps/instances), and LC
     because it reads as current.
   - **Occupancy.** Nothing counts players per world. "3 divers on this seed" is the single
     line that makes a browser worth opening rather than a list of numbers.
-  - 🔴 **A per-world board** — the one part of this item still open. The Vanguard Wall
+  - ✅ **A per-world board.** `vanguard_world` (season, world_key, player) + `GET
+    /v1/leaderboards/world/:seed`. A SEPARATE table rather than a `world_key` column on
+    `vanguard`: the seasonal board's primary key is `(season, player_id)` — one best per
+    player — and a per-world board needs one best per player PER WORLD, so folding them
+    together means changing that key, which is a migration rather than an additive
+    column. They are also genuinely different boards, which is what this item said.
+    - **One event posts BOTH.** `DbWrite::Vanguard` carries the world key, so the Wall
+      and the world board are two queries over the same fact rather than two call sites
+      that can drift about which run it was. A world-board write failing does not lose
+      the seasonal posting — that is the one with a season riding on it.
+    - A world nobody has dived returns an **empty board, not a 404**: the world exists
+      (you can dive into it), it simply has no history yet, and 404 would read as "no
+      such world".
+    - ⚠️ `star`/`clear_ms` are deliberately absent per-world: the end fight is a GLOBAL
+      milestone — one encounter at the end of the world — so a per-world board has
+      nothing to say about it.
+    - Held by `a_worlds_board_ranks_only_that_world`, which is the property that makes it
+      worth having: a deep run in one world must NOT appear on another's board, and the
+      same player carries an independent best in each world they have dived.
+    - ⚠️ Route is `:seed`, not `{seed}` — axum 0.7, where the braces form is not a path
+      parameter and the route silently 404s with an empty body.
+  - 🔴 *The original note, for the record.* The Vanguard Wall
     shows the GLOBAL seasonal leaderboard
     (`/v1/leaderboards/vanguard`); `VanguardEntry` has no world or seed field. A
     per-instance table is a different query, and arguably the better one — a board scoped
