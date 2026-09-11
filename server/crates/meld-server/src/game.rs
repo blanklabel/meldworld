@@ -71,8 +71,10 @@ pub enum ServerEvent {
 /// teardown) directly — it emits these effects, which `GameState` applies. This is
 /// what lets a world's logic move off `GameState` now and onto its own task later.
 enum WorldEffect {
-    /// A player left their run (death/extraction) — the Router flips the session's
-    /// `in_instance` and tears the world down if it's now empty.
+    /// A player left their run (death/extraction) — the Router clears the session's
+    /// routing entry (`Session::world`) and its own roster, and drops the world only if
+    /// it is one of the two that are not places (a tutorial corridor, or any world at all
+    /// when persistence is off). A persistent world OUTLIVES its divers (CANON §W1).
     ReleaseFromRun(String),
     /// A hero rename must also update the caller's session cache (used to form the
     /// NEXT dive) — Router-owned, so the world emits it.
@@ -4724,6 +4726,24 @@ struct GameState {
     /// of it is worse than admitting none, which is the same reason the cap check counts
     /// arrivals as a block.
     queues: HashMap<String, Vec<QueuedGroup>>,
+    /// **WHO THE ROUTER BELIEVES IS IN EACH WORLD** — world key -> player ids (`SC-3`
+    /// b1-B). The Router's own answer to "how full is that world", kept because the
+    /// Router is the only thing that admits and releases anybody: `form_run` puts people
+    /// in and `remove_from_instance` takes them out, so it already knows without asking.
+    ///
+    /// It exists so the admission path — the cap, the queue, the browser's occupancy —
+    /// never reads a world's internals. That is what lets a world move onto its own task
+    /// without admission having to become a round-trip: a Router that had to ask each
+    /// world how full it was before answering a dive would be waiting on the very tasks
+    /// it is trying to decouple from.
+    ///
+    /// ⚠️ **It is a MIRROR, and mirrors drift.** Every roster removal either goes through
+    /// `remove_from_instance` or announces itself as `WorldEffect::ReleaseFromRun` (a
+    /// battle death, walking home), and both land here — but a future path that drops a
+    /// player from `run.runs` without doing either would silently inflate the count and
+    /// hold seats nobody occupies. `the_routers_roster_matches_the_worlds_own` is what
+    /// makes that a test failure rather than a world that slowly fills up with ghosts.
+    seated: HashMap<String, HashSet<String>>,
     /// Open co-op lobbies, keyed by join code.
     lobbies: HashMap<String, Lobby>,
     /// player_id -> the lobby code they're in.
@@ -4772,6 +4792,7 @@ impl GameState {
             worlds: HashMap::new(),
             restore: HashMap::new(),
             queues: HashMap::new(),
+            seated: HashMap::new(),
             lobbies: HashMap::new(),
             player_lobby: HashMap::new(),
             pending_gear_load: Vec::new(),
@@ -4799,7 +4820,7 @@ impl GameState {
             .filter(|w| !w.tutorial && !is_tutorial_key(&w.key))
             .map(|w| meld_proto::http::WorldRow {
                 seed: w.arena.seed,
-                players: w.run.runs.len() as i64,
+                players: self.seated_count(&w.key) as i64,
                 queued: self
                     .queues
                     .get(&w.key)
@@ -4870,7 +4891,7 @@ impl GameState {
     /// would walk straight past the line — and a queue that can be jumped is not a queue,
     /// it is a lottery with extra steps.
     fn fits(&self, world_key: &str, arriving: usize) -> bool {
-        let seated = self.worlds.get(world_key).map_or(0, |w| w.run.runs.len());
+        let seated = self.seated_count(world_key);
         let waiting: usize =
             self.queues.get(world_key).map_or(0, |q| q.iter().map(|g| g.party.len()).sum());
         seated + waiting + arriving <= self.balance.world.max_divers_per_world
@@ -4936,7 +4957,7 @@ impl GameState {
     fn queue_positions(&self, world_key: &str) -> Vec<Outgoing> {
         let Some(groups) = self.queues.get(world_key) else { return Vec::new() };
         let cap = self.balance.world.max_divers_per_world;
-        let seated = self.worlds.get(world_key).map_or(0, |w| w.run.runs.len());
+        let seated = self.seated_count(world_key);
         let mut out = Vec::new();
         // Seats the groups ahead of you will take when they go in. This is why the wire
         // carries it separately from `position`: the queue holds GROUPS, so being second
@@ -4978,7 +4999,7 @@ impl GameState {
                 tracing::error!(key = %world_key, "world.queue: drain did not terminate");
                 break;
             }
-            let seated = self.worlds.get(world_key).map_or(0, |w| w.run.runs.len());
+            let seated = self.seated_count(world_key);
             let Some(next) = self.queues.get(world_key).and_then(|q| q.first()) else { break };
             if seated + next.party.len() > cap {
                 break;
@@ -5012,6 +5033,12 @@ impl GameState {
         self.queues.retain(|_, g| !g.is_empty());
         out.extend(self.queue_positions(world_key));
         out
+    }
+
+    /// How many divers the Router has seated in this world. THE answer for admission —
+    /// the cap, the queue and the browser all ask here rather than reading a world.
+    fn seated_count(&self, world_key: &str) -> usize {
+        self.seated.get(world_key).map_or(0, |s| s.len())
     }
 
     /// Is this player in a run? Derived from the routing entry rather than stored beside
@@ -5148,6 +5175,9 @@ impl GameState {
         }
         for key in asleep {
             self.worlds.remove(&key);
+            // It was empty — that is why it slept — so this only drops an empty entry.
+            // Leaving it would grow the map by one key per world that ever existed.
+            self.seated.remove(&key);
         }
     }
 
@@ -5306,6 +5336,9 @@ impl GameState {
             return;
         };
         inst.forget_player(player_id);
+        if let Some(roster) = self.seated.get_mut(&key) {
+            roster.remove(player_id);
+        }
         // A world OUTLIVES its divers (CANON §W1) — it keeps shifting, regrowing and
         // holding what players built — so an empty one stays in the map and keeps
         // ticking, and `hibernate_worlds` is what eventually puts it to sleep. Only the
@@ -5315,6 +5348,7 @@ impl GameState {
         if inst.run.runs.is_empty() {
             if inst.tutorial || is_tutorial_key(&key) || !self.balance.world_persist.enabled {
                 self.worlds.remove(&key);
+                self.seated.remove(&key);
             } else {
                 inst.empty_since = Some(inst.tick_count);
             }
@@ -6404,6 +6438,10 @@ impl GameState {
                 s.world = Some(world_key.clone());
             }
         }
+        // …and the Router's own roster, which is what the cap, the queue and the browser
+        // read. Written beside the routing entry so the two cannot disagree about who is
+        // where.
+        self.seated.entry(world_key.clone()).or_default().extend(party_ids.iter().cloned());
         let inst = self.worlds.get_mut(&world_key).expect("world was just built");
         // Somebody is in it again, so the dormancy clock stops.
         inst.empty_since = None;
@@ -16225,6 +16263,58 @@ mod sharding_tests {
         let rows = g.board.live();
         assert_eq!(rows.len(), 1, "only the real world is a destination");
         assert_eq!(rows[0].seed, 41);
+    }
+
+    /// **THE ROUTER'S ROSTER IS A MIRROR, AND MIRRORS DRIFT** (`SC-3` b1-B).
+    ///
+    /// The cap, the queue and the browser all read `seated` rather than a world's own
+    /// `run.runs` — that is what lets a world move onto its own task without admission
+    /// becoming a round-trip. The price is that the two can disagree, and a roster that
+    /// over-counts holds seats nobody occupies: the world slowly fills with ghosts and
+    /// starts queueing people against divers who left.
+    ///
+    /// Every removal today goes through `remove_from_instance` or announces itself as
+    /// `ReleaseFromRun`. This walks a mixed sequence — dives, releases, a whole world
+    /// emptying — and holds the two answers together at each step, so a future path that
+    /// drops a player from `run.runs` without doing either fails here.
+    #[tokio::test]
+    async fn the_routers_roster_matches_the_worlds_own() {
+        let (mut g, _rx, ids) = router(4).await;
+        let agree = |g: &GameState, when: &str| {
+            for (key, w) in g.worlds.iter() {
+                let mine = g.seated_count(key);
+                let theirs = w.run.runs.len();
+                assert_eq!(
+                    mine, theirs,
+                    "{when}: the Router thinks {mine} are in world {key}, the world holds {theirs}"
+                );
+            }
+            // …and the reverse: a roster entry for a world that no longer exists is a
+            // seat held against a place nobody can reach.
+            for key in g.seated.keys() {
+                assert!(g.worlds.contains_key(key), "{when}: roster for a dead world {key}");
+            }
+        };
+
+        g.dive_as(vec![ids[0].clone(), ids[1].clone()], &ids[0], false, Some(51));
+        agree(&g, "after a pair dives");
+        g.dive_as(vec![ids[2].clone()], &ids[2], false, Some(52));
+        agree(&g, "after a solo dives elsewhere");
+
+        g.release_from_run(&ids[0]);
+        agree(&g, "after one of the pair leaves");
+        g.release_from_run(&ids[1]);
+        agree(&g, "after the world empties");
+
+        // A world that empties is not torn down (§W1), so its roster entry must still
+        // exist and must read zero — not be missing, and not still hold the leavers.
+        assert!(g.worlds.contains_key("51"), "an emptied world outlives its divers");
+        assert_eq!(g.seated_count("51"), 0, "…and nobody is still seated in it");
+
+        // Re-entering the same world reuses the entry rather than stacking a second one.
+        g.dive_as(vec![ids[3].clone()], &ids[3], false, Some(51));
+        agree(&g, "after somebody dives back into the emptied world");
+        assert_eq!(g.seated_count("51"), 1);
     }
 
     /// A tutorial world is onboarding rather than a place — it is never persisted and

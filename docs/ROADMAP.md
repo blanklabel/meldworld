@@ -5615,8 +5615,24 @@ Directly underpins CR-4 (sim budget), MON-2 (persistent camps/instances), and LC
       asserted: two seeds never see each other, AND one seed is one place — the isolation
       test alone passes perfectly if `seed` is parsed and ignored and every diver gets a
       private world.
-    **Remaining:** the b1-B boundary (spawn `WorldActor` as its own task so it never calls
-    `GameState` methods) and hub handoff. *(The admission queue and the dormancy catch-up
+  - 🟡 **b1-B, step 1: the Router stops reading world internals to admit anybody.**
+    `GameState::seated` (world key → player ids) is the Router's own roster, and the cap,
+    the queue and the browser's occupancy all read it rather than `w.run.runs.len()`.
+    The Router is the only thing that admits and releases, so it already knows without
+    asking — and that is precisely what lets a world move onto its own task without
+    admission becoming a round-trip. A Router that had to ask each world how full it was
+    before answering a dive would be waiting on the very tasks it is decoupling from.
+    - ⚠️ **It is a MIRROR, and mirrors drift.** Every roster removal today either goes
+      through `remove_from_instance` or announces itself as `WorldEffect::ReleaseFromRun`
+      (a battle death, walking home into the city), and both land in it. A future path
+      that drops a player from `run.runs` without doing either would inflate the count and
+      hold seats nobody occupies — the world fills with ghosts and queues people against
+      divers who left. `the_routers_roster_matches_the_worlds_own` walks a mixed sequence
+      and holds the two answers together at each step, including the reverse direction (a
+      roster entry for a world that no longer exists).
+    **Remaining for b1-B:** the task spawn itself — worlds tick, save and publish
+    themselves, and extraction completions come back as effects rather than the Router
+    reaching in to bank them. Plus hub handoff. *(The admission queue and the dormancy catch-up
     below have since landed.)*
   - ✅ **BUILT — a dormant world catches up in CLOSED FORM, never by replaying ticks.**
     `WorldActor::advance_to(target)`, called the moment a world is stood back up (off
