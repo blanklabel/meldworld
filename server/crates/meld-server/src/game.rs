@@ -5951,6 +5951,17 @@ impl GameState {
                 self.apply_world_effects(eff);
                 out
             }
+            wr::EquipLootBest::TYPE => {
+                let (out, eff) = match self.world_of_mut(player_id) {
+                    Some(w) => w.handle_equip_loot_best(player_id, raw),
+                    None => (
+                        vec![error(player_id, ErrorCode::InvalidState, "Not in a run.", Some(raw.seq))],
+                        Vec::new(),
+                    ),
+                };
+                self.apply_world_effects(eff);
+                out
+            }
             wr::EquipLoot::TYPE => {
                 let (out, eff) = match self.world_of_mut(player_id) {
                     Some(w) => w.handle_equip_loot(player_id, raw),
@@ -8347,6 +8358,124 @@ impl WorldActor {
             r.looted_gear[idx].equipped_hero_slot = Some(slot);
         } else {
             r.looted_gear[idx].equipped_hero_slot = None;
+        }
+        (vec![out_msg(player_id, &wr::RunGear { gear: r.looted_gear.clone() })], Vec::new())
+    }
+
+    /// The pieces one press of "equip best" should put on `hero_slot`, as `(index into
+    /// `looted`, wear slot)` — the pure half of [`WorldActor::handle_equip_loot_best`],
+    /// and the same four rules the Vault's own picker uses.
+    ///
+    /// Candidates are what NOBODY is wearing plus what this hero already has on: a press
+    /// never strips a teammate, so it stays predictable and easy to undo.
+    fn best_loot_picks(
+        looted: &[LootGear],
+        hero_slot: i32,
+        class: CharacterClass,
+        weights: [f64; 3],
+    ) -> Vec<(usize, &'static str)> {
+        let score = |g: &LootGear| {
+            meld_proto::equipment::gear_score(g.atk_bonus, g.def_bonus, g.spd_bonus, g.tier, weights)
+        };
+        let mut picks: Vec<(usize, &'static str)> = Vec::new();
+        for wear_slot in meld_proto::equipment::SLOTS {
+            let best = looted
+                .iter()
+                .enumerate()
+                .filter(|(_, g)| g.slot == wear_slot)
+                .filter(|(_, g)| {
+                    g.equipped_hero_slot.is_none() || g.equipped_hero_slot == Some(hero_slot)
+                })
+                // A piece chewed down to 0 max durability cannot be worn (CANON D6).
+                .filter(|(_, g)| g.max_durability > 0)
+                .filter(|(_, g)| {
+                    meld_proto::equipment::can_wear(
+                        class,
+                        &g.slot,
+                        &g.class_key,
+                        &g.family,
+                        &g.armor_weight,
+                    )
+                })
+                .max_by(|(_, a), (_, b)| score(a).total_cmp(&score(b)))
+                .map(|(i, _)| i);
+            if let Some(i) = best {
+                picks.push((i, wear_slot));
+            }
+        }
+        // A two-hander reserves the off-hand, so drop the off-hand pick rather than wearing
+        // a pair the battle would have to refuse (GR-5).
+        let two_handed = picks.iter().any(|(i, wear_slot)| {
+            *wear_slot == "main_hand"
+                && meld_proto::equipment::ItemFamily::from_wire(&looted[*i].family)
+                    .is_some_and(|f| f.reserves_off_hand())
+        });
+        if two_handed {
+            picks.retain(|(_, wear_slot)| *wear_slot != "off_hand");
+        }
+        picks
+    }
+
+    /// Dress one hero in the best of THIS RUN'S loot — the run-scoped twin of the Vault's
+    /// `equip-best` (HTTP).
+    ///
+    /// ⚠️ **"EQUIP BEST" DID NOTHING YOU COULD SEE DURING A DIVE.** The button only ever
+    /// called the Vault endpoint, and a Vault loadout takes effect from the NEXT dive
+    /// (vault-gear.md) — so mid-run it rearranged gear for later while ignoring every piece
+    /// the dive had just turned up, which is the only gear that can change this run's
+    /// fights. Reported from play as the button not working in a dive.
+    ///
+    /// The same rules as the Vault version, because they are the same rules: class
+    /// legality (GR-5), no broken pieces, a two-hander reserves the off-hand, and only
+    /// gear nobody is wearing (or that this hero already has on) — never a teammate's.
+    fn handle_equip_loot_best(
+        &mut self,
+        player_id: &str,
+        raw: RawEnvelope,
+    ) -> (Vec<Outgoing>, Vec<WorldEffect>) {
+        let req: wr::EquipLootBest = match serde_json::from_value(raw.payload) {
+            Ok(v) => v,
+            Err(_) => {
+                return (vec![error(player_id, ErrorCode::ValidationError, "bad equip_loot_best", Some(raw.seq))], Vec::new())
+            }
+        };
+        let party_size = self.balance.battle.party_size_per_player.max(1) as i32;
+        if req.hero_slot < 0 || req.hero_slot >= party_size {
+            return (vec![error(player_id, ErrorCode::ValidationError, "Invalid hero slot.", Some(raw.seq))], Vec::new());
+        }
+        // This dive's class for the slot — the only place a hero's class lives mid-run.
+        let class_key: Option<String> = self
+            .party_classes
+            .get(player_id)
+            .and_then(|v| v.get(req.hero_slot as usize))
+            .map(|c| meld_run::class_key(*c).to_string());
+        let Some(class) = class_key
+            .as_deref()
+            .and_then(meld_proto::equipment::class_from_key)
+        else {
+            return (vec![error(player_id, ErrorCode::InvalidState, "That hero has no class.", Some(raw.seq))], Vec::new());
+        };
+        let weights = class_key
+            .as_deref()
+            .and_then(|k| self.balance.equip_best.get(k))
+            .copied()
+            .unwrap_or([1.0, 1.0, 1.0]);
+        let slot = req.hero_slot;
+        let Some(r) = self.run.run_mut(player_id) else {
+            return (vec![error(player_id, ErrorCode::InvalidState, "Not in a run.", Some(raw.seq))], Vec::new());
+        };
+        let picks = Self::best_loot_picks(&r.looted_gear, slot, class, weights);
+        // Everything this hero wore in a category the picks replace comes off first, so the
+        // per-(hero, category) capacity can never be exceeded by a press of one button.
+        for (i, wear_slot) in &picks {
+            for (j, g) in r.looted_gear.iter_mut().enumerate() {
+                if j != *i && g.slot == *wear_slot && g.equipped_hero_slot == Some(slot) {
+                    g.equipped_hero_slot = None;
+                }
+            }
+        }
+        for (i, _) in &picks {
+            r.looted_gear[*i].equipped_hero_slot = Some(slot);
         }
         (vec![out_msg(player_id, &wr::RunGear { gear: r.looted_gear.clone() })], Vec::new())
     }
@@ -16474,5 +16603,99 @@ mod sharding_tests {
         let heard: Vec<String> =
             g.handle_say(&ids[0], say("world", 11)).into_iter().map(|o| o.player_id).collect();
         assert_eq!(heard.len(), 3, "the world channel is server-global");
+    }
+}
+
+#[cfg(test)]
+mod equip_loot_best_tests {
+    use super::*;
+
+    /// One piece of this run's loot, with only the fields the picker reads spelled out.
+    fn loot(
+        id: &str,
+        slot: &str,
+        atk: i32,
+        def: i32,
+        family: &str,
+        class_key: &str,
+    ) -> LootGear {
+        LootGear {
+            gear_id: id.to_string(),
+            name: id.to_string(),
+            rarity: "common".to_string(),
+            slot: slot.to_string(),
+            class_key: class_key.to_string(),
+            insurance: meld_proto::enums::Insurance::Ephemeral,
+            tier: 0,
+            atk_bonus: atk,
+            def_bonus: def,
+            spd_bonus: 0,
+            base_max_durability: 10,
+            max_durability: 10,
+            equipped_hero_slot: None,
+            damage_modifiers: Vec::new(),
+            family: family.to_string(),
+            armor_weight: String::new(),
+            affixes: Vec::new(),
+            unique_key: String::new(),
+            set_key: String::new(),
+        }
+    }
+
+    fn picked<'a>(picks: &[(usize, &'static str)], looted: &'a [LootGear]) -> Vec<&'a str> {
+        picks.iter().map(|(i, _)| looted[*i].gear_id.as_str()).collect()
+    }
+
+    /// ⚠️ **"EQUIP BEST" HAS TO SEE THIS RUN'S LOOT, OR IN A DIVE IT SEES NOTHING THAT
+    /// MATTERS.** The button only ever asked the Vault, whose loadout takes effect from the
+    /// NEXT dive — so mid-run it ignored every piece the dive had turned up. Reported from
+    /// play as the button not working in a dive.
+    #[test]
+    fn the_best_piece_in_each_slot_is_the_one_that_goes_on() {
+        let looted = vec![
+            loot("plain", "main_hand", 3, 0, "sword", ""),
+            loot("sharp", "main_hand", 9, 0, "sword", ""),
+            loot("hat", "head", 0, 4, "", ""),
+        ];
+        let picks = WorldActor::best_loot_picks(&looted, 0, CharacterClass::Explorer, [1.0, 1.0, 1.0]);
+        let names = picked(&picks, &looted);
+        assert!(names.contains(&"sharp"), "the better weapon is the one worn: {names:?}");
+        assert!(!names.contains(&"plain"), "the worse weapon in the same slot stays off");
+        assert!(names.contains(&"hat"), "every slot is dressed, not just the weapon");
+    }
+
+    /// A teammate's gear is never stripped — the same narrowness the Vault's picker keeps,
+    /// so one press is predictable and easy to undo.
+    #[test]
+    fn a_teammates_piece_is_never_taken_off_them() {
+        let mut looted = vec![
+            loot("theirs", "main_hand", 9, 0, "sword", ""),
+            loot("mine", "main_hand", 3, 0, "sword", ""),
+        ];
+        looted[0].equipped_hero_slot = Some(1);
+        let picks = WorldActor::best_loot_picks(&looted, 0, CharacterClass::Explorer, [1.0, 1.0, 1.0]);
+        assert_eq!(
+            picked(&picks, &looted),
+            vec!["mine"],
+            "slot 0 dresses from what is spare, never off slot 1's back"
+        );
+    }
+
+    /// Broken gear cannot be worn (CANON D6), and a piece this hero's class cannot wear is
+    /// not a candidate at all (GR-5) — the picker must never propose what the equip refuses.
+    #[test]
+    fn broken_and_class_locked_pieces_are_not_candidates() {
+        let mut looted = vec![
+            loot("snapped", "main_hand", 9, 0, "sword", ""),
+            loot("someone_elses", "main_hand", 8, 0, "sword", "hunter"),
+            loot("usable", "main_hand", 2, 0, "sword", ""),
+        ];
+        looted[0].max_durability = 0;
+        let picks = WorldActor::best_loot_picks(&looted, 0, CharacterClass::Explorer, [1.0, 1.0, 1.0]);
+        assert_eq!(
+            picked(&picks, &looted),
+            vec!["usable"],
+            "the broken one and another class's one are not worn just because they score high"
+        );
     }
 }

@@ -1106,6 +1106,35 @@ pub(crate) fn city_input(
     if city.party_open {
         return;
     }
+    // ⚠️ **THE OPEN INVENTORY OWNS THE KEYBOARD, AND ITS OWN TOGGLE IS THE WAY OUT.**
+    // This block used to sit BELOW the dive, which made ENTER inside the storage chest a
+    // dive: the overlay's own ENTER (equip a row, commit a rename) fell through to the
+    // `dive` read a few lines down and dropped the player into a descent out of the middle
+    // of their inventory. Reported from play. Handled here, above the dive, so [V] (and [E]
+    // at the chest) can still close it, and every town hotkey below — ENTER/E dive, [C]
+    // co-op, [T] tutorial dive, the counter's digits — is off while it is open, the same
+    // way the Drill Yard and the tour take the keyboard above.
+    if keys.just_pressed(KeyCode::KeyV)
+        || (keys.just_pressed(KeyCode::KeyE)
+            && city.near.is_some_and(|i| matches!(CITY_DISTRICTS[i].action, CityAction::Vault)))
+    {
+        if overlay.kind == Some(OverlayKind::Inventory) {
+            overlay.kind = None;
+        } else {
+            overlay.kind = Some(OverlayKind::Inventory);
+            net.0.fetch_bounties();
+            *tab = OverlayTab::Items;
+            inv.loaded = false;
+            net.0.fetch_inventory();
+            net.0.fetch_hero_names();
+        }
+        return;
+    }
+    // Escape, the picker's back-out and the overlay's own rows belong to `menu_keys`
+    // (overlays.rs), which is registered in the City too — so this system simply stops.
+    if overlay.kind == Some(OverlayKind::Inventory) {
+        return;
+    }
     // Dive: ENTER anywhere, E while standing at The Threshold, or autoplay (which
     // ?city / CityIdle suppresses so the hub can be inspected).
     let at_threshold = city
@@ -1143,26 +1172,8 @@ pub(crate) fn city_input(
         next.set(Screen::Lobby);
         return;
     }
-    // The storage chest: open the same tabbed Items/Equip/Status overlay the
-    // Overworld uses. Toggling closed just clears `overlay.kind`; opening always
-    // lands on Items and kicks off a fresh fetch (vault + persistent hero names,
-    // since there's no active run's `PartyRoster` to source names from here).
-    if keys.just_pressed(KeyCode::KeyV)
-        || (keys.just_pressed(KeyCode::KeyE)
-            && city.near.is_some_and(|i| matches!(CITY_DISTRICTS[i].action, CityAction::Vault)))
-    {
-        if overlay.kind == Some(OverlayKind::Inventory) {
-            overlay.kind = None;
-        } else {
-            overlay.kind = Some(OverlayKind::Inventory);
-            net.0.fetch_bounties();
-            *tab = OverlayTab::Items;
-            inv.loaded = false;
-            net.0.fetch_inventory();
-            net.0.fetch_hero_names();
-        }
-        return;
-    }
+    // NOTE: the storage chest's [V]/[E] toggle is NOT here any more — it runs above the
+    // dive, because ENTER in an open chest was diving. See the note there.
     // NOTE: no Drill-Yard branch here. `city_input` returns above the moment the yard is
     // open, so the slot/class/[E] handling that used to sit at this point was unreachable
     // for as long as that early-out has existed. The yard's own systems
