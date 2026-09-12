@@ -1740,6 +1740,17 @@ impl Inner {
     /// spare gear. One call, one atomic answer: doing the picking here would mean firing an
     /// equip per slot and hoping, which is the race that made saving a party look broken.
     fn equip_best(&mut self, hero_slot: usize) {
+        // ⚠️ **IN A DIVE, "BEST" MEANS THIS RUN'S LOOT.** The HTTP call below dresses the
+        // hero from the VAULT, and a Vault loadout only takes effect from the NEXT dive
+        // (vault-gear.md) — so during a run this button rearranged gear for later and
+        // ignored every piece the dive had just turned up, which is the only gear that can
+        // change the fights you are still walking into. Reported from play as "equip best"
+        // not working in a dive. The run's own gear is the world actor's, so it takes the
+        // realtime path; with no loot this run there is nothing for it to pick and the
+        // message is not worth sending.
+        if !self.run_loot_gear.is_empty() {
+            self.send_env(wr::EquipLootBest::TYPE, json!({ "hero_slot": hero_slot as i32 }));
+        }
         if self.session_token.is_empty() {
             return;
         }
@@ -3475,6 +3486,17 @@ impl Inner {
                             .and_then(|v| v.as_str().map(String::from))
                             .unwrap_or_default();
                         let banked = m.banked.map(|b| b.len()).unwrap_or(0);
+                        // ⚠️ **THIS RUN'S LOOT DIES WITH THE RUN.** It was cleared only on
+                        // the NEXT `run.started`, so back in town the Equip tab still listed
+                        // every piece the dive had turned up — and those rows equip over
+                        // `EquipLoot`, which the server answers with "Not in a run." and the
+                        // UI drops on the floor. The player clicks a sword, the row lights
+                        // up, and nothing is ever worn: reported from play as equipping gear
+                        // found on a dive not working. What was banked is the VAULT's now
+                        // (`gear_banked`), and the vault rows equip over HTTP, which works.
+                        self.run_gear.clear();
+                        self.run_loot_gear.clear();
+                        self.out.push_back(ServerMsg::RunGear { gear: Vec::new() });
                         self.out.push_back(ServerMsg::RunEnded {
                             result,
                             banked,
@@ -4280,5 +4302,91 @@ mod smith_reply_tests {
             "error": { "code": "conflict", "message": "Nothing to repair, or not enough chits." }
         });
         assert_eq!(repair_line(&refused), "Nothing to repair, or not enough chits.");
+    }
+}
+
+#[cfg(test)]
+mod run_loot_tests {
+    use super::*;
+
+    fn envelope(msg_type: &str, payload: serde_json::Value) -> String {
+        json!({ "type": msg_type, "seq": 1, "ts": 0, "payload": payload }).to_string()
+    }
+
+    /// ⚠️ **THIS RUN'S LOOT DIES WITH THE RUN.** `run_loot_gear` was cleared only on the
+    /// next `run.started`, so between extracting and diving again — i.e. the whole of town
+    /// — the Equip tab still listed every piece the finished dive turned up. Those rows
+    /// equip over `EquipLoot`, which the server answers "Not in a run." to, and the client
+    /// drops a rejection on the floor: the row lights up under the cursor and nothing is
+    /// ever worn. Reported from play as gear found on a dive not being equippable. What
+    /// was banked belongs to the VAULT now, and vault rows equip over HTTP.
+    #[test]
+    fn a_finished_runs_loot_is_dropped_so_town_cannot_offer_it() {
+        let net = start("http://127.0.0.1:1".into());
+        let mut inner = net.0.borrow_mut();
+        inner.player_id = "p1".into();
+        inner.handle_text(&envelope(
+            "run.gear",
+            json!({ "gear": [{ "gear_id": "g1", "name": "Sword", "slot": "main_hand" }] }),
+        ));
+        assert_eq!(inner.run_loot_gear.len(), 1, "the dive's loot arrives on run.gear");
+        inner.out.clear();
+        inner.handle_text(&envelope(
+            "run.member_result",
+            json!({
+                "run_id": "r1",
+                "player_id": "p1",
+                "result": "extracted",
+                "max_distance_reached": 0,
+                "banked": [],
+                "lost": [],
+                "chits": 0,
+                "gear_banked": [],
+                "durability_loss_applied": false
+            }),
+        ));
+        assert!(
+            inner.run_loot_gear.is_empty(),
+            "the run is over: its loot must not still be offered as equippable"
+        );
+        assert!(
+            inner
+                .out
+                .iter()
+                .any(|m| matches!(m, ServerMsg::RunGear { gear } if gear.is_empty())),
+            "the UI holds its own copy, so the emptying has to reach it too"
+        );
+    }
+
+    /// Somebody ELSE finishing their run says nothing about yours: `run.member_result` is
+    /// a notification for every member, and only the caller's own copy ends a run here.
+    #[test]
+    fn another_players_result_leaves_your_own_loot_alone() {
+        let net = start("http://127.0.0.1:1".into());
+        let mut inner = net.0.borrow_mut();
+        inner.player_id = "p1".into();
+        inner.handle_text(&envelope(
+            "run.gear",
+            json!({ "gear": [{ "gear_id": "g1", "name": "Sword", "slot": "main_hand" }] }),
+        ));
+        inner.handle_text(&envelope(
+            "run.member_result",
+            json!({
+                "run_id": "r1",
+                "player_id": "p2",
+                "result": "died",
+                "max_distance_reached": 0,
+                "banked": [],
+                "lost": [],
+                "chits": 0,
+                "gear_banked": [],
+                "durability_loss_applied": false
+            }),
+        ));
+        assert_eq!(
+            inner.run_loot_gear.len(),
+            1,
+            "a party-mate's extraction must not strip the gear off your own run"
+        );
     }
 }

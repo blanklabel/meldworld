@@ -1960,6 +1960,23 @@ pub mod run {
         const TYPE: &'static str = "run.equip_loot";
     }
 
+    /// C2S — dress one hero in the best of THIS RUN'S loot, the run-scoped twin of
+    /// `POST /v1/party/heroes/:slot/equip-best`.
+    ///
+    /// The HTTP one dresses a hero from the **Vault**, and a Vault loadout only takes
+    /// effect from the next dive — so pressing "Equip best" during a run changed nothing
+    /// the player could see and ignored every piece the dive had just turned up. Loot is
+    /// the world actor's state, not the database's, so its "best" is decided here.
+    /// Same narrowness as the Vault version: only pieces nobody is wearing (or that this
+    /// hero already has on), never a teammate's.
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct EquipLootBest {
+        pub hero_slot: i32,
+    }
+    impl Message for EquipLootBest {
+        const TYPE: &'static str = "run.equip_loot_best";
+    }
+
     /// S2C — authoritative snapshot of the recipient's current run-loot gear
     /// (found this run, not yet banked): sent whenever it changes (new loot,
     /// an equip/unequip) so the Equip tab always reflects the truth.
