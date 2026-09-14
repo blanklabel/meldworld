@@ -66,6 +66,16 @@ pub(crate) fn enter_battle(
 #[derive(Component)]
 pub(crate) struct BattleActor {
     pub(crate) id: String,
+    /// The `class:` wire status this actor was last spawned with (empty for an
+    /// enemy, which carries none). `sync_battle_actors` diffs this alongside the
+    /// id set, so a hero whose class the wire corrects — a snapshot that landed
+    /// before `party_fighters` had finished setting it, a hero re-joining after a
+    /// flee, or any other path that could hand back a `CombatantView` with a
+    /// changed class for the same id — forces a respawn instead of leaving the
+    /// old sprite standing under the new name. Comparing only the id SET (the
+    /// prior behaviour) could never catch that: the set is unchanged, only its
+    /// content is.
+    pub(crate) class: String,
 }
 
 /// The floating diamond marker over an enemy, carrying the enemy id it belongs to
@@ -73,6 +83,18 @@ pub(crate) struct BattleActor {
 /// current [`BattleTarget`]; bounces + spins while shown (see [`highlight_target`]).
 #[derive(Component)]
 pub(crate) struct TargetDiamond {
+    id: String,
+    base_y: f32,
+}
+
+/// The arrow marking whose turn is active — tip pointing down, right above that
+/// hero's own head — so the command menu's "who am I ordering right now" has a
+/// visible answer in the arena itself. Hidden for every hero but the one
+/// `BattleData::active` names. Mirrors [`TargetDiamond`]/[`highlight_target`], but
+/// keyed off the command menu's active hero rather than the picked enemy (see
+/// [`highlight_active_turn`]).
+#[derive(Component)]
+pub(crate) struct ActiveTurnArrow {
     id: String,
     base_y: f32,
 }
@@ -138,11 +160,15 @@ pub(crate) fn spawn_hero_actor(
     // The battle stages on FLAT ground (the ground shader's `terrain_amp` is 0 outside the
     // Overworld), so actors sit at their designed Y — NOT lifted by `terrain_height`, which
     // (seeded per run) would otherwise bury or float them off the flat stage.
-    let class = c
-        .statuses
-        .iter()
-        .find_map(|s| s.strip_prefix("class:"))
-        .unwrap_or("explorer");
+    // The raw wire value (empty if this combatant carries no `class:` status at
+    // all — never true for a real hero, but kept distinct from the *render*
+    // fallback just below) is what gets stored on `BattleActor` for
+    // `sync_battle_actors`'s diff: it has to be the exact same value that
+    // function's own `class_of` reads back off `battle.combatants`, or the two
+    // sides disagree on a class-less actor (every enemy) and rebuild every frame.
+    let class_status =
+        c.statuses.iter().find_map(|s| s.strip_prefix("class:")).unwrap_or("");
+    let class = if class_status.is_empty() { "explorer" } else { class_status };
     let frames = wa.class_frames(class);
     let base_tint = Color::srgb(1.2, 1.18, 1.08);
     let mat = mats.add(hd2d::sprite_material(base_tint, frames.idle[0].clone()));
@@ -171,7 +197,7 @@ pub(crate) fn spawn_hero_actor(
     let quad = if bust { wa.bust_quad.clone() } else { wa.sprite_quad.clone() };
     commands
         .spawn((
-            BattleActor { id: c.id.clone() },
+            BattleActor { id: c.id.clone(), class: class_status.to_string() },
             Transform::from_translation(root),
             Visibility::default(),
             cs,
@@ -237,6 +263,34 @@ pub(crate) fn spawn_hero_actor(
                         .with_scale(Vec3::new(1.0, 0.55, 1.0)),
                 ));
             }
+            // The active-turn arrow: hidden until `highlight_active_turn` (below)
+            // says this is the hero on the clock.
+            //
+            // ⚠️ THE Y IS DERIVED, NOT GUESSED. This child's own `Transform` above
+            // (`0.0, 0.72, 0.0`) is NOT where the sprite actually ends up —
+            // `hd2d::place_billboards` regrounds and rescales every
+            // `hd2d::HeroBillboard` from `Look` every frame (see its own doc
+            // comment), which is also why a hero never floats the way an
+            // ungrounded creature billboard used to. Reading the real geometry
+            // back out of the same two constants that drive that system is what
+            // keeps this arrow honest if `HERO_SPRITE_SCALE` is ever retuned,
+            // instead of a literal that quietly stops matching the sprite under
+            // it.
+            let hero_top = hd2d::grounded_sprite_y(hd2d::HERO_SPRITE_SCALE)
+                + 0.5 * hd2d::SPRITE_QUAD_HEIGHT * hd2d::HERO_SPRITE_SCALE;
+            // Same clearance the enemy target diamond floats above its own top
+            // (`marker_y` in `spawn_enemy_actor`).
+            let arrow_y = hero_top + 0.45;
+            p.spawn((
+                ActiveTurnArrow { id: c.id.clone(), base_y: arrow_y },
+                Mesh3d(wa.turn_arrow_mesh.clone()),
+                MeshMaterial3d(wa.turn_arrow_mat.clone()),
+                // The cone is apex-up by construction (see its spawn site) — flip
+                // it so the point reads as "aiming down at this hero".
+                Transform::from_xyz(0.0, arrow_y, 0.0)
+                    .with_rotation(Quat::from_rotation_x(std::f32::consts::PI)),
+                Visibility::Hidden,
+            ));
         });
 }
 
@@ -322,7 +376,11 @@ pub(crate) fn spawn_enemy_actor(
             .unwrap_or_default(),
     ));
     let mut root_cmds = commands.spawn((
-        BattleActor { id: c.id.clone() },
+        // Enemies never carry a `class:` status, and never swap sprite sets
+        // mid-fight — this stays empty so the set-plus-class diff in
+        // `sync_battle_actors` never mistakes an unrelated status change on the
+        // SAME enemy for a reason to respawn the whole arena.
+        BattleActor { id: c.id.clone(), class: String::new() },
         Transform::from_translation(root),
         Visibility::default(),
     ));
@@ -522,8 +580,26 @@ pub(crate) fn sync_battle_actors(
     //
     // The roster changes rarely and the arena is a dozen entities, so rebuild the whole
     // thing when the SET changes and do nothing at all when it has not.
-    let live: HashSet<&str> = battle.combatants.iter().map(|c| c.id.as_str()).collect();
-    let have: HashSet<&str> = q.iter().map(|(_, a)| a.id.as_str()).collect();
+    //
+    // ⚠️ THE CLASS RIDES ALONG IN THE SAME DIFF, not just the id. An id set alone
+    // says "who is here", never "what they last spawned as" — so a hero whose
+    // `class:` wire status is corrected after this same id was already on the
+    // field (any snapshot that could hand back a changed class for an id already
+    // rendered) would keep its stale, wrong-class sprite forever: the set the old
+    // check compared never moved. Reported as "the Hunter sometimes shows as the
+    // Explorer". Folding class into the same set closes that gap without a
+    // second, separately-maintained check that could itself drift out of sync.
+    // Empty (not "explorer") when absent — matching the raw value stored on
+    // `BattleActor::class` at spawn (see `spawn_hero_actor`/`spawn_enemy_actor`),
+    // never the render-time fallback, so an enemy (no `class:` status, ever)
+    // reads as equal here instead of "changing" on every single frame.
+    fn class_of(c: &CombatantView) -> &str {
+        c.statuses.iter().find_map(|s| s.strip_prefix("class:")).unwrap_or("")
+    }
+    let live: HashSet<(&str, &str)> =
+        battle.combatants.iter().map(|c| (c.id.as_str(), class_of(c))).collect();
+    let have: HashSet<(&str, &str)> =
+        q.iter().map(|(_, a)| (a.id.as_str(), a.class.as_str())).collect();
     if live == have {
         return;
     }
@@ -665,6 +741,35 @@ pub(crate) fn highlight_target(
         if on {
             tf.translation.y = d.base_y + bob;
             tf.rotation = spin;
+        }
+    }
+}
+
+/// Show the active-turn arrow over whichever hero `battle.active` names — the
+/// one the command menu is giving orders to — and hide it over every other
+/// hero. Mirrors [`highlight_target`]'s pick-one-hide-the-rest shape, minus the
+/// spin: a downward cone reads the same from any angle around its own axis, so
+/// spinning it would cost a system update for zero visible change.
+pub(crate) fn highlight_active_turn(
+    time: Res<Time>,
+    battle: Res<BattleData>,
+    report: Res<LootReport>,
+    mut arrows: Query<(&ActiveTurnArrow, &mut Transform, &mut Visibility)>,
+) {
+    // The fight is over the instant its tally (chits/XP/loot) is up, even
+    // though `battle.active` still names whoever was on the clock when the
+    // last blow landed — the command menu is gone by then, so an arrow still
+    // pointing at a hero reads as a leftover, not as "your turn".
+    let active = if report.active { None } else { battle.active.as_deref() };
+    // A slightly quicker bob than the target diamond's, and the arrow's own
+    // rotation is left alone — flipping it stays the spawn-time constant, only
+    // its height animates.
+    let bob = 0.15 * (time.elapsed_secs() * 3.0).sin();
+    for (a, mut tf, mut vis) in &mut arrows {
+        let on = active == Some(a.id.as_str());
+        *vis = if on { Visibility::Visible } else { Visibility::Hidden };
+        if on {
+            tf.translation.y = a.base_y + bob;
         }
     }
 }
@@ -1289,16 +1394,42 @@ pub(crate) fn next_commandable(battle: &BattleData) -> Option<String> {
 /// Send a hero's order to the server, aimed at `target` (the combatant the player
 /// chose; already validated/retargeted by [`auto_fire_queued`]).
 pub(crate) fn fire_order(net: &Net, battle_id: &str, actor: &str, kind: QueuedKind, target: Option<&str>) {
-    let cmd = match kind {
+    if let Some(cmd) = command_for_order(battle_id, actor, kind, target) {
+        net.send(cmd);
+    }
+}
+
+/// The `ClientCmd` [`fire_order`] would send, or `None` if it would build nothing
+/// (which drops the order in silence — see the Second Wind comment below). Split
+/// out from `fire_order` itself so this can be tested without a live [`Net`]: a
+/// kind that returns `None` here for a `target` `needs_a_target` already promised
+/// would arrive is an order thrown away forever, not just delayed.
+fn command_for_order(
+    battle_id: &str,
+    actor: &str,
+    kind: QueuedKind,
+    target: Option<&str>,
+) -> Option<ClientCmd> {
+    match kind {
         QueuedKind::Attack => target.map(|t| ClientCmd::Attack {
             battle_id: battle_id.to_string(),
             actor: actor.to_string(),
             target: t.to_string(),
         }),
-        QueuedKind::Skill(sk) => target.map(|t| ClientCmd::Skill {
+        // A self-cast skill (Second Wind, ...) reaches here with `target: None` by
+        // design — `needs_a_target` only guarantees `Some` for a skill the registry
+        // actually aims at an enemy/ally (see its own doc comment). `target.map(...)`
+        // would silently build NO command at all for the self-cast case (the same
+        // shape of bug `needs_a_target` itself was fixed for, one function
+        // downstream): the client believed the order had fired and cleared it from
+        // `queued`/`ready`, but nothing ever reached the server, so the hero's gauge
+        // was never reset and the hero sat frozen until the 15s no-action auto-Defend
+        // eventually unstuck it. `unwrap_or("")`, matching `Focus`/`Hold` just below —
+        // `resolve_hunter`'s Second Wind/Iron Lung branch never reads `target_id`.
+        QueuedKind::Skill(sk) => Some(ClientCmd::Skill {
             battle_id: battle_id.to_string(),
             actor: actor.to_string(),
-            target: t.to_string(),
+            target: target.unwrap_or("").to_string(),
             skill_kind: sk.to_string(),
         }),
         QueuedKind::Defend => Some(ClientCmd::Defend {
@@ -1330,9 +1461,6 @@ pub(crate) fn fire_order(net: &Net, battle_id: &str, actor: &str, kind: QueuedKi
             battle_id: battle_id.to_string(),
             actor: actor.to_string(),
         }),
-    };
-    if let Some(cmd) = cmd {
-        net.send(cmd);
     }
 }
 
@@ -1401,7 +1529,17 @@ pub(crate) fn auto_fire_queued(net: NonSend<NetRes>, mut battle: ResMut<BattleDa
 /// orders are aimed — a kind that is aimed here and not there is an order held forever,
 /// and one that is aimed there and not here is an order dropped forever.
 pub(crate) fn needs_a_target(kind: QueuedKind) -> bool {
-    matches!(kind, QueuedKind::Attack | QueuedKind::Skill(_))
+    match kind {
+        QueuedKind::Attack => true,
+        // A skill only actually needs a target if the REGISTRY says it's aimed at an
+        // enemy or ally (same lookup `order_side` uses) — a self-cast skill (Second
+        // Wind, Rite of Rest, ...) fires with `target: None` by design, and blanket-
+        // matching every `Skill(_)` here held it in `auto_fire_queued` forever waiting
+        // for a target that never arrives, permanently locking the hero out of the
+        // command menu (`pick_active`/`next_commandable` skip any hero still queued).
+        QueuedKind::Skill(_) => order_side(kind).is_some(),
+        _ => false,
+    }
 }
 
 /// The `&'static str` manifestation kind matching a dynamic `kind` string (from a
@@ -4421,6 +4559,44 @@ mod simultaneous_turn_tests {
         }
         for kind in [QueuedKind::Defend, QueuedKind::Flee, QueuedKind::Hold] {
             assert!(!needs_a_target(kind), "{kind:?} is not aimed and must still fire");
+        }
+    }
+
+    /// A self-cast `Skill` (the registry says `Target::Caster`) must NOT be treated as
+    /// aimed: `order_side`/`begin_order`/`queue_order` already queue it with
+    /// `target: None` by design (see `Order`'s own doc comment), so if `needs_a_target`
+    /// disagreed, `auto_fire_queued` would hold the order forever waiting for a target
+    /// that a self-cast skill never receives — and a held order permanently excludes
+    /// its hero from `pick_active`/`next_commandable`, locking the whole character out
+    /// of the command menu for the rest of the fight. This was a real regression:
+    /// Second Wind (Hunter, unlock 5) reproduced it exactly.
+    #[test]
+    fn a_self_cast_skill_is_not_aimed_and_must_still_fire() {
+        for key in ["second_wind", "iron_lung", "rite_of_rest"] {
+            assert!(
+                !needs_a_target(QueuedKind::Skill(key)),
+                "{key} is self-cast (Target::Caster) and must fire with no target"
+            );
+        }
+    }
+
+    /// `needs_a_target` alone isn't enough — `fire_order` (via `command_for_order`)
+    /// must actually agree and build a real command. This was a real regression, one
+    /// function downstream of the fix above: `needs_a_target` correctly stopped
+    /// holding Second Wind's order forever, but `command_for_order`'s `Skill` arm
+    /// still used `target.map(...)` (drop-on-`None`) instead of `unwrap_or("")` (like
+    /// `Focus`/`Hold`), so the order the client believed had "fired" built no
+    /// `ClientCmd` at all and never reached the server — the hero's gauge was never
+    /// reset, and it sat frozen until the server's 15s no-action auto-Defend timeout
+    /// eventually forced a turn, reading as "stuck for about two turns."
+    #[test]
+    fn a_self_cast_skill_actually_builds_a_command_with_no_target() {
+        for key in ["second_wind", "iron_lung", "rite_of_rest"] {
+            assert!(
+                command_for_order("b1", "hero1", QueuedKind::Skill(key), None).is_some(),
+                "{key} must build a real command even with target: None, or the order \
+                 is silently dropped and the hero's gauge never resets"
+            );
         }
     }
 }
