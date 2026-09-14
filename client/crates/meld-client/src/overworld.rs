@@ -129,6 +129,18 @@ const HURT_FLASH_FULL_AT: f32 = 0.25;
 /// player learns nothing from the thing that is slowly killing them.
 const HURT_FLASH_MIN: f32 = 0.06;
 
+/// The side length of each compass letter's little backing chip — see
+/// `spawn_compass_label`.
+const COMPASS_LABEL_SIZE: f32 = 14.0;
+
+/// The corner minimap's on-screen size (both width and height — it's a square panel).
+/// `HALF`/`R` in `update_minimap` and the depth-readout's position below the panel are
+/// all derived from this, so resizing the map only ever means changing this one number.
+pub(crate) const MINIMAP_SIZE: f32 = 161.0; // 140 * 1.15, rounded to a whole pixel
+/// The panel's own border thickness — subtracted from `MINIMAP_SIZE / 2.0` to get the
+/// dot field's usable radius (`R` in `update_minimap`), so dots never draw under the edge.
+const MINIMAP_BORDER: f32 = 2.0;
+
 /// How hard a wash goes for losing `lost` of a `pool`-sized party: 0..1, full at
 /// [`HURT_FLASH_FULL_AT`].
 ///
@@ -401,9 +413,9 @@ pub(crate) fn overworld_ui(
                     position_type: PositionType::Absolute,
                     right: Val::Px(14.0),
                     top: Val::Px(14.0),
-                    width: Val::Px(140.0),
-                    height: Val::Px(140.0),
-                    border: UiRect::all(Val::Px(2.0)),
+                    width: Val::Px(MINIMAP_SIZE),
+                    height: Val::Px(MINIMAP_SIZE),
+                    border: UiRect::all(Val::Px(MINIMAP_BORDER)),
                     overflow: Overflow::clip(),
                     display: Display::None,
                     ..default()
@@ -414,7 +426,15 @@ pub(crate) fn overworld_ui(
             .with_children(|p| {
                 if let Some(g) = &ground {
                     p.spawn((
-                        ImageNode::new(g.image.clone()),
+                        // `Stretch`, not the default `Auto`: the render target is a
+                        // 16:9 texture (`minimap.rs`'s `TARGET_W`/`TARGET_H`), and
+                        // `Auto` preserves ITS aspect ratio inside this square panel
+                        // instead of honoring the `Percent(100.0)` sizing below —
+                        // letterboxing the map into a strip that doesn't fill the frame.
+                        ImageNode {
+                            image_mode: NodeImageMode::Stretch,
+                            ..ImageNode::new(g.image.clone())
+                        },
                         Node {
                             position_type: PositionType::Absolute,
                             left: Val::Px(0.0),
@@ -425,6 +445,18 @@ pub(crate) fn overworld_ui(
                         },
                     ));
                 }
+                // A compass ring: N/S/E/W read straight off the same world axes the
+                // ground image and dots already use above (`dx`/`dy` in
+                // `update_minimap` — +x is drawn right, +y is drawn down), so the map
+                // needs no rotation to be north-up: N is simply "top", S "bottom", E
+                // "right", W "left".
+                let centered = MINIMAP_SIZE / 2.0 - COMPASS_LABEL_SIZE / 2.0;
+                let inset = 3.0;
+                // (label, left, top, right, bottom)
+                spawn_compass_label(p, "N", Some(centered), Some(inset), None, None);
+                spawn_compass_label(p, "S", Some(centered), None, None, Some(inset));
+                spawn_compass_label(p, "W", Some(inset), Some(centered), None, None);
+                spawn_compass_label(p, "E", None, Some(centered), Some(inset), None);
             });
             // How deep you are, under the map that earned it. Distance is the whole
             // difficulty axis, so it belongs beside the reading of the ground rather
@@ -438,7 +470,9 @@ pub(crate) fn overworld_ui(
                 Node {
                     position_type: PositionType::Absolute,
                     right: Val::Px(14.0),
-                    top: Val::Px(160.0),
+                    // 14 (panel top) + MINIMAP_SIZE (panel height) + 6 (gap) — stays
+                    // pinned just under the panel however large it is.
+                    top: Val::Px(14.0 + MINIMAP_SIZE + 6.0),
                     display: Display::None,
                     ..default()
                 },
@@ -2876,8 +2910,8 @@ pub(crate) fn update_minimap(
         return;
     }
     let Some(me) = world.entities.get(&session.player_id) else { return };
-    const HALF: f32 = 70.0;
-    const R: f32 = 68.0;
+    const HALF: f32 = MINIMAP_SIZE / 2.0;
+    const R: f32 = HALF - MINIMAP_BORDER;
     // The dots must use the SAME framing the ground was drawn at, or the blips float over a
     // map of somewhere else. `MapView` is that framing, so there is one answer to "what is
     // this panel showing" rather than two that drift.
@@ -2927,6 +2961,43 @@ pub(crate) fn spawn_dot(p: &mut ChildSpawnerCommands, cx: f32, cy: f32, size: f3
         },
         BackgroundColor(col),
     ));
+}
+
+/// One compass letter (N/S/E/W) on a small dark backing chip, so it stays legible
+/// over whatever terrain colour happens to be under it. Exactly one of `left`/`right`
+/// and one of `top`/`bottom` should be `Some` — the other pair centres the chip on
+/// the opposite pair of edges via its own fixed `COMPASS_LABEL_SIZE`.
+fn spawn_compass_label(
+    p: &mut ChildSpawnerCommands,
+    label: &'static str,
+    left: Option<f32>,
+    top: Option<f32>,
+    right: Option<f32>,
+    bottom: Option<f32>,
+) {
+    p.spawn((
+        Node {
+            position_type: PositionType::Absolute,
+            left: left.map_or(Val::Auto, Val::Px),
+            top: top.map_or(Val::Auto, Val::Px),
+            right: right.map_or(Val::Auto, Val::Px),
+            bottom: bottom.map_or(Val::Auto, Val::Px),
+            width: Val::Px(COMPASS_LABEL_SIZE),
+            height: Val::Px(COMPASS_LABEL_SIZE),
+            align_items: AlignItems::Center,
+            justify_content: JustifyContent::Center,
+            border_radius: BorderRadius::all(Val::Px(3.0)),
+            ..default()
+        },
+        BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.35)),
+    ))
+    .with_children(|b| {
+        b.spawn((
+            Text::new(label),
+            TextFont { font_size: FontSize::Px(11.0), ..default() },
+            TextColor(Color::srgba(1.0, 1.0, 1.0, 0.92)),
+        ));
+    });
 }
 
 /// The depth readout beneath the corner minimap. The map moved to the

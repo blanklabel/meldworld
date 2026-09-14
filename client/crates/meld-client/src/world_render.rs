@@ -956,6 +956,11 @@ pub(crate) struct WorldAssets {
     pub(crate) bust_quad: Handle<Mesh>,
     pub(crate) shadow_mesh: Handle<Mesh>,
     pub(crate) shadow_mat: Handle<StandardMaterial>,
+    /// The active-turn arrow's cone, apex up as `Cone` spawns it — flipped per-instance
+    /// at each hero's own spawn site (`spawn_hero_actor`), not baked in here, since every
+    /// hero shares the one mesh/material pair.
+    pub(crate) turn_arrow_mesh: Handle<Mesh>,
+    pub(crate) turn_arrow_mat: Handle<StandardMaterial>,
     /// CC0 pixel-art creature billboards keyed by creature content id (see
     /// `meld-world::creatures_for_biome`); unknown kinds fall back to [`Self::monster_pool`].
     /// Creatures stay 2D sprites — the HD-2D convention (2D actors, 3D world).
@@ -1531,6 +1536,19 @@ pub(crate) fn setup(
         bust_quad: meshes.add(hd2d::bust_billboard_mesh(2.2, 2.2, 12, 60.0, 0.55)),
         shadow_mesh: meshes.add(Circle::new(0.7)),
         shadow_mat: mats.add(hd2d::contact_shadow_material()),
+        // A small, bright, unlit cone — noticeable without needing new PixelLab art
+        // the way the target diamond has. Unlit so it reads the same colour at
+        // night as it does in daylight; the fight is dark enough already without
+        // one more thing that dims.
+        // Half the first cut's size (0.28/0.5) — noticeable was already there, this
+        // just stops it competing with the sprite it's pointing at.
+        turn_arrow_mesh: meshes.add(Cone { radius: 0.14, height: 0.25 }),
+        turn_arrow_mat: mats.add(StandardMaterial {
+            base_color: Color::srgb(1.0, 0.86, 0.2),
+            emissive: LinearRgba::rgb(2.6, 2.0, 0.2),
+            unlit: true,
+            ..default()
+        }),
         monster_sprites,
         monster_pool,
         prop_scenes,

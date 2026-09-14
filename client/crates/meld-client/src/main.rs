@@ -838,6 +838,7 @@ fn main() {
                     sync_battle_actors,
                     battle_click_target,
                     highlight_target,
+                    highlight_active_turn,
                     drive_battle_action_clips,
                     drive_battle_facing,
                     animate_battle_actors,
