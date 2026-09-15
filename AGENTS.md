@@ -1963,6 +1963,58 @@ bars, hiding the formation the grace beat exists for you to read. It lives exact
 `feel.opening_ttl` (2 s), which is that beat; `MELD_OPENING=ambush|surprise` is the fixture,
 since the static mockup never receives a `battle.started` to raise it.
 
+**EVERYBODY CHARGES AT ONCE, AND NOW YOU CAN SEE IT** (`UX-13`,
+[`turn_order.rs`](client/crates/meld-client/src/turn_order.rs)). A charging line across the
+top of the arena: every combatant rides one shared track as its own south-facing sprite —
+the SAME art the arena spawns, resolved the same way, since an icon that disagreed with the
+body it stands for is worse than no icon — sliding left to right with its gauge, dragging a
+sparkling charge line behind it, foes in the lane above the rail and your party below. At
+the GO end it **bounces and glows** until the turn is spent. Before it, the only gauges on
+screen were the four hero bars along the bottom edge and a 5px enemy bar gated behind the
+TOP rung of the Hunter's Predator's Eye, so "who goes next, them or me" — the question a
+player asks every second of a fight — had no answer for either side. ⚠️ **Getting to go does
+not stop anybody else going, and this is where that becomes visible**: an icon sitting at the
+GO end while five others keep sliding toward it IS the rule
+(`one_hero_thinking_does_not_stop_the_fight`). ⚠️ It **rebuilds on the CAST and animates on
+the clock** — folding the gauges into its redraw key would tear the node tree down ten times
+a second, which is the exact cost `UI REDRAWS ON CHANGE` exists to avoid.
+
+**THE COMMAND MENU IS AN EVENT, NOT A FRAME.** `pick_active` hands back a hero only when that
+hero's gauge is FULL and it has no order locked in; `None` hides the panel. It used to fall
+back to "any un-ordered live hero", so the window was up for the whole fight asking a hero
+with a quarter-full gauge what it would like to do in six seconds — and the one thing the
+panel has to say, *somebody is waiting on you*, was never news. One predicate (`commandable`)
+answers for the panel, TAB, the number keys and a tap on a party cell, so none of them can
+offer a hero the panel would then refuse to draw.
+⚠️ **`BattleData::ready` therefore had to stop being a latch.** It was set by
+`battle.turn_ready` and cleared only when this client fired something — but a turn ends by
+paths that send this client nothing at all (the 15 s auto-defend, a paralysis, a frenzy), so
+a hero stayed "ready" forever. Harmless while the panel was always up; with the panel gated
+on that set it would leave an unusable menu on screen for the rest of the fight. It is
+re-derived from every `gauge_update` now, and a hero mid-round-trip sits in `acting` so the
+panel does not flicker back over one that is already swinging.
+
+**AUTO-BATTLE IS EVERYONE'S, FROM THE FIRST FIGHT.** `[T]` (and its tile in the command
+window) queues each un-ordered hero's class default — the same heuristics `MELD_AUTOPLAY`
+drives. It used to be called TACTICS and was gated on an Phoenix Guard standing in the line,
+which made the one convenience in the game that answers "I have fought this pack forty times"
+a reward for fielding one particular class; worse, the toggle, its keyboard hint and its tile
+were all simply ABSENT for every other party, so most players never learned it existed. A
+comfort control is not a power: it queues exactly the orders a player could queue by hand, at
+the speed the ATB already allows.
+
+**A GUARD BUYS TEMPO AS WELL AS SKIN** (`UX-14`). Defending leaves a fighter **BRACED** —
+its gauge fills at `[battle] defend_haste_mult` from the moment it guards until its own next
+turn — because halving one incoming blow is a trade you make only when the alternative is
+dying, which made Defend the row nobody pressed. A RATE like every other gauge modifier here,
+so it can no more lock a gauge than a slow can, and it multiplies alongside a haste rather
+than replacing it (the two are bought separately, one with this hero's own turn). Cleared in
+`reset_gauge` — the ONE place every resolved turn passes through — rather than by each
+resolver remembering to, which is also why a second Defend re-arms it cleanly. It is its own
+flag rather than `defending`, which eleven call sites clear the moment the fighter SWINGS:
+the tempo half is bought by the turn you spent, not by the stance you are still holding. It
+rides the wire as `braced` so the HUD can draw it, and the 15-second auto-defend braces too.
+
 **A FIGHT ALSO FINISHES ON ITS OWN SCREEN.** The tally drew over the arena and gated the walk
 back out (`LootReport::gate_return`); the LEVEL-UP screens it earned did not — they were
 registered on Overworld/City/Ended and *despawned on the way INTO* a fight, so a victory read

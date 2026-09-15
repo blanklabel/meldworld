@@ -160,7 +160,7 @@ pub(crate) fn mock_battle_setup(
     );
     battle.combatants = vec![
         // A Explorer + Phoenix Guard hold the front; a Psyker + Resonant sit the back row.
-        // (The Phoenix Guard makes the TACTICS tap toggle visible for screenshots.)
+        // (Four classes, so the fixture exercises four different command menus.)
         hero("h1", 32, 1.0, "explorer", false),
         hero("h2", 40, 0.4, "psyker", true),
         hero("h3", 21, 1.0, "resonant", true),

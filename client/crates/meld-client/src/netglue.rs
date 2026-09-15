@@ -427,9 +427,13 @@ pub(crate) fn pump_net(
                 battle.monster_combatant = monster_combatant;
                 battle.combatants = combatants;
                 battle.ready.clear();
+                battle.acting.clear();
                 battle.queued.clear();
                 battle.spectating = spectating;
-                battle.active = battle.your_ids.first().cloned();
+                // NOBODY is being commanded yet. The command panel is raised by a hero's
+                // gauge filling (`pick_active`), and pointing it at hero 1 before the bell
+                // put an unusable menu on screen for the whole opening grace beat.
+                battle.active = None;
                 // **SAY HOW IT OPENED, AS A POP-UP.** An ambush costs the party a whole
                 // round and a surprise hands it one; both were previously invisible — the
                 // gauges simply started somewhere different and the player was left to
@@ -457,6 +461,7 @@ pub(crate) fn pump_net(
                     battle.spectating = false;
                     battle.combatants.clear();
                     battle.ready.clear();
+                    battle.acting.clear();
                     battle.queued.clear();
                     battle.active = None;
                     if *state.get() == Screen::Battle {
@@ -629,6 +634,24 @@ pub(crate) fn pump_net(
                         c.gauge = gauge;
                         c.hp = hp;
                         c.statuses = statuses;
+                    }
+                }
+                // **WHOSE TURN IT IS COMES OFF THE GAUGE, EVERY TICK.** `battle.turn_ready`
+                // is an edge and turns end by paths that send no message to this client at
+                // all (the 15 s auto-defend, a paralysis, a frenzy), so a latched `ready`
+                // went stale — and the command panel, which now hides unless somebody owns a
+                // turn, would have stayed up forever offering orders the server refuses.
+                // A hero mid-round-trip keeps its order: its gauge is still full.
+                let ids = battle.your_ids.clone();
+                for id in ids {
+                    let full = battle.view(&id).map(|c| c.gauge >= 1.0).unwrap_or(false);
+                    if full {
+                        if !battle.acting.contains(&id) {
+                            battle.ready.insert(id);
+                        }
+                    } else {
+                        battle.acting.remove(&id);
+                        battle.ready.remove(&id);
                     }
                 }
             }

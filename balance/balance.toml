@@ -235,6 +235,15 @@ flee_item_drop_chance = 0.25
 merge_cap_normal_instances = 2   # CANON D5
 merge_cap_gatekeeper_instances = 4
 defend_damage_reduction = 0.5    # content-defined; spike default
+# **DEFEND BUYS TEMPO AS WELL AS SKIN.** Halving one incoming blow is a trade a player
+# makes only when the alternative is dying, so Defend was the row nobody pressed: it spent
+# a turn and bought nothing you could see. While BRACED — from the moment you defend until
+# your own next turn — the gauge fills at this rate, so guarding is also how you come back
+# round sooner. It is deliberately the same shape as `explorer_haste_mult` (a RATE, never a
+# gauge cap) and a touch gentler than it, because a party-wide haste from a level-50
+# capstone must still beat what any hero can do by pressing the second row of its own
+# menu. [TUNABLE]
+defend_haste_mult = 1.45
 # Front/back row (formation). Caster classes (Psyker/Resonant) stand in the back
 # row: they take `back_row_damage_mult` of incoming damage, and the enemy AI, when
 # the weakest foe it would strike is in the back row, only commits to it

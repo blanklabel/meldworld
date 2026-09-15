@@ -31,7 +31,13 @@ pub const AFFLICTIONS: &[&str] = &[
 ];
 
 /// Conditions a fighter WANTS, which fade on purpose.
-pub const BOONS: &[&str] = &["hasted", "barrier", "regen", "evasion", "insight", "gauge_guard"];
+pub const BOONS: &[&str] = &[
+    "hasted", "barrier", "regen", "evasion", "insight", "gauge_guard",
+    // What a fighter that GUARDED carries until its own next turn: its gauge fills faster.
+    // It is not on a timer like the rest — it is spent by the turn it bought — but it is
+    // still a boon, so a client colouring by condition tints it as one.
+    "braced",
+];
 
 /// Whether `name` is an affliction — and therefore whether it needs curing rather than
 /// waiting out. Unknown conditions are treated as BOONS, because the failure mode matters:

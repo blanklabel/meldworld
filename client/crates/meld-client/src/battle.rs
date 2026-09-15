@@ -1271,7 +1271,10 @@ pub(crate) fn queue_order(
     tutorial_run: &mut TutorialRun,
 ) {
     battle.queued.insert(hero.to_string(), Order { kind, target });
-    battle.active = pick_active(battle).or_else(|| Some(hero.to_string()));
+    // No `.or_else(|| Some(hero))`: the hero that just ordered is exactly the one that no
+    // longer has anything to do, and holding focus on it kept the panel up for a frame
+    // showing a menu that could not be used.
+    battle.active = pick_active(battle);
     reset_menu(menu);
     // The guided [T]-dive walkthrough's "what to click" step: the first order
     // submitted, of any kind, is proof the player found the command menu.
@@ -1357,23 +1360,41 @@ pub(crate) fn default_target(battle: &BattleData, kind: QueuedKind) -> Option<St
     }
 }
 
-/// The hero the command panel should focus: prefer one that's ready and still
-/// un-ordered, else any un-ordered live hero. Returns `None` when every living
-/// hero already has a locked order — that's the signal for the command panel to
-/// hide (nothing left to command until someone acts).
+/// The hero the command panel should focus: a living hero whose gauge is FULL and which
+/// has not already locked an order. `None` — and the panel is hidden — whenever nobody is
+/// waiting on you.
+///
+/// ⚠️ **THE MENU ONLY APPEARS WHEN SOMEBODY HAS SOMETHING TO DO.** This used to fall back
+/// to "any un-ordered live hero", so the command window was on screen for the whole fight,
+/// permanently asking a hero with a quarter-full gauge what it would like to do in six
+/// seconds' time. Two things followed from that, both bad: the one piece of information the
+/// panel carries — *somebody is waiting on you* — was never news, and the arena spent every
+/// fight behind a box that mostly could not be acted on. A turn is an EVENT now; the panel
+/// is what announces it.
 pub(crate) fn pick_active(battle: &BattleData) -> Option<String> {
-    let alive: Vec<&String> = battle.your_ids.iter().filter(|h| battle.alive(h)).collect();
-    alive
+    battle
+        .your_ids
         .iter()
-        .find(|h| battle.ready.contains(**h) && !battle.queued.contains_key(**h))
-        .or_else(|| alive.iter().find(|h| !battle.queued.contains_key(**h)))
-        .map(|h| (*h).clone())
+        .find(|h| battle.alive(h) && commandable(battle, h))
+        .cloned()
 }
 
-/// The next living, un-ordered hero after the current `active` (wrapping) — the
-/// target of TAB / clicking another hero's box, so you can pick WHICH ready hero to
-/// command. `None` when no other hero can be commanded. A hero that already locked
-/// an order is skipped (its action can't be changed until it fires).
+/// Whether this hero can be given an order right now: the server's gauge says it owns a
+/// turn ([`BattleData::ready`]), it has not already locked an order in, and it has none in
+/// flight. The ONE predicate every path that focuses a hero asks — the panel, TAB, the
+/// number keys and a tap on a party cell — so none of them can offer a hero the menu would
+/// then refuse to draw.
+pub(crate) fn commandable(battle: &BattleData, hero: &str) -> bool {
+    battle.ready.contains(hero)
+        && !battle.queued.contains_key(hero)
+        && !battle.acting.contains(hero)
+}
+
+/// The next living, READY, un-ordered hero after the current `active` (wrapping) — the
+/// target of TAB / clicking another hero's box, so you can pick WHICH of the heroes
+/// currently waiting on you to command first. `None` when nobody else is waiting. A hero
+/// that already locked an order is skipped (its action can't be changed until it fires),
+/// and so is one whose gauge is still filling — it has nothing to decide yet.
 pub(crate) fn next_commandable(battle: &BattleData) -> Option<String> {
     let ids = &battle.your_ids;
     let n = ids.len();
@@ -1385,9 +1406,12 @@ pub(crate) fn next_commandable(battle: &BattleData) -> Option<String> {
         .as_ref()
         .and_then(|a| ids.iter().position(|h| h == a))
         .unwrap_or(0);
-    (1..=n)
+    // `1..n`, not `1..=n`: the full wrap lands back on the hero we started from, so with one
+    // hero waiting TAB "switched" to the hero it was already on and the panel advertised a
+    // switch that does nothing.
+    (1..n)
         .map(|step| &ids[(start + step) % n])
-        .find(|h| battle.alive(h) && !battle.queued.contains_key(*h))
+        .find(|h| battle.alive(h) && commandable(battle, h))
         .cloned()
 }
 
@@ -1473,9 +1497,7 @@ pub(crate) fn validate_active(mut battle: ResMut<BattleData>, mut menu: ResMut<B
     }
     let prev = battle.active.clone();
     let needs_repick = match &battle.active {
-        Some(a) => {
-            !(battle.your_ids.contains(a) && battle.alive(a)) || battle.queued.contains_key(a)
-        }
+        Some(a) => !(battle.your_ids.contains(a) && battle.alive(a) && commandable(&battle, a)),
         None => true,
     };
     if needs_repick {
@@ -1519,6 +1541,10 @@ pub(crate) fn auto_fire_queued(net: NonSend<NetRes>, mut battle: ResMut<BattleDa
             battle.last_skill.insert(hero.clone(), sk.to_string());
         }
         fire_order(&net.0, &battle_id, &hero, order.kind, target.as_deref());
+        // The order is gone but the gauge is still full until the server resolves it — so
+        // this hero is neither ready nor commandable for the frame or two in between (see
+        // `BattleData::acting`).
+        battle.acting.insert(hero.clone());
         battle.ready.remove(&hero);
         battle.queued.remove(&hero);
     }
@@ -1737,7 +1763,7 @@ pub(crate) fn results_showing(report: &LootReport, lu: &LevelUpQueue) -> bool {
 pub(crate) fn menu_keyboard(
     keys: Res<ButtonInput<KeyCode>>,
     autoplay: Res<Autoplay>,
-    tactics: Res<Tactics>,
+    auto: Res<AutoBattle>,
     backpack: Res<RunBackpack>,
     report: Res<LootReport>,
     levelup: Res<LevelUpQueue>,
@@ -1757,10 +1783,10 @@ pub(crate) fn menu_keyboard(
     // The command menu keys off the *active hero's* class — a mixed party is
     // commanded hero by hero.
     let class = battle.active_class();
-    // Tactics (spec §6): available while an Phoenix Guard anchors the battle line;
-    // when toggled on it drives the same per-class defaults as `?autoplay`,
-    // submitting intents with no human reaction delay.
-    if autoplay.0 || (tactics.0 && battle_has_phoenix_guard(&battle)) {
+    // AUTO-BATTLE: available to every party from the first fight (see [`AutoBattle`]).
+    // When toggled on it drives the same per-class defaults as `MELD_AUTOPLAY`, submitting
+    // intents with no human reaction delay.
+    if autoplay.0 || auto.0 {
         let idle: Vec<String> = battle
             .your_ids
             .iter()
@@ -1820,7 +1846,7 @@ pub(crate) fn menu_keyboard(
         for (i, key) in digits.iter().enumerate() {
             if i < battle.your_ids.len() && keys.just_pressed(*key) {
                 let h = battle.your_ids[i].clone();
-                if battle.alive(&h) && !battle.queued.contains_key(&h) {
+                if battle.alive(&h) && commandable(&battle, &h) {
                     battle.active = Some(h);
                     reset_menu(&mut menu);
                 }
@@ -1898,10 +1924,10 @@ pub(crate) fn menu_click(
 }
 
 /// Mouse/touch: tapping a party HUD cell makes that hero the one being commanded —
-/// the touch-friendly counterpart to TAB. Only a controllable, un-ordered hero can
-/// be picked (you can't re-open a hero that already locked its action), and only
-/// from the root page (so it never hijacks a target pick). Switching drops back to
-/// the root page for the newly focused hero.
+/// the touch-friendly counterpart to TAB. Only a hero that is actually waiting on you can
+/// be picked ([`commandable`]: gauge full, no order locked in), and only from the root page
+/// (so it never hijacks a target pick). Switching drops back to the root page for the newly
+/// focused hero.
 pub(crate) fn party_select_click(
     mut menu: ResMut<BattleMenu>,
     mut battle: ResMut<BattleData>,
@@ -1917,7 +1943,7 @@ pub(crate) fn party_select_click(
         }
     }
     if let Some(id) = pick {
-        if battle.your_ids.contains(&id) && battle.alive(&id) && !battle.queued.contains_key(&id) {
+        if battle.your_ids.contains(&id) && battle.alive(&id) && commandable(&battle, &id) {
             battle.active = Some(id);
             reset_menu(&mut menu);
         }
@@ -1971,7 +1997,7 @@ pub(crate) fn cmd_tile(
 pub(crate) fn rebuild_command_menu(
     mut commands: Commands,
     battle: Res<BattleData>,
-    tactics: Res<Tactics>,
+    auto: Res<AutoBattle>,
     backpack: Res<RunBackpack>,
     report: Res<LootReport>,
     levelup: Res<LevelUpQueue>,
@@ -1989,11 +2015,11 @@ pub(crate) fn rebuild_command_menu(
     let level = menu.level;
     let active_id = battle.active.clone().unwrap_or_default();
     // Include the dynamic row count so re-opening a Target page (same level) rebuilds,
-    // and the Tactics state so the tap toggle's label refreshes when it flips.
+    // and the auto-battle state so the tap toggle's label refreshes when it flips.
     let sig = format!(
         "{show}|{active_id}|{level:?}|{}|{}|{:?}|{:?}",
         menu.rows.len(),
-        tactics.0,
+        auto.0,
         tutorial_run.step,
         tutorial_run.battle_intro
     );
@@ -2323,19 +2349,20 @@ pub(crate) fn rebuild_command_menu(
                             }
                         });
                 }
-                // Phoenix Guard stance toggle — the last keyboard-only battle control ([T]),
-                // now also a tap button so battle is fully click/tap driven. Shown only
-                // when an Phoenix Guard anchors the line (mirrors `tactics_toggle`).
-                if battle_has_phoenix_guard(&battle) {
-                    let (label, col) = if tactics.0 {
-                        ("\u{f132} TACTICS: ON  [T]", Color::srgb(0.55, 0.95, 0.65))
+                // The auto-battle toggle — the last keyboard-only battle control ([T]), and
+                // also a tap button so a fight is fully click/tap driven. **Always shown**:
+                // it used to appear only when an Phoenix Guard stood in the line, which hid
+                // the feature from most parties entirely (see [`AutoBattle`]).
+                {
+                    let (label, col) = if auto.0 {
+                        ("\u{f132} AUTO-BATTLE: ON  [T]", Color::srgb(0.55, 0.95, 0.65))
                     } else {
-                        ("\u{f132} TACTICS: OFF  [T]", Color::srgb(0.75, 0.8, 0.95))
+                        ("\u{f132} AUTO-BATTLE: OFF  [T]", Color::srgb(0.75, 0.8, 0.95))
                     };
                     panel
                         .spawn((
                             Button,
-                            TacticsButton,
+                            AutoBattleButton,
                             Node {
                                 border_radius: BorderRadius::all(Val::Px(6.0)),
                                 margin: UiRect::top(Val::Px(6.0)),
@@ -2377,7 +2404,9 @@ const BATTLE_INTRO_SEQUENCE: [BattleIntroStep; 4] = [
 fn battle_intro_text(step: BattleIntroStep) -> &'static str {
     match step {
         BattleIntroStep::Attack => "Attack — always available, no cost. Your basic hit.",
-        BattleIntroStep::Defend => "Defend — braces for the next hit, cutting the damage you take.",
+        BattleIntroStep::Defend => {
+            "Defend — braces: halves the next hit, and your next turn comes round sooner."
+        }
         BattleIntroStep::Skill => "Skill — spends your class's own resource for a stronger move.",
         BattleIntroStep::Flee => "Flee — pulls your whole party out of the fight together.",
     }
@@ -2407,7 +2436,10 @@ pub(crate) fn battle_intro_card(
             GlobalZIndex(900),
             Node {
                 position_type: PositionType::Absolute,
-                top: Val::Px(12.0),
+                // Below the charging line, which owns the top of the battle screen: this
+                // card explains the command menu and would otherwise sit on top of the one
+                // readout that says why the menu just appeared.
+                top: Val::Px(112.0),
                 left: Val::Px(0.0),
                 right: Val::Px(0.0),
                 align_items: AlignItems::Center,
@@ -2482,16 +2514,16 @@ pub(crate) fn battle_intro_keyboard(
     }
 }
 
-/// Toggle the Phoenix Guard Tactics stance from its tap button (the keyboard [T] path
-/// is `tactics_toggle`). Marks the command menu dirty so the label rebuilds.
-pub(crate) fn tactics_click(
-    q: Query<&Interaction, (With<TacticsButton>, Changed<Interaction>)>,
-    mut tactics: ResMut<Tactics>,
+/// Toggle auto-battle from its tap button (the keyboard [T] path is
+/// `auto_battle_toggle`). Marks the command menu dirty so the label rebuilds.
+pub(crate) fn auto_battle_click(
+    q: Query<&Interaction, (With<AutoBattleButton>, Changed<Interaction>)>,
+    mut auto: ResMut<AutoBattle>,
     mut menu: ResMut<BattleMenu>,
 ) {
     for interaction in &q {
         if *interaction == Interaction::Pressed {
-            tactics.0 = !tactics.0;
+            auto.0 = !auto.0;
             menu.dirty = true;
         }
     }
@@ -2696,7 +2728,9 @@ pub(crate) fn render_watch_banner(
             Node {
                 position_type: PositionType::Absolute,
                 width: Val::Percent(100.0),
-                top: Val::Px(16.0),
+                // UNDER the charging line, which owns the top of the battle screen now — a
+                // watcher wants to read who goes next as much as a fighter does.
+                top: Val::Px(112.0),
                 align_items: AlignItems::Center,
                 justify_content: JustifyContent::Center,
                 flex_direction: FlexDirection::Column,
@@ -3051,6 +3085,11 @@ fn status_effects(statuses: &[String]) -> Vec<(&'static str, Color, &'static str
     }
     if has("hasted") {
         v.push(("\u{f060c}", Color::srgb(1.0, 0.9, 0.55), "Haste")); // lightning-bolt
+    }
+    // GUARDING. It halves the next blow AND fills the gauge faster until this fighter's own
+    // next turn, and a tempo effect nothing draws is a tempo effect nobody believes in.
+    if has("braced") {
+        v.push(("\u{f18be}", Color::srgb(0.75, 0.86, 1.0), "Braced")); // md-shield_sword
     }
     // A creature that webbed or chilled you SLOWED you, and nothing said so — the gauge
     // just crawled. A snail is the one icon everybody already reads as "slowed".
@@ -3691,24 +3730,15 @@ pub(crate) fn advance_atb_flash(
     }
 }
 
-/// Whether any allied hero in this battle is an Phoenix Guard (their wire statuses
-/// carry `class:phoenix_guard`) — the gate for the Tactics auto-battle toggle.
-pub(crate) fn battle_has_phoenix_guard(battle: &BattleData) -> bool {
-    battle
-        .combatants
-        .iter()
-        .any(|c| c.is_player && c.statuses.iter().any(|s| s == "class:phoenix_guard"))
-}
-
-/// Toggle Tactics with T on the battle screen (only while an Phoenix Guard is in
-/// the battle — without one the toggle is inert and the hint hidden).
-pub(crate) fn tactics_toggle(
+/// Toggle auto-battle with T on the battle screen. **Every party has it, from the first
+/// fight** — see [`AutoBattle`] for why the Phoenix Guard gate this used to carry was
+/// wrong.
+pub(crate) fn auto_battle_toggle(
     keys: Res<ButtonInput<KeyCode>>,
-    battle: Res<BattleData>,
-    mut tactics: ResMut<Tactics>,
+    mut auto: ResMut<AutoBattle>,
 ) {
-    if keys.just_pressed(KeyCode::KeyT) && battle_has_phoenix_guard(&battle) {
-        tactics.0 = !tactics.0;
+    if keys.just_pressed(KeyCode::KeyT) {
+        auto.0 = !auto.0;
     }
 }
 
@@ -3758,7 +3788,7 @@ pub(crate) fn render_hit_fx(
     hitfx: Res<HitFx>,
     battle: Res<BattleData>,
     feel: Res<BattleFeel>,
-    tactics: Res<Tactics>,
+    auto: Res<AutoBattle>,
     windows: Query<&Window>,
     cam_q: Query<(&Camera, &GlobalTransform), With<Camera3d>>,
     actors: Query<(&BattleActor, &GlobalTransform)>,
@@ -3771,7 +3801,7 @@ pub(crate) fn render_hit_fx(
         || hitfx.is_changed()
         || battle.is_changed()
         || feel.is_changed()
-        || tactics.is_changed()
+        || auto.is_changed()
         || !cam_moved.is_empty())
     {
         return;
@@ -3876,20 +3906,22 @@ pub(crate) fn render_hit_fx(
                 });
             }
 
-            // Tactics status (spec §6): a passive top-right readout while an Phoenix Guard
-            // anchors the line. Suppressed while a hero is being commanded, since the
-            // command window then shows the interactive TACTICS toggle button instead.
-            if battle_has_phoenix_guard(&battle) && battle.active.is_none() {
-                let (label, col) = if tactics.0 {
-                    ("TACTICS: ON  [T]", Color::srgb(0.55, 0.95, 0.65))
+            // Auto-battle: a passive top-right readout whenever nobody is being commanded,
+            // so the control is discoverable from the very first fight. While a hero IS being
+            // commanded the command window carries the interactive toggle instead.
+            if battle.active.is_none() {
+                let (label, col) = if auto.0 {
+                    ("AUTO-BATTLE: ON  [T]", Color::srgb(0.55, 0.95, 0.65))
                 } else {
-                    ("TACTICS: OFF  [T]", Color::srgb(0.6, 0.65, 0.8))
+                    ("AUTO-BATTLE: OFF  [T]", Color::srgb(0.6, 0.65, 0.8))
                 };
                 p.spawn((
                     Node {
                         position_type: PositionType::Absolute,
                         right: Val::Px(14.0),
-                        top: Val::Px(64.0),
+                        // Clear of the charging line's panel, which is centred across the
+                        // top and reaches ~104px down on a narrow window.
+                        top: Val::Px(112.0),
                         ..default()
                     },
                     Text::new(label),
