@@ -92,7 +92,7 @@ pub(crate) struct District {
 pub(crate) const CITY_DISTRICTS: &[District] = &[
     District {
         label: "The Threshold",
-        purpose: "leave town: start a run",
+        purpose: "check your kit, then dive",
         x: 0.0,
         z: -19.0,
         radius: 5.5,
@@ -1489,6 +1489,51 @@ pub(crate) fn city_move(
 
 /// Orbit-follow the avatar with the HD-2D camera (mirrors `hd2d_follow`).
 #[allow(clippy::type_complexity)]
+/// The framing the town is composed for, remembered the first time it is seen.
+///
+/// The city and the overworld share ONE `hd2d::Look`, and the overworld lets the player drag
+/// the camera around — so you arrive in town at whatever angle you happened to leave the
+/// maze at, and, because `city_move` takes its basis from `look.cam_yaw`, WASD points
+/// somewhere different every time too. Reported from play as the camera angle always being
+/// different on the way back.
+///
+/// ⚠️ **Captured rather than hardcoded**, so a `LOOK_FILE` survey camera still wins. A
+/// constant here would quietly override every `MELD_CITY` screenshot the moment somebody
+/// pointed the look file at the plaza — which is the whole reason that file exists.
+#[derive(Resource, Clone, Copy)]
+pub(crate) struct CityView {
+    yaw: f32,
+    pitch: f32,
+    dist: f32,
+}
+
+/// Frame the town the way it was first framed.
+///
+/// The city is an AUTHORED space — its districts, its coast and its skyline are composed for
+/// a view — so arriving at it should look the same every time, the way walking into a room
+/// does. Turning the camera WHILE you are there is still yours; it is only the arrival that
+/// is fixed, and the next arrival resets it again.
+pub(crate) fn city_frame_camera(
+    mut commands: Commands,
+    mut look: ResMut<hd2d::Look>,
+    saved: Option<Res<CityView>>,
+) {
+    match saved {
+        // Seen before: put the camera back where the town is meant to be looked at from.
+        Some(v) => {
+            look.cam_yaw = v.yaw;
+            look.cam_pitch = v.pitch;
+            look.cam_dist = v.dist;
+        }
+        // First arrival IS the composition, whatever set it — the default, or a look file.
+        None => commands.insert_resource(CityView {
+            yaw: look.cam_yaw,
+            pitch: look.cam_pitch,
+            dist: look.cam_dist,
+        }),
+    }
+}
+
 pub(crate) fn city_camera(
     look: Res<hd2d::Look>,
     time: Res<Time>,
@@ -1618,7 +1663,12 @@ pub(crate) fn render_city(
 /// The name alone is scenery to anyone who has not been told what a Drill Yard is.
 pub(crate) fn district_prompt(d: &District) -> String {
     let key = match d.action {
-        CityAction::Dive => "[E]/[ENTER] run",
+        // **THE LAST THING YOU DO BEFORE DIVING IS CHECK YOUR KIT, so the gate says where
+        // it is.** The party-and-gear screen is `[V]` from anywhere in town, which is a key
+        // you have to already know — and standing at the gate about to leave is exactly the
+        // moment a player wants it and the one place nothing mentioned it. Reported from
+        // play as there being no way to change gear or fill a bag before departing.
+        CityAction::Dive => "[V] party & gear    [E]/[ENTER] run",
         CityAction::Vault => "[E] open",
         CityAction::Shop => "[E] browse",
         CityAction::Craft => "[E] work",

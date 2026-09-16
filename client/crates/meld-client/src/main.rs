@@ -496,6 +496,7 @@ fn main() {
         .add_systems(
             OnEnter(Screen::City),
             (
+                city::city_frame_camera,
                 city_hud,
                 city_scene,
                 despawn::<BattleActor>,
@@ -929,6 +930,11 @@ fn main() {
         // counters read as dead was precisely that hover had been solved per-screen and
         // the city was never one of the screens. See `glass::ChipBase`.
         .add_systems(Update, glass::repaint_hovered_chips)
+        // …and every long list scrolls, from one system, for exactly the same reason. A node
+        // that can scroll gets scrolling the day it is spawned rather than the day somebody
+        // wires it per screen — which is how every list in town came to be clipped at the
+        // panel edge with no way to reach the rest. See `glass::scroll_hovered`.
+        .add_systems(Update, glass::scroll_hovered)
         .add_plugins(announce_plugin)
         .run();
 }

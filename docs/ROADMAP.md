@@ -5494,6 +5494,31 @@ only the things that can't be class-gated.
     legality rule still applies and a refusal leaves the piece in the Vault rather than
     lying about having dressed anybody.
 
+- [x] **UX-19 — Town scrolls, the camera arrives the same way twice, and the gate says
+  where your kit is.** Three reports about the hub that are three different things.
+  - *No menu in town could be scrolled, and it is not a town bug.* `Overflow::scroll_y()`
+    only CLIPS — Bevy repositions a node's children by its `ScrollPosition` and **nothing
+    anywhere in this client ever wrote one**, a gap `tutorial_predive` had already written
+    down and worked around rather than closed. Every long list in the game was cut off at
+    the panel's edge with no way to reach the rest. `glass::scroll_hovered` is ONE ungated
+    system for every scrollable node, exactly as `repaint_hovered_chips` is one for every
+    chip — a node that can scroll gets scrolling the day it is spawned rather than the day
+    somebody wires it per screen. It hit-tests the cursor itself rather than going through
+    `Interaction`, which exists only on `Button`s; **innermost wins**, since columns nest and
+    scrolling the outer one moves the thing the player is not looking at.
+  - *The camera arrived at a different angle every time.* The city and the overworld share
+    ONE `hd2d::Look` and the overworld lets the player drag it, so you walked into town at
+    whatever angle you left the maze at — and `city_move` takes its basis from `cam_yaw`, so
+    WASD pointed somewhere different too. The town is an AUTHORED space, so arriving at it
+    looks the same every time now (`city_frame_camera`); turning the camera while you are
+    there is still yours. ⚠️ The framing is CAPTURED on first sight rather than hardcoded, so
+    a `LOOK_FILE` survey camera still wins — a constant would have silently overridden every
+    `MELD_CITY` screenshot, which is the whole reason that file exists.
+  - *Nothing told you where to check your kit before diving.* The party-and-gear screen is
+    `[V]` from anywhere in town — a key you have to already know — and standing at the gate
+    about to leave is exactly the moment you want it and the one place that never mentioned
+    it. The Threshold names it now, and its purpose line says what the room is for.
+
 - [ ] **UX-1 — Last City minimap & compass (town-only).** A minimap and compass
   **for Last City itself** so players can navigate the hub — locate the districts
   (Vault-Deep, Market, Forge/Alembic, Bounty Board, Drill Yard, Vanguard Wall),

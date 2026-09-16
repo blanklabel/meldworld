@@ -323,6 +323,76 @@ pub struct ChipBase {
 /// `Changed<Interaction>` makes this cost nothing on a still cursor, and the fill is
 /// written only when it actually moved — a `DerefMut` on `BackgroundColor` flags the
 /// component changed whether or not the value did, and a flagged node is re-extracted.
+/// **THE WHEEL SCROLLS WHATEVER IS UNDER THE CURSOR.**
+///
+/// `Overflow::scroll_y()` only CLIPS — Bevy moves a node's children by its `ScrollPosition`
+/// and nothing anywhere writes one, so every long list in this game was cut off at the
+/// panel's edge with no way to reach the rest. Reported from play as not being able to
+/// scroll any menu in town, and it is not a town bug: the columns, the counters and the
+/// menu's own panes all use the same [`column`], so all of them were clipped.
+///
+/// ⚠️ **ONE ungated system for every scrollable node in the game**, exactly as
+/// [`repaint_hovered_chips`] is one for every chip. Wired per screen it would be wired for
+/// the screens somebody remembered, and this is the second time that argument has been made
+/// in this file; a node that can scroll gets scrolling the day it is spawned.
+///
+/// The hit test is done here rather than through `Interaction`, which only exists on
+/// `Button`s — a scrollable column is not a button, and making it one would give every list
+/// in the game a hover highlight and swallow clicks meant for the rows inside it.
+/// **Innermost wins**: columns nest, and scrolling the outer one when the cursor is over an
+/// inner list moves the thing the player is not looking at.
+pub fn scroll_hovered(
+    mut wheel: bevy::ecs::message::MessageReader<bevy::input::mouse::MouseWheel>,
+    windows: Query<&Window>,
+    mut nodes: Query<(&ComputedNode, &UiGlobalTransform, &mut ScrollPosition)>,
+) {
+    let dy: f32 = wheel
+        .read()
+        .map(|w| match w.unit {
+            bevy::input::mouse::MouseScrollUnit::Line => w.y * LINE_SCROLL,
+            bevy::input::mouse::MouseScrollUnit::Pixel => w.y,
+        })
+        .sum();
+    if dy == 0.0 {
+        return;
+    }
+    let Ok(window) = windows.single() else { return };
+    let Some(cursor) = window.cursor_position() else { return };
+
+    // Smallest node containing the cursor that has somewhere to scroll. Size rather than
+    // hierarchy depth, because depth does not tell you which box is drawn inside which — a
+    // detail column and the panel holding it are siblings of different parents.
+    let mut winner: Option<(f32, Mut<ScrollPosition>, f32)> = None;
+    for (computed, transform, scroll) in &mut nodes {
+        let size = computed.size();
+        let overflow = computed.content_size().y - size.y;
+        if overflow <= 0.5 {
+            continue; // nothing hidden: scrolling it is a no-op the player feels as a dead wheel
+        }
+        let centre = transform.translation;
+        let half = size * 0.5;
+        if (cursor.x - centre.x).abs() > half.x || (cursor.y - centre.y).abs() > half.y {
+            continue;
+        }
+        let area = size.x * size.y;
+        if winner.as_ref().is_none_or(|(a, _, _)| area < *a) {
+            winner = Some((area, scroll, overflow));
+        }
+    }
+    if let Some((_, mut scroll, overflow)) = winner {
+        // A wheel notch UP moves the content down, which is a SMALLER scroll position; the
+        // clamp is what stops the list being dragged off its own ends into empty glass.
+        let want = (scroll.0.y - dy).clamp(0.0, overflow);
+        if (want - scroll.0.y).abs() > f32::EPSILON {
+            scroll.0.y = want;
+        }
+    }
+}
+
+/// How far one notch of a line-unit wheel scrolls, in logical pixels. About three rows of
+/// an 18px chip, which is what a notch moves in every other list a player has used.
+const LINE_SCROLL: f32 = 56.0;
+
 pub fn repaint_hovered_chips(
     mut chips: Query<(&Interaction, &ChipBase, &mut BackgroundColor), Changed<Interaction>>,
 ) {
