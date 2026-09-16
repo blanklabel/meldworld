@@ -49,6 +49,7 @@ mod netglue; // server messages → state, demo driver, despawn + font install
 mod overlays; // inventory/equip/status, gear tooltip, loot report, level-up
 mod overworld; // movement/camera, sprite reconciler, terrain, followers, minimap
 mod screens; // Join, co-op Lobby, Ended summary
+mod turn_order; // the charging line across the top of a fight: who goes next, both sides
 mod tutorial; // onboarding: the town welcome tour + the first-dive briefing
 mod tutorial_predive; // the [T] guided dive's own pre-dive welcome + 4-class picker
 mod world_render; // asset load + scene setup, biome ground, sky/weather/water
@@ -347,7 +348,8 @@ fn main() {
         // Demo and autoplay are mutually exclusive; demo skips networking.
         // `?city` connects via the autoplay path but parks in the hub (see CityIdle).
         .insert_resource(Autoplay((autoplay_flag() || city_idle_flag()) && !demo_flag()))
-        .init_resource::<Tactics>()
+        .init_resource::<AutoBattle>()
+        .init_resource::<turn_order::TurnBarView>()
         .insert_resource(CityIdle(city_idle_flag()))
         .insert_resource(Demo {
             on: demo_flag(),
@@ -811,6 +813,12 @@ fn main() {
                 // raises it before `OnEnter(Screen::Battle)` runs.
                 despawn::<battle::OpeningCardRoot>,
                 battle::reset_battle_opening,
+                // The charging line, and the eased gauges behind it — the same argument as
+                // `reset_battle_opening`: the marker goes with the despawn, but positions
+                // left in the resource would open the next fight sliding home from this
+                // one's.
+                despawn::<turn_order::TurnOrderBar>,
+                turn_order::reset_turn_bar,
             ),
         )
         .add_systems(
@@ -818,8 +826,8 @@ fn main() {
             (
                 validate_active,
                 auto_fire_queued,
-                tactics_toggle,
-                tactics_click,
+                auto_battle_toggle,
+                auto_battle_click,
                 menu_keyboard,
                 menu_click,
                 party_select_click,
@@ -875,6 +883,15 @@ fn main() {
                 mocks::mock_battle_fx,
                 mocks::mock_battle_opening,
             )
+                .run_if(in_state(Screen::Battle)),
+        )
+        // The charging line across the top of the fight (`turn_order`). Its own call for
+        // the same reason `battle_fx` has one: the Battle tuple above is already nested
+        // once to stay under Bevy's arity cap, and overflowing it produces an error that
+        // names `IntoObserverSystem` and says nothing at all about arity.
+        .add_systems(
+            Update,
+            (turn_order::rebuild_turn_bar, turn_order::animate_turn_bar)
                 .run_if(in_state(Screen::Battle)),
         )
         // Onboarding: the guided [T]-dive's first-fight command-menu walkthrough.
@@ -1589,8 +1606,21 @@ struct BattleData {
     your_ids: Vec<String>,
     monster_combatant: Option<String>,
     combatants: Vec<CombatantView>,
-    /// Heroes whose ATB gauge is full (server said TurnReady).
+    /// Heroes whose ATB gauge is full and who therefore own a turn right now.
+    ///
+    /// ⚠️ **A MIRROR OF THE SERVER'S GAUGE, not a latch.** It is seeded by `battle.turn_ready`
+    /// and then re-derived from every `battle.gauge_update` (which carries every combatant's
+    /// authoritative gauge each tick), because a turn can end without the client firing
+    /// anything — the 15 s auto-defend, a paralysis, a frenzy. Latched, those left a hero
+    /// permanently "ready" in the client's eyes, and since the command panel is now gated on
+    /// exactly this set, that would leave the menu up forever offering orders the server
+    /// would refuse.
     ready: HashSet<String>,
+    /// Heroes whose order has been sent and whose gauge has not reset yet — one or two
+    /// frames of round trip. Without it the hero reads as ready again the instant its order
+    /// leaves (the gauge is still full), so the command panel flickers back up over a hero
+    /// that is already swinging.
+    acting: HashSet<String>,
     /// Per-hero queued order (action + chosen target); auto-fires the instant that
     /// hero is ready.
     queued: HashMap<String, Order>,
@@ -2515,12 +2545,19 @@ const PREDICT_MAX_REPLAY: usize = 8;
 #[derive(Resource)]
 struct Autoplay(bool);
 
-/// The Tactics auto-battle toggle (spec §6): available while an Phoenix Guard is
-/// in the battle; when enabled, ready heroes auto-queue their class default
-/// (same per-class heuristics as `?autoplay`) with no human reaction delay.
-/// Toggled with T on the battle screen.
+/// **AUTO-BATTLE, AND EVERY PARTY HAS IT FROM THE FIRST FIGHT.** When enabled, each
+/// un-ordered hero auto-queues its class default (the same per-class heuristics as
+/// `MELD_AUTOPLAY`) with no human reaction delay. Toggled with T on the battle screen, or
+/// by its tile in the command window.
+///
+/// ⚠️ It used to be gated on an Phoenix Guard standing in the line, which made the one
+/// convenience in the game that answers "I have fought this pack forty times" a reward for
+/// fielding one particular class — and the toggle, its keyboard hint and its tile were all
+/// simply absent for everyone else, so most players never learned the feature existed. A
+/// comfort control is not a power: it queues exactly the orders a player could queue by
+/// hand, at the same speed the ATB allows.
 #[derive(Resource, Default)]
-struct Tactics(bool);
+struct AutoBattle(bool);
 
 /// When true (`?city` / `MELD_CITY`), the client connects but parks in The Last City
 /// (the hub) instead of auto-diving — for screenshotting / iterating on the city.
@@ -2686,7 +2723,20 @@ fn menu_entries(
         // sync with `rebuild_command_menu`'s cross and `menu_keyboard`'s arrows.
         MenuLevel::Root => vec![
             e("Attack", EntryAction::Attack),
-            e("Defend", EntryAction::Defend),
+            // ⚠️ DEFEND BUYS TEMPO TOO, and nothing said so. The row halves the next blow
+            // AND braces the hero — its gauge fills faster until its own next turn — which
+            // is what makes guarding a play rather than the thing you press when you have
+            // given up. No magnitudes: both live in `[battle]` and this workspace has no
+            // balance loader (a registry ability rides its numbers over on `run.party`;
+            // Defend is a menu row, not a registry ability).
+            MenuEntry {
+                label: "Defend".to_string(),
+                action: EntryAction::Defend,
+                tooltip: "Guard: halve the next blow, and charge faster until your next turn."
+                    .to_string(),
+                enabled: true,
+                adrenaline_cost: None,
+            },
             e("Item", EntryAction::OpenItems),
             e("Skill", EntryAction::OpenSkills),
             e("Flee", EntryAction::Flee),
@@ -2816,9 +2866,9 @@ struct CommandWindow;
 struct MenuRow {
     index: usize,
 }
-/// The tappable Phoenix Guard Tactics-stance toggle in the command window (keyboard: T).
+/// The tappable auto-battle toggle in the command window (keyboard: T).
 #[derive(Component)]
-struct TacticsButton;
+struct AutoBattleButton;
 /// A clickable party HUD cell: tapping it makes that hero the one the command panel
 /// is giving orders to (if it's alive and hasn't locked an action yet). The
 /// touch-friendly way to pick WHICH ready hero to command.
@@ -3020,6 +3070,58 @@ mod tests {
             ],
             ..Default::default()
         }
+    }
+
+    /// **THE PANEL ONLY OPENS WHEN SOMEBODY IS WAITING ON YOU.** It used to fall back to
+    /// "any un-ordered live hero", so the command window sat on screen for the whole fight
+    /// asking a hero with a quarter-full gauge what it would like to do in six seconds.
+    #[test]
+    fn nobody_is_commanded_until_a_gauge_fills() {
+        let mut b = battle();
+        assert_eq!(pick_active(&b), None, "no full gauge, no panel");
+        b.ready.insert("h2".into());
+        assert_eq!(pick_active(&b).as_deref(), Some("h2"), "the hero whose turn came up");
+    }
+
+    /// A hero that has locked an order has nothing left to decide, and one whose order is
+    /// mid-round-trip (`acting`) is already swinging — the panel must not reopen over
+    /// either of them.
+    #[test]
+    fn a_committed_hero_is_not_asked_again() {
+        let mut b = battle();
+        b.ready.insert("h1".into());
+        b.queued.insert("h1".into(), Order { kind: QueuedKind::Attack, target: Some("m1".into()) });
+        assert_eq!(pick_active(&b), None, "an ordered hero is not commandable");
+        b.queued.remove("h1");
+        b.acting.insert("h1".into());
+        assert_eq!(
+            pick_active(&b),
+            None,
+            "a hero whose order is in flight must not flicker the panel back up"
+        );
+    }
+
+    /// TAB (and a tap on a party cell) may only reach a hero the panel would actually
+    /// draw — offering one it would then refuse is a dead keypress.
+    #[test]
+    fn tab_only_reaches_a_hero_that_is_waiting() {
+        let mut b = battle();
+        b.ready.insert("h1".into());
+        b.active = Some("h1".into());
+        assert_eq!(next_commandable(&b), None, "h2's gauge is still filling");
+        b.ready.insert("h2".into());
+        assert_eq!(next_commandable(&b).as_deref(), Some("h2"));
+    }
+
+    /// A dead hero owns no turn, however full its gauge was when it fell.
+    #[test]
+    fn a_fallen_hero_is_never_commanded() {
+        let mut b = battle();
+        if let Some(c) = b.combatants.iter_mut().find(|c| c.id == "h1") {
+            c.hp = 0;
+        }
+        b.ready.insert("h1".into());
+        assert_eq!(pick_active(&b), None);
     }
 
     #[test]

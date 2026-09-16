@@ -5209,6 +5209,57 @@ only the things that can't be class-gated.
     legends rather than tabs — all three sections are in `main` at once — and
     `counter_click`'s nav arm is gated on `city.shop_open`, so pressing one does nothing.
 
+- [x] **UX-13 — The fight says who goes next, the menu only asks when somebody is
+  waiting, and auto-battle is everyone's.** An ATB fight's whole shape is *everybody
+  charges at once*, and none of it was on screen: the only gauges drawn were the four
+  hero bars along the bottom edge and — for a party whose Hunter had bought the TOP rung
+  of Predator's Eye — a 5px bar under each foe's HP. Meanwhile the command window was up
+  for the entire fight (`pick_active` fell back to "any un-ordered live hero"), so the one
+  thing it has to say — *somebody is waiting on you* — was never news; and the auto-battle
+  toggle was gated on an Phoenix Guard standing in the line, which hid a comfort control
+  behind one class.
+  - *Shipped:* a **charging line** across the top of the arena
+    ([`turn_order.rs`](../client/crates/meld-client/src/turn_order.rs)). Every combatant
+    rides one shared track as its own south-facing sprite — the SAME art the arena spawns,
+    resolved the same way — sliding left to right with its gauge and dragging a sparkling
+    charge line behind it; foes take the lane above the rail and your party the lane below.
+    At the GO end the icon **bounces and glows** until the turn is spent. It rebuilds only
+    when the CAST changes and eases between the server's ten gauge updates a second, so the
+    motion is a slide rather than a tick.
+  - *The command menu is an EVENT now.* `pick_active` returns a hero only when that hero's
+    gauge is full and it has no order locked in, so the panel appears when a turn comes up
+    and goes away when it is spent. One predicate (`commandable`) answers for the panel,
+    TAB, the number keys and a tap on a party cell, so none of them can offer a hero the
+    panel would then refuse to draw.
+  - ⚠️ *And `ready` had to stop being a latch.* It was set by `battle.turn_ready` and
+    cleared only when this client fired something — but a turn can end with no message to
+    this client at all (the 15 s auto-defend, a paralysis, a frenzy). Latched, that left a
+    hero permanently "ready", which was harmless while the panel was always up and would
+    now leave it up forever offering orders the server refuses. It is re-derived from every
+    `gauge_update` instead, with a hero mid-round-trip held in `acting` so the panel does
+    not flicker back over a hero that is already swinging.
+  - *Auto-battle is universal.* No class gate, and no fight in which the toggle, its
+    keyboard hint and its tile are simply absent. It queues exactly the orders a player
+    could queue by hand, at the speed the ATB already allows — a comfort control, not a
+    power.
+  - ⚠️ *Not verified by screenshot.* The box's display was asleep for the whole session
+    (`Monitor removed` → Bevy closes the window → every capture is black), so the geometry
+    is held by unit test (`turn_order`'s five) rather than by a frame. Worth one capture
+    next time somebody is at the machine.
+
+- [x] **UX-14 — Defend buys tempo as well as skin.** Halving one incoming blow is a trade
+  a player makes only when the alternative is dying, so Defend was the row nobody pressed:
+  it spent a turn and bought nothing you could see afterwards.
+  - *Shipped:* a guard leaves the fighter **BRACED** — its gauge fills at `[battle]
+    defend_haste_mult` from the moment it defends until its own next turn, so guarding is
+    also how you come back round sooner. It is a RATE, like every other gauge modifier in
+    this engine, so it can no more lock a gauge than a slow can; it multiplies alongside a
+    haste rather than replacing it, because the two are bought separately. Cleared in
+    `reset_gauge` — the one place every resolved turn passes through — rather than by each
+    resolver remembering to, and it rides the wire as `braced` so the party HUD draws it.
+    The 15-second auto-defend braces too: a hero that ran out of clock at least gets the
+    tempo back.
+
 - [ ] **UX-1 — Last City minimap & compass (town-only).** A minimap and compass
   **for Last City itself** so players can navigate the hub — locate the districts
   (Vault-Deep, Market, Forge/Alembic, Bounty Board, Drill Yard, Vanguard Wall),

@@ -178,6 +178,10 @@ pub struct Battle {
     pub merge_cap_normal_instances: i32,
     pub merge_cap_gatekeeper_instances: i32,
     pub defend_damage_reduction: f64,
+    /// Gauge fill-rate multiplier while BRACED — from the moment a fighter defends until
+    /// its own next turn. A rate, never a cap, for the same reason every other gauge
+    /// modifier in this engine is one.
+    pub defend_haste_mult: f64,
     pub back_row_damage_mult: f64,
     /// Share of its own PHYSICAL damage a back-row hero deals — the other half of the trade.
     pub back_row_attack_mult: f64,

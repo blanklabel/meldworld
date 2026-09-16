@@ -200,6 +200,13 @@ pub struct Fighter {
     pub foci: Vec<Focus>,
     /// True while a `defend` stance is active (until this fighter next acts).
     pub defending: bool,
+    /// **BRACED**: this fighter guarded, so its gauge fills at `defend_haste_mult` until its
+    /// own next turn. The same window `defending` covers and deliberately a separate flag:
+    /// `defending` is cleared the moment the fighter SWINGS (eleven call sites do it), and
+    /// the tempo half must outlive that — it is bought by the turn you spent, not by the
+    /// stance you are still holding. Cleared in `reset_gauge`, which is the one place every
+    /// turn this engine resolves passes through.
+    pub braced: bool,
     /// The (level-unfiltered) monster ability pool — content from
     /// `meld_world::abilities`. Empty for players and unknown creature kinds
     /// (they fight with basic attacks only).
@@ -390,6 +397,7 @@ impl Fighter {
             free_casts: 0,
             foci: Vec::new(),
             defending: false,
+            braced: false,
             abilities: Vec::new(),
             raid_parties: 1,
             boss_kind: String::new(),
@@ -466,6 +474,9 @@ impl Fighter {
         if self.back_row {
             v.push("row:back".to_string());
         }
+        if self.braced {
+            v.push(BRACED_STATUS.to_string());
+        }
         if let Some(g) = self.group_id {
             v.push(format!("group:{g}"));
         }
@@ -521,6 +532,7 @@ impl Fighter {
         self.regen.hash(&mut h);
         ((self.evasion * 100.0).round() as i64).hash(&mut h);
         self.adrenaline.hash(&mut h);
+        self.braced.hash(&mut h);
         self.focus_max.hash(&mut h);
         for f in &self.foci {
             f.kind.hash(&mut h);
@@ -612,6 +624,14 @@ enum Stack {
 
 /// The timed status a hastened fighter carries: its gauge fills faster while it holds.
 pub const HASTE_STATUS: &str = "hasted";
+
+/// What a fighter that GUARDED carries until its own next turn: its gauge fills at
+/// `[battle] defend_haste_mult`.
+///
+/// It rides the wire so the party HUD and the turn-order bar can say so — a mechanic the
+/// screen never mentions is a mechanic nobody presses, which is the exact reason Defend
+/// needed something to buy in the first place.
+pub const BRACED_STATUS: &str = "braced";
 
 /// A fighter that has just had its gauge knocked down cannot have it knocked down again
 /// while this holds.
@@ -964,6 +984,8 @@ pub struct Battle {
     explorer_safe_passage_evasion: f64,
     explorer_haste_mult: f64,
     explorer_haste_ticks: u64,
+    /// Gauge fill-rate multiplier while BRACED (see [`BRACED_STATUS`]).
+    defend_haste_mult: f64,
     explorer_world_entire_mark_ticks: u64,
     explorer_world_entire_haste_ticks: u64,
     /// The two profession classes' kits (MS-1). Held whole rather than flattened field
@@ -1322,6 +1344,7 @@ impl Battle {
             explorer_safe_passage_evasion: balance.battle.explorer_safe_passage_evasion,
             explorer_haste_mult: balance.battle.explorer_haste_mult,
             explorer_haste_ticks: balance.battle.explorer_haste_ticks,
+            defend_haste_mult: balance.battle.defend_haste_mult,
             explorer_world_entire_mark_ticks: balance.battle.explorer_world_entire_mark_ticks,
             explorer_world_entire_haste_ticks: balance.battle.explorer_world_entire_haste_ticks,
             resonant_deep: ResonantDeep::from(&balance.battle),
@@ -1583,6 +1606,7 @@ impl Battle {
         let slow_mult = self.status_slow_mult;
         let anchor_mult = self.psyker_anchor_slow_mult;
         let haste_mult = self.explorer_haste_mult;
+        let brace_mult = self.defend_haste_mult;
         let now = self.tick_count;
         for i in 0..n {
             let f = &mut self.fighters[i];
@@ -1614,7 +1638,14 @@ impl Battle {
             };
             // A set piece resists being controlled out of the fight entirely.
             let slowed_to = slowed_to.max(f.slow_floor);
-            let rate_mult = slowed_to * if hastened { haste_mult } else { 1.0 };
+            // A GUARD BUYS TEMPO. Braced multiplies alongside a haste rather than replacing
+            // it — the same way a bind and a haste multiply — because the two are bought
+            // separately (one with this fighter's own turn, one with somebody's capstone) and
+            // a player who paid for both should get both. Still a RATE, so it can no more
+            // lock a gauge than a slow can.
+            let rate_mult = slowed_to
+                * if hastened { haste_mult } else { 1.0 }
+                * if f.braced { brace_mult } else { 1.0 };
             f.gauge =
                 (f.gauge + f.speed_stat as f64 * rate_mult / self.gauge_divisor).min(1.0);
         }
@@ -4714,6 +4745,9 @@ impl Battle {
     fn resolve_defend(&mut self, actor_i: usize, action_id: Option<Id>, auto: bool) -> Resolution {
         self.fighters[actor_i].defending = true;
         self.reset_gauge(actor_i);
+        // AFTER `reset_gauge`, which is what ENDS a brace — setting it before would have this
+        // turn's guard cleared by the very call that spends the turn it was bought with.
+        self.fighters[actor_i].braced = true;
         Resolution { damage_type: None, callout_text: None,
             action_id,
             actor_id: self.fighters[actor_i].combatant_id.clone(),
@@ -6133,6 +6167,10 @@ impl Battle {
         if self.fighters[i].gauge_guard_turns == 0 {
             self.fighters[i].statuses.retain(|s| s != GAUGE_GUARD_STATUS);
         }
+        // A brace lasts until you come round again, and this is where you come round. It is
+        // cleared for EVERY turn rather than only for a swing (which is what `defending`
+        // does) — including a second Defend, which then re-arms it below.
+        self.fighters[i].braced = false;
         self.fighters[i].gauge = 0.0;
         self.fighters[i].awaiting = false;
     }
@@ -6388,6 +6426,134 @@ mod tests {
         assert_eq!(
             marked, plain,
             "a mark is not a slow - the gauge used to throttle on ANY non-DoT status"
+        );
+    }
+
+    /// **A GUARD BUYS TEMPO.** Defend used to be the row nobody pressed: it spent a turn and
+    /// halved one blow, which is a trade you make only when the alternative is dying. While
+    /// BRACED the gauge fills faster, so guarding is also how you come back round sooner —
+    /// and it is a RATE like every other gauge modifier here, so it can never lock anything.
+    #[test]
+    fn defending_fills_the_gauge_faster_until_your_next_turn() {
+        let b = Balance::load_default().unwrap();
+        let mk = |defend: bool| {
+            let mut bt = Battle::new(
+                "b".into(),
+                EncounterClass::Standard,
+                vec![player("h1", 60)],
+                vec![monster("m1", 9_999, 1)],
+                &b,
+                7,
+            );
+            bt.skip_opening();
+            let i = bt.idx("h1").unwrap();
+            if defend {
+                bt.fighters[i].gauge = 1.0;
+                bt.fighters[i].awaiting = true;
+                bt.submit(
+                    "h1",
+                    "00000000-0000-7000-8000-000000000001".to_string(),
+                    BattleActionKind::Defend,
+                    None,
+                    None,
+                    None,
+                )
+                .expect("defend lands");
+            } else {
+                bt.fighters[i].gauge = 0.0;
+            }
+            bt.tick();
+            let i = bt.idx("h1").unwrap();
+            (bt.fighters[i].gauge, bt.fighters[i].braced)
+        };
+        let (plain, plain_braced) = mk(false);
+        let (guarded, guarded_braced) = mk(true);
+        assert!(!plain_braced, "a hero that did not guard is not braced");
+        assert!(guarded_braced, "a hero that guarded is braced");
+        assert!(
+            guarded > plain,
+            "a braced gauge must fill faster: {plain} -> {guarded}"
+        );
+    }
+
+    /// The brace lasts until this fighter's OWN next turn and no longer — otherwise one
+    /// Defend early in a fight would hasten a hero for the rest of it. `reset_gauge` is the
+    /// one place every resolved turn passes through, which is why it is cleared there rather
+    /// than by each resolver remembering to.
+    #[test]
+    fn a_brace_ends_at_your_next_turn() {
+        let b = Balance::load_default().unwrap();
+        let mut bt = Battle::new(
+            "b".into(),
+            EncounterClass::Standard,
+            vec![player("h1", 60)],
+            vec![monster("m1", 9_999, 1)],
+            &b,
+            7,
+        );
+        bt.skip_opening();
+        let act = |bt: &mut Battle, n: u32, kind: BattleActionKind, target: Option<Vec<Id>>| {
+            let i = bt.idx("h1").unwrap();
+            bt.fighters[i].gauge = 1.0;
+            bt.fighters[i].awaiting = true;
+            bt.submit(
+                "h1",
+                format!("00000000-0000-7000-8000-{n:012}"),
+                kind,
+                target,
+                None,
+                None,
+            )
+            .expect("the action lands");
+        };
+        act(&mut bt, 1, BattleActionKind::Defend, None);
+        assert!(bt.fighters[bt.idx("h1").unwrap()].braced, "the guard armed it");
+        act(&mut bt, 2, BattleActionKind::Attack, Some(vec!["m1".to_string()]));
+        assert!(
+            !bt.fighters[bt.idx("h1").unwrap()].braced,
+            "the brace is spent by the turn it bought"
+        );
+    }
+
+    /// **GETTING TO GO MUST NOT STOP ANYBODY ELSE GOING.** A hero awaiting input stops
+    /// filling its OWN gauge (its turn is already here) and everything else on the field —
+    /// its party, and the creatures — keeps charging and keeps acting. This is what the
+    /// turn-order bar draws, and it is the property that makes a 15-second decision window
+    /// a cost rather than a pause button.
+    #[test]
+    fn one_hero_thinking_does_not_stop_the_fight() {
+        let b = Balance::load_default().unwrap();
+        let mut bt = Battle::new(
+            "b".into(),
+            EncounterClass::Standard,
+            vec![player("slow", 1), player("quick", 90)],
+            vec![monster("m1", 9_999, 90)],
+            &b,
+            7,
+        );
+        bt.skip_opening();
+        // `slow` owns its turn and is not spending it.
+        let i = bt.idx("slow").unwrap();
+        bt.fighters[i].gauge = 1.0;
+        bt.fighters[i].awaiting = true;
+        let quick_before = bt.fighters[bt.idx("quick").unwrap()].gauge;
+        let foe_before = bt.fighters[bt.idx("m1").unwrap()].gauge;
+        for _ in 0..5 {
+            bt.tick();
+        }
+        let quick_after = bt.fighters[bt.idx("quick").unwrap()].gauge;
+        let foe_after = bt.fighters[bt.idx("m1").unwrap()].gauge;
+        assert!(
+            quick_after > quick_before,
+            "an ally kept charging while a teammate deliberated: {quick_before} -> {quick_after}"
+        );
+        assert!(
+            foe_after > foe_before,
+            "the creature kept charging too: {foe_before} -> {foe_after}"
+        );
+        assert!(
+            bt.fighters[bt.idx("slow").unwrap()].awaiting,
+            "the deliberating hero still owns its turn"
         );
     }
 
