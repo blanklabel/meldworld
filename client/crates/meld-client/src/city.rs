@@ -2332,6 +2332,41 @@ impl CounterPick {
 /// which is what made the counters read as scenery along the bottom of the screen instead
 /// of as the menus they are. Rows as data is what lets each one be its own tappable chip
 /// and gives the detail column something to say about the one under the cursor.
+/// One chip in a counter's nav column.
+///
+/// ⚠️ **A TAB AND A LEGEND LOOK IDENTICAL AND ARE NOT THE SAME THING.** The column used to
+/// be `Vec<(String, bool)>` and `render_counter_panel` spawned every entry as a `Button`,
+/// while `counter_click`'s nav arm was gated on `city.shop_open` — so the Forge's three
+/// chips ("Recipes", "Anvil", "Bench"), the Wall's season, and the Bounty Board's own
+/// **Hunts / Bounties** pair were all pressable and all did nothing. `UX-12` shipped
+/// knowing about the Forge's ("legends rather than tabs") and it was survivable only
+/// because nothing repainted under the cursor; once a chip LIGHTS when you point at it, a
+/// chip that lights and does nothing is a worse lie than a label.
+///
+/// So a tab NAMES what pressing it does, exactly as [`CounterRow::action`] does, and the
+/// panel spawns a button only for a tab that has one. `None` is a caption — the Forge's
+/// column headings, the Wall's season, a live "3 to claim" count — and draws as text.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct CounterTab {
+    pub(crate) label: String,
+    /// The side you are on. Exactly one chip per counter reads as current.
+    pub(crate) on: bool,
+    /// What pressing it turns the counter around to, for `counter_click` to resolve by
+    /// name. `None` makes it a legend.
+    pub(crate) action: Option<&'static str>,
+}
+
+impl CounterTab {
+    /// A caption: it says where you are and cannot be pressed.
+    fn legend(label: impl Into<String>, on: bool) -> Self {
+        Self { label: label.into(), on, action: None }
+    }
+    /// A real tab: pressing it turns the counter around.
+    fn tab(label: impl Into<String>, on: bool, action: &'static str) -> Self {
+        Self { label: label.into(), on, action: Some(action) }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Default)]
 pub(crate) struct CounterView {
     pub(crate) title: String,
@@ -2339,7 +2374,7 @@ pub(crate) struct CounterView {
     /// on the strength of a chip should not have to press a row to find out what the
     /// room does.
     pub(crate) subtitle: String,
-    pub(crate) nav: Vec<(String, bool)>,
+    pub(crate) nav: Vec<CounterTab>,
     pub(crate) rows: Vec<CounterRow>,
     pub(crate) detail: Vec<String>,
     pub(crate) footer: Vec<String>,
@@ -2354,8 +2389,13 @@ impl CounterView {
         if !self.subtitle.is_empty() {
             out.push_str(&format!("\n{}", self.subtitle));
         }
-        for (n, on) in &self.nav {
-            out.push_str(&format!("\n{}{n}", if *on { "> " } else { "  " }));
+        for t in &self.nav {
+            out.push_str(&format!(
+                "\n{}{}{}",
+                if t.on { "> " } else { "  " },
+                t.label,
+                if t.action.is_some() { "" } else { " (legend)" }
+            ));
         }
         for r in &self.rows {
             out.push_str(&format!(
@@ -2383,7 +2423,10 @@ pub(crate) fn shop_view(shop: &ShopData, inv: &InventoryData, selling: bool) -> 
         } else {
             "supplies and plain gear, for chits".into()
         },
-        nav: vec![("Buy".into(), !selling), ("Sell".into(), selling)],
+        nav: vec![
+            CounterTab::tab("Buy", !selling, "buy"),
+            CounterTab::tab("Sell", selling, "sell"),
+        ],
         footer: vec![format!(
             "{}   [E]/[ESC] leave",
             if selling { "[B] buy instead" } else { "[B] sell" }
@@ -2526,7 +2569,7 @@ pub(crate) fn wall_view(board: &VanguardBoardData) -> CounterView {
         v.detail = vec!["The Vanguard Wall flickers awake...".into()];
         return v;
     }
-    v.nav = vec![(format!("Season {}", board.season), true)];
+    v.nav = vec![CounterTab::legend(format!("Season {}", board.season), true)];
     if board.entries.is_empty() {
         v.detail = vec![
             "No name carved yet — the first to walk out and come back deep takes it.".into(),
@@ -2580,32 +2623,37 @@ pub(crate) fn wall_view(board: &VanguardBoardData) -> CounterView {
 /// A finished hunt is a row you can press; everything else states its progress. The
 /// numbers are all the server's — the panel never computes a reward or a completion.
 pub(crate) fn hunts_view(board: &HuntBoardData) -> CounterView {
+    // ⚠️ **THE DEN HAD NO DOOR.** This side used to show `Hunts` and a claim count and no
+    // `Bounties` chip at all, so the only way to reach the board's other half was `[B]` —
+    // a key printed in the footer of the side you were already on. A counter with two
+    // sides names both of them.
+    //
+    // ABOVE the early returns, deliberately: a board that is bare or still loading is
+    // exactly when you want to look at the other half, and a nav built after them would
+    // leave those two frames with no way across but a key nobody was told about.
     let mut v = CounterView {
         title: "The Bounty Board".into(),
         subtitle: "go and do these; claim the reward here".into(),
         footer: vec!["[1]-[8] claim   [E]/[ESC] leave".into()],
+        nav: vec![
+            CounterTab::tab("Hunts", true, "hunts"),
+            CounterTab::tab("Bounties", false, "bounties"),
+        ],
         ..default()
     };
     if !board.loaded {
         v.detail = vec!["Someone is still pinning the contracts up...".into()];
         return v;
     }
+    let claimable = board.hunts.iter().filter(|h| h.claimable).count();
+    v.nav.push(CounterTab::legend(
+        if claimable > 0 { format!("{claimable} to claim") } else { "nothing to claim".into() },
+        false,
+    ));
     if board.hunts.is_empty() {
         v.detail = vec!["The board is bare.".into()];
         return v;
     }
-    let claimable = board.hunts.iter().filter(|h| h.claimable).count();
-    v.nav = vec![
-        ("Hunts".into(), true),
-        (
-            if claimable > 0 {
-                format!("{claimable} to claim")
-            } else {
-                "nothing to claim".into()
-            },
-            claimable > 0,
-        ),
-    ];
     if board.hunts.iter().any(|h| h.reward_gear) {
         v.footer.insert(0, "* also pays a piece of gear".into());
     }
@@ -2701,6 +2749,10 @@ pub(crate) fn bounty_view(board: &BountyData) -> CounterView {
         title: "The Bounty Board".into(),
         subtitle: "the Den's contracts, with your name on them".into(),
         footer: vec!["[1]-[8] claim   [B] posted hunts   [E]/[ESC] leave".into()],
+        nav: vec![
+            CounterTab::tab("Hunts", false, "hunts"),
+            CounterTab::tab("Bounties", true, "bounties"),
+        ],
         ..default()
     };
     if !board.loaded {
@@ -2708,18 +2760,14 @@ pub(crate) fn bounty_view(board: &BountyData) -> CounterView {
         return v;
     }
     let ready = board.active.iter().filter(|b| b.state == "completed").count();
-    v.nav = vec![
-        ("Hunts".into(), false),
-        ("Bounties".into(), true),
-        (
-            if ready > 0 {
-                format!("{ready} to claim")
-            } else {
-                format!("rank {} - {}", board.rank, board.rank_title)
-            },
-            ready > 0,
-        ),
-    ];
+    v.nav.push(CounterTab::legend(
+        if ready > 0 {
+            format!("{ready} to claim")
+        } else {
+            format!("rank {} - {}", board.rank, board.rank_title)
+        },
+        false,
+    ));
     if board.active.is_empty() {
         v.detail = vec!["The Den has nothing posted for you.".into()];
         return v;
@@ -2922,10 +2970,12 @@ pub(crate) fn craft_view(craft: &CraftData, inv: &InventoryData) -> CounterView 
     let mut v = CounterView {
         title: "The Forge & Alembic".into(),
         subtitle: "brew, smelt, forge, mend".into(),
+        // Legends, not tabs: all three sections are in `main` at once, so there is nothing
+        // to turn around to. `UX-12` left these spawned as dead buttons.
         nav: vec![
-            ("Recipes  up/down".into(), true),
-            ("Anvil  S C F".into(), false),
-            ("Bench  left/right R P".into(), false),
+            CounterTab::legend("Recipes  up/down", true),
+            CounterTab::legend("Anvil  S C F", false),
+            CounterTab::legend("Bench  left/right R P", false),
         ],
         footer: vec!["ENTER craft   [E]/[ESC] leave".into()],
         ..default()
@@ -2983,25 +3033,63 @@ pub(crate) fn craft_view(craft: &CraftData, inv: &InventoryData) -> CounterView 
         v.rows.push(if r.craftable && !short { row } else { row.dim() });
     }
     let stock = best_stock(inv, meld_proto::materials::MaterialClass::Refined);
+    let trophy = best_stock(inv, meld_proto::materials::MaterialClass::Trophy);
     let anvil = stock.as_deref().unwrap_or("nothing refined");
     let quench = if craft.catalyze { "on" } else { "off" };
     v.rows.push(
         CounterRow::new("S", format!("slot: {}", FORGE_SLOTS[craft.slot])).flipping("slot"),
     );
-    v.rows.push(CounterRow::new("C", format!("quench: {quench}")).flipping("quench"));
+    // On the LABEL, not in a description: a switch acts on the press, so its detail column
+    // is never drawn and anything written there would be text no player can reach.
     v.rows.push(
-        CounterRow::new("F", format!("forge from {anvil}"))
-            .of(anvil)
-            // No magnitudes: the costs are `[forge]` tunables and the client has no
-            // balance.toml, so the server prices it and answers in its own words.
-            .saying(vec![
-                format!("Forge a {} from refined stock.", FORGE_SLOTS[craft.slot]),
-                format!("The anvil would take {anvil}."),
-                "Spends stock and chits; the Forging skill sets the tier.".into(),
-            ])
-            .committed_by("Forge")
-            .doing("forge"),
+        CounterRow::new(
+            "C",
+            match (craft.catalyze, &trophy) {
+                (true, Some(t)) => {
+                    format!("quench: on - {}", crate::icons::display_name(t))
+                }
+                (true, None) => "quench: on - no trophy in the Vault".to_string(),
+                (false, _) => format!("quench: {quench}"),
+            },
+        )
+        .flipping("quench"),
     );
+    // ⚠️ **THE ANVIL USED TO READ AS LIVE WITH NOTHING ON IT.** The row was always
+    // `enabled`, so an empty Vault got a bright `[F] forge from nothing refined` and a
+    // Forge button, and the only way to learn it could not work was to press it and read
+    // the refusal. That is the shop's `(short)` rule applied one counter over: a cost you
+    // cannot meet is a DECISION, and a control that cannot act must say so before it is
+    // pressed. The refusal in `run_craft_action` stays — it is what answers the keyboard,
+    // which has no greying to protect it — and the server still prices everything.
+    let short = match (&stock, craft.catalyze, &trophy) {
+        (None, _, _) => Some("the anvil needs refined stock - smelt an ore first"),
+        (Some(_), true, None) => Some("a quench needs a trophy - take the quench off, or fell something"),
+        _ => None,
+    };
+    let forge = CounterRow::new(
+        "F",
+        match short {
+            Some(_) => format!("forge from {anvil}   (short)"),
+            None => format!("forge from {anvil}"),
+        },
+    )
+    .of(anvil)
+    // No magnitudes: the costs are `[forge]` tunables and the client has no
+    // balance.toml, so the server prices it and answers in its own words.
+    .saying({
+        let mut lines = vec![
+            format!("Forge a {} from refined stock.", FORGE_SLOTS[craft.slot]),
+            format!("The anvil would take {anvil}."),
+            "Spends stock and chits; the Forging skill sets the tier.".into(),
+        ];
+        if let Some(why) = short {
+            lines.push(why.to_string());
+        }
+        lines
+    })
+    .committed_by("Forge")
+    .doing("forge");
+    v.rows.push(if short.is_some() { forge.dim() } else { forge });
     // The bench is a ROW PER SERVICE, not one line advertising four keys. It read as a
     // status line because it WAS one, lifted from the field forge's strip — where the
     // player has no rows to tap — and pasted into a column, which left the smith's two
@@ -3031,15 +3119,30 @@ pub(crate) fn craft_view(craft: &CraftData, inv: &InventoryData) -> CounterView 
             );
             let (rerollable, repairable) = bench_services(g);
             if rerollable {
-                v.rows.push(
-                    CounterRow::new("R", format!("reroll ({} stock)", g.reroll_cost))
-                        .saying(vec![
-                            "Another draw on this piece's affixes.".into(),
-                            format!("Spends {} refined stock.", g.reroll_cost),
-                        ])
-                        .committed_by("Reroll")
-                        .doing("reroll"),
-                );
+                // Same rule as the anvil: a reroll with no refined stock in the Vault is
+                // refused by `run_craft_action` before it ever reaches the wire, so the row
+                // says so instead of looking live and then apologising.
+                let have = stock.is_some();
+                let row = CounterRow::new(
+                    "R",
+                    match have {
+                        true => format!("reroll ({} stock)", g.reroll_cost),
+                        false => format!("reroll ({} stock)   (short)", g.reroll_cost),
+                    },
+                )
+                .saying({
+                    let mut lines = vec![
+                        "Another draw on this piece's affixes.".into(),
+                        format!("Spends {} refined stock.", g.reroll_cost),
+                    ];
+                    if !have {
+                        lines.push("Nothing refined in the Vault - smelt an ore first.".into());
+                    }
+                    lines
+                })
+                .committed_by("Reroll")
+                .doing("reroll");
+                v.rows.push(if have { row } else { row.dim() });
             }
             if repairable {
                 v.rows.push(
@@ -3307,11 +3410,99 @@ mod shop_tests {
             // Exactly one nav chip reads as selected, or the column stops saying where
             // you are — which is the other half of its job.
             assert_eq!(
-                v.nav.iter().filter(|(_, on)| *on).count(),
+                v.nav.iter().filter(|t| t.on).count(),
                 1,
                 "{name} nav does not mark exactly one side as current: {:?}",
                 v.nav
             );
+        }
+    }
+
+    /// **A CHIP IS A PROMISE THAT PRESSING IT DOES SOMETHING**, and the nav column was
+    /// breaking it on three counters out of four.
+    ///
+    /// Every entry was spawned as a `Button` while `counter_click` only ever answered for
+    /// the shop, so the Forge's three column headings, the Wall's season and the Bounty
+    /// Board's own **Hunts / Bounties** pair all lit nothing and did nothing. That was
+    /// survivable while no chip repainted under the cursor; with `glass::ChipBase` lighting
+    /// every chip in the game, a dead one is a worse lie than a label.
+    ///
+    /// So: a tab that turns the counter around NAMES its action and the handler resolves it
+    /// by name, and everything else is a legend that draws as text. Both halves are checked
+    /// here — an action nothing handles is as dead as no action at all.
+    #[test]
+    fn every_nav_chip_either_turns_the_counter_around_or_is_not_a_chip() {
+        let shop = ShopData { loaded: true, vendor: "The Apothecary".into(), ..Default::default() };
+        let inv = InventoryData::default();
+        let craft = CraftData { loaded: true, ..Default::default() };
+        let board = VanguardBoardData { loaded: true, season: 1, ..Default::default() };
+        // Both boards are checked EMPTY on purpose: an empty board is the frame most
+        // likely to drop its nav on an early return, and it is exactly when a player
+        // wants to look at the other half.
+        let hunts = HuntBoardData { loaded: true, hunts: vec![], ..Default::default() };
+        let bounties = BountyData { loaded: true, ..Default::default() };
+        // Every action a tab may name, and the arm of `counter_click` that answers it.
+        const HANDLED: [&str; 4] = ["buy", "sell", "hunts", "bounties"];
+        for (name, v) in [
+            ("shop/buy", shop_view(&shop, &inv, false)),
+            ("shop/sell", shop_view(&shop, &inv, true)),
+            ("forge", craft_view(&craft, &inv)),
+            ("wall", wall_view(&board)),
+            ("hunts", hunts_view(&hunts)),
+            ("bounties", bounty_view(&bounties)),
+        ] {
+            for t in &v.nav {
+                if let Some(a) = t.action {
+                    assert!(
+                        HANDLED.contains(&a),
+                        "{name}'s '{}' tab names '{a}', which nothing in counter_click answers",
+                        t.label
+                    );
+                }
+            }
+        }
+        // The Forge and the Wall have nothing to turn around to, so they carry no chips.
+        for (name, v) in
+            [("forge", craft_view(&craft, &inv)), ("wall", wall_view(&board))]
+        {
+            assert!(
+                v.nav.iter().all(|t| t.action.is_none()),
+                "{name} has a pressable nav chip and nowhere for it to go"
+            );
+        }
+        // ⚠️ **THE DEN HAD NO DOOR**: the hunts side showed no Bounties chip at all, so
+        // the board's other half was reachable only by knowing `[B]`. A counter with two
+        // sides names both from either side.
+        for (name, v) in [("hunts", hunts_view(&hunts)), ("bounties", bounty_view(&bounties))] {
+            for want in ["hunts", "bounties"] {
+                assert!(
+                    v.nav.iter().any(|t| t.action == Some(want)),
+                    "{name} cannot be left for the {want} side by mouse"
+                );
+            }
+        }
+    }
+
+    /// Only a counter that PRICES something has an amount to step, which is why
+    /// `counter_pick_max` builds two views and not four. The day a board row is sold by
+    /// the handful, this fails rather than the stepper silently answering 1.
+    #[test]
+    fn only_a_priced_counter_has_an_amount_to_step() {
+        let board = VanguardBoardData { loaded: true, season: 1, ..Default::default() };
+        let hunts = HuntBoardData { loaded: true, hunts: vec![], ..Default::default() };
+        let bounties = BountyData { loaded: true, ..Default::default() };
+        for (name, v) in [
+            ("wall", wall_view(&board)),
+            ("hunts", hunts_view(&hunts)),
+            ("bounties", bounty_view(&bounties)),
+        ] {
+            for r in &v.rows {
+                assert!(
+                    !r.countable && r.unit_price == 0,
+                    "{name}'s '{}' is priced, so the stepper has to learn about this counter",
+                    r.label
+                );
+            }
         }
     }
 
@@ -3609,6 +3800,74 @@ mod shop_tests {
         assert!(craft.catalyze, "[C] did not arm the quench");
         run_craft_action(&net, &mut craft, &inv, "bench_next");
         assert_eq!(bench_gear(&craft, &inv).unwrap().name, "Issued Cuirass");
+    }
+
+    /// **A CONTROL THAT CANNOT ACT SAYS SO BEFORE IT IS PRESSED.**
+    ///
+    /// The anvil row was `enabled` unconditionally, so a fresh account walked up to a
+    /// bright `[F] forge from nothing refined` with a live **Forge** button behind it, and
+    /// the only way to find out it could not work was to press it and read the refusal in
+    /// the detail column. Reported from play as the Forge not working at all. The shop had
+    /// this right the whole time — an unaffordable shelf row is dimmed and labelled
+    /// `(short)` — and the two counters now answer the same way.
+    ///
+    /// Still PICKABLE while dim, deliberately: a row you cannot act on is a row you are
+    /// still allowed to read, and its description is where the reason lives. Only the
+    /// commit stands down (`render_counter_panel`).
+    #[test]
+    fn the_anvil_is_grey_when_there_is_nothing_on_it() {
+        let craft = CraftData { loaded: true, recipes: vec![], ..Default::default() };
+        let by_key = |inv: &InventoryData, key: &str| -> CounterRow {
+            craft_view(&craft, inv)
+                .rows
+                .into_iter()
+                .find(|r| r.key == key)
+                .unwrap_or_else(|| panic!("the forge has no [{key}] row"))
+        };
+
+        // Nothing in the Vault at all: the anvil AND the bench's reroll stand down, and
+        // each says which of the two things it is missing.
+        let empty = InventoryData {
+            gear: vec![bench_piece_of("insured", 2, "g", "Wearing Blade", 8, 12)],
+            ..Default::default()
+        };
+        for key in ["F", "R"] {
+            let row = by_key(&empty, key);
+            assert!(!row.enabled, "[{key}] reads as live with nothing to work from");
+            assert!(row.label.contains("(short)"), "[{key}] is grey and will not say why: {}", row.label);
+            assert!(
+                row.describe.iter().any(|l| l.contains("smelt an ore")),
+                "[{key}] does not say what would fix it: {:?}",
+                row.describe
+            );
+            // A dim row is still readable — that is the whole reason it is a row.
+            assert!(row.action.is_some(), "[{key}] stopped naming its own action");
+        }
+
+        // Refined stock in hand: both come back.
+        let stocked = InventoryData {
+            gear: vec![bench_piece_of("insured", 2, "g", "Wearing Blade", 8, 12)],
+            materials: vec![("peat_ingot".to_string(), 9)],
+            ..Default::default()
+        };
+        for key in ["F", "R"] {
+            assert!(by_key(&stocked, key).enabled, "[{key}] stayed grey with stock in the Vault");
+        }
+
+        // A quench is armed with no trophy to quench in: the anvil cannot fire, and the
+        // fix is a different one, so the row must not say "smelt an ore".
+        let armed = CraftData { loaded: true, catalyze: true, recipes: vec![], ..Default::default() };
+        let row = craft_view(&armed, &stocked)
+            .rows
+            .into_iter()
+            .find(|r| r.key == "F")
+            .expect("the forge has no [F] row");
+        assert!(!row.enabled, "the anvil reads as live with a quench it cannot pour");
+        assert!(
+            row.describe.iter().any(|l| l.contains("quench needs a trophy")),
+            "{:?}",
+            row.describe
+        );
     }
 
     // A smith's two services do not apply to every tier, and a key that is certain to
@@ -4115,10 +4374,12 @@ pub(crate) fn party_panel(
                             .with_children(|b| {
                                 b.spawn(glass::text("rename", 12.0, Color::srgb(0.78, 0.82, 0.95)));
                             });
+                            // Forgetting a saved party is the one irreversible thing on
+                            // this screen, so it lights RED rather than blue.
                             row.spawn((
                                 Button,
                                 LoadoutDeleteButton(l.name.clone()),
-                                glass::chip_sized(false, Val::Px(34.0)),
+                                glass::chip_sized_warn(false, Val::Px(34.0)),
                             ))
                             .with_children(|b| {
                                 b.spawn(glass::text("x", 13.0, Color::srgb(0.9, 0.6, 0.6)));
@@ -5352,10 +5613,15 @@ pub(crate) struct CounterPanel;
 #[derive(Component, Clone, Copy)]
 pub(crate) struct CounterRowButton(pub usize);
 
-/// A nav chip on the counter. The shop's Buy/Sell sides are the only two, and they are
-/// each other's only alternative, so the chip that was pressed does not matter yet.
+/// A nav chip on the counter, by its index in [`CounterView::nav`].
+///
+/// It used to carry nothing — "the shop's Buy/Sell sides are the only two, and they are
+/// each other's only alternative, so the chip that was pressed does not matter yet" — and
+/// the handler simply flipped `shop_selling`. That was true of the shop alone: the Bounty
+/// Board has a real Hunts/Bounties pair and got a dead chip out of the same code. The
+/// index is resolved against the rebuilt view, so a tab's meaning comes from the tab.
 #[derive(Component, Clone, Copy)]
-pub(crate) struct CounterNavButton;
+pub(crate) struct CounterNavButton(pub usize);
 
 /// Nudge the amount on the picked row: `-1` or `+1`.
 #[derive(Component, Clone, Copy)]
@@ -5378,6 +5644,56 @@ pub(crate) struct CounterCancelButton;
 /// lands you INSIDE the district radius, so walking away does not close it either.
 #[derive(Component, Clone, Copy)]
 pub(crate) struct CounterCloseButton;
+
+/// Whichever counter is open, built. `None` when none is.
+///
+/// ONE builder, asked by the panel that draws it, by the stepper that bounds the amount,
+/// and by the nav handler that resolves a pressed tab — because three copies of "which
+/// view is this" is three chances to answer for a counter the player is not standing at.
+/// Same argument as `run_craft_action` being the single implementation behind the key and
+/// the button.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn open_counter_view(
+    city: &CityUi,
+    shop: &ShopData,
+    inv: &InventoryData,
+    craft: &CraftData,
+    board: &VanguardBoardData,
+    hunts: &HuntBoardData,
+    bounties: &BountyData,
+    selling: &ShopSelling,
+) -> Option<CounterView> {
+    if city.craft_open {
+        Some(craft_view(craft, inv))
+    } else if city.shop_open {
+        Some(shop_view(shop, inv, selling.0))
+    } else if city.board_open {
+        Some(wall_view(board))
+    } else if city.hunts_open {
+        Some(if city.bounty_tab { bounty_view(bounties) } else { hunts_view(hunts) })
+    } else {
+        None
+    }
+}
+
+/// What the nav chip at `idx` would do, on whatever counter is open.
+#[allow(clippy::too_many_arguments)]
+fn counter_nav_action(
+    city: &CityUi,
+    shop: &ShopData,
+    inv: &InventoryData,
+    craft: &CraftData,
+    board: &VanguardBoardData,
+    hunts: &HuntBoardData,
+    bounties: &BountyData,
+    selling: &ShopSelling,
+    idx: usize,
+) -> Option<&'static str> {
+    open_counter_view(city, shop, inv, craft, board, hunts, bounties, selling)?
+        .nav
+        .get(idx)
+        .and_then(|t| t.action)
+}
 
 /// Draw whichever counter is open as **nav | main | detail**, centred.
 ///
@@ -5422,19 +5738,9 @@ pub(crate) fn render_counter_panel(
     if session.entered || city.party_open {
         return;
     }
-    let view = if city.craft_open {
-        craft_view(&craft, &inv)
-    } else if city.shop_open {
-        shop_view(&shop, &inv, shop_selling.0)
-    } else if city.board_open {
-        wall_view(&board)
-    } else if city.hunts_open {
-        if city.bounty_tab {
-            bounty_view(&bounties)
-        } else {
-            hunts_view(&hunts)
-        }
-    } else {
+    let Some(view) =
+        open_counter_view(&city, &shop, &inv, &craft, &board, &hunts, &bounties, &shop_selling)
+    else {
         return;
     };
     let Ok(root) = root_q.single() else { return };
@@ -5457,16 +5763,18 @@ pub(crate) fn render_counter_panel(
                         nav.spawn(glass::text(view.subtitle.clone(), 12.0, glass::DIM));
                     }
                     nav.spawn(glass::divider());
-                    for (label, on) in view.nav.iter() {
-                        nav.spawn((Button, CounterNavButton, glass::row_chip(*on))).with_children(
-                            |b| {
-                                b.spawn(glass::text(
-                                    label.clone(),
-                                    15.0,
-                                    if *on { glass::TITLE } else { glass::TEXT },
-                                ));
-                            },
-                        );
+                    for (i, t) in view.nav.iter().enumerate() {
+                        let tint = if t.on { glass::TITLE } else { glass::TEXT };
+                        // A LEGEND is text. Spawning it as a chip made it light under the
+                        // cursor and promise something it has no way to do.
+                        let Some(_) = t.action else {
+                            nav.spawn(glass::text(t.label.clone(), 15.0, glass::DIM));
+                            continue;
+                        };
+                        nav.spawn((Button, CounterNavButton(i), glass::row_chip(t.on)))
+                            .with_children(|b| {
+                                b.spawn(glass::text(t.label.clone(), 15.0, tint));
+                            });
                     }
                     nav.spawn(glass::divider());
                     nav.spawn((Button, CounterCloseButton, glass::row_chip(false)))
@@ -5624,6 +5932,8 @@ pub(crate) fn counter_click(
     mut shop_selling: ResMut<ShopSelling>,
     mut craft: ResMut<CraftData>,
     mut hunts: ResMut<HuntBoardData>,
+    board: Res<VanguardBoardData>,
+    bounties: Res<BountyData>,
     rows: Query<(&Interaction, &CounterRowButton), Changed<Interaction>>,
     navs: Query<(&Interaction, &CounterNavButton), Changed<Interaction>>,
     closes: Query<(&Interaction, &CounterCloseButton), Changed<Interaction>>,
@@ -5639,14 +5949,31 @@ pub(crate) fn counter_click(
             return;
         }
     }
-    for (interaction, _) in &navs {
-        if *interaction == Interaction::Pressed && city.shop_open {
-            shop_selling.0 = !shop_selling.0;
-            // The two sides hold different things on the same row numbers, so a pick made on
-            // one side must not survive the flip.
-            pick.clear();
-            return;
+    for (interaction, btn) in &navs {
+        if *interaction != Interaction::Pressed {
+            continue;
         }
+        // Resolved by NAME off the view the chip was drawn from, the way a row's action is
+        // — never by "the shop is open, so flip it", which is what left the Bounty Board's
+        // own pair inert.
+        let action = counter_nav_action(
+            &city, &shop, &inv, &craft, &board, &hunts, &bounties, &shop_selling, btn.0,
+        );
+        match action {
+            Some("buy") => shop_selling.0 = false,
+            Some("sell") => shop_selling.0 = true,
+            Some("hunts") => city.bounty_tab = false,
+            Some("bounties") => {
+                city.bounty_tab = true;
+                // The Den is fetched on demand, exactly as `[B]` does it.
+                net.0.fetch_bounties();
+            }
+            _ => return,
+        }
+        // The two sides hold different things on the same row numbers, so a pick made on
+        // one side must not survive the flip.
+        pick.clear();
+        return;
     }
     for (interaction, _) in &cancels {
         if *interaction == Interaction::Pressed {
@@ -5722,6 +6049,11 @@ fn counter_pick_max(
     selling: &ShopSelling,
     pick: &CounterPick,
 ) -> i32 {
+    // Only two counters SELL anything by the handful. The Wall and the board hand out
+    // one thing per row and never call `CounterRow::priced`, so building their views to
+    // ask for a ceiling would mean plumbing two more resources through `city_input` for an
+    // answer that is always 1. `only_a_priced_counter_has_an_amount_to_step` holds that,
+    // so the day a board row becomes countable this stops being true loudly.
     let view = if city.craft_open {
         craft_view(craft, inv)
     } else if city.shop_open {

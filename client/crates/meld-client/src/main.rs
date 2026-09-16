@@ -24,6 +24,7 @@ use bevy::prelude::*;
 use bevy::image::{ImageAddressMode, ImageLoaderSettings, ImageSampler, ImageSamplerDescriptor};
 // `Affine2` (was: ground uv_transform) is now referenced fully-qualified in apply_sky.
 
+use meld_client::glass;
 use meld_client::hd2d::{self};
 use meld_client::net;
 use net::{ClientCmd, CombatantView, EntityKind, GearLine, Net, SkillLine};
@@ -918,6 +919,11 @@ fn main() {
         )
         .add_systems(OnExit(Screen::Ended), despawn::<EndedRoot>)
         .add_systems(Update, (ended_input, ended_buttons).run_if(in_state(Screen::Ended)))
+        // EVERY chip lights under the cursor, on every screen, from one system. Not gated
+        // on a state: a chip is a chip wherever it is spawned, and the reason the town
+        // counters read as dead was precisely that hover had been solved per-screen and
+        // the city was never one of the screens. See `glass::ChipBase`.
+        .add_systems(Update, glass::repaint_hovered_chips)
         .add_plugins(announce_plugin)
         .run();
 }
@@ -2885,7 +2891,12 @@ struct OverlayRoot;
 /// A clickable gear row in the Equip tab's picker screen: clicking equips it
 /// to the hero the picker was opened for — over HTTP for a Vault item, over
 /// WS for run-loot (see `GearSource`) — and closes back to the main screen.
-/// `worn` only drives the row's highlight, not the click behavior.
+///
+/// "Already worn" is NOT carried here: it is the chip's own spawned fill
+/// (`glass::chip(worn)`) and `glass::ChipBase` restores it, so the highlight cannot
+/// disagree with the state that drew it. It used to be a field this system re-derived a
+/// colour from on every `Interaction::None`, which is why a worn piece came back
+/// transparent the first time the cursor crossed it.
 #[derive(Component)]
 struct GearButton {
     gear_id: String,
@@ -2893,8 +2904,6 @@ struct GearButton {
     /// Hero slot this row equips to when clicked (whichever hero the picker
     /// was opened for).
     target_hero_slot: usize,
-    /// True if this hero already has this exact item equipped (highlight only).
-    worn: bool,
     /// Set when this hero's class may not wear the item (GR-5): the row renders
     /// dim with the reason and a press does nothing, so the player is told the
     /// rule instead of being handed a server refusal.

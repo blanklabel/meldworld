@@ -1036,6 +1036,15 @@ undead_rite_min_tier = 4         # never shallower than this
 # second creature a level-1 party meets — measured as a guaranteed wipe, which is
 # not an encounter. The shallow ring is the on-ramp; champions wait past it.
 elite_min_distance = 120         # no Elite promotion shallower than this [TUNABLE]
+# THE FIRST AFFLICTION. Poison and web do not WEAR OFF (`meld_proto::statuses`) — they hold
+# until something cures them — and the cures that answer them (a Keeper's Poultice, a
+# Resonant's Sanctuary, a bought antidote) are not reliably in a party's hands in the
+# on-ramp. So a bog serpent's bite at d20 was a condition with no reachable answer, which
+# is not a decision, it is a delayed loss. Nothing that APPLIES one of those two may be
+# rolled shallower than this; the creature claws instead, exactly as the tutorial-band
+# stalker already did. Damage of the Poison TYPE is untouched — it resolves and is over.
+# Read as a creature LEVEL through `Scaling::mlevel`, which is the axis abilities gate on.
+affliction_min_distance = 200    # mlevel(200) = 16 [TUNABLE]
 # A Gatekeeper is a 10x-HP wall and was gated only by `hub_safe_radius` (13 units),
 # so one could stand a few paces from the hub and end a new account's first dive on
 # contact. It waits until a party has had somewhere to grow into. [TUNABLE]

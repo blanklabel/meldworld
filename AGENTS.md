@@ -253,6 +253,23 @@ its own button — **[N]** asks for a smith's **edge** on a worn piece or a Keep
 **tonic** for the whole party, both lasting the dive and no longer. A set-up alembic also
 radiates a **regen field** over anyone standing near it.
 
+**AND THE FIRST AFFLICTION WAITS UNTIL d200** (`[encounters] affliction_min_distance`,
+read as a creature level through `Scaling::mlevel` = **16**, mirrored as
+`abilities::AFFLICTION_MIN_LEVEL`). Mire is `[biome_gate]` **0**, so a bog serpent's Venom
+Fang and a bog stinger's Sting were `min_level 1` — you could be permanently poisoned by
+roughly the first thing you met, with no cure reachable at that depth. Poison **damage** is
+deliberately untouched: it resolves and is over, so it is a hit like any other, and gating
+the TYPE would empty a swamp creature's kit.
+⚠️ **The lazy version of this fix is caught by an invariant that already existed**: raising
+those rows outright left four kinds with nothing authored to do below 16, and every pool
+must open by level 4 (`every_creature_kind_has_a_pool_and_all_pools_are_well_formed`). So a
+signature row is **SPLIT** rather than moved — the bite, the sting and the claw keep their
+damage at level 1 and the VENOM is a row of its own at 16, on a longer cooldown at a lower
+weight. A creature gains venom with depth instead of going quiet without it.
+⚠️ And the weights matter beyond their own rate: an ability's `weight` is read a second time
+as its RARITY (`signature_ability`, `CN-7`'s rebuke), so a new low-weight row on a BOSS can
+silently change what that boss answers an interruption with.
+
 **An AFFLICTION does not wear off; a BOON does.** Poison, a web, a mark, a dread — these hold
 until something CURES them, because outlasting a debuff by standing still is not a decision.
 Haste, Barrier, Regen and Evasion still expire and decay, or the opening turns of a fight would
@@ -891,6 +908,39 @@ fires casts on a loop inside the `MELD_BATTLE` mockup — which otherwise resolv
 a battle effect is unreachable in a screenshot. It re-fires just UNDER the burst's own TTL,
 because a capture is one frame at an arbitrary moment and a cadence longer than the effect
 means most screenshots catch the gap and report the shader as broken.
+
+**A CONTROL WITH NO HOVER STATE READS AS SCENERY.** Every town counter spawned its rows
+as real `Button`s that really fired and repainted NOTHING under the cursor, so the one
+signal a mouse user has that a thing is pressable was absent from every menu in the city —
+reported from play as *"I can't use the forge or anything"*, while the clicks were landing.
+Hover had been solved FIVE times privately (the Equip tab's gear rows, its categories, its
+unequip and back rows, the party screen's formation toggle), each with its own idea of the
+rest colour, which is why a worn gear chip hovered gold and came back transparent. It is
+the chip's own property now — `glass::ChipBase` carries the fill it repaints back to,
+`chip`/`chip_sized`/`row_chip`/`inset` all set it, and ONE ungated `repaint_hovered_chips`
+lights every chip in the game. A chip cannot be spawned without hover, so a new panel gets
+it the day it is written rather than the day somebody remembers. Three states, not two:
+rest, hover and **held** (`CHIP_PRESS`) — a click that looks identical to arriving says
+nothing happened.
+
+**AND A CHIP IS A PROMISE THAT PRESSING IT DOES SOMETHING.** Two kinds of lie were live at
+once. A row that CANNOT ACT must be dim and say why *before* it is pressed: the anvil's
+`[F] forge from nothing refined` was `enabled` unconditionally, so an empty Vault got a
+bright row and a live Forge button and the only way to learn it could not work was to press
+it — the rule the shelf has had since `EC-2` (`(short)`), applied one counter over. Dim is
+still PICKABLE, deliberately: a row you cannot act on is a row you are still allowed to
+READ, and only the commit stands down. And a nav chip that goes NOWHERE must not be a chip:
+every entry was spawned as a `Button` while the handler was gated on `city.shop_open`, so
+the Forge's three column headings, the Wall's season and the Bounty Board's own
+**Hunts / Bounties** pair were pressable and inert. A tab NAMES its action (`CounterTab`)
+exactly as a row does; a legend draws as text. ⚠️ Build the tabs ABOVE a counter's
+empty/loading early returns — the hunts side showed no Bounties chip at all, so **the Den
+was reachable only by knowing `[B]`**, a key printed in the footer of the side you were
+already on.
+⚠️ **Adding hover made the dead chips WORSE before it made them better**, and that is the
+order to expect: a control that lit up and did nothing was a louder lie than the label it
+had been. Anything that makes affordance visible has to land together with the greying, or
+it advertises every remaining gap.
 
 **THE PARTY HUD BUILDS OUT FROM THE CENTRE.** A cell is a quarter of the row at every party
 size and the row centres them. It used to spawn four slots and fill the empty ones with

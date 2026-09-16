@@ -494,6 +494,12 @@ pub struct Encounters {
     /// it an Elite — a named boss with `elite_hp_mult` behind it — can be the second
     /// creature a level-1 party meets, which is a wipe rather than an encounter.
     pub elite_min_distance: i64,
+    /// Distance below which nothing may APPLY a poison or a web. Both are afflictions —
+    /// they hold until something cures them — and the cures that answer them are not in a
+    /// party's hands in the on-ramp, so one taken at d20 is a delayed loss rather than a
+    /// decision. Read as a creature level through `Scaling::mlevel`, since `min_level` is
+    /// the axis an ability gates on.
+    pub affliction_min_distance: i64,
     /// Distance below which a peak never mounts a Gatekeeper. Deeper than the Elite
     /// gate because a Gatekeeper carries `gatekeeper_hp_mult` (10x) — it was gated
     /// only on `hub_safe_radius`, so one could stand 14 units from the hub.

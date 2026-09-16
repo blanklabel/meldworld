@@ -1352,7 +1352,7 @@ fn equipment_pane(
         }
         Some(cat) => {
             col.spawn(glass::text(gear_category_label(cat), 19.0, glass::WARN));
-            col.spawn((Button, PickerUnequipButton { category: cat }, glass::chip(false)))
+            col.spawn((Button, PickerUnequipButton { category: cat }, glass::chip_warn(false)))
                 .with_children(|b| {
                     b.spawn(glass::text("Remove", 18.0, glass::TEXT));
                 });
@@ -1388,7 +1388,6 @@ fn gear_row(
             gear_id: g.gear_id.clone(),
             source,
             target_hero_slot: member,
-            worn,
             blocked: blocked.is_some(),
             // GR-5: a two-hander puts the off-hand away first rather than bouncing the
             // player off a 409. This was hardcoded `None` here, so the rule only existed

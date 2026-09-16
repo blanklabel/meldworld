@@ -443,9 +443,12 @@ pub(crate) fn gear_click(
     net: NonSend<NetRes>,
     mut picker: ResMut<EquipPicker>,
     mut cursor: ResMut<OverlayCursor>,
-    mut rows: Query<(&Interaction, &GearButton, &mut BackgroundColor), Changed<Interaction>>,
+    // No `BackgroundColor`: hovering is `glass::repaint_hovered_chips`'s job now, for every
+    // chip in the game. This arm used to restore its own idea of the rest colour, so a WORN
+    // piece lit gold, hovered blue and came back transparent.
+    rows: Query<(&Interaction, &GearButton), Changed<Interaction>>,
 ) {
-    for (interaction, g, mut bg) in &mut rows {
+    for (interaction, g) in &rows {
         match *interaction {
             Interaction::Pressed => {
                 if !g.gear_id.is_empty() && !g.blocked {
@@ -470,16 +473,7 @@ pub(crate) fn gear_click(
                     cursor.index = 0;
                 }
             }
-            Interaction::Hovered => {
-                *bg = BackgroundColor(glass::CHIP_HOVER);
-            }
-            Interaction::None => {
-                *bg = BackgroundColor(if g.worn {
-                    Color::srgba(0.12, 0.3, 0.16, 0.6)
-                } else {
-                    Color::NONE
-                });
-            }
+            Interaction::Hovered | Interaction::None => {}
         }
     }
 }
@@ -489,16 +483,12 @@ pub(crate) fn gear_click(
 pub(crate) fn category_button_click(
     mut picker: ResMut<EquipPicker>,
     mut cursor: ResMut<OverlayCursor>,
-    mut rows: Query<(&Interaction, &CategoryButton, &mut BackgroundColor), Changed<Interaction>>,
+    rows: Query<(&Interaction, &CategoryButton), Changed<Interaction>>,
 ) {
-    for (interaction, c, mut bg) in &mut rows {
-        match *interaction {
-            Interaction::Pressed => {
-                picker.category = Some(c.category);
-                cursor.index = 0;
-            }
-            Interaction::Hovered => *bg = BackgroundColor(glass::CHIP_HOVER),
-            Interaction::None => *bg = BackgroundColor(Color::NONE),
+    for (interaction, c) in &rows {
+        if *interaction == Interaction::Pressed {
+            picker.category = Some(c.category);
+            cursor.index = 0;
         }
     }
 }
@@ -512,17 +502,13 @@ pub(crate) fn picker_unequip_click(
     equip_sel: Res<EquipSelection>,
     mut picker: ResMut<EquipPicker>,
     mut cursor: ResMut<OverlayCursor>,
-    mut rows: Query<(&Interaction, &PickerUnequipButton, &mut BackgroundColor), Changed<Interaction>>,
+    rows: Query<(&Interaction, &PickerUnequipButton), Changed<Interaction>>,
 ) {
-    for (interaction, u, mut bg) in &mut rows {
-        match *interaction {
-            Interaction::Pressed => {
-                unequip_category(&net.0, &inv, &run_gear, u.category, equip_sel.hero_slot);
-                picker.category = None;
-                cursor.index = 0;
-            }
-            Interaction::Hovered => *bg = BackgroundColor(glass::CHIP_HOVER_WARN),
-            Interaction::None => *bg = BackgroundColor(Color::NONE),
+    for (interaction, u) in &rows {
+        if *interaction == Interaction::Pressed {
+            unequip_category(&net.0, &inv, &run_gear, u.category, equip_sel.hero_slot);
+            picker.category = None;
+            cursor.index = 0;
         }
     }
 }
@@ -531,16 +517,12 @@ pub(crate) fn picker_unequip_click(
 pub(crate) fn picker_back_click(
     mut picker: ResMut<EquipPicker>,
     mut cursor: ResMut<OverlayCursor>,
-    mut rows: Query<(&Interaction, &mut BackgroundColor), (Changed<Interaction>, With<PickerBackButton>)>,
+    rows: Query<&Interaction, (Changed<Interaction>, With<PickerBackButton>)>,
 ) {
-    for (interaction, mut bg) in &mut rows {
-        match *interaction {
-            Interaction::Pressed => {
-                picker.category = None;
-                cursor.index = 0;
-            }
-            Interaction::Hovered => *bg = BackgroundColor(glass::CHIP_HOVER),
-            Interaction::None => *bg = BackgroundColor(Color::NONE),
+    for interaction in &rows {
+        if *interaction == Interaction::Pressed {
+            picker.category = None;
+            cursor.index = 0;
         }
     }
 }
@@ -549,19 +531,11 @@ pub(crate) fn picker_back_click(
 /// (server persists it + re-sends the roster, which re-renders the button).
 pub(crate) fn formation_click(
     net: NonSend<NetRes>,
-    mut rows: Query<(&Interaction, &FormationButton, &mut BackgroundColor), Changed<Interaction>>,
+    rows: Query<(&Interaction, &FormationButton), Changed<Interaction>>,
 ) {
-    for (interaction, f, mut bg) in &mut rows {
-        match *interaction {
-            Interaction::Pressed => {
-                net.0.send(ClientCmd::SetFormation { slot: f.slot, back_row: !f.back_row });
-            }
-            Interaction::Hovered => {
-                *bg = BackgroundColor(glass::CHIP_HOVER);
-            }
-            Interaction::None => {
-                *bg = BackgroundColor(Color::NONE);
-            }
+    for (interaction, f) in &rows {
+        if *interaction == Interaction::Pressed {
+            net.0.send(ClientCmd::SetFormation { slot: f.slot, back_row: !f.back_row });
         }
     }
 }
