@@ -2024,6 +2024,19 @@ fn hero_name_at(roster: &PartyRoster, names: &AccountHeroNames, i: usize) -> Opt
 /// something the server would allow, or vice versa (GR-5).
 pub(crate) fn gear_block_reason(item: &GearLine, hero_class: Option<&str>) -> Option<String> {
     use meld_proto::equipment::{self as eq, Legality};
+    // **A BROKEN PIECE CANNOT BE WORN, AND THE ROW HAS TO SAY SO BEFORE IT IS PRESSED.** The
+    // server has always refused one (`set_equipped` re-checks brokenness, and `equip-best`
+    // filters on `max_durability > 0`), so a bright, gold, pressable row for a piece at zero
+    // durability is the anvil's `[F] forge from nothing refined` one counter over: the only
+    // way to learn it cannot work is to press it and watch nothing happen.
+    //
+    // ⚠️ It is answered BEFORE the class check, and before the `?` that gives up on an
+    // unknown class. Brokenness is a fact about the PIECE rather than about this hero, so it
+    // is true on every row the piece appears in — and it is the one refusal here the player
+    // can actually act on, because repair is a thing they can go and buy.
+    if item.max_durability <= 0 {
+        return Some("broken - repair it".into());
+    }
     let class = eq::class_from_key(hero_class?)?;
     let verdict = eq::check_equip(
         class,

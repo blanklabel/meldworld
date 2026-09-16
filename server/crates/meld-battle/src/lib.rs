@@ -125,6 +125,21 @@ pub struct Fighter {
     /// gauge has refilled, and then the lock resumes. Counted in turns, "it always gets
     /// turns" is unconditional.
     pub gauge_guard_turns: u8,
+    /// How many of its own turns this fighter's gauge still drags for, from a Snare.
+    ///
+    /// A turn count rather than a `timed_status` deadline for the reason `gauge_guard_turns`
+    /// above is one: creature `speed_stat` is a fixed 40-125 while a hero's climbs with Dex,
+    /// so the same tick deadline is several turns for one fighter and half a turn for
+    /// another, and "slowed for five turns" is the only phrasing that means one thing to the
+    /// player reading it.
+    pub snared_turns: u8,
+    /// The tick this fighter stops being held at the START of the turn track.
+    ///
+    /// A recoil that bottoms the gauge out has nothing left to take, so the overflow is paid
+    /// in TIME: the gauge does not move at all until this lapses, which costs exactly the
+    /// charge it would have made. It cannot chain into the unbounded lock `flinch_guard_until`
+    /// exists to prevent, because a second recoil finds an empty gauge and takes nothing.
+    pub stagger_hold_until: u64,
     pub gauge: f64,
     pub statuses: Vec<String>,
     /// Content key of the fighter's class (`explorer`/`psyker`/`resonant`/…), surfaced
@@ -384,6 +399,8 @@ impl Fighter {
             undead_bane: 0.0,
             staggered: false,
             gauge_guard_turns: 0,
+            snared_turns: 0,
+            stagger_hold_until: 0,
             rebuke_pending: false,
             gauge: 0.0,
             statuses: Vec::new(),
@@ -504,6 +521,13 @@ impl Fighter {
         if self.staggered {
             v.push("staggered".to_string());
         }
+        // A Snare drags the gauge for a counted number of turns rather than to a deadline, so
+        // it cannot ride out on `timed_statuses` with the rest of the slows. It still has to
+        // SAY so: the snail and the blue-sage tint are how a player tells a dragging gauge
+        // from a naturally slow one, and both are keyed off this token.
+        if self.snared_turns > 0 {
+            v.push(SNARE_STATUS.to_string());
+        }
         // How close this fighter is to blazing ahead. A streak the player cannot watch fill
         // is a streak they never learn exists, which is the whole reason the pack's
         // gang-up mark is shouted.
@@ -570,6 +594,7 @@ impl Fighter {
         self.adrenaline.hash(&mut h);
         self.braced.hash(&mut h);
         self.staggered.hash(&mut h);
+        self.snared_turns.hash(&mut h);
         self.streak.hash(&mut h);
         self.surged.hash(&mut h);
         self.focus_max.hash(&mut h);
@@ -681,6 +706,14 @@ pub const RECOIL_STATUS: &str = "recoil";
 /// holds. Unlike a recoil it takes nothing away; it stops progress rather than undoing it,
 /// which is why the client draws it as something holding the body still rather than as a hit.
 pub const PINNED_STATUS: &str = "pinned";
+
+/// **SNARED** — this fighter's gauge fills slowly for a counted number of its OWN turns.
+///
+/// It is the one slow in the engine that is not a `timed_status`, because it is the one
+/// measured in turns; see `Fighter::snared_turns` for why that distinction is load-bearing.
+/// `is_slowing_status` deliberately does NOT list it — that function answers for timed
+/// statuses, and a token that never appears in `timed_statuses` would be dead weight there.
+pub const SNARE_STATUS: &str = "snared";
 
 /// A fighter that has just had its gauge knocked down cannot have it knocked down again
 /// while this holds.
@@ -1001,6 +1034,7 @@ pub struct Battle {
     hunter_snare_cost: i32,
     explorer_snare_mult: f64,
     explorer_snare_drain: f64,
+    explorer_snare_turns: u8,
     hunter_frenzy_cost: i32,
     explorer_frenzy_mult: f64,
     hunter_iron_lung_heal_fraction: f64,
@@ -1037,10 +1071,13 @@ pub struct Battle {
     defend_haste_mult: f64,
     recoil_gauge_loss: f64,
     recoil_ticks: u64,
-    pinned_ticks: u64,
+    pinned_ticks_min: u64,
+    pinned_ticks_max: u64,
+    pinned_hp_fraction_full: f64,
     flinch_guard_ticks: u64,
+    stagger_turn_fraction: f64,
     surge_streak: u32,
-    surge_gauge: f64,
+    surge_haste_mult: f64,
     counter_chance_base: f64,
     counter_chance_per_wll: f64,
     counter_chance_cap: f64,
@@ -1364,6 +1401,7 @@ impl Battle {
             hunter_snare_cost: balance.battle.hunter_snare_cost,
             explorer_snare_mult: balance.battle.explorer_snare_mult,
             explorer_snare_drain: balance.battle.explorer_snare_drain,
+            explorer_snare_turns: balance.battle.explorer_snare_turns,
             hunter_frenzy_cost: balance.battle.hunter_frenzy_cost,
             explorer_frenzy_mult: balance.battle.explorer_frenzy_mult,
             hunter_iron_lung_heal_fraction: balance.battle.hunter_iron_lung_heal_fraction,
@@ -1407,10 +1445,13 @@ impl Battle {
             defend_haste_mult: balance.battle.defend_haste_mult,
             recoil_gauge_loss: balance.battle.recoil_gauge_loss,
             recoil_ticks: balance.battle.recoil_ticks,
-            pinned_ticks: balance.battle.pinned_ticks,
+            pinned_ticks_min: balance.battle.pinned_ticks_min,
+            pinned_ticks_max: balance.battle.pinned_ticks_max,
+            pinned_hp_fraction_full: balance.battle.pinned_hp_fraction_full,
             flinch_guard_ticks: balance.battle.flinch_guard_ticks,
+            stagger_turn_fraction: balance.battle.stagger_turn_fraction,
             surge_streak: balance.battle.surge_streak,
-            surge_gauge: balance.battle.surge_gauge,
+            surge_haste_mult: balance.battle.surge_haste_mult,
             counter_chance_base: balance.battle.counter_chance_base,
             counter_chance_per_wll: balance.battle.counter_chance_per_wll,
             counter_chance_cap: balance.battle.counter_chance_cap,
@@ -1670,6 +1711,12 @@ impl Battle {
             return events;
         }
 
+        // Lapsed tells go FIRST, before anything reads one. A status that outlives its own
+        // effect is worse than no status at all — see `expire_statuses`.
+        for i in 0..self.fighters.len() {
+            self.expire_statuses(i);
+        }
+
         // 1. Fill gauges for living fighters not already awaiting input.
         // A channeling monster's gauge is frozen (the cast IS its turn), and a
         // slowing status (web/chill/bind/…) halves the fill rate.
@@ -1678,6 +1725,8 @@ impl Battle {
         let anchor_mult = self.psyker_anchor_slow_mult;
         let haste_mult = self.explorer_haste_mult;
         let brace_mult = self.defend_haste_mult;
+        let snare_mult = self.status_slow_mult;
+        let surge_mult = self.surge_haste_mult;
         let now = self.tick_count;
         for i in 0..n {
             let f = &mut self.fighters[i];
@@ -1690,6 +1739,13 @@ impl Battle {
             // than `pinned_ticks`, so a pinned fighter is guaranteed windows in which it
             // charges normally and can never be frozen out of the fight.
             if f.timed_statuses.iter().any(|(n, until)| *until > now && n == PINNED_STATUS) {
+                continue;
+            }
+            // HELD AT THE START OF THE TRACK by a recoil that bottomed the gauge out. The
+            // overflow a knock could not take is paid in time instead, so this costs exactly
+            // the charge that was left to make — and because the gauge is already empty, a
+            // further recoil takes nothing and cannot extend it.
+            if f.stagger_hold_until > now {
                 continue;
             }
             let pinned = f
@@ -1722,7 +1778,18 @@ impl Battle {
             // separately (one with this fighter's own turn, one with somebody's capstone) and
             // a player who paid for both should get both. Still a RATE, so it can no more
             // lock a gauge than a slow can.
+            // A SNARE drags alongside the rest rather than joining the strongest-slow
+            // contest above: that contest picks between two blanket rate multipliers, while
+            // this one is bought with a hero's turn and a cost in Adrenaline. Being webbed
+            // AND snared should be worse than either, the same way a bind and a haste
+            // multiply instead of cancelling.
+            let snared = if f.snared_turns > 0 { snare_mult } else { 1.0 };
+            // A CATCH-UP SPRINT. The reward for five good blows is a rate, not a gauge grant:
+            // the striker visibly runs down its own lane and arrives first, where a grant
+            // would teleport its icon to the GO end and read as the bar having broken.
             let rate_mult = slowed_to
+                * snared
+                * if f.surged { surge_mult } else { 1.0 }
                 * if hastened { haste_mult } else { 1.0 }
                 * if f.braced { brace_mult } else { 1.0 };
             f.gauge =
@@ -2390,14 +2457,7 @@ impl Battle {
                 effects.extend(self.apply_damage(t, dmg));
                 if drain > 0.0 && self.fighters[t].alive {
                     self.deny_gauge(t, Some(drain));
-                    effects.push(ResolvedEffect {
-                        modifier_flag: None,
-                        target_id: self.fighters[t].combatant_id.clone(),
-                        kind: EffectKind::StatusApplied,
-                        amount: None,
-                        status: Some("slowed".to_string()),
-                        hp_after: self.fighters[t].hp,
-                    });
+                    effects.push(self.apply_snare(t));
                 }
             }
             self.fighters[actor_i].defending = false;
@@ -2432,13 +2492,7 @@ impl Battle {
         };
         if drain > 0.0 && self.fighters[target_i].alive {
             self.deny_gauge(target_i, Some(drain));
-            effects.push(ResolvedEffect { modifier_flag: None,
-                target_id: self.fighters[target_i].combatant_id.clone(),
-                kind: EffectKind::StatusApplied,
-                amount: None,
-                status: Some("slowed".to_string()),
-                hp_after: self.fighters[target_i].hp,
-            });
+            effects.push(self.apply_snare(target_i));
         }
         self.fighters[actor_i].defending = false;
         self.reset_gauge(actor_i);
@@ -4497,6 +4551,25 @@ impl Battle {
         }
     }
 
+    /// Drop this fighter's lapsed timed statuses.
+    ///
+    /// ⚠️ **A TELL THAT OUTLIVES ITS EFFECT IS A LIE, and this used to run only as a fighter
+    /// took its own turn.** Every timed status therefore kept riding the wire from the tick it
+    /// lapsed until that fighter next acted — for a slow creature, several seconds. The gauge
+    /// had long since resumed filling while the bar still drew the little wall holding it, so
+    /// the one mechanic whose whole job is to be READ said the opposite of what the engine
+    /// was doing. It is swept for everybody every tick now, which is what makes `pinned`,
+    /// `hasted`, `marked` and every future timed tell mean "right now".
+    ///
+    /// An AFFLICTION is exempt because it does not wear off at all: it holds until something
+    /// cures it, so a poisoned party spends a turn on the cure instead of waiting out a timer.
+    fn expire_statuses(&mut self, i: usize) {
+        let now = self.tick_count;
+        self.fighters[i]
+            .timed_statuses
+            .retain(|(n, until)| *until > now || meld_proto::statuses::is_affliction(n));
+    }
+
     /// Start-of-turn upkeep for a fighter: apply Regen (heal) then decay Barrier.
     /// Returned effects are prepended to the turn's resolution.
     fn start_of_turn(&mut self, i: usize) -> Vec<ResolvedEffect> {
@@ -4508,9 +4581,7 @@ impl Battle {
         // An AFFLICTION does not wear off — it holds until something cures it, so a poisoned
         // party spends a turn on the cure instead of waiting out a timer. A BOON still fades,
         // or the opening turns of a fight would be the whole fight.
-        self.fighters[i]
-            .timed_statuses
-            .retain(|(n, until)| *until > now || meld_proto::statuses::is_affliction(n));
+        self.expire_statuses(i);
         let dots: Vec<String> = self.fighters[i]
             .timed_statuses
             .iter()
@@ -5582,7 +5653,7 @@ impl Battle {
         let Some(actor_i) = self.idx(&res.actor_id) else { return };
         // What each blow WAS, per body: a crit knocks its target back and a weakness holds it
         // still, and the two are different effects rather than one "flinch" with two causes.
-        let landed: Vec<(usize, bool, bool)> = res
+        let landed: Vec<(usize, bool, bool, i32)> = res
             .effects
             .iter()
             .filter(|e| matches!(e.kind, EffectKind::Damage) && e.amount.unwrap_or(0) > 0)
@@ -5590,7 +5661,7 @@ impl Battle {
                 let t = self.idx(&e.target_id)?;
                 let crit = e.status.as_deref() == Some("crit");
                 let weak = e.modifier_flag == Some(ModifierFlag::Weak);
-                Some((t, crit, weak))
+                Some((t, crit, weak, e.amount.unwrap_or(0)))
             })
             .collect();
         if landed.is_empty() {
@@ -5601,14 +5672,16 @@ impl Battle {
         // 1. RECOIL and PIN. A crit takes ground; a weakness freezes it. A blow that is both
         // RECOILS — losing ground is the worse of the two, and stacking them would let one
         // hit spend the whole guard window twice.
-        for (t, crit, weak) in landed.iter().copied() {
+        for (t, crit, weak, dmg) in landed.iter().copied() {
             if t == actor_i {
                 continue;
             }
             let fx = if crit {
                 self.recoil(t)
             } else if weak {
-                self.pin(t)
+                // How long it seizes up is the weight of what hit it, so the same weakness
+                // struck for a graze and for the biggest blow of the fight do not read alike.
+                self.pin(t, dmg)
             } else {
                 Vec::new()
             };
@@ -5616,7 +5689,7 @@ impl Battle {
         }
         // 2. THE CATCH-UP. One blow, however many bodies it found — five weaknesses in one
         // sweep is one good blow, so the streak is five consecutive TURNS.
-        let good_blow = landed.iter().any(|(_, crit, weak)| *crit || *weak);
+        let good_blow = landed.iter().any(|(_, crit, weak, _)| *crit || *weak);
         if good_blow {
             self.fighters[actor_i].streak += 1;
             if self.fighters[actor_i].streak >= self.surge_streak {
@@ -5627,7 +5700,7 @@ impl Battle {
             self.fighters[actor_i].streak = 0;
         }
         // 3. THE COUNTER. A braced fighter answers the first blow that lands on it.
-        for (t, _, _) in landed {
+        for (t, _, _, _) in landed {
             if t == actor_i {
                 continue;
             }
@@ -5679,9 +5752,26 @@ impl Battle {
         // about, and "down means open" applies however the target got there.
         if after <= f64::EPSILON && !self.fighters[target_i].staggered {
             self.fighters[target_i].staggered = true;
+            // …and the ground the knock could not take is charged in TIME. The gauge is held
+            // at zero for as long as this fighter would have needed to charge from empty, so
+            // reaching the start of the track costs a WHOLE TURN rather than the sliver of
+            // gauge that happened to be left. Its icon sits parked at the left of the bar for
+            // the whole of it, which is the only reading of "staggered" a player can act on.
+            self.fighters[target_i].stagger_hold_until =
+                self.tick_count + self.charge_ticks(target_i, self.stagger_turn_fraction);
             fx.push(self.mark(target_i, "staggered"));
         }
         fx
+    }
+
+    /// How many ticks this fighter needs to fill `share` of its gauge from empty, at its own
+    /// unmodified rate. One turn's worth of time, expressed as time.
+    ///
+    /// ⚠️ It reads the BASE rate deliberately — a fighter that is slowed while held would
+    /// otherwise be held proportionally longer, so a slow would silently multiply a stagger.
+    fn charge_ticks(&self, i: usize, share: f64) -> u64 {
+        let speed = (self.fighters[i].speed_stat as f64).max(1.0);
+        ((self.gauge_divisor / speed) * share).ceil().max(1.0) as u64
     }
 
     /// **PINNED** — a blow that found what this fighter is weak to freezes its gauge.
@@ -5690,12 +5780,12 @@ impl Battle {
     /// is the honest reading of hitting something where it is soft — it seizes up — and it
     /// is what makes the two effects tell apart on the bar at a glance, one knocked back and
     /// one held in place.
-    fn pin(&mut self, target_i: usize) -> Vec<ResolvedEffect> {
+    fn pin(&mut self, target_i: usize, damage: i32) -> Vec<ResolvedEffect> {
         if !self.can_be_jostled(target_i) {
             return Vec::new();
         }
         self.fighters[target_i].flinch_guard_until = self.tick_count + self.flinch_guard_ticks;
-        let until = self.tick_count + self.pinned_ticks;
+        let until = self.tick_count + self.pin_ticks_for(target_i, damage);
         self.fighters[target_i]
             .timed_statuses
             .retain(|(n, _)| n != PINNED_STATUS);
@@ -5703,6 +5793,26 @@ impl Battle {
             .timed_statuses
             .push((PINNED_STATUS.to_string(), until));
         vec![self.mark(target_i, PINNED_STATUS)]
+    }
+
+    /// How long a pinning blow holds its target: interpolated from `pinned_ticks_min` to
+    /// `pinned_ticks_max` across the share of that target's OWN max HP the blow took.
+    ///
+    /// A share rather than a raw number, for the reason every magnitude that lands on a
+    /// fighter here is one — the same 40 damage is most of a level-1 hero and a rounding
+    /// error on a gatekeeper, and the hold has to read as the blow's weight to the thing
+    /// that took it.
+    ///
+    /// ⚠️ The result is clamped to `pinned_ticks_max`, which is what keeps it under
+    /// `flinch_guard_ticks`; the guard staying wider than the hold is what guarantees a
+    /// pinned fighter windows in which it charges normally.
+    fn pin_ticks_for(&self, target_i: usize, damage: i32) -> u64 {
+        let max_hp = self.fighters[target_i].max_hp.max(1) as f64;
+        let full = self.pinned_hp_fraction_full.max(f64::EPSILON);
+        let share = ((damage.max(0) as f64 / max_hp) / full).clamp(0.0, 1.0);
+        let min = self.pinned_ticks_min;
+        let max = self.pinned_ticks_max.max(min);
+        min + ((max - min) as f64 * share).round() as u64
     }
 
     /// Whether a recoil or a pin may land on this fighter at all: it is alive, its turn has
@@ -5716,6 +5826,18 @@ impl Battle {
         self.fighters[target_i].alive
             && self.fighters[target_i].gauge < 1.0
             && self.tick_count >= self.fighters[target_i].flinch_guard_until
+    }
+
+    /// Drag this fighter's gauge for `explorer_snare_turns` of its OWN turns.
+    ///
+    /// The gauge steal a Snare lands with is a nudge; THIS is what the row buys. It refreshes
+    /// rather than adding, so two Snares on one creature is a longer drag and never a deeper
+    /// one — the same "the strongest slow wins rather than stacking" rule the fill loop keeps,
+    /// because a rate that compounds is how a slow becomes a lock by accident.
+    fn apply_snare(&mut self, target_i: usize) -> ResolvedEffect {
+        let turns = self.explorer_snare_turns;
+        self.fighters[target_i].snared_turns = self.fighters[target_i].snared_turns.max(turns);
+        self.mark(target_i, SNARE_STATUS)
     }
 
     /// A bare status effect on a fighter, for the client to draw.
@@ -5737,7 +5859,6 @@ impl Battle {
     fn surge(&mut self, i: usize) -> Vec<ResolvedEffect> {
         self.fighters[i].streak = 0;
         self.fighters[i].surged = true;
-        self.fighters[i].gauge = (self.fighters[i].gauge + self.surge_gauge).min(1.0);
         vec![ResolvedEffect {
             modifier_flag: None,
             target_id: self.fighters[i].combatant_id.clone(),
@@ -6581,6 +6702,11 @@ impl Battle {
         self.fighters[i].counter_ready = false;
         // The catch-up is spent by the turn it bought, exactly like the brace above it.
         self.fighters[i].surged = false;
+        // A Snare is counted in the target's OWN turns, so this is where one is spent — the
+        // same point `gauge_guard_turns` above is decremented, and for the same reason.
+        self.fighters[i].snared_turns = self.fighters[i].snared_turns.saturating_sub(1);
+        // Acting is proof the hold lapsed, so nothing can be carried into the next charge.
+        self.fighters[i].stagger_hold_until = 0;
         self.fighters[i].gauge = 0.0;
         self.fighters[i].awaiting = false;
     }
@@ -6849,6 +6975,162 @@ mod tests {
         );
     }
 
+    /// **BEING PUSHED PAST THE START OF THE TRACK COSTS A WHOLE TURN.** A recoil that bottoms
+    /// the gauge out has nothing left to take, so the overflow is paid in time: the fighter
+    /// is held at zero for as long as it would have needed to charge from empty, and its
+    /// icon sits parked at the left of the bar for the whole of it. Without the hold, a
+    /// staggered fighter starts charging again on the very next tick and "staggered" is a
+    /// damage multiplier the player can only infer from numbers.
+    #[test]
+    fn a_stagger_holds_the_gauge_at_the_start_for_a_whole_turn() {
+        let b = Balance::load_default().unwrap();
+        let mut bt = Battle::new(
+            "b".into(),
+            EncounterClass::Standard,
+            vec![player("h1", 60)],
+            vec![monster("m1", 5_000, 1)],
+            &b,
+            7,
+        );
+        bt.skip_opening();
+        let mi = bt.idx("m1").unwrap();
+        // Just short of the knock, so it bottoms out rather than merely losing ground.
+        bt.fighters[mi].gauge = b.battle.recoil_gauge_loss * 0.5;
+        bt.recoil(mi);
+        assert!(bt.fighters[mi].staggered, "bottoming out did not stagger");
+        let hold = bt.fighters[mi].stagger_hold_until;
+        assert!(hold > bt.tick_count, "a stagger did not hold the gauge at all");
+        // It is a WHOLE turn: the hold is what that fighter's own charge from empty costs.
+        let expected = bt.charge_ticks(mi, b.battle.stagger_turn_fraction);
+        assert_eq!(hold - bt.tick_count, expected, "a stagger cost the wrong amount of time");
+        // …and for every tick of it the icon does not move off the start of the track. The
+        // deadline is exclusive, the same convention every other timed status here keeps.
+        while bt.tick_count + 1 < hold {
+            bt.tick();
+            let mi = bt.idx("m1").unwrap();
+            assert_eq!(bt.fighters[mi].gauge, 0.0, "a staggered fighter charged while held");
+        }
+        bt.tick();
+        assert!(
+            bt.fighters[bt.idx("m1").unwrap()].gauge > 0.0,
+            "a staggered fighter never started charging again"
+        );
+    }
+
+    /// **A TELL THAT OUTLIVES ITS EFFECT IS A LIE.** Lapsed timed statuses are swept every
+    /// tick for everybody, not as each fighter takes its own turn — swept on the turn, a
+    /// `pinned` tell rides from the tick it lapses until that creature next acts, which for
+    /// a slow creature is seconds of the bar drawing a wall holding a gauge that is already
+    /// charging again.
+    #[test]
+    fn a_lapsed_tell_stops_riding_the_wire_before_its_owner_acts() {
+        let b = Balance::load_default().unwrap();
+        let mut bt = Battle::new(
+            "b".into(),
+            EncounterClass::Standard,
+            vec![player("h1", 60)],
+            vec![monster("m1", 5_000, 1)],
+            &b,
+            7,
+        );
+        bt.skip_opening();
+        let mi = bt.idx("m1").unwrap();
+        // A creature slow enough that its next turn is a long way off — the case where a
+        // sweep-on-your-own-turn leaves the tell up longest.
+        bt.fighters[mi].speed_stat = 1;
+        bt.fighters[mi].gauge = 0.0;
+        bt.pin(mi, 1);
+        assert!(
+            bt.fighters[mi].build_wire_statuses().iter().any(|s| s == PINNED_STATUS),
+            "the pin never reached the wire"
+        );
+        for _ in 0..=b.battle.pinned_ticks_max {
+            bt.tick();
+        }
+        let mi = bt.idx("m1").unwrap();
+        assert!(
+            !bt.fighters[mi].build_wire_statuses().iter().any(|s| s == PINNED_STATUS),
+            "a lapsed pin was still telling the player its target was held"
+        );
+        // …and the gauge the tell claimed was frozen really is moving again.
+        assert!(bt.fighters[mi].gauge > 0.0, "the hold outlived its own deadline");
+    }
+
+    /// **A HOLD IS AS LONG AS THE BLOW WAS HEAVY.** A flat pin makes a graze and the biggest
+    /// hit of the fight hold a creature for exactly as long, which is the same "a rule you
+    /// can only infer" failure the stagger tell above fixes. It is a share of the target's
+    /// OWN max HP for the reason every magnitude landing on a fighter here is one: the same
+    /// 40 damage is most of a level-1 hero and a rounding error on a gatekeeper.
+    #[test]
+    fn a_heavier_pinning_blow_holds_its_target_for_longer() {
+        let b = Balance::load_default().unwrap();
+        let bt = Battle::new(
+            "b".into(),
+            EncounterClass::Standard,
+            vec![player("h1", 60)],
+            vec![monster("m1", 1_000, 1)],
+            &b,
+            7,
+        );
+        let mi = bt.idx("m1").unwrap();
+        let max_hp = bt.fighters[mi].max_hp;
+        let graze = bt.pin_ticks_for(mi, 1);
+        let solid = bt.pin_ticks_for(mi, (max_hp as f64 * b.battle.pinned_hp_fraction_full * 0.5) as i32);
+        let heavy = bt.pin_ticks_for(mi, max_hp);
+        assert!(graze < solid && solid < heavy, "the hold did not track the blow: {graze}/{solid}/{heavy}");
+        assert_eq!(graze, b.battle.pinned_ticks_min, "the lightest blow did not hold for the minimum");
+        assert_eq!(heavy, b.battle.pinned_ticks_max, "a blow past the ceiling held for longer than the max");
+        // ⚠️ THE GUARD HAS TO STAY WIDER THAN THE HOLD, or a pinned fighter can be re-pinned
+        // before it has charged at all and is frozen out of the fight — the unbounded lock
+        // `flinch_guard_ticks` exists to prevent, reached from the other direction.
+        assert!(
+            b.battle.pinned_ticks_max < b.battle.flinch_guard_ticks,
+            "the flinch guard is no longer wider than the longest hold"
+        );
+    }
+
+    /// **A SNARE DRAGS FOR A COUNTED NUMBER OF THE TARGET'S OWN TURNS.** Counted in turns
+    /// rather than ticks because creature `speed_stat` is a fixed 40-125 while a hero's climbs
+    /// with Dex — the same tick deadline is several turns for one fighter and half a turn for
+    /// another, and "slowed for five turns" is the only phrasing that means one thing.
+    #[test]
+    fn a_snare_drags_for_a_counted_number_of_the_targets_own_turns() {
+        let b = Balance::load_default().unwrap();
+        let mut bt = Battle::new(
+            "b".into(),
+            EncounterClass::Standard,
+            vec![player("h1", 60)],
+            vec![monster("m1", 5_000, 1)],
+            &b,
+            7,
+        );
+        bt.skip_opening();
+        let mi = bt.idx("m1").unwrap();
+        bt.apply_snare(mi);
+        assert_eq!(bt.fighters[mi].snared_turns, b.battle.explorer_snare_turns);
+        // It SAYS so on the wire, or a dragging gauge is indistinguishable from a slow one.
+        assert!(
+            bt.fighters[mi].build_wire_statuses().iter().any(|s| s == SNARE_STATUS),
+            "a snared fighter did not say so"
+        );
+        // Re-snaring refreshes rather than deepening: a rate that compounds is how a slow
+        // becomes a lock by accident.
+        bt.apply_snare(mi);
+        assert_eq!(bt.fighters[mi].snared_turns, b.battle.explorer_snare_turns);
+        // …and a turn of it is spent by the target ACTING, not by the clock running.
+        let before = bt.fighters[mi].snared_turns;
+        for _ in 0..50 {
+            bt.tick();
+        }
+        assert_eq!(
+            bt.fighters[bt.idx("m1").unwrap()].snared_turns, before,
+            "a snare was spent by the clock rather than by the target taking its turn"
+        );
+        let mi = bt.idx("m1").unwrap();
+        bt.reset_gauge(mi);
+        assert_eq!(bt.fighters[mi].snared_turns, before - 1, "acting did not spend a snare turn");
+    }
+
     /// **A CRIT KNOCKS YOU BACKWARDS**, and being pushed all the way to the start of the
     /// track leaves you STAGGERED — the flag the engine already had, so "down means open"
     /// applies however the target got there.
@@ -7048,10 +7330,14 @@ mod tests {
                 });
                 if surged {
                     surges += 1;
-                    assert_eq!(
-                        bt.fighters[bt.idx("h1").unwrap()].gauge,
-                        1.0,
-                        "a catch-up must actually hand the turn back"
+                    // The catch-up is a RATE, so what it leaves behind is a flag and a spent
+                    // turn — not a full gauge. Asserting `gauge == 1.0` here would be
+                    // asserting the teleport this reward deliberately is not; that the
+                    // sprint actually arrives sooner is
+                    // `a_catch_up_sprints_to_its_next_turn_rather_than_teleporting_to_it`.
+                    assert!(
+                        bt.fighters[bt.idx("h1").unwrap()].surged,
+                        "a catch-up must leave the striker sprinting"
                     );
                 }
             }
@@ -7059,6 +7345,50 @@ mod tests {
         };
         assert_eq!(run(true), 1, "five weak hits in a row did not earn a catch-up");
         assert_eq!(run(false), 0, "an ordinary run of blows earned a catch-up");
+    }
+
+    /// **THE CATCH-UP SPRINTS; IT DOES NOT TELEPORT.** Handing the striker a full gauge moves
+    /// its icon from wherever it stands to the GO end inside one frame, which reads as the
+    /// turn bar having broken rather than as a reward — reported from play as characters
+    /// getting stuck at the end of the track. It has to arrive SOONER than it otherwise
+    /// would and it has to be watchable, so this asserts both halves: the sprint wins the
+    /// race, and it still takes real ticks to run.
+    #[test]
+    fn a_catch_up_sprints_to_its_next_turn_rather_than_teleporting_to_it() {
+        let b = Balance::load_default().unwrap();
+        let ticks_to_turn = |surged: bool| -> u64 {
+            let mut bt = Battle::new(
+                "b".into(),
+                EncounterClass::Standard,
+                vec![player("h1", 60)],
+                vec![monster("m1", 5_000_000, 1)],
+                &b,
+                7,
+            );
+            bt.skip_opening();
+            let h = bt.idx("h1").unwrap();
+            bt.fighters[h].gauge = 0.0;
+            bt.fighters[h].surged = surged;
+            for n in 1..=10_000u64 {
+                bt.tick();
+                if bt.fighters[bt.idx("h1").unwrap()].gauge >= 1.0 {
+                    return n;
+                }
+            }
+            panic!("the fighter never reached its turn");
+        };
+        let plain = ticks_to_turn(false);
+        let sprint = ticks_to_turn(true);
+        assert!(
+            sprint < plain,
+            "a catch-up has to arrive sooner than an ordinary charge: {sprint} vs {plain}"
+        );
+        // …and it is still a run rather than a jump. A single tick would be the teleport
+        // wearing a rate's clothes, and there would be nothing on the bar to watch.
+        assert!(
+            sprint > 1,
+            "a catch-up arrived in one tick, which is the teleport it is meant to replace"
+        );
     }
 
     /// **A GUARD CAN ANSWER, AND ONLY ONCE.** A turn spent defending returns at most one

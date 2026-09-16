@@ -204,17 +204,27 @@ pub struct Battle {
     pub recoil_gauge_loss: f64,
     /// How long the knocked-back tell rides the wire, in ticks (cosmetic).
     pub recoil_ticks: u64,
-    /// How long a blow that found a target's WEAKNESS freezes its gauge. Not a loss: a
-    /// pinned fighter keeps the ground it has made and simply stops making more.
-    pub pinned_ticks: u64,
+    /// How long a blow that found a target's WEAKNESS freezes its gauge, at its lightest and
+    /// its heaviest. Not a loss: a pinned fighter keeps the ground it has made and simply
+    /// stops making more. The hold is interpolated between the two across the fraction of
+    /// the target's own max HP the blow took, so its length reads as the blow's weight.
+    pub pinned_ticks_min: u64,
+    pub pinned_ticks_max: u64,
+    /// The share of a target's max HP at which a pinning blow holds for the full
+    /// `pinned_ticks_max`. Anything heavier holds for the same.
+    pub pinned_hp_fraction_full: f64,
     /// …and how long that body cannot be flinched again, in ticks. Without it, four heroes
     /// branded into one creature's weakness chain-flinch it out of the fight.
     pub flinch_guard_ticks: u64,
+    /// How long a fighter pushed to the START of the track is held there, as a multiple of
+    /// the time it takes that fighter to charge from empty. 1.0 costs it exactly one turn.
+    pub stagger_turn_fraction: f64,
     /// Consecutive damaging resolutions that found a weakness or crit before a fighter
     /// blazes ahead.
     pub surge_streak: u32,
-    /// How much gauge that catch-up hands the striker (1.0 = act immediately).
-    pub surge_gauge: f64,
+    /// How much faster the catch-up charges its striker's gauge, until that striker's own
+    /// next turn. A rate rather than a gauge grant, so the run-up is something to watch.
+    pub surge_haste_mult: f64,
     /// A braced fighter's chance to answer the first blow that lands on it, and what that
     /// chance is worth per point of Wll (see `balance.toml` for why Wll and not Dex).
     pub counter_chance_base: f64,
@@ -293,6 +303,10 @@ pub struct Battle {
     pub hunter_snare_cost: i32,
     pub explorer_snare_mult: f64,
     pub explorer_snare_drain: f64,
+    /// How many of the target's OWN turns a Snare drags its gauge for. Counted in turns
+    /// rather than ticks because creature `speed_stat` is fixed while a hero's climbs with
+    /// Dex — a tick deadline is several turns for one fighter and half a turn for another.
+    pub explorer_snare_turns: u8,
     pub hunter_frenzy_cost: i32,
     pub explorer_frenzy_mult: f64,
     pub hunter_iron_lung_heal_fraction: f64,

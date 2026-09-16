@@ -5399,6 +5399,55 @@ only the things that can't be class-gated.
     already on. `every_nav_chip_either_turns_the_counter_around_or_is_not_a_chip` holds
     both halves, since an action nothing handles is as dead as no action at all.
 
+- [x] **UX-18 — The turn track tells the truth: a tell that lapses stops showing, a
+  stagger costs a turn, and the catch-up runs rather than teleports.** Reported from play
+  as four separate complaints that turned out to be three mechanics and one stale tell.
+  - *A tell that outlives its effect is a lie.* Lapsed `timed_statuses` were swept only as
+    a fighter took **its own turn**, so every timed tell rode the wire from the tick it
+    expired until that body next acted — for a slow creature, seconds. The bar drew the
+    little wall holding a gauge that had long since resumed filling, which made `pinned`
+    (the one mechanic whose entire job is to be read) say the opposite of what the engine
+    was doing. `expire_statuses` is swept for everybody every tick now, ahead of anything
+    that reads one, so `hasted`, `marked` and every future timed tell mean *right now*.
+  - *And a hold is as long as the blow was heavy.* `pinned_ticks` was flat, so a graze and
+    the biggest hit of the fight held a body for exactly as long. It is interpolated across
+    the share of the target's OWN max HP the blow took (`pinned_ticks_min`/`_max`) — the
+    same argument as every other magnitude that lands on a fighter. The max stays under
+    `flinch_guard_ticks`, which is what guarantees a pinned fighter windows in which it
+    charges normally.
+  - *A stagger costs a WHOLE TURN.* A recoil that bottoms the gauge out has nothing left to
+    take, so the overflow is paid in TIME: held at zero for exactly the charge it would have
+    made (`stagger_turn_fraction`), icon parked at the left of the track for the whole of
+    it. It cannot chain into the unbounded lock `flinch_guard_ticks` exists to prevent,
+    because a second recoil finds an empty gauge and takes nothing — bounded by arithmetic
+    rather than by a guard.
+  - *The catch-up sprints; it does not teleport.* `surge_gauge = 1.0` moved the icon from
+    wherever it stood to the GO end inside one frame, which reads as the bar having broken
+    rather than as a reward — reported as characters getting stuck at the end of the track.
+    It is `surge_haste_mult` now, a rate until that fighter's own next turn, and the bar's
+    fast lane already draws a fighter moving quicker than it should be.
+  - *Every condition at once.* The floating badges CYCLED one at a time on a 1.5 s timer, so
+    a body carrying two looked exactly like a body carrying one — a target blazed and then
+    misdirected read as only misdirected, which is precisely the pair a player sets up on
+    purpose and then has to verify. All of them draw, in a row centred on the sprite.
+  - *And the description follows the mouse.* The command panel already drew the registry's
+    prose and the server's magnitudes for whichever row `menu.cursor` was on — and the
+    cursor moved only with the arrow keys, so a player reading the menu with a mouse got the
+    description of a row their pointer was nowhere near. Hovering moves the SAME cursor, so
+    the highlight, the tooltip and [Enter] cannot disagree about which row is being asked
+    about.
+  - *A broken piece is dim and says why.* The server has always refused one; the equip
+    picker drew it bright, gold and pressable, so the only way to learn it could not be worn
+    was to click it and watch nothing happen — `UX-17`'s anvil, one screen over. Answered
+    ahead of the class rules, because brokenness is a fact about the PIECE and it is the one
+    refusal there that the player can act on.
+  - *Two rows retuned with it:* Misdirection deals ordinary damage (1.1x → 1.0) and steals a
+    tenth of the gauge rather than half — what the row buys is `distracted`, and paying it a
+    damage multiplier on top made the control button also the best attack. Snare likewise
+    drops to a tenth, and gains what it was named for: `snared`, a drag counted in the
+    target's OWN turns (`explorer_snare_turns`) rather than to a tick deadline, because
+    creature `speed_stat` is fixed while a hero's climbs with Dex.
+
 - [ ] **UX-1 — Last City minimap & compass (town-only).** A minimap and compass
   **for Last City itself** so players can navigate the hub — locate the districts
   (Vault-Deep, Market, Forge/Alembic, Bounty Board, Drill Yard, Vanguard Wall),

@@ -1081,6 +1081,30 @@ mod equip_ux_tests {
         assert!(gear_block_reason(&spear, Some("")).is_none());
     }
 
+    /// **A BROKEN PIECE IS DIM AND SAYS WHY BEFORE IT IS PRESSED.** The server refuses one
+    /// outright, so a bright pressable row for a piece at zero durability is a control whose
+    /// only way of telling you it cannot work is to do nothing when you click it.
+    #[test]
+    fn a_broken_piece_reads_as_broken_on_every_row_it_appears_in() {
+        let mut spear = item("Warpike", "main_hand", "spear", "");
+        spear.max_durability = 0;
+        let reason = gear_block_reason(&spear, Some("explorer"));
+        assert!(
+            reason.as_deref().is_some_and(|r| r.contains("broken")),
+            "a broken piece did not say so: {reason:?}"
+        );
+        // ⚠️ It is a fact about the PIECE, not about the hero, so it holds where the class
+        // rules give up entirely — an unknown class blocks nothing else and must still block
+        // this, or the one row the player can act on is the one row that stays bright.
+        assert!(
+            gear_block_reason(&spear, None).as_deref().is_some_and(|r| r.contains("broken")),
+            "a broken piece read as wearable once the class was unknown"
+        );
+        // …and an intact piece is untouched by any of it.
+        let whole = item("Warpike", "main_hand", "spear", "");
+        assert!(gear_block_reason(&whole, Some("explorer")).is_none());
+    }
+
     #[test]
     fn a_two_hander_names_the_off_hand_it_displaces() {
         let mut shield = item("Targe", "off_hand", "shield", "");
