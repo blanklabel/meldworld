@@ -5326,9 +5326,22 @@ only the things that can't be class-gated.
     opening drew no card, so a deliberate pause was indistinguishable from a hang. A
     **FIGHT!** card fills it, in ordinary title gold rather than the alarm colours the two
     openings that cost or bought you a round wear.
-  - *And the bar grew a third rail:* anyone charging faster than they should be — braced,
-    hastened, or fresh off a catch-up — hops onto it, so "why is that one moving quicker"
-    is answered by where it is standing. The lane says SPEED, the colour still says SIDE.
+  - *And the bar grew more rails:* **four at most, ever** — what you are fighting, your own
+    party, everybody else's heroes (all of them on ONE line; a merge fields sixteen across
+    four parties and a rail each would be a stave), and anyone **charging faster than they
+    should be**: braced, hastened, or fresh off a catch-up. The lane says SPEED, the colour
+    says SIDE, and the ally rail only exists in co-op, so a solo dive draws three.
+  - *A fast fighter BURNS:* a comet — white-hot head over the sprite, tapering to a coloured
+    tail — throwing embers that fall back down its own line and dissipate into white wisps.
+    Both are stacks of primitives because a Bevy UI node is a rounded rectangle and nothing
+    else: the comet is seven lozenges that shorten as they reach back, so the *silhouette*
+    tapers. ⚠️ Two cuts of a lightning bolt were built and discarded before this — a
+    hard-edged line sits on the panel, and only motion says *flying*.
+  - ⚠️ *Three things the tests could not have found, all caught by finally LOOKING:* every
+    fighter at a full gauge drew on the same pixel (two ready heroes rendered as one icon —
+    on the bar whose whole point is that a turn arriving does not stop anybody else's); the
+    per-lane rails drew four empty lines behind the filled ones; and in co-op the bar and
+    the ally strip drew straight through each other. `make check` was green for all three.
 
 - [x] **UX-17 — Every chip lights under the cursor, and a control that cannot act says
   so.** Reported from play as *"I can't use the forge or anything"* — while the clicks were

@@ -2087,11 +2087,47 @@ FIGHT! wears the ordinary title gold.
 top of the arena: every combatant rides one shared track as its own south-facing sprite —
 the SAME art the arena spawns, resolved the same way, since an icon that disagreed with the
 body it stands for is worse than no icon — sliding left to right with its gauge, dragging a
-sparkling charge line behind it, foes in the lane above the rail and your party below, and a THIRD rail below
-both for anyone charging faster than they should be — braced, hastened, or fresh off a
-catch-up — so "why is that one moving quicker" is answered by where it is standing. The lane
-says SPEED and the colour says SIDE. At the GO end an icon **bounces and glows** until the
-turn is spent. Before it, the only gauges on
+sparkling charge line behind it. At the GO end an icon **bounces and glows** until the turn
+is spent.
+
+**FOUR RAILS AT MOST, EVER**: what you are fighting, your own party, everybody else's heroes
+(a co-op merge fields sixteen across four parties — a rail each would be a stave, so every
+ally shares one), and whoever is **charging faster than they should be** — braced, hastened,
+or fresh off a catch-up. So "why is that one moving quicker" is answered by where it is
+standing. The lane says SPEED, the colour says SIDE, and the ally rail only exists when
+somebody else's heroes are actually here (`LaneSet`), so a solo dive draws three.
+⚠️ **The lane is written EVERY FRAME, never baked in at spawn**: a fighter hops rails
+mid-fight the moment a guard goes up, and rebuilding the bar for that would tear the node
+tree down on a state change the animator absorbs for free. The same goes for a PILE — every
+fighter at a full gauge sits on the same pixel, so two heroes whose turns came up together
+drew as one icon on the very bar whose point is that one turn arriving does not stop anybody
+else's. `fan_pile` spreads them, which is a bounded lie (up to `PILE_GAP` per stacked body)
+told only when the truth would be invisible.
+⚠️ **NO EMPTY RAIL UNDER A LANE.** The first cut drew a faint full-width line per lane for
+the charge lines to run along, which put four unfilled lines across the panel on top of the
+filled ones and read from play as "the additional lines". A lane is legible from what is ON
+it; the only full-height line left is the GO end, which is the finish rather than a lane.
+⚠️ **And the co-op ally strip has to start BELOW it** (`turn_order::bar_bottom`), asked
+rather than hard-coded: the bar grows a rail exactly when that panel exists, so a constant
+would be right solo and wrong in every merge — where the two drew straight through each
+other.
+
+**A FAST FIGHTER BURNS.** It wears a comet — a white-hot head over the sprite tapering to a
+coloured tail behind it — and throws **embers** off itself that fall back down its own line
+and dissipate into white wisps. ⚠️ **Both shapes are stacks of primitives, because a Bevy UI
+node is a rounded rectangle and nothing else.** There is no gradient and no arbitrary shape:
+the comet is seven LOZENGES that get shorter as they reach further back, so the SILHOUETTE
+tapers (one box rounded hard at the front and barely at the back is a pill, and it read
+exactly like a highlighted button), and the fuzz is particles rather than a drawn line.
+⚠️ **Two cuts of a LIGHTNING BOLT were built and thrown away first** — one node per segment
+sized to bridge its neighbour (a jump became a wide tall block: a torn paper ribbon), then a
+run plus a vertical joint per vertex, which drew a clean stepped arc and still read as a
+square wave printed on the panel. The shape was never the problem: a hard-edged line cannot
+say *flying*. Motion can, so the trail streams.
+⚠️ **These two systems write every frame on purpose**, against `UI REDRAWS ON CHANGE`: a
+trail that holds still is not a trail. The cost is bounded by construction — every ember and
+every aura layer is `Display::None` for anyone not on the fast rail, which is most of the
+cast for most of a fight. Before it, the only gauges on
 screen were the four hero bars along the bottom edge and a 5px enemy bar gated behind the
 TOP rung of the Hunter's Predator's Eye, so "who goes next, them or me" — the question a
 player asks every second of a fight — had no answer for either side. ⚠️ **Getting to go does

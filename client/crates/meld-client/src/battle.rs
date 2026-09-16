@@ -3277,7 +3277,12 @@ pub(crate) fn render_ally_parties(
                                 bottom_right: Val::Px(12.0),
                             },
                 position_type: PositionType::Absolute,
-                top: Val::Px(0.0), // flush to the top — no buffer
+                // UNDER the charging line, which owns the top of the battle screen. Asked
+                // rather than hard-coded: the bar grows a rail the moment somebody else's
+                // heroes join, which is exactly when this panel exists at all — so a
+                // constant here would be correct in a solo fight and wrong in every co-op
+                // one, where the two drew straight through each other.
+                top: Val::Px(crate::turn_order::bar_bottom(&battle)),
                 left: Val::Px(0.0),
                 right: Val::Px(0.0),
                 flex_direction: FlexDirection::Column,
