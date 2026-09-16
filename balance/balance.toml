@@ -302,7 +302,26 @@ crit_mult = 1.8                  # damage multiplier on a crit
 # chain. A flinch cannot land on the same body again until `flinch_guard_ticks` have
 # passed, which bounds a four-hero party branded into one creature's weakness to one flinch
 # per window rather than one per hero per swing. [TUNABLE]
-flinch_gauge_loss = 0.10
+# **A CRIT KNOCKS YOU BACK; A WEAKNESS HOLDS YOU STILL.** Two different things happen to a
+# fighter's place in the turn order, and they are deliberately not the same effect:
+#
+#   - RECOIL (a critical hit, from a weapon or a spell) takes gauge. You lose ground — the
+#     bar shows your icon knocked backwards down its own line.
+#   - PINNED (a blow that found what you are weak to) freezes the gauge where it is. You do
+#     not lose progress, you just stop making any for a moment, held by the hit.
+#
+# The split is what makes the two readable apart at a glance, and it is also the honest
+# reading of each: a crit is a blow that landed harder than it should have, while hitting
+# something's weakness is the moment it seizes up.
+recoil_gauge_loss = 0.10
+recoil_ticks = 5                 # how long the knocked-back tell rides the wire (~0.5s)
+pinned_ticks = 5                 # ~0.5s frozen, comfortably inside the guard below
+# ⚠️ **ONE GUARD COVERS BOTH, and it has to stay WIDER than `pinned_ticks`.** Gauge denial
+# in this engine composed into a 464-hero-turn lock once; these are small and frequent, which
+# is the same bug from the other direction. The guard is what bounds four heroes branded into
+# one creature's weakness to one effect per window — and while it is wider than the hold, a
+# pinned fighter is guaranteed gaps in which it charges normally, so it can never be frozen
+# out of the fight. [TUNABLE]
 flinch_guard_ticks = 12          # ~1.2s at the 100ms tick
 # **FIVE GOOD BLOWS IN A ROW AND YOU BLAZE AHEAD.** Consecutive resolutions in which this
 # fighter found a weakness or landed a crit; the fifth fills its own gauge, so a party that

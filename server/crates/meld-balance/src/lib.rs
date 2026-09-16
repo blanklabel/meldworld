@@ -200,8 +200,13 @@ pub struct Battle {
     pub crit_chance_per_dex: f64,
     pub crit_chance_cap: f64,
     pub crit_mult: f64,
-    /// Gauge a blow takes off a target it found a WEAKNESS in or landed a CRIT on.
-    pub flinch_gauge_loss: f64,
+    /// Gauge a CRITICAL hit knocks off its target — it loses ground on the turn order.
+    pub recoil_gauge_loss: f64,
+    /// How long the knocked-back tell rides the wire, in ticks (cosmetic).
+    pub recoil_ticks: u64,
+    /// How long a blow that found a target's WEAKNESS freezes its gauge. Not a loss: a
+    /// pinned fighter keeps the ground it has made and simply stops making more.
+    pub pinned_ticks: u64,
     /// …and how long that body cannot be flinched again, in ticks. Without it, four heroes
     /// branded into one creature's weakness chain-flinch it out of the fight.
     pub flinch_guard_ticks: u64,

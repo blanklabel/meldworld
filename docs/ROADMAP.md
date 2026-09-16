@@ -5292,6 +5292,15 @@ only the things that can't be class-gated.
   Hitting a creature's weakness was worth a damage multiplier and nothing else, so "what is
   this thing made of" was an arithmetic question rather than a tempo one, and Defend bought
   half a blow and a faster gauge but never anything you could *do*.
+  - ⚠️ *The flinch became TWO effects, and crits learned to fire from spells.* A **critical
+    hit** (from a weapon or, now, any ability) knocks its target BACKWARDS down the turn
+    order; a blow that finds what it is **weak to** freezes the gauge where it is without
+    taking anything away. Knocked back versus held still is the read, and a recoil that
+    reaches the start of the track leaves the target **staggered** — the flag the engine
+    already had, so "down means open" applies however it got there. Crits are rolled in
+    `apply_ability_damage` now, the one funnel every ability's damage passes through: they
+    used to exist only inside `resolve_attack`, so the whole caster half of the game could
+    not land one.
   - *Shipped, all three through ONE funnel* (`Battle::answer_the_blow`, called from
     `stamped`, which every resolution already passes through): a **FLINCH** takes
     `[battle] flinch_gauge_loss` off anything hit where it is weak or crit; a **CATCH-UP**
@@ -5326,9 +5335,24 @@ only the things that can't be class-gated.
     opening drew no card, so a deliberate pause was indistinguishable from a hang. A
     **FIGHT!** card fills it, in ordinary title gold rather than the alarm colours the two
     openings that cost or bought you a round wear.
-  - *And the bar grew a third rail:* anyone charging faster than they should be — braced,
-    hastened, or fresh off a catch-up — hops onto it, so "why is that one moving quicker"
-    is answered by where it is standing. The lane says SPEED, the colour still says SIDE.
+  - *And the bar grew more rails:* **four at most, ever** — what you are fighting, your own
+    party, everybody else's heroes (all of them on ONE line; a merge fields sixteen across
+    four parties and a rail each would be a stave), and anyone **charging faster than they
+    should be**: braced, hastened, or fresh off a catch-up. The lane says SPEED, the colour
+    says SIDE, and the ally rail only exists in co-op, so a solo dive draws three.
+  - *A fast fighter BURNS,* and it is a shader: `turn_fire.wgsl`, a `UiMaterial` with an
+    additive blend. A tongue of flame with a white-hot core on the sprite, licking back down
+    that fighter's own charge line in that line's colour. ⚠️ **Four `Node`-built cuts were
+    made and thrown away first** — a bolt as bridging segments (a torn ribbon), a bolt as
+    runs plus joints (a square wave), a comet as stacked lozenges (a smudge) and forty ember
+    particles (a row of dots). A UI node is an alpha-blended rounded rectangle, and fire
+    needs a colour that ramps and light that adds; only a material does both. It also
+    replaced ~47 CPU-moved nodes per fast fighter with one quad.
+  - ⚠️ *Three things the tests could not have found, all caught by finally LOOKING:* every
+    fighter at a full gauge drew on the same pixel (two ready heroes rendered as one icon —
+    on the bar whose whole point is that a turn arriving does not stop anybody else's); the
+    per-lane rails drew four empty lines behind the filled ones; and in co-op the bar and
+    the ally strip drew straight through each other. `make check` was green for all three.
 
 - [x] **UX-17 — Every chip lights under the cursor, and a control that cannot act says
   so.** Reported from play as *"I can't use the forge or anything"* — while the clicks were

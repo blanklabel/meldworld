@@ -2018,21 +2018,36 @@ the finished resolution, in ONE place (`Battle::answer_the_blow`, called from `s
 the funnel every resolution already passes through on its way out, which is why the damage
 type is stamped there too):
 
-- **THE FLINCH.** A blow that finds a target's WEAKNESS or lands a CRIT takes
-  `[battle] flinch_gauge_loss` off that target's gauge. Hitting a creature's element used to
-  be a damage multiplier and nothing else, so "what is it made of" was an arithmetic
-  question; now the answer is felt on the turn order itself. ⚠️ **It has its OWN guard
-  (`flinch_guard_ticks`) and that is load-bearing** — gauge denial in this engine has
-  already composed into a 464-hero-turn lock once, and a small frequent knock is that bug
-  reached from the other direction: four heroes branded into one weakness would otherwise
-  hold a creature at zero. ⚠️ **It arms NO rebuke and no `staggered`**, unlike `deny_gauge`:
-  a knock is a turn TAKEN by an ability that spent its own turn doing it, while a flinch
-  happens several times a round — a rebuke on each would make a boss's *scarcest* ability
-  its most common one, which is the exact failure the raid tier's note warns about, since
-  `weight` is read as rarity. ⚠️ And **a turn that has already arrived cannot be flinched
-  away**: at a full gauge the fighter owns its turn (a hero is `awaiting`, its menu is on
-  screen), so a flinch there would CANCEL a turn rather than delay one. Cancelling is what a
-  knock is, and it is priced like one.
+- **RECOIL and PINNED — TWO EFFECTS, NOT ONE.** A **critical hit** knocks its target
+  BACKWARDS down the turn order (`recoil_gauge_loss`); a blow that finds what it is **weak
+  to** freezes the gauge where it is (`pinned_ticks`) without taking anything away. The split
+  is what makes them readable apart at a glance — knocked back versus held still — and it is
+  the honest reading of each: a crit landed harder than it should have, while hitting
+  something's weakness is the moment it seizes up. A blow that is BOTH recoils, since losing
+  ground is the worse of the two. ⚠️ **One guard covers both (`flinch_guard_ticks`) and it is
+  load-bearing** — gauge denial in this engine composed into a 464-hero-turn lock once, and
+  small frequent effects are that bug reached from the other direction: four heroes branded
+  into one weakness would otherwise hold a creature still for the whole fight. The guard is
+  WIDER than the hold, so a pinned fighter is guaranteed windows in which it charges
+  normally. ⚠️ **Neither arms the rebuke**, unlike `deny_gauge`: a knock is a turn TAKEN by
+  an ability that spent its own turn doing it, while these happen several times a round — a
+  rebuke on each would make a boss's *scarcest* ability its most common one, the exact
+  failure the raid tier's note warns about since `weight` is read as rarity. ⚠️ And **a turn
+  that has already arrived cannot be jostled**: at a full gauge the fighter owns its turn (a
+  hero is `awaiting`, its menu is on screen), so taking ground there would CANCEL a turn
+  rather than delay one. Cancelling is what a knock is, and it is priced like one.
+- **PUSHED ALL THE WAY BACK IS A STAGGER.** A recoil that reaches the start of the track sets
+  the `staggered` flag the engine already had, so "down means open" (`staggered_damage_mult`)
+  applies however the target got there — nothing new to reason about. It rides the wire now,
+  because a rule the player can only infer from damage numbers is a rule nobody learns.
+- **AND A SPELL CAN CRIT.** The roll lived only inside `resolve_attack`, so the entire
+  ability half of the game — every hero skill, every creature ability, every Focus — could
+  not land one: the crit stat was worth nothing to a caster, and the recoil above would have
+  been a martial-only mechanic. It is rolled in `apply_ability_damage`, the one funnel every
+  ability's damage passes through, so an ability written tomorrow crits the day it is
+  written. Per TARGET rather than per cast, which falls out of that. ⚠️ A DoT deliberately
+  still cannot crit: burn and poison are a fraction of the victim's OWN max HP and never come
+  through there.
 - **THE CATCH-UP.** `surge_streak` (5) consecutive damaging resolutions that found a
   weakness or crit fill the striker's gauge outright. Counted per RESOLUTION, never per
   body — an all-enemy blow that finds three weaknesses is one good blow — so the streak is
@@ -2087,11 +2102,74 @@ FIGHT! wears the ordinary title gold.
 top of the arena: every combatant rides one shared track as its own south-facing sprite —
 the SAME art the arena spawns, resolved the same way, since an icon that disagreed with the
 body it stands for is worse than no icon — sliding left to right with its gauge, dragging a
-sparkling charge line behind it, foes in the lane above the rail and your party below, and a THIRD rail below
-both for anyone charging faster than they should be — braced, hastened, or fresh off a
-catch-up — so "why is that one moving quicker" is answered by where it is standing. The lane
-says SPEED and the colour says SIDE. At the GO end an icon **bounces and glows** until the
-turn is spent. Before it, the only gauges on
+sparkling charge line behind it. At the GO end an icon **bounces and glows** until the turn
+is spent.
+
+**FOUR RAILS AT MOST, EVER**: what you are fighting, your own party, everybody else's heroes
+(a co-op merge fields sixteen across four parties — a rail each would be a stave, so every
+ally shares one), and whoever is **charging faster than they should be** — braced, hastened,
+or fresh off a catch-up. So "why is that one moving quicker" is answered by where it is
+standing. The lane says SPEED, the colour says SIDE, and the ally rail only exists when
+somebody else's heroes are actually here (`LaneSet`), so a solo dive draws three.
+⚠️ **The lane is written EVERY FRAME, never baked in at spawn**: a fighter hops rails
+mid-fight the moment a guard goes up, and rebuilding the bar for that would tear the node
+tree down on a state change the animator absorbs for free. The same goes for a PILE — every
+fighter at a full gauge sits on the same pixel, so two heroes whose turns came up together
+drew as one icon on the very bar whose point is that one turn arriving does not stop anybody
+else's. `fan_pile` spreads them, which is a bounded lie (up to `PILE_GAP` per stacked body)
+told only when the truth would be invisible.
+⚠️ **NO EMPTY RAIL UNDER A LANE.** The first cut drew a faint full-width line per lane for
+the charge lines to run along, which put four unfilled lines across the panel on top of the
+filled ones and read from play as "the additional lines". A lane is legible from what is ON
+it; the only full-height line left is the GO end, which is the finish rather than a lane.
+⚠️ **And the co-op ally strip has to start BELOW it** (`turn_order::bar_bottom`), asked
+rather than hard-coded: the bar grows a rail exactly when that panel exists, so a constant
+would be right solo and wrong in every merge — where the two drew straight through each
+other.
+
+**A FAST FIGHTER BURNS**, and it is a SHADER — `turn_fire.wgsl`, a `UiMaterial`
+(`turn_order::FireTrail`). A tongue of flame with a white-hot core on the sprite, licking
+backwards down that fighter's own charge line in that line's own colour: an ally burns
+blue-white, a creature red-white, so the colour still says whose it is.
+
+⚠️ **FOUR CUTS OF THIS WERE BUILT OUT OF `Node`s FIRST AND ALL FOUR FAILED THE SAME WAY.** A
+lightning bolt as one node per segment sized to bridge its neighbour (a jump became a wide
+tall block — a torn paper ribbon); the same bolt as runs plus vertical joints (a clean
+stepped arc that read as a square wave printed on the panel); a comet as stacked lozenges (a
+smudge under the sprite); and forty ember particles per fighter (a row of dots). **A UI node
+is an alpha-blended rounded rectangle**, and fire is made of two things a rectangle cannot
+do: a colour that RAMPS through a gradient, and light that ADDS where it overlaps. A
+`UiMaterial` does both — `specialize` sets the additive blend, so the icon underneath is
+never occluded (`sprite_material`'s trap, recorded there three times). It also replaced ~47
+CPU-moved nodes per fast fighter with ONE quad whose motion is a noise field scrolling inside
+it.
+
+⚠️ **Three things that shader got wrong first, all of them invisible to every test.** The
+noise was sampled at four cells across a four-hundred-pixel quad, so the "fire" was an
+airbrushed cone with no structure in it. The vertical falloff ran out to the quad's own edge,
+so the flame was sliced off in straight lines — a searchlight in a box. And the nose and core
+were sized in UV on a quad whose width IS the fighter's charge line (~30px at the start of
+the track, ~600 at the GO end), so the head glow swelled twentyfold as a fighter charged;
+both are in pixels now, off `UiVertexOutput::size`.
+
+**AND THE BAR DRAWS ALL THREE.** A recoil throws the icon backwards with a grey impact — the
+overshoot decays to nothing so the icon settles on the position its real gauge says it has,
+and the punch starts on the wire status's RISING edge, so one knock draws one hit however
+many ticks the status rides for. A held fighter wears a blue force field and a staggered one
+a red ring, from ONE node: a fighter can only be drawn as one of them, and **staggered
+outranks held** because being wide open is the news you act on.
+⚠️ **Every line is spawned before every icon**, in two passes — spawn order is draw order in
+a UI hierarchy, so building each fighter's line and then its icon interleaved let a LATER
+fighter's charge line draw over an EARLIER fighter's sprite.
+⚠️ **And an effect drawn BEHIND a sprite has to be bigger than it.** The impact was first
+drawn at exactly icon size, centred, behind 30px of opaque art: it fired on 198 frames and
+was invisible in every capture. The fixture has the same trap one level up — seeding it on a
+body that is also carrying a white-hot flame hides it just as completely.
+
+⚠️ **The material is written every frame while a fighter is fast**, against
+`UI REDRAWS ON CHANGE`: a flame that holds still is not a flame. It is one small uniform per
+fast fighter, and the quad is `Display::None` for everybody else — most of the cast, most of
+a fight. Before it, the only gauges on
 screen were the four hero bars along the bottom edge and a 5px enemy bar gated behind the
 TOP rung of the Hunter's Predator's Eye, so "who goes next, them or me" — the question a
 player asks every second of a fight — had no answer for either side. ⚠️ **Getting to go does

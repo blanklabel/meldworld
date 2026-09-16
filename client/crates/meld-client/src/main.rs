@@ -327,6 +327,9 @@ fn main() {
         .add_plugins(MaterialPlugin::<world_render::SkyDome>::default())
         // The battle's elemental VFX: one impact material for every element, and the
         // full-frame wash behind a party-wide blow (`battle_fx`).
+        // The turn bar's fast rail paints its flame with a UI material — the bar is UI, and
+        // a plain `Node` cannot ramp a gradient or add light (see `turn_order::FireTrail`).
+        .add_plugins(bevy::ui_render::UiMaterialPlugin::<turn_order::FireTrail>::default())
         .add_plugins(MaterialPlugin::<battle_fx::AbilityFx>::default())
         .add_plugins(MaterialPlugin::<battle_fx::ScreenWash>::default())
         // The corner map's ground. A map is a GRID, and it was being drawn as one
@@ -883,6 +886,7 @@ fn main() {
                 battle_fx::react_to_conditions,
                 mocks::mock_battle_fx,
                 mocks::mock_battle_opening,
+                mocks::mock_turn_recoil,
             )
                 .run_if(in_state(Screen::Battle)),
         )

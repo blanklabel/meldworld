@@ -225,6 +225,15 @@ pub(crate) fn mock_battle_setup(
     // these the fast lane is an empty rail in every screenshot, which reads as a stray
     // line rather than as a lane.
     add(&mut battle, "h4", &["braced"]);
+    // The three things that happen to a fighter's place in the turn order, one of each so
+    // all three are in the same frame: a creature HELD by a hit on its weakness, one knocked
+    // backwards by a crit, and one pushed all the way back and left wide open.
+    // ⚠️ Each on a body where it can actually be SEEN. The first cut put the recoil on
+    // `wight`, which is on the fast rail with a white-hot flame sitting exactly where the
+    // grey impact draws — the effect fired on 198 frames and was invisible in every capture.
+    // And `stalker` is the fixture's KO'd creature, which the bar does not draw at all.
+    add(&mut battle, "h2", &["pinned"]);
+    add(&mut battle, "h4", &["staggered"]);
     add(&mut battle, "wight", &["surged", "streak:3"]);
     add(&mut battle, "h1", &["streak:4"]);
     // A FRENZIED creature, so the rage tint + swell have a subject in the fixture. It is
@@ -327,6 +336,38 @@ pub(crate) fn mock_battle_opening(
     // ordinary bell, which has its own FIGHT! card since the grace beat otherwise reads as
     // the screen having frozen.
     open.raise(&spec);
+}
+
+/// **RE-FIRE THE RECOIL SO A CAPTURE CAN CATCH IT.** A knock backwards is a punch that lasts
+/// under half a second by design, and the static fixture sets its status once — so every
+/// screenshot of the turn bar was taken after it had already faded, and the one effect that
+/// cannot be inferred from a still frame was the one effect never in one. Toggled off and on
+/// under its own TTL, because the client starts the punch on the status's RISING edge.
+///
+/// Same argument as `MELD_FX`'s cast tour and `MELD_TALLY`'s held haul: a capture is one
+/// frame at an arbitrary moment.
+pub(crate) fn mock_turn_recoil(
+    time: Res<Time>,
+    mut battle: ResMut<BattleData>,
+    mut next_at: Local<f32>,
+) {
+    if !battle_mockup_flag() {
+        return;
+    }
+    let now = time.elapsed_secs();
+    if now < *next_at {
+        return;
+    }
+    *next_at = now + 0.7;
+    let Some(c) = battle.combatants.iter_mut().find(|c| c.id == "grendel") else {
+        return;
+    };
+    // Off and straight back on: the rising edge is what the bar watches for.
+    if c.statuses.iter().any(|s| s == "recoil") {
+        c.statuses.retain(|s| s != "recoil");
+    } else {
+        c.statuses.push("recoil".to_string());
+    }
 }
 
 pub(crate) fn mock_battle_fx(
