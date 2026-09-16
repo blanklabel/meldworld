@@ -187,8 +187,8 @@ pub(crate) fn battle_fx_flag() -> Option<String> {
     std::env::var("MELD_FX").ok().filter(|s| !s.is_empty())
 }
 
-/// Hold the AMBUSHED!/SURPRISE! opening card up in the battle mockup.
-/// `MELD_OPENING=ambush|surprise`.
+/// Hold the opening card up in the battle mockup.
+/// `MELD_OPENING=ambush|surprise|rolled`.
 ///
 /// Same argument as [`battle_fx_flag`], one beat earlier in the fight: the card lives for
 /// `feel.opening_ttl` (2 s, matching `[battle] open_grace_ms`) and is raised by a

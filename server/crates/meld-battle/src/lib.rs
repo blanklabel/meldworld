@@ -200,6 +200,23 @@ pub struct Fighter {
     pub foci: Vec<Focus>,
     /// True while a `defend` stance is active (until this fighter next acts).
     pub defending: bool,
+    /// How long this fighter cannot be FLINCHED again (a tick deadline). A flinch is small
+    /// and frequent, so without its own guard four heroes branded into one creature's
+    /// weakness would chain-flinch it out of the fight — the unbounded gauge lock this
+    /// engine has already been bitten by once, reached from the other direction.
+    pub flinch_guard_until: u64,
+    /// Consecutive damaging resolutions by this fighter that found a weakness or landed a
+    /// crit. At `surge_streak` it blazes ahead and this resets.
+    pub streak: u32,
+    /// **JUST BLAZED AHEAD**, until it spends the turn it earned. It rides the wire so the
+    /// turn-order bar can move this fighter onto its FAST rail — the same shape as `braced`,
+    /// and for the same reason: a surge is over the instant it lands, so a client left to
+    /// infer it from a gauge jump would be guessing at something the server already knows.
+    pub surged: bool,
+    /// A guard that still has its answer in hand: armed by defending, spent by the first
+    /// blow it counters. ONE per guard, so a counter cannot scale with how many things are
+    /// hitting you.
+    pub counter_ready: bool,
     /// **BRACED**: this fighter guarded, so its gauge fills at `defend_haste_mult` until its
     /// own next turn. The same window `defending` covers and deliberately a separate flag:
     /// `defending` is cleared the moment the fighter SWINGS (eleven call sites do it), and
@@ -397,6 +414,10 @@ impl Fighter {
             free_casts: 0,
             foci: Vec::new(),
             defending: false,
+            flinch_guard_until: 0,
+            streak: 0,
+            surged: false,
+            counter_ready: false,
             braced: false,
             abilities: Vec::new(),
             raid_parties: 1,
@@ -477,6 +498,15 @@ impl Fighter {
         if self.braced {
             v.push(BRACED_STATUS.to_string());
         }
+        // How close this fighter is to blazing ahead. A streak the player cannot watch fill
+        // is a streak they never learn exists, which is the whole reason the pack's
+        // gang-up mark is shouted.
+        if self.streak > 0 {
+            v.push(format!("streak:{}", self.streak));
+        }
+        if self.surged {
+            v.push("surged".to_string());
+        }
         if let Some(g) = self.group_id {
             v.push(format!("group:{g}"));
         }
@@ -533,6 +563,8 @@ impl Fighter {
         ((self.evasion * 100.0).round() as i64).hash(&mut h);
         self.adrenaline.hash(&mut h);
         self.braced.hash(&mut h);
+        self.streak.hash(&mut h);
+        self.surged.hash(&mut h);
         self.focus_max.hash(&mut h);
         for f in &self.foci {
             f.kind.hash(&mut h);
@@ -986,6 +1018,14 @@ pub struct Battle {
     explorer_haste_ticks: u64,
     /// Gauge fill-rate multiplier while BRACED (see [`BRACED_STATUS`]).
     defend_haste_mult: f64,
+    flinch_gauge_loss: f64,
+    flinch_guard_ticks: u64,
+    surge_streak: u32,
+    surge_gauge: f64,
+    counter_chance_base: f64,
+    counter_chance_per_wll: f64,
+    counter_chance_cap: f64,
+    counter_damage_mult: f64,
     explorer_world_entire_mark_ticks: u64,
     explorer_world_entire_haste_ticks: u64,
     /// The two profession classes' kits (MS-1). Held whole rather than flattened field
@@ -1016,6 +1056,7 @@ pub struct Battle {
     min_damage: i32,
     initiative_max: f64,
     initiative_advantage_rolls: u32,
+    opening_spread: f64,
     open_grace_ticks: u64,
     paralysis_break_base: f64,
     paralysis_break_per_wll: f64,
@@ -1345,6 +1386,14 @@ impl Battle {
             explorer_haste_mult: balance.battle.explorer_haste_mult,
             explorer_haste_ticks: balance.battle.explorer_haste_ticks,
             defend_haste_mult: balance.battle.defend_haste_mult,
+            flinch_gauge_loss: balance.battle.flinch_gauge_loss,
+            flinch_guard_ticks: balance.battle.flinch_guard_ticks,
+            surge_streak: balance.battle.surge_streak,
+            surge_gauge: balance.battle.surge_gauge,
+            counter_chance_base: balance.battle.counter_chance_base,
+            counter_chance_per_wll: balance.battle.counter_chance_per_wll,
+            counter_chance_cap: balance.battle.counter_chance_cap,
+            counter_damage_mult: balance.battle.counter_damage_mult,
             explorer_world_entire_mark_ticks: balance.battle.explorer_world_entire_mark_ticks,
             explorer_world_entire_haste_ticks: balance.battle.explorer_world_entire_haste_ticks,
             resonant_deep: ResonantDeep::from(&balance.battle),
@@ -1369,6 +1418,7 @@ impl Battle {
             min_damage: balance.combat_math.min_damage,
             initiative_max: balance.battle.initiative_max,
             initiative_advantage_rolls: balance.battle.initiative_advantage_rolls,
+            opening_spread: balance.battle.opening_spread,
             // In TICKS, because the engine has no clock — it is handed its own tick and
             // must stay a pure state machine (no `Instant::now`, ever).
             open_grace_ticks: balance
@@ -3697,14 +3747,65 @@ impl Battle {
         }
     }
 
-    /// One side acts first, the other from a standing start.
+    /// One side acts first, the other from a standing start — **and each side still rolls
+    /// within itself.**
+    ///
+    /// ⚠️ It used to set every favoured fighter to exactly 1.0 and every other fighter to
+    /// exactly 0.0, which is where *"it appears everyone starts at the same point"* came
+    /// from: a surprise or an ambush is most of the fights a player actually walks into
+    /// (`approach_of` answers one or the other whenever somebody is hit from behind), so in
+    /// practice four heroes opened stacked on one instant. The turn-order bar draws that as
+    /// a single icon with three hidden underneath it.
+    ///
+    /// The favoured side rolls in the TOP `opening_spread` of the gauge and the other in
+    /// the BOTTOM, so who moves first is untouched — every favoured fighter still outruns
+    /// every other one by construction, which is what a sided opening MEANS and what
+    /// `a_sided_opening_is_still_one_sided` holds — while the order within a side becomes a
+    /// thing that happened. The best roll on the favoured side still lands on a full gauge,
+    /// so a surprise still hands you the round.
     fn hand_the_opening(&mut self, first: CombatantKind) {
-        for f in self.fighters.iter_mut() {
-            if !f.alive {
-                continue;
+        let spread = self.opening_spread.clamp(0.0, 0.49);
+        // Rolled, then RANKED within each side and spaced evenly from that side's anchor.
+        // Ranking rather than using the roll directly is what keeps the promise the two
+        // sided openings make: the best roll on the favoured side lands on exactly 1.0, so
+        // a surprise still hands you a turn RIGHT NOW rather than one a few ticks from now
+        // — which for a lone hero is the whole reward for having spent a pin to get it.
+        let alive: Vec<usize> =
+            (0..self.fighters.len()).filter(|&i| self.fighters[i].alive).collect();
+        let mut rolled: Vec<(usize, f64)> =
+            alive.into_iter().map(|i| (i, self.best_roll(i))).collect();
+        // Best roll first, so index 0 of a side is the one that moves first.
+        rolled.sort_by(|a, b| b.1.total_cmp(&a.1));
+        for side in [true, false] {
+            let ids: Vec<usize> = rolled
+                .iter()
+                .filter(|(i, _)| (self.fighters[*i].kind == first) == side)
+                .map(|(i, _)| *i)
+                .collect();
+            let step = if ids.len() > 1 { spread / (ids.len() - 1) as f64 } else { 0.0 };
+            for (rank, i) in ids.into_iter().enumerate() {
+                let back = step * rank as f64;
+                self.fighters[i].gauge = if side { 1.0 - back } else { spread - back };
             }
-            f.gauge = if f.kind == first { 1.0 } else { 0.0 };
         }
+    }
+
+    /// One fighter's initiative roll in `0..=1`, kept-best for innate dodge.
+    ///
+    /// The ONE place the advantage rule lives, so the two openings that roll cannot
+    /// disagree about who is quick — `hand_the_opening` was written without it and a
+    /// Shifter's edge silently stopped existing in exactly the fights it is best in.
+    fn best_roll(&mut self, i: usize) -> f64 {
+        let n = if self.fighters[i].dodge > 0.0 {
+            self.initiative_advantage_rolls.max(1)
+        } else {
+            1
+        };
+        let mut best = 0.0f64;
+        for _ in 0..n {
+            best = best.max(self.next_rand_unit());
+        }
+        best
     }
 
     /// **EVERYBODY ROLLS AT THE BELL.**
@@ -3727,17 +3828,12 @@ impl Battle {
     /// would charge the same stat twice and make the roll decorative.
     pub fn roll_initiative(&mut self) {
         let cap = self.initiative_max.clamp(0.0, 1.0);
-        let rolls = self.initiative_advantage_rolls.max(1);
         for i in 0..self.fighters.len() {
             if !self.fighters[i].alive {
                 continue;
             }
-            let n = if self.fighters[i].dodge > 0.0 { rolls } else { 1 };
-            let mut best = 0.0f64;
-            for _ in 0..n {
-                best = best.max(self.next_rand_unit());
-            }
-            self.fighters[i].gauge = best * cap;
+            let roll = self.best_roll(i);
+            self.fighters[i].gauge = roll * cap;
         }
     }
 
@@ -4748,6 +4844,7 @@ impl Battle {
         // AFTER `reset_gauge`, which is what ENDS a brace — setting it before would have this
         // turn's guard cleared by the very call that spends the turn it was bought with.
         self.fighters[actor_i].braced = true;
+        self.fighters[actor_i].counter_ready = true;
         Resolution { damage_type: None, callout_text: None,
             action_id,
             actor_id: self.fighters[actor_i].combatant_id.clone(),
@@ -5430,7 +5527,200 @@ impl Battle {
     /// inherit the fire.
     fn stamped(&mut self, mut res: Resolution) -> Resolution {
         res.damage_type = self.last_damage_type.take();
+        self.answer_the_blow(&mut res);
         res
+    }
+
+    /// **WHAT A GOOD BLOW SETS OFF**: the flinch, the catch-up streak, and a braced
+    /// fighter's counter.
+    ///
+    /// All three read the finished resolution rather than hooking the damage path, and they
+    /// live HERE because `stamped` is the one funnel every resolution passes through on its
+    /// way out — the same reason the damage-type stamp is taken here. A weak hit is
+    /// `ModifierFlag::Weak` on a Damage effect and a crit is its `crit` status, so both are
+    /// already on the record by the time anything is emitted, and an ability written
+    /// tomorrow gets all three the day it lands instead of the day somebody remembers to
+    /// call something.
+    ///
+    /// ⚠️ **A DoT tick deliberately does not come through here.** Upkeep builds its own
+    /// resolution (`upkeep_only`), so poison cannot flinch, cannot build a streak and cannot
+    /// be countered — a condition ticking is not somebody landing a good hit.
+    ///
+    /// ⚠️ **The effects are read from a SNAPSHOT taken at entry.** A counter appends Damage
+    /// effects to this same resolution, and re-reading them would let a counter flinch, feed
+    /// a streak, or be countered back — which for two braced fighters is an infinite volley.
+    fn answer_the_blow(&mut self, res: &mut Resolution) {
+        let Some(actor_i) = self.idx(&res.actor_id) else { return };
+        let landed: Vec<(usize, bool)> = res
+            .effects
+            .iter()
+            .filter(|e| matches!(e.kind, EffectKind::Damage) && e.amount.unwrap_or(0) > 0)
+            .filter_map(|e| {
+                let t = self.idx(&e.target_id)?;
+                let good = e.modifier_flag == Some(ModifierFlag::Weak)
+                    || e.status.as_deref() == Some("crit");
+                Some((t, good))
+            })
+            .collect();
+        if landed.is_empty() {
+            // A turn that dealt no damage neither builds a streak nor breaks one: a healer
+            // spending its turn mending should not cost it the run-up it had going.
+            return;
+        }
+        // 1. THE FLINCH. Every body that took a good hit loses ground.
+        for (t, good) in landed.iter().copied() {
+            if good && t != actor_i {
+                let fx = self.flinch(t);
+                res.effects.extend(fx);
+            }
+        }
+        // 2. THE CATCH-UP. One blow, however many bodies it found — five weaknesses in one
+        // sweep is one good blow, so the streak is five consecutive TURNS.
+        let good_blow = landed.iter().any(|(_, good)| *good);
+        if good_blow {
+            self.fighters[actor_i].streak += 1;
+            if self.fighters[actor_i].streak >= self.surge_streak {
+                let fx = self.surge(actor_i);
+                res.effects.extend(fx);
+            }
+        } else {
+            self.fighters[actor_i].streak = 0;
+        }
+        // 3. THE COUNTER. A braced fighter answers the first blow that lands on it.
+        for (t, _) in landed {
+            if t == actor_i {
+                continue;
+            }
+            let fx = self.counter(t, actor_i);
+            res.effects.extend(fx);
+        }
+    }
+
+    /// A slight stop in a fighter's ATB, for taking a blow it was weak to or a crit.
+    ///
+    /// ⚠️ **NOTHING HERE ARMS THE GAUGE-KNOCK REBUKE, and that is the point of it being its
+    /// own path rather than a small `deny_gauge`.** A knock is a turn TAKEN by an ability
+    /// that spent its own turn doing it, so it earns `staggered`, the guard countdown and a
+    /// boss's rarest-ability answer. A flinch is the consequence of hitting something where
+    /// it is soft — it happens several times a round, and a rebuke on each would make a
+    /// boss's SCARCEST ability its most common one, which is exactly the failure the raid
+    /// tier's note warns about for the same reason (`weight` is read as rarity).
+    ///
+    /// ⚠️ **A turn that has already arrived cannot be flinched away.** At a full gauge the
+    /// fighter owns its turn — a hero is already `awaiting` and the client is already
+    /// showing its menu — so knocking it back below the line there would cancel a turn
+    /// rather than delay one. Delaying a turn is what this is; cancelling one is what a
+    /// gauge knock is, and it is priced like one.
+    fn flinch(&mut self, target_i: usize) -> Vec<ResolvedEffect> {
+        if !self.fighters[target_i].alive
+            || self.fighters[target_i].gauge >= 1.0
+            || self.tick_count < self.fighters[target_i].flinch_guard_until
+        {
+            return Vec::new();
+        }
+        let before = self.fighters[target_i].gauge;
+        let after = (before - self.flinch_gauge_loss).max(0.0);
+        if (before - after).abs() < f64::EPSILON {
+            // Nothing was taken from an empty gauge, so nothing is guarded — the same rule
+            // `deny_gauge` keeps, for the same reason: a bounce must not buy an immunity.
+            return Vec::new();
+        }
+        self.fighters[target_i].gauge = after;
+        self.fighters[target_i].flinch_guard_until = self.tick_count + self.flinch_guard_ticks;
+        vec![ResolvedEffect {
+            modifier_flag: None,
+            target_id: self.fighters[target_i].combatant_id.clone(),
+            kind: EffectKind::StatusApplied,
+            amount: None,
+            status: Some("flinch".to_string()),
+            hp_after: self.fighters[target_i].hp,
+        }]
+    }
+
+    /// **THE CATCH-UP.** `surge_streak` good blows in a row and this fighter blazes ahead.
+    ///
+    /// A gauge GIVEN, so — like a fight's opening — it arms nothing: there is no rebuke for
+    /// being handed tempo, and the fighter is not staggered by its own good fortune.
+    fn surge(&mut self, i: usize) -> Vec<ResolvedEffect> {
+        self.fighters[i].streak = 0;
+        self.fighters[i].surged = true;
+        self.fighters[i].gauge = (self.fighters[i].gauge + self.surge_gauge).min(1.0);
+        vec![ResolvedEffect {
+            modifier_flag: None,
+            target_id: self.fighters[i].combatant_id.clone(),
+            kind: EffectKind::StatusApplied,
+            amount: None,
+            status: Some("surge".to_string()),
+            hp_after: self.fighters[i].hp,
+        }]
+    }
+
+    /// Whether these two are on opposite sides of THIS fight — a hero and a creature, or two
+    /// creatures whose factions are at war. Asked through `meld_proto::factions` like every
+    /// other side check, rather than "one is a Player and one is not": a mixed encounter has
+    /// creatures fighting each other, and a counter has to answer whoever actually hit you.
+    fn hostile_to(&self, a: usize, b: usize) -> bool {
+        let (fa, fb) = (&self.fighters[a], &self.fighters[b]);
+        if (fa.kind == CombatantKind::Player) != (fb.kind == CombatantKind::Player) {
+            return true;
+        }
+        meld_proto::factions::battle_at_odds(
+            &fa.faction,
+            fa.monster_kind.as_deref().unwrap_or_default(),
+            &fb.faction,
+            fb.monster_kind.as_deref().unwrap_or_default(),
+        )
+    }
+
+    /// **A GUARD ANSWERS.** A braced fighter struck by `attacker_i` may hit back for free.
+    ///
+    /// It rides **Wll**, against the obvious reading of Dex, and the reason is who actually
+    /// presses Defend: the Phoenix Guard carries the most Wll in the game and no dodge at
+    /// all, while the Shifter — all Dex — never guards, because its whole answer to a blow
+    /// is not being there. A Dex riposte would therefore hand the best counters to the class
+    /// that never earns them. It is also the mirror of Mnd buying `ward` as well as spell
+    /// power: Dex already buys speed, dodge, crit and the initiative advantage, and Wll
+    /// bought HP and armour and nothing you could DO.
+    ///
+    /// ONE per guard (`counter_ready`), so a turn spent guarding returns at most one blow
+    /// and a counter cannot scale with the size of the pack hitting you — the same argument
+    /// that keeps all-enemy damage off weapons and on limited throwables.
+    ///
+    /// It deliberately does not crit, does not build a streak and cannot itself be
+    /// countered: a counter is a snap answer, and every one of those would be a second
+    /// reaction hanging off a reaction.
+    fn counter(&mut self, defender_i: usize, attacker_i: usize) -> Vec<ResolvedEffect> {
+        if !self.fighters[defender_i].counter_ready
+            || !self.fighters[defender_i].alive
+            || !self.fighters[attacker_i].alive
+            || !self.hostile_to(defender_i, attacker_i)
+        {
+            return Vec::new();
+        }
+        let wll = self.fighters[defender_i].wll.max(0) as f64;
+        let chance = (self.counter_chance_base + self.counter_chance_per_wll * wll)
+            .min(self.counter_chance_cap);
+        if self.next_rand_unit() >= chance {
+            return Vec::new();
+        }
+        self.fighters[defender_i].counter_ready = false;
+        let ty = self.fighters[defender_i].basic_attack_type;
+        let atk = ((self.fighters[defender_i].atk as f64)
+            * self.counter_damage_mult
+            * self.rank_attack_mult(defender_i, ty.is_physical()))
+        .round()
+        .max(1.0) as i32;
+        let dmg = self.damage(atk, self.fighters[attacker_i].def, false);
+        let mut fx = vec![ResolvedEffect {
+            modifier_flag: None,
+            target_id: self.fighters[defender_i].combatant_id.clone(),
+            kind: EffectKind::StatusApplied,
+            amount: None,
+            status: Some("counter".to_string()),
+            hp_after: self.fighters[defender_i].hp,
+        }];
+        fx.extend(self.apply_typed_damage(attacker_i, dmg, ty));
+        fx
     }
 
     /// ⚠️ **`&mut self` BECAUSE IT CONSUMES THE ELEMENT TOO.** A burn or poison tick runs
@@ -6171,6 +6461,9 @@ impl Battle {
         // cleared for EVERY turn rather than only for a swing (which is what `defending`
         // does) — including a second Defend, which then re-arms it below.
         self.fighters[i].braced = false;
+        self.fighters[i].counter_ready = false;
+        // The catch-up is spent by the turn it bought, exactly like the brace above it.
+        self.fighters[i].surged = false;
         self.fighters[i].gauge = 0.0;
         self.fighters[i].awaiting = false;
     }
@@ -6367,12 +6660,378 @@ mod tests {
                 f.iter().map(|c| c.gauge).collect::<Vec<_>>(),
             )
         };
+        // The side that chose the moment acts first, WHOLE side before whole side — and its
+        // best roll lands on exactly a full gauge, so a surprise still hands you a turn now.
+        let sided = |won: &[f64], lost: &[f64]| {
+            let slowest_winner = won.iter().copied().fold(f64::MAX, f64::min);
+            let quickest_loser = lost.iter().copied().fold(0.0, f64::max);
+            assert!(
+                slowest_winner > quickest_loser,
+                "the opening stopped being one-sided: {won:?} vs {lost:?}"
+            );
+            assert!(
+                won.iter().copied().fold(0.0, f64::max) >= 1.0,
+                "nobody on the favoured side actually got a turn: {won:?}"
+            );
+        };
         let (heroes, foes) = open(Opening::Surprise);
-        assert!(heroes.iter().all(|g| *g == 1.0), "a surprised party did not act first");
-        assert!(foes.iter().all(|g| *g == 0.0), "a surprised creature kept its gauge");
+        sided(&heroes, &foes);
         let (heroes, foes) = open(Opening::Ambush);
-        assert!(foes.iter().all(|g| *g == 1.0), "an ambushing creature did not act first");
-        assert!(heroes.iter().all(|g| *g == 0.0), "an ambushed party kept its gauge");
+        sided(&foes, &heroes);
+    }
+
+    /// **A BLOW THAT FINDS A WEAKNESS PUTS A STOP IN THE ATB.** Hitting a creature's element
+    /// used to be worth a damage multiplier and nothing else, so "what is it made of" was an
+    /// arithmetic question. The flinch makes the answer felt on the turn order itself.
+    #[test]
+    fn a_weak_hit_flinches_the_gauge_and_a_plain_one_does_not() {
+        let b = Balance::load_default().unwrap();
+        let gauge_after = |weak: bool| {
+            let mut m = monster("m1", 5_000, 1);
+            m.damage_modifiers
+                .insert(DamageType::Slash, if weak { 2.0 } else { 1.0 });
+            let mut bt = Battle::new(
+                "b".into(),
+                EncounterClass::Standard,
+                vec![player("h1", 60)],
+                vec![m],
+                &b,
+                7,
+            );
+            bt.skip_opening();
+            let (h, mi) = (bt.idx("h1").unwrap(), bt.idx("m1").unwrap());
+            bt.fighters[h].basic_attack_type = DamageType::Slash;
+            bt.fighters[mi].gauge = 0.6;
+            bt.fighters[h].gauge = 1.0;
+            bt.fighters[h].awaiting = true;
+            bt.submit(
+                "h1",
+                "00000000-0000-7000-8000-000000000001".to_string(),
+                BattleActionKind::Attack,
+                Some(vec!["m1".to_string()]),
+                None,
+                None,
+            )
+            .expect("the swing lands");
+            bt.fighters[bt.idx("m1").unwrap()].gauge
+        };
+        let plain = gauge_after(false);
+        let weak = gauge_after(true);
+        assert!(
+            (plain - 0.6).abs() < 1e-9,
+            "an ordinary blow must not move the gauge: {plain}"
+        );
+        assert!(weak < plain, "a weak hit did not flinch: {plain} -> {weak}");
+    }
+
+    /// ⚠️ **AND IT CANNOT CHAIN INTO A LOCK.** Gauge denial in this engine has already
+    /// composed into a 464-hero-turn lock once. A flinch is small and frequent, so its guard
+    /// is what stops four heroes branded into one weakness from holding a creature at zero.
+    #[test]
+    fn a_flinch_cannot_be_chained_to_hold_a_creature_down() {
+        let b = Balance::load_default().unwrap();
+        let mut m = monster("m1", 500_000, 1);
+        m.damage_modifiers.insert(DamageType::Slash, 2.0);
+        let mut bt = Battle::new(
+            "b".into(),
+            EncounterClass::Standard,
+            vec![player("h1", 60), player("h2", 60), player("h3", 60), player("h4", 60)],
+            vec![m],
+            &b,
+            7,
+        );
+        bt.skip_opening();
+        for h in ["h1", "h2", "h3", "h4"] {
+            let i = bt.idx(h).unwrap();
+            bt.fighters[i].basic_attack_type = DamageType::Slash;
+        }
+        let mi = bt.idx("m1").unwrap();
+        bt.fighters[mi].gauge = 0.5;
+        let before = bt.fighters[mi].gauge;
+        for (n, h) in ["h1", "h2", "h3", "h4"].iter().enumerate() {
+            let i = bt.idx(h).unwrap();
+            bt.fighters[i].gauge = 1.0;
+            bt.fighters[i].awaiting = true;
+            bt.submit(
+                h,
+                format!("00000000-0000-7000-8000-{:012}", n + 1),
+                BattleActionKind::Attack,
+                Some(vec!["m1".to_string()]),
+                None,
+                None,
+            )
+            .expect("the swing lands");
+        }
+        let after = bt.fighters[bt.idx("m1").unwrap()].gauge;
+        let loss = before - after;
+        assert!(loss > 0.0, "the first weak hit should still flinch");
+        assert!(
+            loss <= b.battle.flinch_gauge_loss + 1e-9,
+            "four heroes chained {loss:.3} of flinch out of one guard window — a gauge lock \
+             reached from the other direction"
+        );
+    }
+
+    /// **A TURN THAT HAS ALREADY ARRIVED CANNOT BE FLINCHED AWAY.** At a full gauge the
+    /// fighter owns its turn — a hero is `awaiting` and its menu is already on screen — so a
+    /// flinch there would CANCEL a turn rather than delay one, which is what a gauge knock is
+    /// for and what a knock is priced like.
+    #[test]
+    fn a_flinch_never_takes_a_turn_that_has_already_come_up() {
+        let b = Balance::load_default().unwrap();
+        let mut m = monster("m1", 5_000, 1);
+        m.damage_modifiers.insert(DamageType::Slash, 2.0);
+        let mut bt = Battle::new(
+            "b".into(),
+            EncounterClass::Standard,
+            vec![player("h1", 60)],
+            vec![m],
+            &b,
+            7,
+        );
+        bt.skip_opening();
+        let (h, mi) = (bt.idx("h1").unwrap(), bt.idx("m1").unwrap());
+        bt.fighters[h].basic_attack_type = DamageType::Slash;
+        bt.fighters[mi].gauge = 1.0;
+        bt.fighters[h].gauge = 1.0;
+        bt.fighters[h].awaiting = true;
+        bt.submit(
+            "h1",
+            "00000000-0000-7000-8000-000000000001".to_string(),
+            BattleActionKind::Attack,
+            Some(vec!["m1".to_string()]),
+            None,
+            None,
+        )
+        .expect("the swing lands");
+        assert_eq!(
+            bt.fighters[bt.idx("m1").unwrap()].gauge,
+            1.0,
+            "a flinch cancelled a turn that had already arrived"
+        );
+    }
+
+    /// **FIVE GOOD BLOWS IN A ROW AND YOU BLAZE AHEAD**, and a blow that finds nothing
+    /// breaks the run — otherwise the catch-up is just a slow metronome rather than a reward
+    /// for having worked out what the thing in front of you is made of.
+    #[test]
+    fn five_good_blows_in_a_row_blaze_ahead_and_a_plain_one_resets() {
+        let b = Balance::load_default().unwrap();
+        let run = |weak: bool| {
+            let mut m = monster("m1", 5_000_000, 1);
+            m.damage_modifiers
+                .insert(DamageType::Slash, if weak { 2.0 } else { 1.0 });
+            let mut bt = Battle::new(
+                "b".into(),
+                EncounterClass::Standard,
+                vec![player("h1", 60)],
+                vec![m],
+                &b,
+                7,
+            );
+            bt.skip_opening();
+            let h = bt.idx("h1").unwrap();
+            bt.fighters[h].basic_attack_type = DamageType::Slash;
+            let mut surges = 0;
+            for n in 0..b.battle.surge_streak {
+                let i = bt.idx("h1").unwrap();
+                bt.fighters[i].gauge = 1.0;
+                bt.fighters[i].awaiting = true;
+                let res = bt
+                    .submit(
+                        "h1",
+                        format!("00000000-0000-7000-8000-{:012}", n + 1),
+                        BattleActionKind::Attack,
+                        Some(vec!["m1".to_string()]),
+                        None,
+                        None,
+                    )
+                    .expect("the swing lands");
+                let surged = res.iter().any(|ev| match ev {
+                    Event::Resolved(r) => {
+                        r.effects.iter().any(|e| e.status.as_deref() == Some("surge"))
+                    }
+                    _ => false,
+                });
+                if surged {
+                    surges += 1;
+                    assert_eq!(
+                        bt.fighters[bt.idx("h1").unwrap()].gauge,
+                        1.0,
+                        "a catch-up must actually hand the turn back"
+                    );
+                }
+            }
+            surges
+        };
+        assert_eq!(run(true), 1, "five weak hits in a row did not earn a catch-up");
+        assert_eq!(run(false), 0, "an ordinary run of blows earned a catch-up");
+    }
+
+    /// **A GUARD CAN ANSWER, AND ONLY ONCE.** A turn spent defending returns at most one
+    /// blow, so a counter cannot scale with how many things are hitting you — the same
+    /// argument that keeps all-enemy damage off weapons.
+    #[test]
+    fn a_braced_fighter_answers_one_blow_and_no_more() {
+        let b = Balance::load_default().unwrap();
+        let mut bt = Battle::new(
+            "b".into(),
+            EncounterClass::Standard,
+            vec![player("h1", 60)],
+            vec![monster("m1", 5_000, 1), monster("m2", 5_000, 1), monster("m3", 5_000, 1)],
+            &b,
+            7,
+        );
+        bt.skip_opening();
+        let h = bt.idx("h1").unwrap();
+        // A wall of Wll, so the roll is at its cap and the test is about the CAP not the dice.
+        bt.fighters[h].wll = 10_000;
+        bt.fighters[h].gauge = 1.0;
+        bt.fighters[h].awaiting = true;
+        bt.submit(
+            "h1",
+            "00000000-0000-7000-8000-000000000001".to_string(),
+            BattleActionKind::Defend,
+            None,
+            None,
+            None,
+        )
+        .expect("the guard goes up");
+        assert!(bt.fighters[bt.idx("h1").unwrap()].counter_ready, "a guard is armed");
+        let mut counters = 0;
+        for m in ["m1", "m2", "m3"] {
+            let mi = bt.idx(m).unwrap();
+            bt.fighters[mi].gauge = 1.0;
+            for ev in bt.tick() {
+                if let Event::Resolved(r) = ev {
+                    counters += r
+                        .effects
+                        .iter()
+                        .filter(|e| e.status.as_deref() == Some("counter"))
+                        .count();
+                }
+            }
+        }
+        assert!(counters <= 1, "a single guard answered {counters} blows");
+        assert!(
+            !bt.fighters[bt.idx("h1").unwrap()].counter_ready || counters == 0,
+            "the answer was spent but the guard is still armed"
+        );
+    }
+
+    /// A counter is bought with Wll, not Dex — the classes that actually press Defend are
+    /// the dense ones, and the Shifter (all Dex, no Wll) never guards at all.
+    #[test]
+    fn the_wall_counters_more_often_than_the_runner() {
+        let b = Balance::load_default().unwrap();
+        let rate = |wll: i32| {
+            let mut hits = 0;
+            for seed in 0..200u64 {
+                let mut bt = Battle::new(
+                    "b".into(),
+                    EncounterClass::Standard,
+                    vec![player("h1", 60)],
+                    vec![monster("m1", 5_000, 1)],
+                    &b,
+                    seed,
+                );
+                bt.skip_opening();
+                let h = bt.idx("h1").unwrap();
+                bt.fighters[h].wll = wll;
+                bt.fighters[h].gauge = 1.0;
+                bt.fighters[h].awaiting = true;
+                bt.submit(
+                    "h1",
+                    "00000000-0000-7000-8000-000000000001".to_string(),
+                    BattleActionKind::Defend,
+                    None,
+                    None,
+                    None,
+                )
+                .expect("the guard goes up");
+                let mi = bt.idx("m1").unwrap();
+                bt.fighters[mi].gauge = 1.0;
+                for ev in bt.tick() {
+                    if let Event::Resolved(r) = ev {
+                        if r.effects.iter().any(|e| e.status.as_deref() == Some("counter")) {
+                            hits += 1;
+                        }
+                    }
+                }
+            }
+            hits
+        };
+        let wall = rate(200);
+        let runner = rate(4);
+        assert!(
+            wall > runner,
+            "Wll bought nothing: a wall countered {wall} times to a runner's {runner}"
+        );
+    }
+
+    /// ⚠️ **AND A DoT TICK IS NOT A GOOD HIT.** Upkeep builds its own resolution, so poison
+    /// cannot flinch, cannot feed a streak and cannot be countered — a condition ticking is
+    /// not somebody landing a blow, and letting it count would make a burn the cheapest
+    /// tempo weapon in the game.
+    #[test]
+    fn a_poison_tick_neither_flinches_nor_builds_a_streak() {
+        let b = Balance::load_default().unwrap();
+        let mut bt = Battle::new(
+            "b".into(),
+            EncounterClass::Standard,
+            vec![player("h1", 60)],
+            vec![monster("m1", 5_000, 1)],
+            &b,
+            7,
+        );
+        bt.skip_opening();
+        let h = bt.idx("h1").unwrap();
+        bt.fighters[h].timed_statuses.push(("poison".to_string(), 10_000));
+        bt.fighters[h].gauge = 0.5;
+        let before = bt.fighters[h].gauge;
+        for _ in 0..40 {
+            bt.tick();
+        }
+        let i = bt.idx("h1").unwrap();
+        assert_eq!(bt.fighters[i].streak, 0, "a DoT tick fed a catch-up streak");
+        assert!(
+            bt.fighters[i].gauge >= before,
+            "a DoT tick flinched its own victim"
+        );
+    }
+
+    /// ⚠️ **AND A SIDE IS NOT FLAT.** Reported from play as *"it appears everyone starts at
+    /// the same point"* — and it was literally true for the two openings that pick a side:
+    /// every favoured fighter opened on exactly 1.0 and every other on exactly 0.0, so four
+    /// heroes shared one instant and the turn-order bar drew them stacked on one pixel.
+    #[test]
+    fn a_sided_opening_still_rolls_within_the_side() {
+        let b = Balance::load_default().unwrap();
+        for op in [Opening::Surprise, Opening::Ambush] {
+            let mut battle = Battle::new(
+                "b".into(),
+                EncounterClass::Standard,
+                vec![player("h1", 60), player("h2", 60), player("h3", 60), player("h4", 60)],
+                vec![monster("m1", 900, 1), monster("m2", 900, 1), monster("m3", 900, 1)],
+                &b,
+                7,
+            );
+            battle.open(op);
+            for side in [CombatantKind::Player, CombatantKind::Monster] {
+                let g: Vec<f64> = battle
+                    .fighters
+                    .iter()
+                    .filter(|f| f.kind == side)
+                    .map(|f| f.gauge)
+                    .collect();
+                let lo = g.iter().copied().fold(f64::MAX, f64::min);
+                let hi = g.iter().copied().fold(0.0, f64::max);
+                assert!(
+                    hi - lo > 0.0,
+                    "{op:?}: every fighter on one side opened on the same instant: {g:?}"
+                );
+            }
+        }
     }
 
 

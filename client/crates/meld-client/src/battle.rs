@@ -3976,6 +3976,18 @@ pub(crate) fn push_hit_fx(hitfx: &mut HitFx, e: &HitEffect, show_elements: bool)
             }
         }
         "ko" => ("KO!".to_string(), Color::srgb(1.0, 0.35, 0.35)),
+        // The two things a blow can set off that are worth a word of their own. A FLINCH
+        // deliberately gets none: it happens several times a round and the turn-order bar
+        // already shows it — the icon visibly loses ground — while the WEAK!/CRIT! text on
+        // the same blow has already said why.
+        "status_applied" => match e.status.as_deref() {
+            Some("surge") => {
+                scale = 1.45;
+                ("BLAZE!".to_string(), glass::TITLE)
+            }
+            Some("counter") => ("COUNTER!".to_string(), Color::srgb(0.65, 0.85, 1.0)),
+            _ => return,
+        },
         _ => return,
     };
     let stack = hitfx.items.iter().filter(|h| h.target == e.target).count().min(255) as u8;
@@ -4283,8 +4295,14 @@ mod watch_banner_tests {
 /// hiding the formation you are being told to worry about.
 #[derive(Resource, Default)]
 pub(crate) struct BattleOpening {
-    /// `"ambush"` or `"surprise"`; a `Rolled` opening says nothing, because nothing
-    /// happened to the party — everyone simply rolled.
+    /// `"ambush"`, `"surprise"`, or `"rolled"` for the ordinary bell.
+    ///
+    /// ⚠️ **THE ORDINARY OPENING USED TO SAY NOTHING**, on the reasoning that nothing had
+    /// happened to the party — everyone simply rolled. Played, that reads as a fault:
+    /// `open_grace_ms` holds the whole arena still for two seconds and, with no card, the
+    /// screen just sits there and then snaps into motion. Reported as *"the whole screen is
+    /// frozen and then it suddenly flickers and starts"*. The beat is real and deliberate;
+    /// it needed something in it saying so.
     pub(crate) kind: Option<&'static str>,
     pub(crate) age: f32,
 }
@@ -4296,7 +4314,10 @@ impl BattleOpening {
         self.kind = match opening {
             "ambush" => Some("ambush"),
             "surprise" => Some("surprise"),
-            _ => None,
+            // Anything else is the ordinary bell. An unknown word from a future arm or an
+            // older server lands here too, which is the right failure: a fight that opens
+            // some way this client has never heard of still gets a card saying it started.
+            _ => Some("rolled"),
         };
         self.age = 0.0;
     }
@@ -4316,6 +4337,14 @@ impl BattleOpening {
                 "SURPRISE!",
                 "You chose the moment \u{2014} your heroes move first.",
                 Color::srgb(0.62, 0.98, 0.55),
+            )),
+            // The ordinary bell: neither side got the drop, so the subtitle says what the
+            // held beat is FOR rather than what it cost — read the line in front of you,
+            // because everyone is charging from where the roll put them.
+            "rolled" => Some((
+                "FIGHT!",
+                "Nobody got the drop \u{2014} everyone charges from where they rolled.",
+                glass::TITLE,
             )),
             _ => None,
         }
@@ -4455,14 +4484,29 @@ mod opening_card_tests {
         }
     }
 
-    /// An ordinary opening draws NOTHING. Every fight opens some way, so a card on the
-    /// rolled case is a card on every fight in the game — which is a card nobody reads,
-    /// and the two that matter go with it.
+    /// ⚠️ **EVERY OPENING DRAWS A CARD NOW, AND THIS TEST USED TO ASSERT THE OPPOSITE.**
+    /// It read: *"an ordinary opening draws NOTHING. Every fight opens some way, so a card
+    /// on the rolled case is a card on every fight in the game — which is a card nobody
+    /// reads, and the two that matter go with it."*
+    ///
+    /// That argument is real and it lost to play. `open_grace_ms` holds the entire arena
+    /// still for two seconds, and with nothing in that beat the fight reads as *"the whole
+    /// screen is frozen and then it suddenly flickers and starts"* — a deliberate pause
+    /// indistinguishable from a hang. The beat needs something in it SAYING it is a beat.
+    ///
+    /// The wallpaper risk is answered by loudness rather than by silence: AMBUSHED! and
+    /// SURPRISE! are alarm-coloured (red and green) because they cost or bought you a
+    /// round, while FIGHT! wears the ordinary title gold and tells you what the pause is
+    /// for. An unknown word lands on the ordinary card too — a fight that opened some way
+    /// this client has never heard of still started.
     #[test]
-    fn an_ordinary_opening_says_nothing() {
-        for quiet in ["rolled", "", "something_added_later"] {
-            let lines = card_lines(quiet, crate::feel::BattleFeel::default());
-            assert!(lines.is_empty(), "`{quiet}` drew a card: {lines:?}");
+    fn every_opening_fills_the_beat_it_is_held_for() {
+        for word in ["rolled", "", "something_added_later"] {
+            let lines = card_lines(word, crate::feel::BattleFeel::default());
+            assert!(
+                lines.iter().any(|l| l.contains("FIGHT!")),
+                "`{word}` left the grace beat empty: {lines:?}"
+            );
         }
     }
 

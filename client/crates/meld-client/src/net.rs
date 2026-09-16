@@ -316,6 +316,11 @@ pub struct HitEffect {
     /// Elemental modifier flag ("weak"/"resist"/"immune"/"absorb"/"normal") —
     /// drives the WEAK!/RESIST!/IMMUNE!/ABSORB! feedback (Psyker-gated).
     pub modifier: Option<String>,
+    /// The effect's own tag, verbatim off the wire: `surge`, `counter`, `flinch`,
+    /// `cured:<n>`, `dodge`, … The client used to keep only the one bit it happened to
+    /// need (`crit`), so every other thing the engine reported about a blow was dropped at
+    /// the door — and a mechanic the client is never told about is one it can never draw.
+    pub status: Option<String>,
 }
 
 /// A biome seam (chokepoint) for the client to wall + gate.
@@ -3330,6 +3335,7 @@ impl Inner {
                                 amount: e.amount,
                                 hp_after: e.hp_after,
                                 modifier,
+                                status: e.status,
                             }
                         })
                         .collect();

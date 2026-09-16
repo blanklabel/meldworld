@@ -11,6 +11,13 @@
 //! reaches the GO end it **bounces and glows** until it spends its turn. Two lanes — foes
 //! above the line, your party below it — because nine icons on one rail is a pile.
 //!
+//! **AND A THIRD LANE FOR ANYONE CHARGING FASTER THAN THEY SHOULD BE.** A fighter that
+//! GUARDED (braced: its gauge fills at `defend_haste_mult`), one carrying a HASTE, or one
+//! that just blazed ahead on a five-blow streak hops down to the FAST rail — so "why is
+//! that one moving quicker" is answered by where it is standing rather than by remembering
+//! what you pressed four seconds ago. The icon keeps its own side's colour there, because
+//! the lane says *speed* and the colour says *whose*.
+//!
 //! ⚠️ **GETTING TO GO DOES NOT STOP ANYBODY ELSE GOING, AND THIS IS WHERE YOU SEE IT.** A
 //! fighter awaiting input stops filling its own gauge and nothing else pauses: the party
 //! keeps charging and so do the creatures (held by
@@ -39,9 +46,14 @@ use meld_client::net::CombatantView;
 /// would need every one of them recomputed on resize anyway.
 const TRACK_W: f32 = 660.0;
 /// One little sprite, square.
-const ICON: f32 = 34.0;
-/// A lane's height — one row of icons plus the room a bounce needs above it.
-const LANE_H: f32 = 40.0;
+const ICON: f32 = 30.0;
+/// How far an icon sits below the top of its own lane.
+const ICON_INSET: f32 = 3.0;
+/// A lane's height: an icon, the gap it sits in, and the room its bounce needs above it —
+/// DERIVED rather than picked, because a third lane turned "40 looks about right" into a
+/// one-pixel overlap where a bouncing icon clipped into the rail above it
+/// (`the_three_lanes_do_not_overlap` found it).
+const LANE_H: f32 = ICON + ICON_INSET + BOUNCE_PX;
 /// How much of the sprite's canvas the icon shows. Every class and creature sheet is a
 /// 184² canvas with the character filling the middle ~48% of it (see `docs/asset-pipeline.md`),
 /// so the icon is a centre crop rather than the whole square — otherwise the figure floats
@@ -55,10 +67,49 @@ const SPARK_SPEED: f32 = 0.55;
 /// Bounces per second for a fighter whose turn has come up.
 const BOUNCE_HZ: f32 = 2.6;
 /// How far that bounce lifts the icon, in pixels.
-const BOUNCE_PX: f32 = 7.0;
+const BOUNCE_PX: f32 = 6.0;
 /// Exponential easing rate for an icon chasing its authoritative gauge. The server sends a
 /// gauge ten times a second; this is what turns that staircase into a slide.
 const GLIDE: f32 = 12.0;
+/// Which rail a fighter rides. The lane is about SPEED; the icon's colour is about side.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Lane {
+    Foe,
+    Party,
+    /// Braced, hastened, or fresh off a catch-up.
+    Fast,
+}
+
+impl Lane {
+    fn top(self) -> f32 {
+        match self {
+            Lane::Foe => 0.0,
+            Lane::Party => LANE_H,
+            Lane::Fast => LANE_H * 2.0,
+        }
+    }
+}
+
+/// The rail a combatant belongs on right now.
+///
+/// ⚠️ **Read off the wire statuses, not off a client guess.** All three are server facts —
+/// the gauge really is filling faster — so the lane cannot disagree with the motion the
+/// player is watching. `surged` rides the wire for exactly this reason: a catch-up is over
+/// the instant it lands, and a client left to infer it from a gauge that jumped would be
+/// guessing at something the server already knows.
+pub(crate) fn lane_of(c: &CombatantView) -> Lane {
+    let fast = c
+        .statuses
+        .iter()
+        .any(|s| s == "braced" || s == "hasted" || s == "surged");
+    if fast {
+        Lane::Fast
+    } else if c.is_player {
+        Lane::Party
+    } else {
+        Lane::Foe
+    }
+}
 
 /// The bar's root node.
 #[derive(Component)]
@@ -68,8 +119,6 @@ pub(crate) struct TurnOrderBar;
 #[derive(Component)]
 pub(crate) struct TurnIcon {
     pub(crate) id: String,
-    /// Which lane it rides: allies below the centre line, foes above it.
-    pub(crate) ally: bool,
 }
 
 /// The charge line running from the start of the track to an icon.
@@ -109,9 +158,10 @@ pub(crate) fn bar_cast(battle: &BattleData) -> Vec<&CombatantView> {
 }
 
 /// A signature of everything the NODE TREE depends on — who is in the fight and what each
-/// of them looks like. Deliberately NOT the gauges: those move constantly and are what the
-/// per-frame animator writes, so folding them in here would rebuild the whole bar ten times
-/// a second, which is the exact cost the change-driven rule exists to avoid.
+/// of them looks like. Deliberately NOT the gauges, and deliberately not the LANE either:
+/// both move constantly and both are written by the per-frame animator, so folding either
+/// in here would rebuild the whole bar ten times a second, which is the exact cost the
+/// change-driven rule exists to avoid.
 pub(crate) fn cast_key(battle: &BattleData) -> u64 {
     let rows: Vec<(&str, bool, &str, Vec<&str>)> = bar_cast(battle)
         .iter()
@@ -268,7 +318,7 @@ pub(crate) fn rebuild_turn_bar(
                 Node {
                     border_radius: BorderRadius::all(Val::Px(8.0)),
                     width: Val::Px(TRACK_W + 24.0),
-                    height: Val::Px(LANE_H * 2.0 + 14.0),
+                    height: Val::Px(LANE_H * 3.0 + 14.0),
                     padding: UiRect::axes(Val::Px(12.0), Val::Px(7.0)),
                     border: UiRect::all(Val::Px(1.0)),
                     ..default()
@@ -281,23 +331,30 @@ pub(crate) fn rebuild_turn_bar(
                 panel
                     .spawn(Node {
                         width: Val::Px(TRACK_W),
-                        height: Val::Px(LANE_H * 2.0),
+                        height: Val::Px(LANE_H * 3.0),
                         ..default()
                     })
                     .with_children(|lane| {
-                        // The rail: one hairline across the middle, the two lanes' shared
-                        // floor. Foes charge above it and the party below it.
-                        lane.spawn((
-                            Node {
-                                position_type: PositionType::Absolute,
-                                left: Val::Px(0.0),
-                                top: Val::Px(LANE_H - 1.0),
-                                width: Val::Px(TRACK_W),
-                                height: Val::Px(2.0),
-                                ..default()
-                            },
-                            BackgroundColor(Color::srgba(0.6, 0.72, 1.0, 0.22)),
-                        ));
+                        // A rail under each lane. The FAST one is brighter and gold,
+                        // because a fighter hopping onto it is the bar's way of saying
+                        // "this one is charging quicker than it should be".
+                        for (lane_i, col) in [
+                            (Lane::Foe, Color::srgba(0.6, 0.72, 1.0, 0.22)),
+                            (Lane::Party, Color::srgba(0.6, 0.72, 1.0, 0.22)),
+                            (Lane::Fast, glass::EDGE.with_alpha(0.3)),
+                        ] {
+                            lane.spawn((
+                                Node {
+                                    position_type: PositionType::Absolute,
+                                    left: Val::Px(0.0),
+                                    top: Val::Px(lane_i.top() + LANE_H - 1.0),
+                                    width: Val::Px(TRACK_W),
+                                    height: Val::Px(2.0),
+                                    ..default()
+                                },
+                                BackgroundColor(col),
+                            ));
+                        }
                         // The GO end. A bar rather than a word: it is read a hundred times a
                         // fight and never actually needs to be re-read.
                         lane.spawn((
@@ -307,13 +364,17 @@ pub(crate) fn rebuild_turn_bar(
                                 left: Val::Px(TRACK_W - 3.0),
                                 top: Val::Px(2.0),
                                 width: Val::Px(3.0),
-                                height: Val::Px(LANE_H * 2.0 - 4.0),
+                                height: Val::Px(LANE_H * 3.0 - 4.0),
                                 ..default()
                             },
                             BackgroundColor(glass::EDGE.with_alpha(0.75)),
                         ));
                         for (id, ally, img, crop) in &rows {
-                            let lane_top = if *ally { LANE_H } else { 0.0 };
+                            // Every y here is a placeholder: which LANE a fighter rides
+                            // changes while the fight runs (a guard goes up, a haste lands,
+                            // somebody blazes ahead), so `animate_turn_bar` writes every
+                            // `top` each frame. Only the COLOUR is fixed at spawn, because
+                            // whose side you are on does not change.
                             let col = lane_color(*ally);
                             // The charge line, and the sparks running up it.
                             lane.spawn((
@@ -322,7 +383,7 @@ pub(crate) fn rebuild_turn_bar(
                                     border_radius: BorderRadius::all(Val::Px(2.0)),
                                     position_type: PositionType::Absolute,
                                     left: Val::Px(0.0),
-                                    top: Val::Px(lane_top + LANE_H * 0.5 - 1.5),
+                                    top: Val::Px(LANE_H * 0.5 - 1.5),
                                     width: Val::Px(1.0),
                                     height: Val::Px(3.0),
                                     ..default()
@@ -339,7 +400,7 @@ pub(crate) fn rebuild_turn_bar(
                                         border_radius: BorderRadius::all(Val::Px(2.0)),
                                         position_type: PositionType::Absolute,
                                         left: Val::Px(0.0),
-                                        top: Val::Px(lane_top + LANE_H * 0.5 - 2.0),
+                                        top: Val::Px(LANE_H * 0.5 - 2.0),
                                         width: Val::Px(4.0),
                                         height: Val::Px(4.0),
                                         ..default()
@@ -355,7 +416,7 @@ pub(crate) fn rebuild_turn_bar(
                                     border_radius: BorderRadius::all(Val::Px(ICON)),
                                     position_type: PositionType::Absolute,
                                     left: Val::Px(0.0),
-                                    top: Val::Px(lane_top),
+                                    top: Val::Px(0.0),
                                     width: Val::Px(ICON + 10.0),
                                     height: Val::Px(ICON + 10.0),
                                     ..default()
@@ -366,11 +427,11 @@ pub(crate) fn rebuild_turn_bar(
                             let inner = ICON * zoom;
                             let inset = -(inner - ICON) * 0.5;
                             lane.spawn((
-                                TurnIcon { id: id.clone(), ally: *ally },
+                                TurnIcon { id: id.clone() },
                                 Node {
                                     position_type: PositionType::Absolute,
                                     left: Val::Px(0.0),
-                                    top: Val::Px(lane_top + 3.0),
+                                    top: Val::Px(ICON_INSET),
                                     width: Val::Px(ICON),
                                     height: Val::Px(ICON),
                                     // The sheet is mostly transparent margin; show the middle
@@ -421,6 +482,16 @@ pub(crate) fn animate_turn_bar(
         view.shown.insert(c.id.clone(), glide(shown, target, dt));
     }
     let at = |id: &str| view.shown.get(id).copied().unwrap_or(0.0);
+    // Which rail each body rides THIS frame — a guard going up or a catch-up landing moves
+    // a fighter between lanes mid-fight, so the lane is read here rather than baked in at
+    // spawn. Resolved once and shared by all four queries below, so an icon, its charge
+    // line and its sparks can never end up on different rails for a frame.
+    let lanes: HashMap<String, Lane> = battle
+        .combatants
+        .iter()
+        .map(|c| (c.id.clone(), lane_of(c)))
+        .collect();
+    let lane_top = |id: &str| lanes.get(id).copied().unwrap_or(Lane::Party).top();
     // Owning a turn is the SERVER's fact (a full gauge), not the client's `ready` set: the
     // bar draws foes too, and nothing tells this client when a creature's turn comes up.
     let up = |id: &str| {
@@ -432,17 +503,18 @@ pub(crate) fn animate_turn_bar(
 
     for (icon, mut node) in &mut icons {
         let g = at(&icon.id);
-        let lane_top = if icon.ally { LANE_H } else { 0.0 } + 3.0;
         let lift = if up(&icon.id) { bounce_px(t) } else { 0.0 };
         set_px(&mut node.left, icon_x(g));
-        set_px(&mut node.top, lane_top + lift);
+        set_px(&mut node.top, lane_top(&icon.id) + ICON_INSET + lift);
     }
     for (trail, mut node) in &mut trails {
         set_px(&mut node.width, trail_w(at(&trail.id)));
+        set_px(&mut node.top, lane_top(&trail.id) + LANE_H * 0.5 - 1.5);
     }
     for (spark, mut node, mut bg) in &mut sparks {
         let w = trail_w(at(&spark.id));
         set_px(&mut node.left, spark_x(t, spark.phase, w));
+        set_px(&mut node.top, lane_top(&spark.id) + LANE_H * 0.5 - 2.0);
         // A spark on a fighter that is already up has nowhere left to run.
         let a = if up(&spark.id) { 0.0 } else { spark_alpha(t, spark.phase) };
         let want = bg.0.with_alpha(a);
@@ -452,11 +524,9 @@ pub(crate) fn animate_turn_bar(
     }
     for (glow, mut node, mut bg) in &mut glows {
         let g = at(&glow.id);
-        let ally = battle.view(&glow.id).map(|c| c.is_player).unwrap_or(true);
-        let lane_top = if ally { LANE_H } else { 0.0 };
         let lift = if up(&glow.id) { bounce_px(t) } else { 0.0 };
         set_px(&mut node.left, icon_x(g) - 5.0);
-        set_px(&mut node.top, lane_top - 2.0 + lift);
+        set_px(&mut node.top, lane_top(&glow.id) - 2.0 + lift);
         // Quantised to a few steps a second: a continuous pulse is a material write every
         // frame for a difference nobody can see.
         let a = if up(&glow.id) {
@@ -534,6 +604,52 @@ mod tests {
             let t = i as f32 * 0.037;
             assert!(bounce_px(t) <= 0.0, "bounce dipped below the lane at t={t}");
             assert!(bounce_px(t) >= -BOUNCE_PX, "bounce overshot at t={t}");
+        }
+    }
+
+    fn cv(id: &str, ally: bool, statuses: &[&str]) -> CombatantView {
+        CombatantView {
+            id: id.into(),
+            name: id.into(),
+            hp: 10,
+            max_hp: 10,
+            gauge: 0.0,
+            is_player: ally,
+            player_id: ally.then(|| id.into()),
+            level: 1,
+            statuses: statuses.iter().map(|s| s.to_string()).collect(),
+        }
+    }
+
+    /// **THE LANE SAYS SPEED; THE COLOUR SAYS SIDE.** Anyone charging faster than they
+    /// should be — a guard that braced, a haste, or a fighter fresh off a five-blow
+    /// catch-up — hops onto the FAST rail, whichever side they are on.
+    #[test]
+    fn anyone_charging_faster_rides_the_fast_rail() {
+        assert!(lane_of(&cv("m1", false, &[])) == Lane::Foe);
+        assert!(lane_of(&cv("h1", true, &[])) == Lane::Party);
+        for fast in ["braced", "hasted", "surged"] {
+            assert!(
+                lane_of(&cv("h1", true, &[fast])) == Lane::Fast,
+                "a {fast} hero stayed on the ordinary rail"
+            );
+            assert!(
+                lane_of(&cv("m1", false, &[fast])) == Lane::Fast,
+                "the rule has to read the same for a creature: {fast}"
+            );
+        }
+    }
+
+    /// Three lanes, and none of them overlap — an icon is 34px tall in a 40px lane, so a
+    /// bounce at the top of one must not reach into the one above it.
+    #[test]
+    fn the_three_lanes_do_not_overlap() {
+        let tops = [Lane::Foe.top(), Lane::Party.top(), Lane::Fast.top()];
+        for pair in tops.windows(2) {
+            assert!(
+                pair[1] - pair[0] >= ICON + ICON_INSET + BOUNCE_PX,
+                "lanes at {pair:?} are closer than an icon, its inset and its bounce"
+            );
         }
     }
 

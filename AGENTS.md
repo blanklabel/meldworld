@@ -1963,13 +1963,85 @@ bars, hiding the formation the grace beat exists for you to read. It lives exact
 `feel.opening_ttl` (2 s), which is that beat; `MELD_OPENING=ambush|surprise` is the fixture,
 since the static mockup never receives a `battle.started` to raise it.
 
+**A GOOD BLOW STAGGERS, AND FIVE IN A ROW BLAZE AHEAD** (`UX-15`). Three reactions hang off
+the finished resolution, in ONE place (`Battle::answer_the_blow`, called from `stamped` —
+the funnel every resolution already passes through on its way out, which is why the damage
+type is stamped there too):
+
+- **THE FLINCH.** A blow that finds a target's WEAKNESS or lands a CRIT takes
+  `[battle] flinch_gauge_loss` off that target's gauge. Hitting a creature's element used to
+  be a damage multiplier and nothing else, so "what is it made of" was an arithmetic
+  question; now the answer is felt on the turn order itself. ⚠️ **It has its OWN guard
+  (`flinch_guard_ticks`) and that is load-bearing** — gauge denial in this engine has
+  already composed into a 464-hero-turn lock once, and a small frequent knock is that bug
+  reached from the other direction: four heroes branded into one weakness would otherwise
+  hold a creature at zero. ⚠️ **It arms NO rebuke and no `staggered`**, unlike `deny_gauge`:
+  a knock is a turn TAKEN by an ability that spent its own turn doing it, while a flinch
+  happens several times a round — a rebuke on each would make a boss's *scarcest* ability
+  its most common one, which is the exact failure the raid tier's note warns about, since
+  `weight` is read as rarity. ⚠️ And **a turn that has already arrived cannot be flinched
+  away**: at a full gauge the fighter owns its turn (a hero is `awaiting`, its menu is on
+  screen), so a flinch there would CANCEL a turn rather than delay one. Cancelling is what a
+  knock is, and it is priced like one.
+- **THE CATCH-UP.** `surge_streak` (5) consecutive damaging resolutions that found a
+  weakness or crit fill the striker's gauge outright. Counted per RESOLUTION, never per
+  body — an all-enemy blow that finds three weaknesses is one good blow — so the streak is
+  five consecutive TURNS and a party that has worked out what it is fighting gets a free one
+  out of knowing. A turn that deals no damage at all (a heal, a guard, a buff) neither builds
+  nor breaks it. It rides the wire as `streak:<n>` and `surged`, because a streak nobody can
+  watch fill is one nobody learns exists.
+- **THE COUNTER.** While BRACED, the first blow that lands on you may be answered with a free
+  swing. ⚠️ **It rides Wll, deliberately against the obvious reading of Dex.** The classes
+  that actually press Defend are the dense ones — the Phoenix Guard carries the most Wll in
+  the game and no dodge at all — while the Shifter is all Dex and never guards, because its
+  whole answer to a blow is not being there; a Dex riposte would hand the best counters to
+  the class that never earns them. It is also the mirror of Mnd buying `ward` as well as
+  spell power: Dex already buys speed, dodge, crit and the initiative advantage, and Wll
+  bought HP and armour and nothing you could DO. **ONE per guard**, so a turn spent guarding
+  returns at most one blow and a counter cannot scale with the size of the pack hitting you
+  — the same argument that keeps all-enemy damage off weapons and on limited throwables.
+
+⚠️ **A DoT TICK IS NOT A GOOD HIT.** Upkeep builds its own resolution (`upkeep_only`) and
+never reaches `answer_the_blow`, so poison cannot flinch, cannot feed a streak and cannot be
+countered — otherwise a burn would be the cheapest tempo weapon in the game. ⚠️ **And the
+effects are read from a SNAPSHOT taken at entry**: a counter appends its own Damage effects
+to the same resolution, and re-reading them would let a counter flinch, feed a streak, or be
+countered back, which for two braced fighters is an infinite volley.
+
+**A SIDED OPENING STILL ROLLS WITHIN THE SIDE.** `Opening::Surprise` / `Ambush` used to set
+every fighter on the favoured side to exactly 1.0 and every other to exactly 0.0 — reported
+from play as *"it appears everyone starts at the same point"*, and literally true: those two
+openings are most of the fights a player walks into (`approach_of` answers one or the other
+whenever somebody is hit from behind), so four heroes shared one instant and the turn-order
+bar drew them stacked on a single pixel. Each side now rolls and is RANKED within itself,
+spaced across `[battle] opening_spread` from its own anchor. Who moves first is untouched —
+the whole favoured side still outruns the whole other side by construction — and the best
+roll on the favoured side lands on exactly 1.0, so a surprise still hands you a turn NOW
+rather than one a few ticks away, which for a lone hero is the entire reward for spending a
+pin. ⚠️ `opening_spread` must stay well under 0.5 or the two bands meet and an ambushed hero
+acts before the creature that ambushed it. The advantage-to-innate-dodge rule lives in ONE
+place (`best_roll`) that both openings call; written separately, `hand_the_opening` silently
+dropped it and a Shifter's edge stopped existing in exactly the fights it is best in.
+
+**AND THE GRACE BEAT SAYS WHAT IT IS.** `open_grace_ms` holds the whole arena still for two
+seconds, and the ordinary opening drew no card at all — the deliberate pause was
+indistinguishable from a hang (*"the whole screen is frozen and then it suddenly flickers and
+starts"*). A **FIGHT!** card now fills it. ⚠️ The test that used to assert the opposite
+("a card on the rolled case is a card on every fight, which is a card nobody reads") is
+recorded in its replacement: the wallpaper risk is answered by LOUDNESS rather than silence —
+AMBUSHED! and SURPRISE! are alarm-coloured because they cost or bought you a round, and
+FIGHT! wears the ordinary title gold.
+
 **EVERYBODY CHARGES AT ONCE, AND NOW YOU CAN SEE IT** (`UX-13`,
 [`turn_order.rs`](client/crates/meld-client/src/turn_order.rs)). A charging line across the
 top of the arena: every combatant rides one shared track as its own south-facing sprite —
 the SAME art the arena spawns, resolved the same way, since an icon that disagreed with the
 body it stands for is worse than no icon — sliding left to right with its gauge, dragging a
-sparkling charge line behind it, foes in the lane above the rail and your party below. At
-the GO end it **bounces and glows** until the turn is spent. Before it, the only gauges on
+sparkling charge line behind it, foes in the lane above the rail and your party below, and a THIRD rail below
+both for anyone charging faster than they should be — braced, hastened, or fresh off a
+catch-up — so "why is that one moving quicker" is answered by where it is standing. The lane
+says SPEED and the colour says SIDE. At the GO end an icon **bounces and glows** until the
+turn is spent. Before it, the only gauges on
 screen were the four hero bars along the bottom edge and a 5px enemy bar gated behind the
 TOP rung of the Hunter's Predator's Eye, so "who goes next, them or me" — the question a
 player asks every second of a fight — had no answer for either side. ⚠️ **Getting to go does

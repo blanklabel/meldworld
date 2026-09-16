@@ -5260,6 +5260,48 @@ only the things that can't be class-gated.
     The 15-second auto-defend braces too: a hero that ran out of clock at least gets the
     tempo back.
 
+- [x] **UX-15 — A good blow staggers, five in a row blaze ahead, and a guard can answer.**
+  Hitting a creature's weakness was worth a damage multiplier and nothing else, so "what is
+  this thing made of" was an arithmetic question rather than a tempo one, and Defend bought
+  half a blow and a faster gauge but never anything you could *do*.
+  - *Shipped, all three through ONE funnel* (`Battle::answer_the_blow`, called from
+    `stamped`, which every resolution already passes through): a **FLINCH** takes
+    `[battle] flinch_gauge_loss` off anything hit where it is weak or crit; a **CATCH-UP**
+    fills the striker's gauge after `surge_streak` (5) consecutive good resolutions; and a
+    **COUNTER** lets a braced fighter answer the first blow that lands on it.
+  - ⚠️ *The flinch has its own guard, and that is the whole safety argument.* Gauge denial
+    here composed into a 464-hero-turn lock once; a small frequent knock is that same bug
+    from the other side, so `flinch_guard_ticks` bounds four heroes branded into one
+    weakness to one flinch per window. It arms no rebuke and no `staggered` (a knock is a
+    turn taken by an ability that spent its own; a flinch is the consequence of a good hit,
+    and a rebuke on each would make a boss's rarest ability its most common), and it can
+    never take a turn that has already arrived.
+  - *The counter rides **Wll**, against the obvious reading of Dex*: the classes that press
+    Defend are the dense ones, and a Dex riposte would hand the best counters to the Shifter,
+    which never guards. It is the mirror of Mnd buying `ward` as well as spell power — Wll
+    bought HP and armour and nothing you could DO. One per guard, so it cannot scale with
+    the size of the pack hitting you.
+
+- [x] **UX-16 — Everyone stops starting at the same point, and the held beat says what it
+  is.** Reported from play as *"it appears everyone starts at the same point"* and *"the
+  whole screen is frozen and then it suddenly flickers and starts"*. Both were real and
+  both were measured before they were touched.
+  - *The opening:* `Rolled` already spread properly, but `Surprise` and `Ambush` set every
+    fighter on the favoured side to exactly 1.0 and every other to exactly 0.0 — and those
+    two are most of the fights a player walks into, since `approach_of` answers one or the
+    other whenever somebody is struck from behind. Each side now rolls and is RANKED within
+    itself across `[battle] opening_spread`. Who moves first is untouched by construction,
+    and the best roll on the favoured side still lands on exactly a full gauge, so a
+    surprise still hands you a turn *now* — which for a lone hero is the whole reward for
+    having spent a pin to get it.
+  - *The beat:* `open_grace_ms` holds the arena still for two seconds and the ordinary
+    opening drew no card, so a deliberate pause was indistinguishable from a hang. A
+    **FIGHT!** card fills it, in ordinary title gold rather than the alarm colours the two
+    openings that cost or bought you a round wear.
+  - *And the bar grew a third rail:* anyone charging faster than they should be — braced,
+    hastened, or fresh off a catch-up — hops onto it, so "why is that one moving quicker"
+    is answered by where it is standing. The lane says SPEED, the colour still says SIDE.
+
 - [ ] **UX-1 — Last City minimap & compass (town-only).** A minimap and compass
   **for Last City itself** so players can navigate the hub — locate the districts
   (Vault-Deep, Market, Forge/Alembic, Bounty Board, Drill Yard, Vanguard Wall),

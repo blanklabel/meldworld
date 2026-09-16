@@ -220,6 +220,13 @@ pub(crate) fn mock_battle_setup(
     add(&mut battle, "h1", &["barrier:8", "regen:3"]);
 
     add(&mut battle, "h3", &["evasion:20"]);
+    // The turn-order bar's THIRD rail needs somebody on it, from both sides: a hero that
+    // guarded (braced) and a creature fresh off a five-blow catch-up (surged). Without
+    // these the fast lane is an empty rail in every screenshot, which reads as a stray
+    // line rather than as a lane.
+    add(&mut battle, "h4", &["braced"]);
+    add(&mut battle, "wight", &["surged", "streak:3"]);
+    add(&mut battle, "h1", &["streak:4"]);
     // A FRENZIED creature, so the rage tint + swell have a subject in the fixture. It is
     // the condition a player most needs to spot across the arena and the one that had no
     // visual at all: `wight` reads red and stands larger than the boar beside it.
@@ -316,10 +323,10 @@ pub(crate) fn mock_battle_opening(
     // Just under the card's own TTL, for the same reason the FX tour re-fires under the
     // burst's: a gap in the cadence reads as a broken card.
     *next_at = now + (feel.opening_ttl * 0.85).max(0.1);
+    // Every word raises a card now — anything that is not an ambush or a surprise is the
+    // ordinary bell, which has its own FIGHT! card since the grace beat otherwise reads as
+    // the screen having frozen.
     open.raise(&spec);
-    if open.kind.is_none() {
-        warn!("MELD_OPENING: `{spec}` is not `ambush` or `surprise`");
-    }
 }
 
 pub(crate) fn mock_battle_fx(

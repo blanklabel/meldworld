@@ -199,6 +199,20 @@ initiative_max = 0.45            # [TUNABLE]
 # blow you are quick enough to see it coming, and a dodge class added later gets it for
 # free instead of being forgotten. [TUNABLE]
 initiative_advantage_rolls = 2
+# **AND A SIDE THAT WON THE OPENING STILL ROLLS WITHIN ITSELF.** A surprise or an ambush
+# used to set every fighter on the favoured side to exactly 1.0 and every fighter on the
+# other side to exactly 0.0 — so four heroes opened on the same instant, which is both
+# unreadable (the turn-order bar draws them stacked on one pixel) and mechanically odd.
+# Reported from play as *"it appears everyone starts at the same point"*.
+#
+# The favoured side now rolls in the top `opening_spread` of the gauge and the other in the
+# bottom `opening_spread` of it, so the ORDER within a side is a thing that happened while
+# WHO MOVES FIRST is untouched — the whole favoured side still outruns the whole other side
+# by construction, which is what an ambush means and what its test asserts.
+#
+# ⚠️ **It must stay well under 0.5** or the two bands meet and an ambushed hero can act
+# before the creature that ambushed it. [TUNABLE]
+opening_spread = 0.14
 # **A FIGHT DOES NOT START SWINGING.** Nothing acts and no gauge fills for this long after
 # the bell — the beat where the arena appears, the initiative lands, and the player reads
 # who is standing in front of them before anything is asked of them.
@@ -276,6 +290,47 @@ crit_chance_base = 0.08          # base crit chance on a basic attack
 crit_chance_per_dex = 0.004      # + this per point of the attacker's Dex
 crit_chance_cap = 0.5            # a crit is never a sure thing
 crit_mult = 1.8                  # damage multiplier on a crit
+# --- A GOOD HIT STAGGERS: the flinch, the catch-up, and the counter ----------------
+# **A BLOW THAT FINDS A WEAKNESS OR LANDS A CRIT PUTS A STOP IN THE TARGET'S ATB.** Hitting
+# a creature's element used to be worth a damage multiplier and nothing else, so "what is
+# it weak to" was an arithmetic question rather than a tempo one. A flinch makes the answer
+# felt: the thing you just burned loses ground on the turn-order bar, visibly.
+#
+# ⚠️ **It is a SMALL loss with its OWN guard, and both halves are load-bearing.** Gauge
+# denial in this engine composes into an unbounded lock — measured once at 464 hero-turns
+# during which a gatekeeper never acted — so anything that takes gauge has to be unable to
+# chain. A flinch cannot land on the same body again until `flinch_guard_ticks` have
+# passed, which bounds a four-hero party branded into one creature's weakness to one flinch
+# per window rather than one per hero per swing. [TUNABLE]
+flinch_gauge_loss = 0.10
+flinch_guard_ticks = 12          # ~1.2s at the 100ms tick
+# **FIVE GOOD BLOWS IN A ROW AND YOU BLAZE AHEAD.** Consecutive resolutions in which this
+# fighter found a weakness or landed a crit; the fifth fills its own gauge, so a party that
+# has worked out what the thing in front of it is made of gets a free turn out of knowing.
+# Counted per RESOLUTION rather than per body — an all-enemy blow that finds three
+# weaknesses is one good blow, not three — so the streak is five consecutive TURNS.
+# A turn that deals no damage at all (a heal, a guard, a buff) neither builds nor breaks it.
+# [TUNABLE]
+surge_streak = 5
+surge_gauge = 1.0                # the catch-up fills this much gauge: 1.0 = act NOW
+# **A GUARD CAN ANSWER.** While BRACED, the first blow that lands on you may be answered
+# with a free swing at whoever threw it.
+#
+# ⚠️ **It rides Wll, and that is a deliberate choice against Dex.** Dex already buys speed,
+# dodge, crit and the initiative advantage; Wll buys HP and `def` and has no active half at
+# all. More to the point, the classes that actually press Defend are the dense ones — the
+# Phoenix Guard has the most Wll and no dodge whatsoever — so a Dex riposte would hand the
+# best counters to the Shifter, which never guards, and the worst to the wall, which does
+# nothing else. This is the mirror of Mnd buying `ward` as well as spell power: the stat
+# that makes you hard to kill also lets you answer.
+#
+# ONCE per guard, so it is one turn spent for at most one blow returned and it cannot scale
+# with how many creatures are hitting you — the same reason all-enemy damage is not a
+# weapon property. [TUNABLE]
+counter_chance_base = 0.10
+counter_chance_per_wll = 0.004   # Phoenix Guard reaches the cap around level 40
+counter_chance_cap = 0.5
+counter_damage_mult = 0.7        # a snap answer, not a full swing
 # Psyker Focus system. A Psyker maintains several persistent Manifestations
 # ("Foci"); on each of its ATB turns every active Focus fires, then the player
 # casts/reinforces/revokes one. Focus slots and which manifestations are unlocked
