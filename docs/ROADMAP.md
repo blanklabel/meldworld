@@ -5331,12 +5331,14 @@ only the things that can't be class-gated.
     four parties and a rail each would be a stave), and anyone **charging faster than they
     should be**: braced, hastened, or fresh off a catch-up. The lane says SPEED, the colour
     says SIDE, and the ally rail only exists in co-op, so a solo dive draws three.
-  - *A fast fighter BURNS:* a comet — white-hot head over the sprite, tapering to a coloured
-    tail — throwing embers that fall back down its own line and dissipate into white wisps.
-    Both are stacks of primitives because a Bevy UI node is a rounded rectangle and nothing
-    else: the comet is seven lozenges that shorten as they reach back, so the *silhouette*
-    tapers. ⚠️ Two cuts of a lightning bolt were built and discarded before this — a
-    hard-edged line sits on the panel, and only motion says *flying*.
+  - *A fast fighter BURNS,* and it is a shader: `turn_fire.wgsl`, a `UiMaterial` with an
+    additive blend. A tongue of flame with a white-hot core on the sprite, licking back down
+    that fighter's own charge line in that line's colour. ⚠️ **Four `Node`-built cuts were
+    made and thrown away first** — a bolt as bridging segments (a torn ribbon), a bolt as
+    runs plus joints (a square wave), a comet as stacked lozenges (a smudge) and forty ember
+    particles (a row of dots). A UI node is an alpha-blended rounded rectangle, and fire
+    needs a colour that ramps and light that adds; only a material does both. It also
+    replaced ~47 CPU-moved nodes per fast fighter with one quad.
   - ⚠️ *Three things the tests could not have found, all caught by finally LOOKING:* every
     fighter at a full gauge drew on the same pixel (two ready heroes rendered as one icon —
     on the bar whose whole point is that a turn arriving does not stop anybody else's); the

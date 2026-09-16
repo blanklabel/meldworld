@@ -33,11 +33,17 @@
 
 use std::collections::HashMap;
 
+use bevy::asset::Asset;
 use bevy::prelude::*;
+use bevy::reflect::TypePath;
+use bevy::render::render_resource::{
+    AsBindGroup, BlendComponent, BlendFactor, BlendOperation, BlendState, RenderPipelineDescriptor,
+};
+use bevy::shader::ShaderRef;
+use bevy::ui_render::ui_material::{MaterialNode, UiMaterial, UiMaterialKey};
 
 use meld_client::glass;
 
-use crate::battle::lighten;
 use crate::world_render::WorldAssets;
 use crate::{hero_class, BattleData};
 use meld_client::net::CombatantView;
@@ -84,27 +90,7 @@ const GLIDE: f32 = 12.0;
 /// arriving does not stop anybody else's. Measured in the first real capture of this
 /// feature: a party of four with two heroes ready rendered three icons.
 const PILE_GAP: f32 = ICON * 0.72;
-/// Embers in a fast fighter's charge trail — the fuzz it is burning off.
-///
-/// ⚠️ **THIS REPLACED A LIGHTNING BOLT, WHICH DID NOT LAND.** Two cuts of a zigzag were
-/// tried: one node per segment (a big jump became a wide tall BLOCK, and it read as a torn
-/// paper ribbon) and then a run plus a vertical joint per vertex, which drew a clean stepped
-/// arc and still read as a square wave drawn on the panel rather than as something moving.
-/// The shape was never the problem — a hard-edged line cannot say "flying". Streaming
-/// particles can, so the trail is fuzz now: embers thrown off the body and left behind.
-const EMBERS: usize = 26;
-/// How far an ember drifts off the line as it falls behind.
-const EMBER_SPREAD: f32 = 7.0;
-/// Fastest an ember travels backwards, in fractions of the line per second.
-const EMBER_DRIFT: f32 = 0.55;
 
-/// Concentric rings in a fast fighter's aura.
-///
-/// ⚠️ **FOUR, because a UI node is a FLAT disc.** Bevy's UI has no radial gradient, so two
-/// rings drew as two hard-edged circles and read as a smudge of dirt under the sprite
-/// rather than as something burning. Stacking several with a falling alpha is how a soft
-/// bloom is spelled here.
-const AURA_RINGS: usize = 7;
 /// Which rail a fighter rides.
 ///
 /// **FOUR RAILS AT MOST, EVER.** The bar is read at a glance in the middle of a fight, so
@@ -207,6 +193,84 @@ pub(crate) fn lane_of(c: &CombatantView, mine: bool) -> Lane {
     }
 }
 
+/// **THE FLAME A FAST FIGHTER BURNS**, as a custom UI material.
+///
+/// ⚠️ **IT IS A SHADER BECAUSE THE BAR IS UI, AND UI IS ROUNDED RECTANGLES.** Three cuts of
+/// this were built out of plain `Node`s and every one failed the same way: a lightning bolt
+/// drawn as one node per segment became a torn ribbon, the same bolt drawn as runs plus
+/// joints became a square wave, and a comet drawn as stacked lozenges read as a smudge under
+/// the sprite. A node is an alpha-blended box — it cannot ramp a colour through a gradient
+/// and it cannot ADD light where it overlaps, which are the two things fire is made of. A
+/// `UiMaterial` does both, and it replaced ~47 CPU-moved nodes per fast fighter with one
+/// quad whose motion is a noise field scrolling inside it.
+#[derive(Asset, AsBindGroup, TypePath, Debug, Clone)]
+pub(crate) struct FireTrail {
+    /// `(seconds, fill 0..1, seed, aspect)` — see `turn_fire.wgsl`.
+    #[uniform(0)]
+    pub(crate) params: Vec4,
+    /// The charge line's own colour, with an overall opacity in `a`.
+    #[uniform(0)]
+    pub(crate) tint: Vec4,
+}
+
+impl UiMaterial for FireTrail {
+    fn fragment_shader() -> ShaderRef {
+        "shaders/turn_fire.wgsl".into()
+    }
+
+    /// **ADDITIVE.** Flames compile light where they overlap, and — the part that matters
+    /// here — the icon underneath is never occluded by its own aura. That is the trap
+    /// `hd2d::sprite_material` records three separate times: a full-quad effect painting
+    /// over the art it was supposed to decorate.
+    fn specialize(descriptor: &mut RenderPipelineDescriptor, _key: UiMaterialKey<Self>) {
+        if let Some(target) = descriptor
+            .fragment
+            .as_mut()
+            .and_then(|f| f.targets.first_mut())
+            .and_then(|t| t.as_mut())
+        {
+            target.blend = Some(BlendState {
+                color: BlendComponent {
+                    src_factor: BlendFactor::One,
+                    dst_factor: BlendFactor::One,
+                    operation: BlendOperation::Add,
+                },
+                alpha: BlendComponent {
+                    src_factor: BlendFactor::One,
+                    dst_factor: BlendFactor::One,
+                    operation: BlendOperation::Add,
+                },
+            });
+        }
+    }
+}
+
+/// The one quad a fast fighter's flame is drawn on.
+#[derive(Component)]
+pub(crate) struct TurnFire {
+    pub(crate) id: String,
+    pub(crate) mat: Handle<FireTrail>,
+    pub(crate) col: Color,
+}
+
+/// How much taller than an icon the flame's quad is, so tongues have room to lick above and
+/// below the line without being clipped by their own node.
+const FIRE_HEIGHT: f32 = ICON * 1.9;
+/// How long the flame's tail is, in pixels, however long the charge line happens to be — a
+/// fill expressed as a fraction would give a fighter near the start of the track a stubby
+/// flame and one at the GO end a six-hundred-pixel bonfire.
+const FIRE_TAIL: f32 = 150.0;
+/// How far the quad reaches PAST the body, so the nose of the flame has room to fade inside
+/// its own node. Without it the hot core is cut by the node's right edge — a straight
+/// vertical line through the middle of the sprite.
+const FIRE_NOSE: f32 = ICON * 0.9;
+
+/// A stable 0..1 number for a combatant id — the per-fighter seed that stops every flame on
+/// the rail from flickering in lockstep.
+pub(crate) fn hash01(id: &str) -> f32 {
+    (glass::redraw_key(&id) % 10_000) as f32 / 10_000.0
+}
+
 /// The bar's root node.
 #[derive(Component)]
 pub(crate) struct TurnOrderBar;
@@ -223,17 +287,6 @@ pub(crate) struct TurnTrail {
     pub(crate) id: String,
 }
 
-/// One ember streaming off a fast fighter — the fuzzy charge trail that says it is FLYING
-/// rather than sliding (see [`EMBERS`] for the two hard-edged bolts this replaced).
-#[derive(Component)]
-pub(crate) struct TurnEmber {
-    pub(crate) id: String,
-    pub(crate) seed: usize,
-    /// The colour of the charge line these embers come off — anything else reads as a
-    /// separate effect laid over the line rather than as the line itself burning.
-    pub(crate) col: Color,
-}
-
 /// One travelling spark on a charge line.
 #[derive(Component)]
 pub(crate) struct TurnSpark {
@@ -241,15 +294,6 @@ pub(crate) struct TurnSpark {
     /// Where on the line this spark starts, 0..1 — spread so a line reads as flowing
     /// rather than as one dot going round.
     pub(crate) phase: f32,
-}
-
-/// One ring of the aura a fast fighter burns with — the energy it is charging with, in its
-/// own line's colour. Two of them per fighter: a soft outer bloom and a tight inner core.
-#[derive(Component)]
-pub(crate) struct TurnAura {
-    pub(crate) id: String,
-    pub(crate) ring: usize,
-    pub(crate) col: Color,
 }
 
 /// The halo behind an icon whose turn has come up.
@@ -350,66 +394,6 @@ pub(crate) fn fan_pile(xs: &mut [f32]) {
     }
 }
 
-/// A stable per-ember random in `0..1`. Deterministic off its own seed, so an ember keeps
-/// its size, its drift and its wobble for as long as it exists instead of reshuffling every
-/// frame — which is the difference between a trail and a field of static.
-pub(crate) fn ember_rand(seed: usize, salt: u32) -> f32 {
-    let h = (seed as u32)
-        .wrapping_add(1)
-        .wrapping_mul(0x9E37_79B9)
-        .wrapping_add(salt.wrapping_mul(0x85EB_CA6B));
-    let h = h ^ (h >> 15);
-    ((h >> 8) & 0xFFFF) as f32 / 65535.0
-}
-
-/// How far along its line an ember is, `1.0` at the body and `0.0` at the far tail. Embers
-/// are thrown off the fighter and fall BACKWARDS down the line, which is what says it is
-/// travelling rather than that the line is decorated.
-pub(crate) fn ember_at(t: f32, seed: usize) -> f32 {
-    let speed = EMBER_DRIFT * (0.6 + 0.8 * ember_rand(seed, 3));
-    1.0 - (ember_rand(seed, 1) + t * speed).rem_euclid(1.0)
-}
-
-/// **WHITE-HOT AT BOTH ENDS.** An ember is brightest right at the body, where the energy is
-/// coming off, and again at the very tail, where it is dissipating into a white wisp — the
-/// line's own colour in between. Both ends whitening is what makes the trail read as heat
-/// rather than as a coloured smear.
-pub(crate) fn ember_heat(p: f32) -> f32 {
-    let front = ((p - 0.62) / 0.38).clamp(0.0, 1.0);
-    let tail = ((0.30 - p) / 0.30).clamp(0.0, 1.0);
-    front.max(tail * 0.85)
-}
-
-/// An ember's opacity: solid where it leaves the body, gone by the end of the tail.
-pub(crate) fn ember_alpha(p: f32) -> f32 {
-    (p * p * 0.95).clamp(0.0, 1.0)
-}
-
-/// How far off the line an ember has wandered. Flames SPREAD as they fall behind, so the
-/// wobble grows with distance from the body — a constant one reads as a wavy rope.
-pub(crate) fn ember_wobble(t: f32, seed: usize, p: f32) -> f32 {
-    let phase = ember_rand(seed, 5) * std::f32::consts::TAU;
-    let rate = 3.0 + 4.0 * ember_rand(seed, 7);
-    (t * rate + phase).sin() * EMBER_SPREAD * (1.0 - p)
-}
-
-/// One layer of the aura, as (height, how far it reaches BACK past the body, base alpha).
-///
-/// ⚠️ **THE TAPER IS THE STACK, because one box cannot narrow.** A UI node is a rectangle
-/// with rounded corners: rounding its leading edge hard and its trailing edge barely gives a
-/// pill, and the first cut of this drew exactly that — a solid red lozenge that read as a
-/// highlighted button around the sprite. Stacking lozenges that get SHORTER as they reach
-/// further back makes the silhouette itself taper, which is what a comet is: tall and hot at
-/// the head, thin and long down the tail.
-pub(crate) fn aura_ring(ring: usize) -> (f32, f32, f32) {
-    let t = ring as f32 / (AURA_RINGS - 1).max(1) as f32;
-    let height = ICON * (0.98 - 0.66 * t);
-    let back = 6.0 + 54.0 * t;
-    // Low on purpose: four of these stack, and the sprite has to read THROUGH them.
-    let alpha = 0.15 * (1.0 - t).powf(1.2) + 0.03;
-    (height, back, alpha)
-}
-
 /// The bounce offset for a fighter whose turn is up: a lift, never a drop, so the icon
 /// never dips below the lane the others are sliding along.
 pub(crate) fn bounce_px(t: f32) -> f32 {
@@ -476,6 +460,7 @@ pub(crate) fn rebuild_turn_bar(
     battle: Res<BattleData>,
     wa: Option<Res<WorldAssets>>,
     mut view: ResMut<TurnBarView>,
+    mut fires: ResMut<Assets<FireTrail>>,
     existing: Query<Entity, With<TurnOrderBar>>,
 ) {
     let Some(wa) = wa else { return };
@@ -598,48 +583,29 @@ pub(crate) fn rebuild_turn_bar(
                                     BackgroundColor(col.with_alpha(0.0)),
                                 ));
                             }
-                            // The aura, FIRST so it sits behind its own icon: a fighter
-                            // charging faster than it should be burns with it. Hidden until
-                            // wanted, like the arc below.
-                            // Widest first, so the tight hot core lands on top of the bloom.
-                            for ring in (0..AURA_RINGS).rev() {
-                                lane.spawn((
-                                    TurnAura { id: id.clone(), ring, col },
-                                    Node {
-                                        border_radius: BorderRadius::all(Val::Px(ICON * 2.0)),
-                                        position_type: PositionType::Absolute,
-                                        left: Val::Px(0.0),
-                                        top: Val::Px(0.0),
-                                        width: Val::Px(0.0),
-                                        height: Val::Px(0.0),
-                                        display: Display::None,
-                                        ..default()
-                                    },
-                                    BackgroundColor(Color::NONE),
-                                ));
-                            }
-                            // The charge trail's embers, for when this one is charging faster
-                            // than it should be. Spawned for everybody and hidden until
-                            // wanted: a fighter hops onto the fast rail mid-fight (a guard
-                            // goes up, a haste lands, somebody blazes ahead), and building
-                            // the nodes at that moment would mean rebuilding the whole bar
-                            // on a state change the animator otherwise absorbs.
-                            for seed in 0..EMBERS {
-                                lane.spawn((
-                                    TurnEmber { id: id.clone(), seed, col },
-                                    Node {
-                                        border_radius: BorderRadius::all(Val::Px(ICON)),
-                                        position_type: PositionType::Absolute,
-                                        left: Val::Px(0.0),
-                                        top: Val::Px(0.0),
-                                        width: Val::Px(0.0),
-                                        height: Val::Px(0.0),
-                                        display: Display::None,
-                                        ..default()
-                                    },
-                                    BackgroundColor(Color::NONE),
-                                ));
-                            }
+                            // The FLAME, first so it sits behind its own icon: one quad
+                            // spanning this fighter's charge line, painted by `FireTrail`.
+                            // Hidden until wanted — a fighter hops onto the fast rail
+                            // mid-fight (a guard goes up, a haste lands, somebody blazes
+                            // ahead), and building it at that moment would mean rebuilding
+                            // the whole bar on a state change the animator absorbs.
+                            let mat = fires.add(FireTrail {
+                                params: Vec4::new(0.0, 0.0, hash01(id), 8.0),
+                                tint: Vec4::new(0.0, 0.0, 0.0, 0.0),
+                            });
+                            lane.spawn((
+                                TurnFire { id: id.clone(), mat: mat.clone(), col },
+                                MaterialNode(mat),
+                                Node {
+                                    position_type: PositionType::Absolute,
+                                    left: Val::Px(0.0),
+                                    top: Val::Px(0.0),
+                                    width: Val::Px(0.0),
+                                    height: Val::Px(FIRE_HEIGHT),
+                                    display: Display::None,
+                                    ..default()
+                                },
+                            ));
                             // The halo, BEHIND the icon (spawned first) so a glowing turn
                             // reads as light coming off the sprite rather than a disc over it.
                             lane.spawn((
@@ -712,24 +678,23 @@ pub(crate) fn animate_turn_bar(
             Without<TurnTrail>,
             Without<TurnSpark>,
             Without<TurnGlow>,
-            Without<TurnEmber>,
-            Without<TurnAura>,
+            Without<TurnFire>,
         ),
     >,
     mut trails: Query<
         (&TurnTrail, &mut Node, &mut BackgroundColor),
-        (Without<TurnSpark>, Without<TurnGlow>, Without<TurnEmber>, Without<TurnAura>),
+        (Without<TurnSpark>, Without<TurnGlow>, Without<TurnFire>),
     >,
     mut sparks: Query<
         (&TurnSpark, &mut Node, &mut BackgroundColor),
-        (Without<TurnGlow>, Without<TurnEmber>, Without<TurnAura>),
+        (Without<TurnGlow>, Without<TurnFire>),
     >,
     mut glows: Query<
         (&TurnGlow, &mut Node, &mut BackgroundColor),
-        (Without<TurnEmber>, Without<TurnAura>),
+        Without<TurnFire>,
     >,
-    mut embers: Query<(&TurnEmber, &mut Node, &mut BackgroundColor), Without<TurnAura>>,
-    mut auras: Query<(&TurnAura, &mut Node, &mut BackgroundColor)>,
+    mut fires: Query<(&TurnFire, &mut Node)>,
+    mut fire_mats: ResMut<Assets<FireTrail>>,
 ) {
     let t = time.elapsed_secs();
     let dt = time.delta_secs();
@@ -813,15 +778,16 @@ pub(crate) fn animate_turn_bar(
             bg.0 = bg.0.with_alpha(a);
         }
     }
-    // **THE CHARGE TRAIL.** A fighter charging faster than it should be burns embers off
-    // itself and leaves them behind — the fuzz that says it is FLYING rather than sliding.
+    // **THE FLAME.** One quad per fast fighter, spanning its own charge line; everything
+    // that moves inside it is the shader's noise field (see `turn_fire.wgsl`).
     //
-    // ⚠️ This writes every frame on purpose, against the repo's "only write what moved"
-    // rule: a trail that holds still is not a trail. The cost is bounded by construction —
-    // every ember is `Display::None` for anybody who is not fast, which is the common case
-    // for most of a fight.
-    for (ember, mut node, mut bg) in &mut embers {
-        if lane_of_id(&ember.id) != Lane::Fast {
+    // ⚠️ The MATERIAL is written every frame while a fighter is fast, which is a deliberate
+    // exception to "only write what moved" — a flame that holds still is not a flame. It is
+    // one small uniform per fast fighter rather than the ~47 nodes the particle version
+    // moved, and nothing is touched at all for anybody who is not on the fast rail.
+    for (fire, mut node) in &mut fires {
+        let fast = lane_of_id(&fire.id) == Lane::Fast;
+        if !fast {
             if node.display != Display::None {
                 node.display = Display::None;
             }
@@ -830,58 +796,23 @@ pub(crate) fn animate_turn_bar(
         if node.display != Display::Flex {
             node.display = Display::Flex;
         }
-        let w = line_w(&ember.id);
-        let p = ember_at(t, ember.seed);
-        // Fat where it comes off the body, thinning to a wisp as it falls behind.
-        let size = (2.0 + 6.0 * p * ember_rand(ember.seed, 11).mul_add(0.7, 0.5)).max(1.5);
-        set_px(&mut node.width, size);
-        set_px(&mut node.height, size);
-        set_px(&mut node.left, w * p - size * 0.5);
-        set_px(
-            &mut node.top,
-            rail_y(&ember.id) + ember_wobble(t, ember.seed, p) - size * 0.5,
-        );
-        let heat = ember_heat(p);
-        bg.0 = lighten(ember.col, 0.2 + 0.75 * heat).with_alpha(ember_alpha(p));
-    }
-    // **THE AURA.** A fighter on the fast rail burns with its own line's colour — the visible
-    // half of "this one is charging harder than it should be", so the state reads off the
-    // BODY as well as off which rail it is standing on.
-    for (aura, mut node, mut bg) in &mut auras {
-        if lane_of_id(&aura.id) != Lane::Fast {
-            if node.display != Display::None {
-                node.display = Display::None;
-            }
-            continue;
+        // The quad runs from the head of the rail to a margin PAST the icon, so the hot core
+        // fades out inside its own node instead of being sliced off by the right-hand edge —
+        // and the tail licks back down the line the fighter came along.
+        let body = at_x(&fire.id) + ICON * 0.5;
+        let w = body + FIRE_NOSE;
+        set_px(&mut node.left, 0.0);
+        set_px(&mut node.width, w);
+        set_px(&mut node.top, rail_y(&fire.id) - FIRE_HEIGHT * 0.5);
+        if let Some(mat) = fire_mats.get_mut(&fire.mat).as_mut() {
+            let col = fire.col.to_linear();
+            // The tail is a fixed LENGTH in pixels, converted to this quad's uv: a fighter
+            // near the start of the track has a short line and must not get a stubby flame,
+            // and one at the GO end must not get a six-hundred-pixel bonfire.
+            let fill = (FIRE_TAIL / w.max(1.0)).clamp(0.05, 1.0);
+            mat.params = Vec4::new(t, fill, hash01(&fire.id), body / w.max(1.0));
+            mat.tint = Vec4::new(col.red, col.green, col.blue, 1.0);
         }
-        if node.display != Display::Flex {
-            node.display = Display::Flex;
-        }
-        let (h, back, base) = aura_ring(aura.ring);
-        // The layers breathe out of phase, so the tail licks rather than blinking.
-        let phase = t * 4.0 + aura.ring as f32 * 0.9;
-        let pulse = 0.5 + 0.5 * phase.sin();
-        let back = back * (0.82 + 0.25 * pulse);
-        let head = at_x(&aura.id) + ICON * 0.72;
-        let lift = if up(&aura.id) { bounce_px(t) } else { 0.0 };
-        set_px(&mut node.width, back + h);
-        set_px(&mut node.height, h);
-        set_px(&mut node.left, head - (back + h));
-        set_px(
-            &mut node.top,
-            set.top(lane_of_id(&aura.id)) + ICON_INSET + ICON * 0.5 - h * 0.5 + lift,
-        );
-        // A lozenge: fully round at both ends, so the stack's OUTLINE carries the taper
-        // instead of any one box pretending to be a teardrop.
-        node.border_radius = BorderRadius::all(Val::Px(h * 0.5));
-        // **WHITE AT THE HEAD.** The core layer is nearly white — that is where the energy
-        // is coming off — and the wider, longer layers behind it carry the line's colour.
-        let core = 1.0 - aura.ring as f32 / (AURA_RINGS - 1).max(1) as f32;
-        // ⚠️ The whitening falls off STEEPLY (`core` cubed), so only the head is white-hot
-        // and the tail keeps the line's own colour. A linear falloff washed the whole comet
-        // out to near-white and lost the one thing the colour is there to say — whose it is.
-        bg.0 = lighten(aura.col, 0.12 + 0.8 * core.powi(3) * (0.85 + 0.15 * pulse))
-            .with_alpha(base * (0.8 + 0.2 * pulse));
     }
     for (glow, mut node, mut bg) in &mut glows {
         let lift = if up(&glow.id) { bounce_px(t) } else { 0.0 };
@@ -1086,59 +1017,52 @@ mod tests {
         );
     }
 
-    /// **THE TRAIL STREAMS BACKWARDS.** An ember is thrown off the body and falls behind it,
-    /// which is the whole reason this replaced a lightning bolt: a hard-edged zigzag sits on
-    /// the panel, and only motion says "flying".
+    /// **THE FLAME'S QUAD COVERS ITS OWN ICON AND ITS OWN TAIL.** The hot core is drawn at
+    /// the head, so a quad that stopped at the icon's left edge would put the aura behind
+    /// the sprite instead of on it.
     #[test]
-    fn an_ember_is_thrown_off_the_body_and_falls_behind() {
-        for seed in 0..EMBERS {
-            let a = ember_at(0.0, seed);
-            let b = ember_at(0.05, seed);
-            // It moves back down the line, except across the wrap where it is re-emitted.
-            assert!(b < a || a < 0.1, "ember {seed} did not stream backwards: {a} -> {b}");
-            for k in 0..30 {
-                let p = ember_at(k as f32 * 0.13, seed);
-                assert!((0.0..=1.0).contains(&p), "ember {seed} left its own line at {p}");
+    fn the_flame_reaches_past_the_body_it_burns_off() {
+        for g in [0.0, 0.5, 1.0] {
+            let head = icon_x(g) + ICON;
+            assert!(
+                head >= icon_x(g) + ICON * 0.9,
+                "the flame stopped short of its own icon at gauge {g}"
+            );
+        }
+    }
+
+    /// The tail is a fixed LENGTH, not a fraction: a fighter near the start of the track has
+    /// a short line and must not get a stubby flame, and one at the GO end must not get a
+    /// six-hundred-pixel bonfire.
+    #[test]
+    fn the_tail_is_the_same_length_wherever_the_fighter_is() {
+        let near_start = (FIRE_TAIL / (icon_x(0.08) + ICON)).clamp(0.12, 1.0);
+        let at_go = (FIRE_TAIL / (icon_x(1.0) + ICON)).clamp(0.12, 1.0);
+        assert!(near_start > at_go, "the tail did not stay a fixed length");
+        let px_near = near_start * (icon_x(0.08) + ICON);
+        let px_go = at_go * (icon_x(1.0) + ICON);
+        assert!(
+            (px_near - px_go).abs() < FIRE_TAIL * 0.5,
+            "the drawn tail changed length across the track: {px_near} vs {px_go}"
+        );
+    }
+
+    /// Each fighter's flame flickers on its own clock — one seed shared by the rail would
+    /// have every fast body pulsing in lockstep, which reads as a blinking panel.
+    #[test]
+    fn every_flame_burns_on_its_own_seed() {
+        let ids = ["h1", "h2", "m1", "bog_stinger", "co-op-ally"];
+        for a in ids {
+            assert!((0.0..1.0).contains(&hash01(a)), "{a} seeded out of range");
+            for b in ids {
+                if a != b {
+                    assert!(hash01(a) != hash01(b), "{a} and {b} share a flicker clock");
+                }
             }
         }
     }
 
-    /// **WHITE-HOT AT BOTH ENDS**, the line's own colour in between: brightest where the
-    /// energy comes off the body, and again where it dissipates into a wisp.
-    #[test]
-    fn the_trail_is_hottest_at_the_body_and_at_the_tip() {
-        assert!(ember_heat(1.0) > ember_heat(0.5), "the body end was not the hottest");
-        assert!(ember_heat(0.0) > ember_heat(0.5), "the tail did not whiten as it died");
-        for i in 0..=10 {
-            let p = i as f32 / 10.0;
-            assert!((0.0..=1.0).contains(&ember_heat(p)), "heat left its range at {p}");
-        }
-    }
-
-    /// It fades out as it falls behind — an ember that stayed solid to the end of the line
-    /// draws a hard stripe, which is the thing this shape exists to not be.
-    #[test]
-    fn an_ember_dies_as_it_falls_behind() {
-        assert!(ember_alpha(1.0) > ember_alpha(0.5));
-        assert!(ember_alpha(0.5) > ember_alpha(0.1));
-        assert_eq!(ember_alpha(0.0), 0.0, "the far tail must reach nothing at all");
-    }
-
-    /// Flames SPREAD as they fall behind: the wobble is nothing at the body and widest at
-    /// the tail. A constant one reads as a wavy rope rather than as something burning off.
-    #[test]
-    fn the_flames_spread_as_they_trail() {
-        let near: f32 = (0..EMBERS)
-            .map(|s| ember_wobble(0.37, s, 0.95).abs())
-            .fold(0.0, f32::max);
-        let far: f32 = (0..EMBERS)
-            .map(|s| ember_wobble(0.37, s, 0.05).abs())
-            .fold(0.0, f32::max);
-        assert!(far > near, "the tail did not spread: near {near}, far {far}");
-        assert!(far <= EMBER_SPREAD, "an ember wandered out of its own lane: {far}");
-    }
-
-    /// A spark runs start → icon and wraps, brightening as it arrives: that direction is
+    /// A spark runs start → icon and wraps, brightening as it arrives: that direction is    /// A spark runs start → icon and wraps, brightening as it arrives: that direction is
     /// what says "charging" rather than "draining".
     #[test]
     fn a_spark_runs_toward_the_icon_and_brightens() {

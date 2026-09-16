@@ -2112,22 +2112,35 @@ rather than hard-coded: the bar grows a rail exactly when that panel exists, so 
 would be right solo and wrong in every merge — where the two drew straight through each
 other.
 
-**A FAST FIGHTER BURNS.** It wears a comet — a white-hot head over the sprite tapering to a
-coloured tail behind it — and throws **embers** off itself that fall back down its own line
-and dissipate into white wisps. ⚠️ **Both shapes are stacks of primitives, because a Bevy UI
-node is a rounded rectangle and nothing else.** There is no gradient and no arbitrary shape:
-the comet is seven LOZENGES that get shorter as they reach further back, so the SILHOUETTE
-tapers (one box rounded hard at the front and barely at the back is a pill, and it read
-exactly like a highlighted button), and the fuzz is particles rather than a drawn line.
-⚠️ **Two cuts of a LIGHTNING BOLT were built and thrown away first** — one node per segment
-sized to bridge its neighbour (a jump became a wide tall block: a torn paper ribbon), then a
-run plus a vertical joint per vertex, which drew a clean stepped arc and still read as a
-square wave printed on the panel. The shape was never the problem: a hard-edged line cannot
-say *flying*. Motion can, so the trail streams.
-⚠️ **These two systems write every frame on purpose**, against `UI REDRAWS ON CHANGE`: a
-trail that holds still is not a trail. The cost is bounded by construction — every ember and
-every aura layer is `Display::None` for anyone not on the fast rail, which is most of the
-cast for most of a fight. Before it, the only gauges on
+**A FAST FIGHTER BURNS**, and it is a SHADER — `turn_fire.wgsl`, a `UiMaterial`
+(`turn_order::FireTrail`). A tongue of flame with a white-hot core on the sprite, licking
+backwards down that fighter's own charge line in that line's own colour: an ally burns
+blue-white, a creature red-white, so the colour still says whose it is.
+
+⚠️ **FOUR CUTS OF THIS WERE BUILT OUT OF `Node`s FIRST AND ALL FOUR FAILED THE SAME WAY.** A
+lightning bolt as one node per segment sized to bridge its neighbour (a jump became a wide
+tall block — a torn paper ribbon); the same bolt as runs plus vertical joints (a clean
+stepped arc that read as a square wave printed on the panel); a comet as stacked lozenges (a
+smudge under the sprite); and forty ember particles per fighter (a row of dots). **A UI node
+is an alpha-blended rounded rectangle**, and fire is made of two things a rectangle cannot
+do: a colour that RAMPS through a gradient, and light that ADDS where it overlaps. A
+`UiMaterial` does both — `specialize` sets the additive blend, so the icon underneath is
+never occluded (`sprite_material`'s trap, recorded there three times). It also replaced ~47
+CPU-moved nodes per fast fighter with ONE quad whose motion is a noise field scrolling inside
+it.
+
+⚠️ **Three things that shader got wrong first, all of them invisible to every test.** The
+noise was sampled at four cells across a four-hundred-pixel quad, so the "fire" was an
+airbrushed cone with no structure in it. The vertical falloff ran out to the quad's own edge,
+so the flame was sliced off in straight lines — a searchlight in a box. And the nose and core
+were sized in UV on a quad whose width IS the fighter's charge line (~30px at the start of
+the track, ~600 at the GO end), so the head glow swelled twentyfold as a fighter charged;
+both are in pixels now, off `UiVertexOutput::size`.
+
+⚠️ **The material is written every frame while a fighter is fast**, against
+`UI REDRAWS ON CHANGE`: a flame that holds still is not a flame. It is one small uniform per
+fast fighter, and the quad is `Display::None` for everybody else — most of the cast, most of
+a fight. Before it, the only gauges on
 screen were the four hero bars along the bottom edge and a 5px enemy bar gated behind the
 TOP rung of the Hunter's Predator's Eye, so "who goes next, them or me" — the question a
 player asks every second of a fight — had no answer for either side. ⚠️ **Getting to go does
