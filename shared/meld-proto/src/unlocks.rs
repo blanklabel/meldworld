@@ -338,6 +338,36 @@ pub fn how_to_earn(def: &UnlockDef, owned: &[String]) -> String {
     }
 }
 
+/// The class keys an account can actually field, given what it `owned`.
+///
+/// ONE answer, so a surface that stocks, lists or prices per class cannot disagree with the
+/// party builder about which classes exist for this player. The starting class is implicit
+/// (`starting_unlocks`), so a brand-new account is never handed an empty set — an empty set
+/// is indistinguishable from a bug at every call site that would consume it.
+pub fn classes_owned(owned: &[String]) -> Vec<&'static str> {
+    let mut v: Vec<&'static str> = UNLOCKS
+        .iter()
+        .filter(|d| owned.iter().any(|o| o == d.key))
+        .filter_map(|d| match d.kind {
+            UnlockKind::Class(c) => Some(crate::equipment::class_key(c)),
+            _ => None,
+        })
+        .collect();
+    for k in starting_unlocks() {
+        if let Some(UnlockKind::Class(c)) =
+            UNLOCKS.iter().find(|d| d.key == k).map(|d| d.kind)
+        {
+            let key = crate::equipment::class_key(c);
+            if !v.contains(&key) {
+                v.push(key);
+            }
+        }
+    }
+    v.sort_unstable();
+    v.dedup();
+    v
+}
+
 pub fn view(def: &UnlockDef, owned: &[String]) -> crate::realtime::run::UnlockView {
     let (kind, class_key, slot) = match def.kind {
         UnlockKind::PartySlot(n) => ("party_slot", None, Some(n)),
@@ -682,4 +712,30 @@ mod tests {
         // A class nobody can earn yet has no unlock row, rather than an empty one.
         assert!(unlock_for_class(CharacterClass::Bard).is_none());
     }
+
+    /// **A SHOP THAT STOCKS PER CLASS AND THE PARTY BUILDER MUST AGREE WHICH CLASSES
+    /// EXIST.** `classes_owned` is the one answer, so the Requisition cannot offer a shelf
+    /// for something you cannot field, and cannot leave one out for something you can.
+    #[test]
+    fn the_classes_an_account_owns_include_the_one_it_started_with() {
+        // A brand-new account owns nothing it has earned and must still have a class: an
+        // empty set is indistinguishable from a bug at every call site that consumes it.
+        let fresh = classes_owned(&[]);
+        assert!(!fresh.is_empty(), "a new account fields no class at all");
+        // …and an earned class joins it rather than replacing it.
+        let owned: Vec<String> = vec!["class_hunter".into()];
+        let after = classes_owned(&owned);
+        for k in &fresh {
+            assert!(after.contains(k), "earning a class dropped the starting one");
+        }
+        assert!(after.len() > fresh.len(), "earning a class added nothing");
+        // Every key it returns is a real class key, or a shop stocks a shelf for nobody.
+        for k in after {
+            assert!(
+                crate::equipment::class_from_key(k).is_some(),
+                "{k} is not a class the equipment rules know"
+            );
+        }
+    }
+
 }

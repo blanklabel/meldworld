@@ -4577,10 +4577,10 @@ impl Battle {
         // Timed ability statuses: expire the stale, then tick the DoTs
         // (poison/burn burn a max-HP fraction each of the victim's turns,
         // typed — so an immunity/absorption profile applies to the DoT too).
-        let now = self.tick_count;
-        // An AFFLICTION does not wear off — it holds until something cures it, so a poisoned
-        // party spends a turn on the cure instead of waiting out a timer. A BOON still fades,
-        // or the opening turns of a fight would be the whole fight.
+        //
+        // The sweep also runs every tick for everybody (see `expire_statuses`); it is kept
+        // here because a turn can arrive from a landing CHANNEL as well as from the gauge,
+        // and this is the one point both paths pass through before any effect is rolled.
         self.expire_statuses(i);
         let dots: Vec<String> = self.fighters[i]
             .timed_statuses

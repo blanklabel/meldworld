@@ -5448,6 +5448,52 @@ only the things that can't be class-gated.
     target's OWN turns (`explorer_snare_turns`) rather than to a tick deadline, because
     creature `speed_stat` is fixed while a hero's climbs with Dex.
 
+- [x] **GR-10 — Gear you can see, change in the field, and buy for a class you have
+  earned.** Six complaints from play that are one story: the equipment system is reachable
+  only by knowing where to look, and half of what it offers does nothing when pressed.
+  - *A Vault equip never reached a dive already under way.* The loop refreshes
+    `gear_bonuses` from `pending_gear_load`, and that queue was pushed to in exactly two
+    places — a player connecting and a run forming. Every Vault write lives on the HTTP
+    side, which had no way to reach the loop at all, so equipping a piece while standing in
+    the maze wrote Postgres, re-rendered the row as worn, and changed nothing about the hero
+    holding it until the next dive. `meld_api::GearDirty` is the note HTTP leaves and the
+    loop collects — the mirror of `WorldBoard`, and a handoff rather than a query for the
+    same reason: the loop must never wait on a web request. Equip, unequip, equip-best and
+    **repair** all leave it; a piece mended off zero starts contributing again exactly as an
+    equip does.
+  - *Equipment had no screen of its own.* A hero's kit was reachable three columns deep,
+    under *Party → that hero → Equipment*, which answers "what is this hero wearing" and
+    cannot answer "what do I own" — so a player who has just picked a sword up has no screen
+    that will admit it exists until they guess which of four heroes to open. The menu has an
+    **Equipment** section now, listing every piece from both sources with its durability, its
+    source and who is wearing it. Deliberately reading-only: putting something on needs a
+    hero's class and a hero's slot, so it stays where the hero is.
+  - *A broken piece looked exactly like a wearable one.* The server has always refused one;
+    the picker drew it bright, gold and pressable. It is dim and says why, ahead of the class
+    rules — brokenness is a fact about the PIECE, so it holds even where the class rules give
+    up, and it is the one refusal there the player can act on.
+  - *"Equip best" gave no sign it had fired.* Dressing a hero is a round-trip, and its most
+    common outcome — *nothing spare beats what this hero already wears* — changes nothing on
+    screen. The press now answers immediately and locally, and the server's own words
+    overwrite it; the panel's notice line also FADES (it was drawn on `!is_empty()`, so a
+    message from minutes ago sat under the button and every press looked like the last one).
+  - *Repair had no screen and no way to choose.* The smith's bench held ONE piece at a time,
+    cycled with left/right, mended by `[P]` — a key printed on the side you were already on.
+    The Forge has two sides now, **Workshop** and **Repair**, and the repair side lists every
+    mendable piece with its durability, worst first, because the list exists to be triaged.
+    Picked-then-confirmed like every other row that spends chits, since a repair's cost
+    scales with the points missing and that is exactly the number the detail column shows.
+  - *The Requisition stocked only the classes you were already fielding*, which is the
+    `AD-7` trap — offering the answer to somebody who no longer needs it — for the one
+    counter whose job is getting a player who died with nothing back out of the gate. It
+    stocks every class the ACCOUNT has earned now, through `unlocks::classes_owned` so it
+    and the party builder cannot disagree about which classes exist. Each row says **who can
+    use it** (with one shelf per class, the class is the only thing separating two otherwise
+    identical rows), the shelf is no longer truncated to four, and a purchase **equips in one
+    step** when a hero of that class is on the roster — through `set_equipped`, so every
+    legality rule still applies and a refusal leaves the piece in the Vault rather than
+    lying about having dressed anybody.
+
 - [ ] **UX-1 — Last City minimap & compass (town-only).** A minimap and compass
   **for Last City itself** so players can navigate the hub — locate the districts
   (Vault-Deep, Market, Forge/Alembic, Bounty Board, Drill Yard, Vanguard Wall),

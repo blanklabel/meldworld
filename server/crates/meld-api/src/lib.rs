@@ -22,7 +22,7 @@ use meld_proto::limits;
 use meld_proto::materials as mat;
 use uuid::Uuid;
 
-pub use tokens::{Sessions, Tickets, WorldBoard};
+pub use tokens::{GearDirty, Sessions, Tickets, WorldBoard};
 
 /// Shared HTTP state. Cheap to clone (pool handle + Arc stores).
 #[derive(Clone)]
@@ -43,6 +43,9 @@ pub struct ApiState {
     pub shop_prices: Vec<(String, i64)>,
     /// SC-9 — the game loop's published occupancy snapshot, for `GET /v1/worlds`.
     pub worlds: WorldBoard,
+    /// Where a Vault equip leaves word that a player's gear moved, so a dive already in
+    /// progress picks it up on the next tick instead of on the next dive.
+    pub gear_dirty: GearDirty,
 }
 
 pub fn router(state: ApiState) -> Router {
@@ -1530,6 +1533,9 @@ async fn repair(
                 .db
                 .add_skill_xp(player_id, "forging", st.balance.forge.forge_xp_per_craft)
                 .await;
+            // A piece mended off ZERO starts contributing again, so this changes what the
+            // party is wearing exactly as an equip does.
+            st.gear_dirty.mark(&player_id);
             Ok((
                 StatusCode::OK,
                 Json(serde_json::json!({
@@ -1689,13 +1695,22 @@ async fn requisition_stock(
     headers: HeaderMap,
 ) -> Result<Response, ApiReject> {
     let player_id = authenticate(&st, &headers)?;
+    // **STOCK FOR EVERY CLASS THE ACCOUNT HAS EARNED, not just the four it happens to be
+    // fielding.** Stocking the live roster alone means the counter has nothing for a class
+    // until you have already taken it into the maze undressed — which is backwards for the
+    // one shop whose job is to get a player who died with nothing back out of the gate. It
+    // is also the `AD-7`-shaped trap the party-slot ladder fell into: offering the answer
+    // only to somebody who no longer needs it.
+    //
+    // ⚠️ Read through `unlocks::classes_owned` rather than by filtering the roster, so this
+    // and the party builder cannot disagree about which classes exist for this player.
+    let owned = st.db.get_unlocks(player_id).await.map_err(ApiReject::internal)?;
     let classes = st.db.get_hero_classes(player_id).await.map_err(ApiReject::internal)?;
-    // Stock what the caller's own roster can actually wear: a counter full of gear for
-    // classes you do not field is a catalogue, not a shop. A fresh roster reports its
-    // slots as empty (they take the class default), and an empty shop is useless to
-    // exactly the player this counter exists for — so fall back to the starting class.
     let mut stocked: std::collections::BTreeSet<&str> =
-        classes.iter().map(|c| c.as_str()).filter(|c| !c.is_empty()).collect();
+        meld_proto::unlocks::classes_owned(&owned).into_iter().collect();
+    // Anything the roster is actually wearing stays stocked too, so a class fielded by a
+    // route the unlock registry does not know about still has a shelf.
+    stocked.extend(classes.iter().map(|c| c.as_str()).filter(|c| !c.is_empty()));
     if stocked.is_empty() {
         stocked.insert(DEFAULT_CLASS_KEY);
     }
@@ -1741,6 +1756,14 @@ struct RequisitionBuyReq {
     slot: String,
     #[serde(default)]
     class_key: Option<String>,
+    /// Put it straight ON this hero, in the same call.
+    ///
+    /// Buying and equipping were two round-trips with a Vault screen between them, which
+    /// for the counter that exists to get an undressed player back out of the gate is six
+    /// pieces bought and then six pieces found again in a list. The purchase already knows
+    /// which class the piece is for; the only thing it was missing was which hero.
+    #[serde(default)]
+    hero_slot: Option<i32>,
 }
 
 /// `POST /v1/vendors/requisition/buy` — chits for a plain piece of gear, atomically.
@@ -1762,23 +1785,43 @@ async fn requisition_buy(
     // No materials — a counter takes coin. `forge_gear` with an empty material list is
     // exactly "spend chits, insert one row", atomically.
     match st.db.forge_gear(player_id, &[], price, &piece).await {
-        Ok(true) => Ok((
-            StatusCode::OK,
-            Json(serde_json::json!({
-                "bought": piece.name,
-                "gear_id": piece.gear_id,
-                "slot": piece.slot,
-                "class_key": piece.class_key,
-                "insurance": drop.insurance,
-                "stats": {
-                    "atk": piece.atk_bonus,
-                    "def": piece.def_bonus,
-                    "spd": piece.spd_bonus,
-                },
-                "spent_chits": price,
-            })),
-        )
-            .into_response()),
+        Ok(true) => {
+            // ONE STEP. The equip goes through `set_equipped` like every other, so every
+            // legality rule still applies and a refusal is reported rather than assumed —
+            // a counter that claimed to have dressed a hero it had not would be worse than
+            // one that made you do it yourself.
+            let worn = match req.hero_slot {
+                Some(slot) if (0..st.party_size_per_player).contains(&slot) => {
+                    matches!(
+                        st.db.set_equipped(player_id, piece.gear_id, Some(slot)).await,
+                        Ok(EquipResult::Ok)
+                    )
+                }
+                _ => false,
+            };
+            if worn {
+                // …and a dive already under way is told, exactly as a Vault equip is.
+                st.gear_dirty.mark(&player_id);
+            }
+            Ok((
+                StatusCode::OK,
+                Json(serde_json::json!({
+                    "bought": piece.name,
+                    "gear_id": piece.gear_id,
+                    "slot": piece.slot,
+                    "class_key": piece.class_key,
+                    "insurance": drop.insurance,
+                    "stats": {
+                        "atk": piece.atk_bonus,
+                        "def": piece.def_bonus,
+                        "spd": piece.spd_bonus,
+                    },
+                    "spent_chits": price,
+                    "equipped_hero_slot": worn.then_some(req.hero_slot).flatten(),
+                })),
+            )
+                .into_response())
+        }
         Ok(false) => Err(ApiReject::new(
             StatusCode::CONFLICT,
             "conflict",
@@ -2147,6 +2190,9 @@ async fn equip_best(
             let _ = st.db.set_equipped(player_id, g.gear_id, None).await;
         }
     }
+    if !changed.is_empty() {
+        st.gear_dirty.mark(&player_id);
+    }
     Ok((
         StatusCode::OK,
         Json(serde_json::json!({
@@ -2186,11 +2232,17 @@ async fn set_equipped(
     let gid = Uuid::parse_str(&gear_id)
         .map_err(|_| ApiReject::new(StatusCode::NOT_FOUND, "not_found", "Unknown gear."))?;
     match st.db.set_equipped(player_id, gid, target).await {
-        Ok(EquipResult::Ok) => Ok((
-            StatusCode::OK,
-            Json(serde_json::json!({ "equipped_hero_slot": target })),
-        )
-            .into_response()),
+        Ok(EquipResult::Ok) => {
+            // The dive already under way reads its bonuses from the loop's own copy, and
+            // the loop only reloads when something tells it to. Without this the piece is
+            // worn in Postgres and on the row, and on nobody.
+            st.gear_dirty.mark(&player_id);
+            Ok((
+                StatusCode::OK,
+                Json(serde_json::json!({ "equipped_hero_slot": target })),
+            )
+                .into_response())
+        }
         Ok(EquipResult::NotFound) => Err(ApiReject::new(
             StatusCode::NOT_FOUND,
             "not_found",

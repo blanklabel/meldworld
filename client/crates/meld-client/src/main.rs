@@ -2332,6 +2332,16 @@ pub(crate) struct CraftData {
     pub bench: usize,
     /// The last thing the workshop said — a made item, or why it refused.
     pub last: String,
+    /// Whether the counter is turned around to the REPAIR side.
+    ///
+    /// Repair had no screen of its own: the smith's bench held ONE piece at a time, cycled
+    /// with left/right, and `[P]` mended whatever happened to be sitting on it. So the
+    /// question a player actually arrives with — *which of my things are worn down, and
+    /// which should I spend on* — could only be answered by pressing a key through the
+    /// whole Vault one piece at a time, and the key was printed on the side you were
+    /// already on. It is a side of the counter now, listing every piece that can take a
+    /// repair with its durability, which is the same shape the Broker's Buy/Sell pair has.
+    pub repair_tab: bool,
 }
 
 /// The slots the Forge half cycles through, in loadout order.
