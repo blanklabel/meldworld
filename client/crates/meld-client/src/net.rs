@@ -1204,9 +1204,15 @@ impl Net {
         self.0.borrow_mut().fetch_gear_shop();
     }
 
-    /// Buy one plain piece of gear for chits, then refresh the Vault.
-    pub fn buy_gear(&self, slot: String, class_key: String) {
-        self.0.borrow_mut().buy_gear(slot, class_key);
+    /// Buy one plain piece of gear for chits and put it straight on `hero_slot`, then
+    /// refresh the Vault.
+    ///
+    /// The hero is optional because a purchase for a class nobody is currently fielding is
+    /// still a purchase — it goes to the Vault and waits — but when there IS a hero of that
+    /// class the counter dresses them in the same call rather than sending the player to a
+    /// second screen to find the thing they just bought.
+    pub fn buy_gear(&self, slot: String, class_key: String, hero_slot: Option<usize>) {
+        self.0.borrow_mut().buy_gear(slot, class_key, hero_slot);
     }
 
     /// Kick off an authenticated GET of the account's saved party loadouts (PT-2).
@@ -1973,14 +1979,17 @@ impl Inner {
 
     /// POST a gear purchase, then re-read the Vault so the chits and the new piece the
     /// player sees are the server's answer rather than the client's arithmetic.
-    fn buy_gear(&mut self, slot: String, class_key: String) {
+    fn buy_gear(&mut self, slot: String, class_key: String, hero_slot: Option<usize>) {
         if self.session_token.is_empty() || slot.is_empty() {
             return;
         }
         let base = self.base.clone();
         let token = self.session_token.clone();
-        let body = serde_json::to_vec(&json!({ "slot": slot, "class_key": class_key }))
-            .unwrap_or_default();
+        let mut payload = json!({ "slot": slot, "class_key": class_key });
+        if let Some(h) = hero_slot {
+            payload["hero_slot"] = json!(h as i32);
+        }
+        let body = serde_json::to_vec(&payload).unwrap_or_default();
         let mut req = ehttp::Request::post(format!("{base}/v1/vendors/requisition/buy"), body);
         req.headers.insert("Authorization", format!("Bearer {token}"));
         req.headers.insert("Content-Type", "application/json");

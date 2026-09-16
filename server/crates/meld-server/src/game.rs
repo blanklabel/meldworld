@@ -451,12 +451,17 @@ async fn run_db_writer(db: Db, balance: Arc<Balance>, mut rx: mpsc::UnboundedRec
 }
 
 /// Spawn the game loop; returns a handle for the gateway.
-pub fn spawn(balance: Arc<Balance>, db: Db, worlds: meld_api::WorldBoard) -> GameHandle {
+pub fn spawn(
+    balance: Arc<Balance>,
+    db: Db,
+    worlds: meld_api::WorldBoard,
+    gear_dirty: meld_api::GearDirty,
+) -> GameHandle {
     let (tx, rx) = mpsc::channel(1024);
     let (db_tx, db_rx) = mpsc::unbounded_channel::<DbWrite>();
     tokio::spawn(run_db_writer(db.clone(), balance.clone(), db_rx));
     tokio::spawn(async move {
-        GameState::new(balance, db, db_tx, worlds).run(rx).await;
+        GameState::new(balance, db, db_tx, worlds, gear_dirty).run(rx).await;
     });
     GameHandle { tx }
 }
@@ -4823,6 +4828,12 @@ struct GameState {
     /// read. Write-only from here: it is a snapshot for a browser, never a thing the loop
     /// asks a question of.
     board: meld_api::WorldBoard,
+    /// Where the HTTP side leaves word that a player's Vault gear moved. Read-only from
+    /// here, and the OPPOSITE direction to `board` above: that is this loop publishing for
+    /// a web request to read, this is a web request leaving a note for this loop to
+    /// collect. Drained into `pending_gear_load` each tick, so a Vault equip reaches a dive
+    /// already under way through exactly the same reload a fresh connection uses.
+    gear_dirty: meld_api::GearDirty,
 }
 
 impl GameState {
@@ -4831,6 +4842,7 @@ impl GameState {
         db: Db,
         db_writes: mpsc::UnboundedSender<DbWrite>,
         board: meld_api::WorldBoard,
+        gear_dirty: meld_api::GearDirty,
     ) -> Self {
         GameState {
             balance,
@@ -4852,6 +4864,7 @@ impl GameState {
             pending_hero_load: Vec::new(),
             db_writes,
             board,
+            gear_dirty,
         }
     }
 
@@ -5154,6 +5167,11 @@ impl GameState {
             // harvest XP and renames are fire-and-forget and go to `run_db_writer`
             // off this task, so the tick never blocks on those round-trips.
             self.expire_heats();
+            // Anything the Vault changed over HTTP since the last tick queues the same
+            // reload a fresh connection does. Collected immediately before the flush that
+            // consumes it, so a note left mid-tick is never carried a whole tick further
+            // than it has to be.
+            self.pending_gear_load.extend(self.gear_dirty.drain());
             self.flush_gear_loads().await;
             self.flush_skill_loads().await;
             self.flush_smith_jobs().await;
@@ -16045,7 +16063,8 @@ mod sharding_tests {
         let (tx, _rx) = mpsc::unbounded_channel();
         // `Db` is only touched by the async flush paths; nothing here reaches Postgres.
         let db = Db::connect("memory://sharding", 4).await.unwrap();
-        let mut g = GameState::new(balance(), db, tx, meld_api::WorldBoard::new());
+        let mut g =
+            GameState::new(balance(), db, tx, meld_api::WorldBoard::new(), meld_api::GearDirty::new());
         let (mut rxs, mut ids) = (Vec::new(), Vec::new());
         for i in 0..n {
             let pid = format!("p{i}");
@@ -16407,6 +16426,37 @@ mod sharding_tests {
         assert_eq!(quiet.players, 1);
         assert!(busy.live && quiet.live);
         assert_eq!(busy.queued, 0);
+    }
+
+    /// **A VAULT EQUIP REACHES A DIVE ALREADY UNDER WAY.** The loop refreshes a player's
+    /// `gear_bonuses` from `pending_gear_load`, and that queue was pushed to in exactly two
+    /// places — a player connecting and a run forming. Every Vault write lives on the HTTP
+    /// side, which had no way to reach this task at all, so equipping a piece while standing
+    /// in the maze wrote Postgres, re-rendered the row as worn, and changed nothing about
+    /// the hero holding it until the next dive. Reported from play as gear not being
+    /// equippable in the field.
+    ///
+    /// The note is drained immediately before the flush that consumes it, so this asserts
+    /// the JOIN between the two rather than either half: a mark left by HTTP has to become
+    /// a queued reload without anybody sending the loop a message.
+    #[tokio::test]
+    async fn a_vault_equip_reaches_a_dive_already_under_way() {
+        let (mut g, _rx, ids) = router(1).await;
+        g.dive_as(vec![ids[0].clone()], &ids[0], false, Some(41));
+        g.pending_gear_load.clear();
+
+        // What the HTTP handler does, and the whole of what it does: leave a name.
+        let uid = Uuid::now_v7();
+        g.gear_dirty.mark(&uid);
+        g.pending_gear_load.extend(g.gear_dirty.drain());
+
+        assert!(
+            g.pending_gear_load.contains(&uid.to_string()),
+            "a Vault equip left no reload for the dive already running"
+        );
+        // …and it is taken exactly once, or a single equip reloads that player forever.
+        let again = g.gear_dirty.drain();
+        assert!(again.is_empty(), "the note outlived the tick that collected it");
     }
 
     /// A queued group is visible on the board, because "this world is full and N are

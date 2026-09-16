@@ -147,3 +147,47 @@ impl WorldBoard {
         self.inner.read().unwrap().clone()
     }
 }
+
+/// **WHOSE VAULT GEAR CHANGED OVER HTTP AND WHOSE LIVE DIVE HAS NOT BEEN TOLD.**
+///
+/// The game loop refreshes a player's `gear_bonuses` from a queue it drains each tick
+/// (`pending_gear_load`), and that queue was pushed to in exactly two places: a player
+/// connecting, and a run forming. The Vault's equip/unequip/equip-best/repair all live on
+/// the HTTP side, which had no way to reach the loop at all — so equipping a piece while
+/// standing in the maze wrote Postgres, re-rendered the row as worn, and changed nothing
+/// whatsoever about the hero holding it until the NEXT dive. Reported from play as gear
+/// not being equippable in the field: the only honest reading of a row that lights up,
+/// says it is worn, and does nothing.
+///
+/// The direction is the mirror of [`WorldBoard`]: that one is the loop publishing a
+/// snapshot for HTTP to read, this one is HTTP leaving a note for the loop to collect.
+/// Both are deliberately a handoff rather than a query, for the same reason — the loop is
+/// the single task that owns all ephemeral state and must never wait on a web request.
+///
+/// ⚠️ **It carries a player id and nothing else, which is what keeps it safe.** The note
+/// says only *this player's gear is stale*; the loop then re-reads the Vault itself,
+/// through the same `equipped_gear_bonuses` path a fresh connection uses. Sending the
+/// CHANGE instead would put a second copy of the equip rules on the HTTP side, and the
+/// two would drift the way `GearBonus`'s two definitions already do.
+#[derive(Clone, Default)]
+pub struct GearDirty {
+    inner: Arc<Mutex<std::collections::HashSet<String>>>,
+}
+
+impl GearDirty {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Note that `player_id`'s equipped set moved. Cheap and idempotent: a player who
+    /// re-equips six times between two ticks is reloaded once.
+    pub fn mark(&self, player_id: &uuid::Uuid) {
+        self.inner.lock().unwrap().insert(player_id.to_string());
+    }
+
+    /// Take every player noted since the last drain. Called by the loop.
+    pub fn drain(&self) -> Vec<String> {
+        let mut g = self.inner.lock().unwrap();
+        g.drain().collect()
+    }
+}

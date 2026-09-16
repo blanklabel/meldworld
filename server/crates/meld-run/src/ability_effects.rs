@@ -153,11 +153,13 @@ pub fn effect_line(key: &str, balance: &Balance) -> String {
         "snare" => join(&[
             dmg(b.explorer_snare_mult),
             turn(b.explorer_snare_drain),
+            format!("its gauge drags for {} of its turns", b.explorer_snare_turns),
             adrenaline(adrenaline_cost(key, balance).unwrap_or(0), balance),
         ]),
         "pin_the_prey" => join(&[
             dmg(b.pin_the_prey_mult),
             turn(b.pin_the_prey_drain),
+            format!("every gauge drags for {} of its own turns", b.explorer_snare_turns),
             adrenaline(adrenaline_cost(key, balance).unwrap_or(0), balance),
         ]),
         "frenzy" => join(&[

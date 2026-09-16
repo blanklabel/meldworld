@@ -1900,7 +1900,18 @@ pub(crate) fn menu_keyboard(
     }
 }
 
-/// Mouse/touch: pressing a command row queues it for the active hero.
+/// Mouse/touch: pressing a command row queues it for the active hero, and HOVERING one
+/// moves the cursor onto it.
+///
+/// **THE DESCRIPTION FOLLOWS THE CURSOR, SO THE CURSOR HAS TO FOLLOW THE MOUSE.** The panel
+/// already draws the registry's prose and the magnitudes the server resolved for whichever
+/// row `menu.cursor` is on — and the cursor could only be moved with the arrow keys, so a
+/// player reading the menu with a mouse got the description of a row their pointer was
+/// nowhere near. Reported from play as having no idea what any ability does.
+///
+/// ⚠️ It is the SAME cursor rather than a second hover-cursor beside it, which is what keeps
+/// the highlight, the tooltip and [Enter] from disagreeing about which row is being asked
+/// about. A second piece of state here is the "two hand-written lists" trap one screen over.
 pub(crate) fn menu_click(
     backpack: Res<RunBackpack>,
     roster: Res<crate::PartyRoster>,
@@ -1910,9 +1921,19 @@ pub(crate) fn menu_click(
     mut tutorial_run: ResMut<TutorialRun>,
 ) {
     let mut pressed = None;
+    let mut hovered = None;
     for (interaction, row) in &rows {
-        if *interaction == Interaction::Pressed {
-            pressed = Some(row.index);
+        match *interaction {
+            Interaction::Pressed => pressed = Some(row.index),
+            Interaction::Hovered => hovered = Some(row.index),
+            Interaction::None => {}
+        }
+    }
+    // A press wins: it carries its own cursor move below, and the pointer is over the row
+    // it is pressing anyway.
+    if let Some(index) = hovered.filter(|_| pressed.is_none()) {
+        if menu.cursor != index {
+            menu.cursor = index;
         }
     }
     if let Some(index) = pressed {
@@ -3020,7 +3041,7 @@ pub(crate) fn update_condition_rims(
 /// The statuses that actually drag the ATB gauge — the server's own list (`web`/`chill`/
 /// `bind`), so the snail and the tint agree with what the engine is doing.
 pub(crate) fn is_slowed(statuses: &[String]) -> bool {
-    statuses.iter().any(|s| matches!(s.as_str(), "web" | "chill" | "bind"))
+    statuses.iter().any(|s| matches!(s.as_str(), "web" | "chill" | "bind" | "snared"))
 }
 
 /// The ink width of each badge glyph, in px at the badge's 18px font size.
@@ -3057,6 +3078,24 @@ fn status_icon_ink(glyph: &str) -> f32 {
 /// should be centred.
 const STATUS_BADGE: f32 = 30.0;
 const STATUS_BADGE_BORDER: f32 = 1.5;
+
+/// Gap between two badges in a body's condition row.
+const STATUS_BADGE_GAP: f32 = 3.0;
+
+/// How many conditions a body draws before the row is cut short.
+///
+/// A cap rather than no cap because the row is centred on the sprite and grows in BOTH
+/// directions: past this it is wider than the creature it belongs to and starts overlapping
+/// its neighbours in a five-body pack, which is the point at which showing everything stops
+/// telling you anything. The order `status_effects` returns is debuffs first, so what
+/// survives the cut is what is being done TO the body.
+const STATUS_BADGES_MAX: usize = 5;
+
+/// How wide a row of `n` badges is, gaps included.
+fn badge_row_width(n: usize) -> f32 {
+    let n = n.max(1) as f32;
+    n * STATUS_BADGE + (n - 1.0) * STATUS_BADGE_GAP
+}
 
 /// Where a glyph's text node goes so its INK sits centred on the badge.
 fn status_icon_left(glyph: &str) -> f32 {
@@ -3167,39 +3206,55 @@ pub(crate) fn render_status_icons(
                 else {
                     continue;
                 };
-                let (glyph, color, _label) = effects[phase % effects.len()];
-                p.spawn((
-                    Node {
-                        border_radius: BorderRadius::all(Val::Px(15.0)),
-                        position_type: PositionType::Absolute,
-                        left: Val::Px(head.x - 15.0),
-                        top: Val::Px(head.y - 30.0),
-                        width: Val::Px(30.0),
-                        height: Val::Px(30.0),
-                        align_items: AlignItems::Center,
-                        justify_content: JustifyContent::Center,
-                        border: UiRect::all(Val::Px(1.5)),
-                        ..default()
-                    },
-                    BorderColor::all(color),
-                    BackgroundColor(glass::GLASS),
-                ))
-                .with_children(|b| {
-                    b.spawn((
-                        Text::new(glyph),
-                        TextFont { font_size: FontSize::Px(18.0), ..default() },
-                        TextColor(color),
-                        // Placed, not centred. `left` puts the INK's centre on the badge's
-                        // centre (see `status_icon_ink`); vertical needs nothing, because
-                        // measured against the font every one of these glyphs already has
-                        // its ink centred on the line box — the 2px of "optical centring"
-                        // that once lived here was itself the thing pushing them off.
-                        Node {
-                            position_type: PositionType::Absolute,
-                            left: Val::Px(status_icon_left(glyph)),
-                            ..default()
-                        },
-                    ));
+                // **EVERY CONDITION AT ONCE.** Cycling one badge at a time makes a body
+                // carrying two look exactly like a body carrying one — a target that was
+                // blazed and then misdirected reads as only misdirected, which is precisely
+                // the pair a player sets up on purpose and then has to verify. The row is
+                // centred on the sprite's head so it still reads as belonging to that body.
+                let shown = &effects[..effects.len().min(STATUS_BADGES_MAX)];
+                let row_w = badge_row_width(shown.len());
+                p.spawn(Node {
+                    position_type: PositionType::Absolute,
+                    left: Val::Px(head.x - row_w * 0.5),
+                    top: Val::Px(head.y - STATUS_BADGE - 6.0),
+                    width: Val::Px(row_w),
+                    flex_direction: FlexDirection::Row,
+                    justify_content: JustifyContent::Center,
+                    column_gap: Val::Px(STATUS_BADGE_GAP),
+                    ..default()
+                })
+                .with_children(|row| {
+                    for (glyph, color, _label) in shown.iter().copied() {
+                        row.spawn((
+                            Node {
+                                border_radius: BorderRadius::all(Val::Px(STATUS_BADGE / 2.0)),
+                                width: Val::Px(STATUS_BADGE),
+                                height: Val::Px(STATUS_BADGE),
+                                align_items: AlignItems::Center,
+                                justify_content: JustifyContent::Center,
+                                border: UiRect::all(Val::Px(STATUS_BADGE_BORDER)),
+                                ..default()
+                            },
+                            BorderColor::all(color),
+                            BackgroundColor(glass::GLASS),
+                        ))
+                        .with_children(|b| {
+                            b.spawn((
+                                Text::new(glyph),
+                                TextFont { font_size: FontSize::Px(18.0), ..default() },
+                                TextColor(color),
+                                // Placed, not centred. `left` puts the INK's centre on the
+                                // badge's centre (see `status_icon_ink`); vertical needs
+                                // nothing, because measured against the font every one of
+                                // these glyphs already has its ink centred on the line box.
+                                Node {
+                                    position_type: PositionType::Absolute,
+                                    left: Val::Px(status_icon_left(glyph)),
+                                    ..default()
+                                },
+                            ));
+                        });
+                    }
                 });
             }
         });

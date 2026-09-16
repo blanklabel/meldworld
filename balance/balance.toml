@@ -315,8 +315,35 @@ crit_mult = 1.8                  # damage multiplier on a crit
 # something's weakness is the moment it seizes up.
 recoil_gauge_loss = 0.10
 recoil_ticks = 5                 # how long the knocked-back tell rides the wire (~0.5s)
-pinned_ticks = 5                 # ~0.5s frozen, comfortably inside the guard below
-# ⚠️ **ONE GUARD COVERS BOTH, and it has to stay WIDER than `pinned_ticks`.** Gauge denial
+# **PUSHED PAST THE START OF THE TRACK COSTS A WHOLE TURN.** A recoil that bottoms the gauge
+# out has nothing left to take, so the overflow is paid in TIME instead: the fighter is held
+# at zero for as long as it would have taken it to charge from empty, and its icon sits
+# parked at the left of the turn bar for the whole of it. That is what makes reaching the
+# start of the track worth more than the ground the last recoil took, rather than being a
+# damage multiplier the player can only infer from numbers.
+#
+# ⚠️ A fraction, never a tick count: the hold is derived from the fighter's OWN
+# `speed_stat`, so a whole turn means the same thing for a slow creature and a fast hero.
+# 1.0 is exactly one charge from empty. [TUNABLE]
+stagger_turn_fraction = 1.0
+# ⚠️ **THIS IS THE LARGEST SINGLE PIECE OF GAUGE DENIAL IN THE ENGINE, and it is bounded by
+# arithmetic rather than by a guard.** A recoil takes nothing from an already-empty gauge, so
+# a staggered fighter cannot be re-staggered while it is held — the hold cannot chain into
+# the unbounded lock that `flinch_guard_ticks` exists to prevent, because the second knock
+# finds no gauge to take. Anything added here that CAN land on an empty gauge needs its own
+# guard.
+# **A HOLD IS AS LONG AS THE BLOW WAS HEAVY.** `pinned_ticks` was a flat 5 whatever landed,
+# so a graze and the biggest hit of the fight held a creature for exactly as long — which is
+# the same "a rule the player can only infer" failure the stagger tell below fixes, one step
+# earlier. The hold is interpolated across the fraction of the target's OWN max HP that blow
+# took, so it reads as the weight of what just hit it rather than as a constant.
+#
+# ⚠️ The MAX is what has to stay under `flinch_guard_ticks`, not the min — see the guard's
+# own note below. [TUNABLE]
+pinned_ticks_min = 3             # ~0.3s: a blow that found the weakness but barely landed
+pinned_ticks_max = 10            # ~1.0s, still inside the guard below
+pinned_hp_fraction_full = 0.25   # a blow taking this much of max HP holds for the full max
+# ⚠️ **ONE GUARD COVERS BOTH, and it has to stay WIDER than `pinned_ticks_max`.** Gauge denial
 # in this engine composed into a 464-hero-turn lock once; these are small and frequent, which
 # is the same bug from the other direction. The guard is what bounds four heroes branded into
 # one creature's weakness to one effect per window — and while it is wider than the hold, a
@@ -331,7 +358,14 @@ flinch_guard_ticks = 12          # ~1.2s at the 100ms tick
 # A turn that deals no damage at all (a heal, a guard, a buff) neither builds nor breaks it.
 # [TUNABLE]
 surge_streak = 5
-surge_gauge = 1.0                # the catch-up fills this much gauge: 1.0 = act NOW
+# ⚠️ **THE CATCH-UP IS A SPRINT, NOT A TELEPORT.** The reward is a RATE: the fighter charges
+# at `surge_haste_mult` until its own next turn, so it still gets there first and the player
+# can watch it run. Adding gauge outright instead would move the icon from wherever it stands
+# to the GO end within one frame, which reads as the turn bar breaking rather than as
+# something being earned. It is the same argument that makes `defend_haste_mult` and every
+# slow in this engine rates — a rate can no more skip a gauge than it can lock one — and the
+# turn bar's fast lane already draws a fighter moving quicker than it should be. [TUNABLE]
+surge_haste_mult = 6.0           # the catch-up charges this much faster until it acts
 # **A GUARD CAN ANSWER.** While BRACED, the first blow that lands on you may be answered
 # with a free swing at whoever threw it.
 #
@@ -502,7 +536,14 @@ hunter_power_strike_cost = 40        # Power Strike: Adrenaline spent (dmg uses 
 hunter_second_wind_cost = 35         # Second Wind: Adrenaline spent (heal uses skill_heal_fraction)
 hunter_snare_cost = 30               # Snare: Adrenaline spent
 explorer_snare_mult = 1.0              # Snare: dmg = atk*mult - def
-explorer_snare_drain = 0.5             # Snare: enemy ATB gauge -= this on hit
+# **A SNARE IS A LASTING SLOW, NOT A ONE-OFF SHOVE.** The gauge steal is a nudge; what the
+# row actually buys is `snared`, which drags the target's fill rate for a counted number of
+# ITS OWN turns. Counted in turns rather than ticks for the same reason `gauge_guard_turns`
+# is: creature `speed_stat` is a fixed 40-125 while a hero's climbs with Dex, so a tick
+# deadline is several turns for one fighter and half a turn for another, and "slowed for five
+# turns" is the only phrasing that means one thing to a player. [TUNABLE]
+explorer_snare_drain = 0.1             # Snare: enemy ATB gauge -= this on hit
+explorer_snare_turns = 5               # …and its fill rate drags for this many of its turns
 hunter_frenzy_cost = 80              # Frenzy: Adrenaline spent
 explorer_frenzy_mult = 3.5             # Frenzy: dmg = atk*mult - def
 # The deep rungs (49, 100). Both UPGRADE a row the Hunter already has and cost exactly
@@ -653,9 +694,15 @@ explorer_mark_damage_mult = 1.2   # damage taken by a blazed target, from anyone
 explorer_mark_ticks = 60          # ~6s at the 100ms tick — the party has to follow the trail
 # Field Dressing (Traveler, L2): a modest self/ally heal as a fraction of max HP.
 explorer_field_dressing_fraction = 0.12
-# Read the Ground (Scout, L5): damage plus an ATB-gauge steal.
-explorer_read_ground_mult = 1.1
-explorer_read_ground_drain = 0.5
+# Misdirection (Scout, L5): an ordinary blow plus a small ATB-gauge steal.
+#
+# ⚠️ **ITS DAMAGE IS DELIBERATELY PLAIN, and the drain is deliberately small.** What this row
+# buys is `distracted` — the creature swings wide and the party may leave — so paying it a
+# damage multiplier AND half the target's gauge on top makes the class's control button also
+# its best attack, and there is then no reason to press anything else. The mult is 1.0 so the
+# tell is the condition rather than the number. [TUNABLE]
+explorer_read_ground_mult = 1.0
+explorer_read_ground_drain = 0.1
 # MISDIRECTION (was Read the Ground): the creature is DISTRACTED. A dazzled foe swings wide — the
 # bonus is added to whoever it attacks — and a party that cannot be pinned down can leave,
 # so it lifts the flee chance too. Blind/dazzle in other games; here it is the mapping

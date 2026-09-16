@@ -496,6 +496,7 @@ fn main() {
         .add_systems(
             OnEnter(Screen::City),
             (
+                city::city_frame_camera,
                 city_hud,
                 city_scene,
                 despawn::<BattleActor>,
@@ -929,6 +930,11 @@ fn main() {
         // counters read as dead was precisely that hover had been solved per-screen and
         // the city was never one of the screens. See `glass::ChipBase`.
         .add_systems(Update, glass::repaint_hovered_chips)
+        // …and every long list scrolls, from one system, for exactly the same reason. A node
+        // that can scroll gets scrolling the day it is spawned rather than the day somebody
+        // wires it per screen — which is how every list in town came to be clipped at the
+        // panel edge with no way to reach the rest. See `glass::scroll_hovered`.
+        .add_systems(Update, glass::scroll_hovered)
         .add_plugins(announce_plugin)
         .run();
 }
@@ -2024,6 +2030,19 @@ fn hero_name_at(roster: &PartyRoster, names: &AccountHeroNames, i: usize) -> Opt
 /// something the server would allow, or vice versa (GR-5).
 pub(crate) fn gear_block_reason(item: &GearLine, hero_class: Option<&str>) -> Option<String> {
     use meld_proto::equipment::{self as eq, Legality};
+    // **A BROKEN PIECE CANNOT BE WORN, AND THE ROW HAS TO SAY SO BEFORE IT IS PRESSED.** The
+    // server has always refused one (`set_equipped` re-checks brokenness, and `equip-best`
+    // filters on `max_durability > 0`), so a bright, gold, pressable row for a piece at zero
+    // durability is the anvil's `[F] forge from nothing refined` one counter over: the only
+    // way to learn it cannot work is to press it and watch nothing happen.
+    //
+    // ⚠️ It is answered BEFORE the class check, and before the `?` that gives up on an
+    // unknown class. Brokenness is a fact about the PIECE rather than about this hero, so it
+    // is true on every row the piece appears in — and it is the one refusal here the player
+    // can actually act on, because repair is a thing they can go and buy.
+    if item.max_durability <= 0 {
+        return Some("broken - repair it".into());
+    }
     let class = eq::class_from_key(hero_class?)?;
     let verdict = eq::check_equip(
         class,
@@ -2319,6 +2338,16 @@ pub(crate) struct CraftData {
     pub bench: usize,
     /// The last thing the workshop said — a made item, or why it refused.
     pub last: String,
+    /// Whether the counter is turned around to the REPAIR side.
+    ///
+    /// Repair had no screen of its own: the smith's bench held ONE piece at a time, cycled
+    /// with left/right, and `[P]` mended whatever happened to be sitting on it. So the
+    /// question a player actually arrives with — *which of my things are worn down, and
+    /// which should I spend on* — could only be answered by pressing a key through the
+    /// whole Vault one piece at a time, and the key was printed on the side you were
+    /// already on. It is a side of the counter now, listing every piece that can take a
+    /// repair with its durability, which is the same shape the Broker's Buy/Sell pair has.
+    pub repair_tab: bool,
 }
 
 /// The slots the Forge half cycles through, in loadout order.

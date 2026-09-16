@@ -22,6 +22,7 @@ use super::*;
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum MenuSection {
     Items,
+    Equipment,
     Materials,
     Party,
     Map,
@@ -30,8 +31,9 @@ pub(crate) enum MenuSection {
 }
 
 impl MenuSection {
-    pub(crate) const ALL: [MenuSection; 6] = [
+    pub(crate) const ALL: [MenuSection; 7] = [
         MenuSection::Items,
+        MenuSection::Equipment,
         MenuSection::Materials,
         MenuSection::Party,
         MenuSection::Map,
@@ -42,6 +44,7 @@ impl MenuSection {
     pub(crate) fn label(self) -> &'static str {
         match self {
             MenuSection::Items => "Party Inventory",
+            MenuSection::Equipment => "Equipment",
             MenuSection::Materials => "Materials",
             MenuSection::Party => "Party",
             MenuSection::Map => "Map",
@@ -419,6 +422,9 @@ pub(crate) fn column_len(
         (Some(MenuSection::Party), None) => party_lines(roster, names).len(),
         (Some(MenuSection::Items), None) => inventory_potions(backpack).len().max(1),
         (Some(MenuSection::Materials), None) => inv.materials.len().max(1),
+        // Every piece the player holds, worn or spare, in one list. Reading only — putting
+        // something ON belongs to the hero it goes on, which is the Party column.
+        (Some(MenuSection::Equipment), None) => 0,
         // Return to town, the two field stations, then ONE PER STRUCTURE from the registry.
         // This was a literal `3`, so the keyboard could never reach a "Raise a ..." row —
         // every buildable in `meld_proto::structures` was mouse-only, silently. A count
@@ -456,6 +462,10 @@ pub(crate) fn render_main_menu(
         Res<Notice>,
         Res<UnlocksRes>,
         Res<BountyData>,
+        // Only to age the notice line out. Deliberately NOT in the rebuild guard below:
+        // the clock changes every frame, and keying a redraw off it is exactly the
+        // rebuild-on-frame cost the guard exists to avoid.
+        Res<Time>,
     ),
     wa: Option<Res<WorldAssets>>,
     ground: Option<Res<crate::minimap::MinimapTiles>>,
@@ -477,8 +487,8 @@ pub(crate) fn render_main_menu(
     {
         return;
     }
-    let (perks, explored, notice, unlocks, bounties) =
-        (&*reads.0, &*reads.1, &*reads.2, &*reads.3, &*reads.4);
+    let (perks, explored, notice, unlocks, bounties, clock) =
+        (&*reads.0, &*reads.1, &*reads.2, &*reads.3, &*reads.4, &*reads.5);
     for e in &existing {
         commands.entity(e).despawn();
     }
@@ -596,6 +606,9 @@ pub(crate) fn render_main_menu(
                                     });
                                 }
                             }
+                        }
+                        MenuSection::Equipment => {
+                            equipment_ledger(col, &inv.gear, &run_gear.gear, &roster, &hero_names);
                         }
                         MenuSection::Materials => {
                             if inv.materials.is_empty() {
@@ -1023,6 +1036,7 @@ pub(crate) fn render_main_menu(
                             depth,
                             menu.cursor,
                             notice,
+                            clock.elapsed_secs_f64(),
                         );
                     }
                 });
@@ -1309,6 +1323,7 @@ fn equipment_pane(
     depth: u8,
     cursor: usize,
     notice: &Notice,
+    now: f64,
 ) {
     let class = (!class_key.is_empty()).then_some(class_key);
     match picker.category {
@@ -1346,8 +1361,8 @@ fn equipment_pane(
             // Whatever the last Vault write said, at the press's own elbow. A refusal that
             // only reaches the overworld HUD behind this panel is a refusal nobody reads,
             // and "nothing happened" is indistinguishable from a dead button.
-            if !notice.text.is_empty() {
-                col.spawn(glass::text(notice.text.clone(), 14.0, glass::WARN));
+            if let Some(text) = notice.live(now) {
+                col.spawn(glass::text(text.to_string(), 14.0, glass::WARN));
             }
         }
         Some(cat) => {
@@ -1364,6 +1379,104 @@ fn equipment_pane(
             }
             col.spawn((Button, PickerBackButton, glass::chip(false))).with_children(|b| {
                 b.spawn(glass::text("Back", 18.0, glass::DIM));
+            });
+        }
+    }
+}
+
+/// **EVERY PIECE YOU HOLD, IN ONE PLACE.**
+///
+/// A hero's equipment has always been reachable — three columns deep, under
+/// *Party → that hero → Equipment* — which answers "what is this hero wearing" and cannot
+/// answer "what do I own". Reported from play as equipment not showing up anywhere: a
+/// player who has just picked a sword up off the floor has no screen that will admit it
+/// exists until they guess which of four heroes to open.
+///
+/// So this is the LEDGER, and it is deliberately reading-only. Putting something on is a
+/// decision about one hero — it needs a hero's class to judge legality and a hero's slot to
+/// fill — so it stays in the Party column where the hero is. Here you find out what you
+/// have and who has it; there you act on it.
+///
+/// Both sources are listed together and the row SAYS which it is, because they behave
+/// differently and a player cannot otherwise tell: a `run` piece is this dive's loot and is
+/// gone if you die, while a vault piece is banked. Grouped by slot rather than by source,
+/// though — "what can go in my main hand" is the question being asked.
+fn equipment_ledger(
+    col: &mut ChildSpawnerCommands,
+    vault: &[GearLine],
+    run_loot: &[GearLine],
+    roster: &PartyRoster,
+    names: &AccountHeroNames,
+) {
+    let all: Vec<(&GearLine, &str)> = vault
+        .iter()
+        .map(|g| (g, "vault"))
+        .chain(run_loot.iter().map(|g| (g, "run")))
+        .collect();
+    if all.is_empty() {
+        col.spawn(glass::text("(you are carrying no equipment)", 16.0, glass::DIM));
+        return;
+    }
+    col.spawn(glass::text(
+        "everything you hold - equip it on a hero from the Party column",
+        14.0,
+        glass::DIM,
+    ));
+    let worn_by = |g: &GearLine| -> Option<String> {
+        let slot = g.equipped_hero_slot?;
+        Some(
+            crate::hero_name_at(roster, names, slot)
+                .unwrap_or_else(|| format!("hero {}", slot + 1)),
+        )
+    };
+    for cat in GEAR_CATEGORIES {
+        let mut rows: Vec<&(&GearLine, &str)> =
+            all.iter().filter(|(g, _)| g.slot == cat).collect();
+        if rows.is_empty() {
+            continue;
+        }
+        // Worn first, then by name: the pieces in play are the ones being looked for.
+        rows.sort_by(|(a, _), (b, _)| {
+            b.equipped_hero_slot
+                .is_some()
+                .cmp(&a.equipped_hero_slot.is_some())
+                .then_with(|| a.name.cmp(&b.name))
+        });
+        col.spawn(glass::text(gear_category_label(cat), 15.0, glass::WARN));
+        for (g, source) in rows {
+            // A broken piece cannot be worn by anybody, so it reads as unavailable here
+            // exactly as it does in the picker — the same rule, said in the same words.
+            let broken = g.max_durability <= 0;
+            let who = worn_by(g);
+            let tail = match (broken, &who) {
+                (true, _) => "  BROKEN".to_string(),
+                (false, Some(name)) => format!("  worn by {name}"),
+                (false, None) => "  spare".to_string(),
+            };
+            let tint = if broken {
+                Color::srgb(0.55, 0.5, 0.5)
+            } else if who.is_some() {
+                glass::TITLE
+            } else {
+                glass::TEXT
+            };
+            col.spawn(glass::inset(false)).with_children(|b| {
+                b.spawn(glass::text(
+                    format!("{}  +{}{tail}", g.name, gear_slot_stat(g)),
+                    17.0,
+                    tint,
+                ));
+                // The source and the durability are the two facts that decide whether a
+                // piece is worth building around, and neither is in the name.
+                b.spawn(glass::text(
+                    format!(
+                        "   {source}   {}/{}",
+                        g.max_durability.max(0),
+                        g.base_max_durability
+                    ),
+                    13.0,
+                    glass::DIM,
+                ));
             });
         }
     }
@@ -1439,6 +1552,8 @@ pub(crate) fn main_menu_input(
     unlocks: Res<UnlocksRes>,
     mut rename: ResMut<HeroRename>,
     net: NonSend<NetRes>,
+    mut notice: ResMut<Notice>,
+    clock: Res<Time>,
 ) {
     if overlay.kind != Some(OverlayKind::Inventory) || rename.slot.is_some() {
         return;
@@ -1555,6 +1670,9 @@ pub(crate) fn main_menu_input(
         && picker.category.is_none()
     {
         net.0.equip_best(menu.member);
+        // The key and the row are one control, so they have to answer alike — see
+        // `equip_best_click`.
+        notice.say("dressing this hero from the spare gear...", clock.elapsed_secs_f64());
     }
     // [A] jumps straight to the focused hero's abilities — the thing a player opens
     // the menu to read.
@@ -1765,13 +1883,27 @@ pub(crate) fn use_item_click(
 /// Clicks on the nav rows and the per-hero Equipment/Abilities buttons. The gear
 /// rows themselves are handled by the equip flow's own click systems.
 /// Tapping the Equipment pane's "Equip best" row — the touch twin of [B].
+///
+/// **THE PRESS ANSWERS BEFORE THE SERVER DOES.** Dressing a hero is a round-trip — the
+/// server owns every legality rule and does the picking — so between the click and the
+/// reply there is nothing on screen that changed, and when the reply is *"nothing spare
+/// beats what this hero already wears"* there is nothing on screen that changed afterwards
+/// either. Reported from play as not being able to tell whether Equip best had been
+/// clicked: a control whose most common outcome is invisible is indistinguishable from a
+/// dead one, which is `UX-17`'s rule about pressing something and learning nothing.
+///
+/// So the click says so itself, immediately and locally, and the server's own words
+/// overwrite it a moment later through the same notice line.
 pub(crate) fn equip_best_click(
     rows: Query<(&Interaction, &EquipBestButton), Changed<Interaction>>,
     net: NonSend<NetRes>,
+    mut notice: ResMut<Notice>,
+    clock: Res<Time>,
 ) {
     for (interaction, btn) in &rows {
         if *interaction == Interaction::Pressed {
             net.0.equip_best(btn.member);
+            notice.say("dressing this hero from the spare gear...", clock.elapsed_secs_f64());
         }
     }
 }

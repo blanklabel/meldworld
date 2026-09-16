@@ -92,7 +92,7 @@ pub(crate) struct District {
 pub(crate) const CITY_DISTRICTS: &[District] = &[
     District {
         label: "The Threshold",
-        purpose: "leave town: start a run",
+        purpose: "check your kit, then dive",
         x: 0.0,
         z: -19.0,
         radius: 5.5,
@@ -1084,7 +1084,9 @@ pub(crate) fn city_input(
     // No `UnlocksRes` here any more: its only reader was the unreachable Drill-Yard branch
     // this system returns above (see the note further down). `pick` rides this tuple because
     // the system is at Bevy's 16-param ceiling.
-    (tutorial, mut pick): (Res<Tutorial>, ResMut<CounterPick>),
+    // `roster` rides here for the same reason `pick` does: the Requisition dresses the hero
+    // it just bought for, so the commit has to know who is on the roster.
+    (tutorial, mut pick, roster): (Res<Tutorial>, ResMut<CounterPick>, Res<crate::PartyRoster>),
     mut predive: ResMut<tutorial_predive::TutorialPreDive>,
 ) {
     let (hunts, bounties) = (&mut boards.0, &boards.1);
@@ -1245,6 +1247,7 @@ pub(crate) fn city_input(
                     hunts,
                     &shop_selling,
                     &mut pick,
+                    &roster,
                 );
                 return;
             }
@@ -1486,6 +1489,51 @@ pub(crate) fn city_move(
 
 /// Orbit-follow the avatar with the HD-2D camera (mirrors `hd2d_follow`).
 #[allow(clippy::type_complexity)]
+/// The framing the town is composed for, remembered the first time it is seen.
+///
+/// The city and the overworld share ONE `hd2d::Look`, and the overworld lets the player drag
+/// the camera around — so you arrive in town at whatever angle you happened to leave the
+/// maze at, and, because `city_move` takes its basis from `look.cam_yaw`, WASD points
+/// somewhere different every time too. Reported from play as the camera angle always being
+/// different on the way back.
+///
+/// ⚠️ **Captured rather than hardcoded**, so a `LOOK_FILE` survey camera still wins. A
+/// constant here would quietly override every `MELD_CITY` screenshot the moment somebody
+/// pointed the look file at the plaza — which is the whole reason that file exists.
+#[derive(Resource, Clone, Copy)]
+pub(crate) struct CityView {
+    yaw: f32,
+    pitch: f32,
+    dist: f32,
+}
+
+/// Frame the town the way it was first framed.
+///
+/// The city is an AUTHORED space — its districts, its coast and its skyline are composed for
+/// a view — so arriving at it should look the same every time, the way walking into a room
+/// does. Turning the camera WHILE you are there is still yours; it is only the arrival that
+/// is fixed, and the next arrival resets it again.
+pub(crate) fn city_frame_camera(
+    mut commands: Commands,
+    mut look: ResMut<hd2d::Look>,
+    saved: Option<Res<CityView>>,
+) {
+    match saved {
+        // Seen before: put the camera back where the town is meant to be looked at from.
+        Some(v) => {
+            look.cam_yaw = v.yaw;
+            look.cam_pitch = v.pitch;
+            look.cam_dist = v.dist;
+        }
+        // First arrival IS the composition, whatever set it — the default, or a look file.
+        None => commands.insert_resource(CityView {
+            yaw: look.cam_yaw,
+            pitch: look.cam_pitch,
+            dist: look.cam_dist,
+        }),
+    }
+}
+
 pub(crate) fn city_camera(
     look: Res<hd2d::Look>,
     time: Res<Time>,
@@ -1615,7 +1663,12 @@ pub(crate) fn render_city(
 /// The name alone is scenery to anyone who has not been told what a Drill Yard is.
 pub(crate) fn district_prompt(d: &District) -> String {
     let key = match d.action {
-        CityAction::Dive => "[E]/[ENTER] run",
+        // **THE LAST THING YOU DO BEFORE DIVING IS CHECK YOUR KIT, so the gate says where
+        // it is.** The party-and-gear screen is `[V]` from anywhere in town, which is a key
+        // you have to already know — and standing at the gate about to leave is exactly the
+        // moment a player wants it and the one place nothing mentioned it. Reported from
+        // play as there being no way to change gear or fill a bag before departing.
+        CityAction::Dive => "[V] party & gear    [E]/[ENTER] run",
         CityAction::Vault => "[E] open",
         CityAction::Shop => "[E] browse",
         CityAction::Craft => "[E] work",
@@ -2505,7 +2558,13 @@ pub(crate) fn shop_view(shop: &ShopData, inv: &InventoryData, selling: bool) -> 
     }
     // The Requisition's plain gear shares the counter, on the keys after the items:
     // "spend chits so the next dive is easier" is one errand, not two.
-    for (i, g) in shop.gear.iter().take(GEAR_ROWS).enumerate() {
+    // **EVERY PIECE THE COUNTER STOCKS, not the first four.** The Requisition stocks one
+    // shelf per class the account has EARNED, so a player with four classes unlocked has
+    // far more than `GEAR_ROWS` on offer and the rest were simply not drawn — a shop that
+    // silently hides most of its stock is the catalogue problem from the other direction.
+    // The numeric key runs out long before the rows do; past it the row is mouse-only,
+    // which is what every long list in this game already is.
+    for (i, g) in shop.gear.iter().enumerate() {
         let stat = [("atk", g.atk), ("def", g.def), ("spd", g.spd)]
             .into_iter()
             .find(|(_, v)| *v > 0)
@@ -2517,18 +2576,21 @@ pub(crate) fn shop_view(shop: &ShopData, inv: &InventoryData, selling: bool) -> 
             .map(|(n, v)| format!("+{v} {n}"))
             .collect::<Vec<_>>()
             .join("  ");
+        // WHO CAN USE IT, on the row rather than only in the detail. With one shelf per
+        // unlocked class the same slot appears several times over, so the class is the
+        // only thing separating two rows that are otherwise the same words and the same
+        // price — and a player cannot pick between them by reading the detail of one.
+        let who = crate::overworld::class_display(&g.class_key);
+        let key = if i < GEAR_ROWS { (ITEM_ROWS + i + 1).to_string() } else { String::new() };
         let row = CounterRow::new(
-            (ITEM_ROWS + i + 1).to_string(),
-            format!("{}{} {}c{}", g.name, stat, g.price_chits, afford(g.price_chits)),
+            key,
+            format!("{}{}  {who}  {}c{}", g.name, stat, g.price_chits, afford(g.price_chits)),
         )
         .of(g.slot.clone())
         .saying(vec![
-            format!(
-                "Plain {} for a {}. No affixes.",
-                g.slot.replace('_', " "),
-                g.class_key.replace('_', " ")
-            ),
+            format!("Plain {} for a {who}. No affixes.", g.slot.replace('_', " ")),
             if stats.is_empty() { "No bonuses.".into() } else { stats },
+            "Bought straight onto that class's hero when you have one.".into(),
         ])
         // One piece at a time: a second copy of the same plain item is not a decision.
         .priced(g.price_chits, 1)
@@ -2972,16 +3034,25 @@ pub(crate) fn craft_view(craft: &CraftData, inv: &InventoryData) -> CounterView 
         subtitle: "brew, smelt, forge, mend".into(),
         // Legends, not tabs: all three sections are in `main` at once, so there is nothing
         // to turn around to. `UX-12` left these spawned as dead buttons.
+        // The two SIDES are real tabs; the workbench headings beside them stay legends,
+        // because all three of those sections are in `main` at once and there is nothing to
+        // turn around to (`UX-12` left them spawned as dead buttons).
         nav: vec![
-            CounterTab::legend("Recipes  up/down", true),
+            CounterTab::tab("Workshop", !craft.repair_tab, "workshop"),
+            CounterTab::tab("Repair", craft.repair_tab, "repair_tab"),
+            CounterTab::legend("Recipes  up/down", false),
             CounterTab::legend("Anvil  S C F", false),
-            CounterTab::legend("Bench  left/right R P", false),
+            CounterTab::legend("Bench  left/right R", false),
         ],
         footer: vec!["ENTER craft   [E]/[ESC] leave".into()],
         ..default()
     };
     if !craft.loaded {
         v.detail = vec!["The Forge & Alembic are warming up...".into()];
+        return v;
+    }
+    if craft.repair_tab {
+        repair_side(&mut v, craft, inv);
         return v;
     }
     let held = |kind: &str| -> i32 {
@@ -3197,6 +3268,79 @@ pub(crate) fn bench_services(g: &GearLine) -> (bool, bool) {
         ins != Some(meld_proto::enums::Insurance::Ephemeral),
         ins == Some(meld_proto::enums::Insurance::Insured),
     )
+}
+
+/// **EVERY PIECE THAT CAN TAKE A REPAIR, WITH WHAT IS LEFT OF IT.**
+///
+/// This is the question a player walks up to a forge holding — *which of my things are worn
+/// down* — and the bench could not answer it: one piece at a time, cycled with left/right,
+/// mended by a key printed on the side you were already on. Reported from play as not being
+/// able to select what to repair.
+///
+/// Sorted by how much is MISSING rather than by name, because the list exists to be
+/// triaged: the piece that has lost the most is the one the chits are for, and a piece at
+/// full durability is on the list only so its absence is not mistaken for a bug.
+///
+/// ⚠️ Picked-then-confirmed like every other row that spends chits, rather than mending on
+/// the press. That is the counter's own rule and it is the right one here: a repair's cost
+/// scales with the points missing, so the number the player needs is exactly the one the
+/// detail column shows between the pick and the Confirm.
+fn repair_side(v: &mut CounterView, craft: &CraftData, inv: &InventoryData) {
+    let pieces = repairable_gear(inv);
+    if pieces.is_empty() {
+        v.rows.push(
+            CounterRow::new("", "nothing in the Vault takes a repair").dim(),
+        );
+        v.detail = vec![
+            "A repair buys back the max durability a hero's death chews off.".into(),
+            "Only INSURED gear erodes, so only insured gear can be mended.".into(),
+        ];
+        return;
+    }
+    for g in &pieces {
+        let missing = (g.base_max_durability - g.max_durability).max(0);
+        let row = CounterRow::new(
+            "",
+            format!(
+                "{}  {}/{} dur{}",
+                g.name,
+                g.max_durability.max(0),
+                g.base_max_durability,
+                if g.max_durability <= 0 { "   BROKEN" } else { "" },
+            ),
+        )
+        .of(g.slot.clone())
+        .saying(vec![
+            format!("Tier {} {}.", g.tier, g.slot.replace('_', " ")),
+            format!("{missing} points of max durability missing."),
+            if g.max_durability <= 0 {
+                "Broken: it cannot be worn until it is mended.".into()
+            } else {
+                "Mending buys back what a death chewed off.".into()
+            },
+        ])
+        .committed_by("Repair")
+        .doing("repair_one");
+        // Nothing to buy back is not a refusal worth hiding — the row stays readable and
+        // only the commit stands down, the same as every other short row on this counter.
+        v.rows.push(if missing > 0 { row } else { row.dim() });
+    }
+    if v.detail.is_empty() {
+        v.detail = vec![format!("{} piece(s) a smith can mend.", pieces.len())];
+    }
+    let _ = craft;
+}
+
+/// The Vault pieces a repair can be spent on, worst first.
+///
+/// ONE answer, asked by the repair side that lists them and by the commit that acts on the
+/// row — a second copy would be two orderings, and the piece the player picked would not be
+/// the piece that got mended.
+pub(crate) fn repairable_gear(inv: &InventoryData) -> Vec<&GearLine> {
+    let mut v: Vec<&GearLine> =
+        inv.gear.iter().filter(|g| bench_services(g).1).collect();
+    v.sort_by_key(|g| g.max_durability - g.base_max_durability);
+    v
 }
 
 /// The piece the bench cursor sits on, or None when the Vault is empty.
@@ -3442,11 +3586,16 @@ mod shop_tests {
         let hunts = HuntBoardData { loaded: true, hunts: vec![], ..Default::default() };
         let bounties = BountyData { loaded: true, ..Default::default() };
         // Every action a tab may name, and the arm of `counter_click` that answers it.
-        const HANDLED: [&str; 4] = ["buy", "sell", "hunts", "bounties"];
+        const HANDLED: [&str; 6] =
+            ["buy", "sell", "hunts", "bounties", "workshop", "repair_tab"];
+        let mending = CraftData { loaded: true, repair_tab: true, ..Default::default() };
         for (name, v) in [
             ("shop/buy", shop_view(&shop, &inv, false)),
             ("shop/sell", shop_view(&shop, &inv, true)),
             ("forge", craft_view(&craft, &inv)),
+            // The repair side draws its own nav, and a side reachable only from the other
+            // side is exactly the shape that shipped the Den unreachable.
+            ("forge/repair", craft_view(&mending, &inv)),
             ("wall", wall_view(&board)),
             ("hunts", hunts_view(&hunts)),
             ("bounties", bounty_view(&bounties)),
@@ -3461,19 +3610,19 @@ mod shop_tests {
                 }
             }
         }
-        // The Forge and the Wall have nothing to turn around to, so they carry no chips.
-        for (name, v) in
-            [("forge", craft_view(&craft, &inv)), ("wall", wall_view(&board))]
-        {
-            assert!(
-                v.nav.iter().all(|t| t.action.is_none()),
-                "{name} has a pressable nav chip and nowhere for it to go"
-            );
-        }
+        // The Wall has nothing to turn around to, so it carries no chips at all.
+        assert!(
+            wall_view(&board).nav.iter().all(|t| t.action.is_none()),
+            "the wall has a pressable nav chip and nowhere for it to go"
+        );
         // ⚠️ **THE DEN HAD NO DOOR**: the hunts side showed no Bounties chip at all, so
         // the board's other half was reachable only by knowing `[B]`. A counter with two
-        // sides names both from either side.
-        for (name, v) in [("hunts", hunts_view(&hunts)), ("bounties", bounty_view(&bounties))] {
+        // sides names both from either side — which is why the Forge is checked from BOTH
+        // of its own sides here and not just from the one it opens on.
+        for (name, v) in [
+            ("hunts", hunts_view(&hunts)),
+            ("bounties", bounty_view(&bounties)),
+        ] {
             for want in ["hunts", "bounties"] {
                 assert!(
                     v.nav.iter().any(|t| t.action == Some(want)),
@@ -3481,6 +3630,77 @@ mod shop_tests {
                 );
             }
         }
+        for (name, v) in
+            [("forge/workshop", craft_view(&craft, &inv)), ("forge/repair", craft_view(&mending, &inv))]
+        {
+            for want in ["workshop", "repair_tab"] {
+                assert!(
+                    v.nav.iter().any(|t| t.action == Some(want)),
+                    "{name} cannot be left for the {want} side by mouse"
+                );
+            }
+        }
+        // …and exactly one of them reads as the side you are on, or the nav stops being
+        // able to say where you are.
+        assert!(
+            craft_view(&craft, &inv).nav.iter().any(|t| t.on && t.action == Some("workshop")),
+            "the workshop side does not read as current"
+        );
+        assert!(
+            craft_view(&mending, &inv).nav.iter().any(|t| t.on && t.action == Some("repair_tab")),
+            "the repair side does not read as current"
+        );
+    }
+
+    /// **THE REPAIR SIDE ANSWERS THE QUESTION A PLAYER ARRIVES WITH.** The bench held ONE
+    /// piece at a time, cycled with left/right, mended by a key printed on the side you were
+    /// already on — so "which of my things are worn down" could only be answered by walking
+    /// the whole Vault one keypress at a time. Reported from play as not being able to
+    /// select what to repair.
+    #[test]
+    fn the_repair_side_lists_every_mendable_piece_worst_first() {
+        let craft = CraftData { loaded: true, repair_tab: true, ..Default::default() };
+        let mut inv = InventoryData::default();
+        let piece = |name: &str, ins: &str, dur: i32, base: i32| GearLine {
+            gear_id: name.into(),
+            name: name.into(),
+            slot: "chest".into(),
+            class_key: String::new(),
+            insurance: ins.into(),
+            family: String::new(),
+            armor_weight: "heavy".into(),
+            tier: 1,
+            equipped_hero_slot: None,
+            max_durability: dur,
+            base_max_durability: base,
+            atk_bonus: 0,
+            def_bonus: 2,
+            spd_bonus: 0,
+            affixes: Vec::new(),
+            unique_key: String::new(),
+            set_key: String::new(),
+            reroll_cost: 3,
+        };
+        inv.gear = vec![
+            piece("Scuffed", "insured", 38, 40),
+            piece("Wrecked", "insured", 0, 40),
+            // Neither of these erodes, so neither can be mended — listing them would be
+            // offering a service that cannot be bought.
+            piece("Plain", "standard", 40, 40),
+            piece("Fleeting", "ephemeral", 10, 40),
+        ];
+        let text = craft_view(&craft, &inv).flat();
+        assert!(text.contains("Wrecked"), "the broken piece is missing: {text}");
+        assert!(text.contains("Scuffed"), "a worn piece is missing: {text}");
+        assert!(!text.contains("Plain"), "standard gear never erodes: {text}");
+        assert!(!text.contains("Fleeting"), "ephemeral gear burns on the walk home: {text}");
+        // WORST FIRST: the list exists to be triaged, and the piece that has lost the most
+        // is the one the chits are for.
+        let order = repairable_gear(&inv);
+        assert_eq!(order[0].name, "Wrecked", "the most damaged piece was not first");
+        // …and the durability is on the row, which is the whole question being asked.
+        assert!(text.contains("0/40") && text.contains("38/40"), "{text}");
+        assert!(text.contains("BROKEN"), "a broken piece did not say so: {text}");
     }
 
     /// Only a counter that PRICES something has an amount to step, which is why
@@ -5934,22 +6154,31 @@ pub(crate) fn counter_click(
     mut hunts: ResMut<HuntBoardData>,
     board: Res<VanguardBoardData>,
     bounties: Res<BountyData>,
-    rows: Query<(&Interaction, &CounterRowButton), Changed<Interaction>>,
-    navs: Query<(&Interaction, &CounterNavButton), Changed<Interaction>>,
-    closes: Query<(&Interaction, &CounterCloseButton), Changed<Interaction>>,
-    qtys: Query<(&Interaction, &CounterQtyButton), Changed<Interaction>>,
-    commits: Query<(&Interaction, &CounterCommitButton), Changed<Interaction>>,
-    cancels: Query<(&Interaction, &CounterCancelButton), Changed<Interaction>>,
+    // The six chip queries travel as ONE param: this system is at Bevy's 16-param ceiling,
+    // the same reason `city_input` above groups its boards.
+    chips: (
+        Query<(&Interaction, &CounterRowButton), Changed<Interaction>>,
+        Query<(&Interaction, &CounterNavButton), Changed<Interaction>>,
+        Query<(&Interaction, &CounterCloseButton), Changed<Interaction>>,
+        Query<(&Interaction, &CounterQtyButton), Changed<Interaction>>,
+        Query<(&Interaction, &CounterCommitButton), Changed<Interaction>>,
+        Query<(&Interaction, &CounterCancelButton), Changed<Interaction>>,
+    ),
     mut pick: ResMut<CounterPick>,
+    roster: Res<crate::PartyRoster>,
 ) {
-    for (interaction, _) in &closes {
+    let (rows, navs, closes, qtys, commits, cancels) =
+        (&chips.0, &chips.1, &chips.2, &chips.3, &chips.4, &chips.5);
+    let (rows, navs, closes, qtys, commits, cancels) =
+        (rows.iter(), navs.iter(), closes.iter(), qtys.iter(), commits.iter(), cancels.iter());
+    for (interaction, _) in closes {
         if *interaction == Interaction::Pressed {
             pick.clear();
             city.close_counters();
             return;
         }
     }
-    for (interaction, btn) in &navs {
+    for (interaction, btn) in navs {
         if *interaction != Interaction::Pressed {
             continue;
         }
@@ -5962,6 +6191,8 @@ pub(crate) fn counter_click(
         match action {
             Some("buy") => shop_selling.0 = false,
             Some("sell") => shop_selling.0 = true,
+            Some("workshop") => craft.repair_tab = false,
+            Some("repair_tab") => craft.repair_tab = true,
             Some("hunts") => city.bounty_tab = false,
             Some("bounties") => {
                 city.bounty_tab = true;
@@ -5975,20 +6206,20 @@ pub(crate) fn counter_click(
         pick.clear();
         return;
     }
-    for (interaction, _) in &cancels {
+    for (interaction, _) in cancels {
         if *interaction == Interaction::Pressed {
             pick.clear();
             return;
         }
     }
-    for (interaction, btn) in &qtys {
+    for (interaction, btn) in qtys {
         if *interaction == Interaction::Pressed {
             let max = counter_pick_max(&city, &shop, &inv, &craft, &shop_selling, &pick);
             pick.nudge(btn.0, max);
             return;
         }
     }
-    for (interaction, _) in &commits {
+    for (interaction, _) in commits {
         if *interaction == Interaction::Pressed {
             commit_counter_pick(
                 &net,
@@ -5999,11 +6230,12 @@ pub(crate) fn counter_click(
                 &hunts,
                 &shop_selling,
                 &mut pick,
+                &roster,
             );
             return;
         }
     }
-    for (interaction, btn) in &rows {
+    for (interaction, btn) in rows {
         if *interaction != Interaction::Pressed {
             continue;
         }
@@ -6079,11 +6311,12 @@ fn commit_counter_pick(
     hunts: &HuntBoardData,
     selling: &ShopSelling,
     pick: &mut CounterPick,
+    roster: &crate::PartyRoster,
 ) {
     let Some(idx) = pick.row else { return };
     let qty = pick.qty.max(1);
     if city.craft_open {
-        if let Some(r) = craft.recipes.get(idx) {
+        if let Some(r) = craft.recipes.get(idx).filter(|_| !craft.repair_tab) {
             if r.craftable {
                 net.0.craft(r.recipe.clone());
                 craft.last = format!("working {}...", r.name);
@@ -6091,8 +6324,27 @@ fn commit_counter_pick(
             pick.clear();
             return;
         }
+        // The REPAIR side's rows are the repairable pieces themselves, in `repairable_gear`
+        // order — the same call the view listed them with, so the piece picked and the
+        // piece mended cannot be two different things.
+        if craft.repair_tab {
+            if let Some(g) = repairable_gear(inv).get(idx) {
+                if g.base_max_durability > g.max_durability {
+                    craft.last = format!("heating {}...", g.name);
+                    net.0.send(ClientCmd::SmithRequest {
+                        entity_id: String::new(),
+                        gear_id: g.gear_id.clone(),
+                        service: "repair".into(),
+                        material: String::new(),
+                        recipe: String::new(),
+                    });
+                }
+            }
+            pick.clear();
+            return;
+        }
         // Past the book stand the anvil and the bench, and each of those rows NAMES what
-        // it does — a tier that hides `[P] repair` must not shift what a click on the row
+        // it does — a tier that hides a service must not shift what a click on the row
         // above it means. This arm used to be the recipe lookup alone, so every one of
         // them picked, raised a Confirm button and then quietly cleared the pick.
         let action = craft_view(craft, inv).rows.get(idx).and_then(|r| r.action);
@@ -6119,8 +6371,24 @@ fn commit_counter_pick(
                 city.notice = format!("bought {qty} x {}", line.name);
             }
         } else if let Some(g) = shop.gear.get(idx - ITEM_ROWS) {
-            net.0.buy_gear(g.slot.clone(), g.class_key.clone());
-            city.notice = format!("bought {}", g.name);
+            // ONE STEP: if a hero of that class is on the roster, the piece goes straight
+            // onto them. The server does the equipping and re-checks every rule, so a
+            // refusal there simply leaves the piece in the Vault rather than lying here.
+            let wearer = roster
+                .heroes
+                .iter()
+                .position(|h| h.class_key == g.class_key);
+            net.0.buy_gear(g.slot.clone(), g.class_key.clone(), wearer);
+            city.notice = match wearer {
+                Some(i) => format!(
+                    "bought {} and equipped it on {}",
+                    g.name,
+                    roster.heroes[i].name
+                ),
+                None => format!("bought {} - no {} in the party, so it waits in the Vault",
+                    g.name,
+                    crate::overworld::class_display(&g.class_key)),
+            };
         }
     }
     pick.clear();

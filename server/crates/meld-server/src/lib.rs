@@ -10,7 +10,7 @@ pub mod prof;
 
 use axum::routing::get;
 use axum::Router;
-use meld_api::{ApiState, Sessions, Tickets, WorldBoard};
+use meld_api::{ApiState, GearDirty, Sessions, Tickets, WorldBoard};
 use meld_db::Db;
 use tower_http::cors::CorsLayer;
 
@@ -38,6 +38,10 @@ pub async fn build(config: &Config) -> Result<Built, String> {
     // before both so the same handle reaches the API state and the game loop; a snapshot
     // rather than a query, because the loop must never wait on an HTTP request.
     let worlds = WorldBoard::new();
+    // …and the note HTTP leaves for the loop when a Vault equip moves what a hero is
+    // wearing. The opposite direction to `worlds` above, built here for the same reason:
+    // one handle has to reach both the API state and the game loop.
+    let gear_dirty = GearDirty::new();
 
     // HTTP API (auth, players/me, healthz).
     let api = meld_api::router(ApiState {
@@ -56,10 +60,11 @@ pub async fn build(config: &Config) -> Result<Built, String> {
             .filter_map(|k| balance.consumable.price(k).map(|p| ((*k).to_string(), p)))
             .collect(),
         worlds: worlds.clone(),
+        gear_dirty: gear_dirty.clone(),
     });
 
     // Realtime gateway.
-    let game = game::spawn(balance.clone(), db.clone(), worlds);
+    let game = game::spawn(balance.clone(), db.clone(), worlds, gear_dirty);
     let gateway_state = gateway::GatewayState {
         db: db.clone(),
         tickets,
