@@ -330,6 +330,7 @@ fn main() {
         // The turn bar's fast rail paints its flame with a UI material — the bar is UI, and
         // a plain `Node` cannot ramp a gradient or add light (see `turn_order::FireTrail`).
         .add_plugins(bevy::ui_render::UiMaterialPlugin::<turn_order::FireTrail>::default())
+        .add_plugins(bevy::ui_render::UiMaterialPlugin::<turn_order::StateFx>::default())
         .add_plugins(MaterialPlugin::<battle_fx::AbilityFx>::default())
         .add_plugins(MaterialPlugin::<battle_fx::ScreenWash>::default())
         // The corner map's ground. A map is a GRID, and it was being drawn as one
