@@ -498,6 +498,12 @@ impl Fighter {
         if self.braced {
             v.push(BRACED_STATUS.to_string());
         }
+        // DOWN MEANS OPEN, and the screen has to say so: a staggered fighter takes
+        // `staggered_damage_mult` more from everything, which was a rule the player could
+        // only infer from damage numbers.
+        if self.staggered {
+            v.push("staggered".to_string());
+        }
         // How close this fighter is to blazing ahead. A streak the player cannot watch fill
         // is a streak they never learn exists, which is the whole reason the pack's
         // gang-up mark is shouted.
@@ -563,6 +569,7 @@ impl Fighter {
         ((self.evasion * 100.0).round() as i64).hash(&mut h);
         self.adrenaline.hash(&mut h);
         self.braced.hash(&mut h);
+        self.staggered.hash(&mut h);
         self.streak.hash(&mut h);
         self.surged.hash(&mut h);
         self.focus_max.hash(&mut h);
@@ -664,6 +671,16 @@ pub const HASTE_STATUS: &str = "hasted";
 /// screen never mentions is a mechanic nobody presses, which is the exact reason Defend
 /// needed something to buy in the first place.
 pub const BRACED_STATUS: &str = "braced";
+
+/// **RECOIL** — this fighter was knocked backwards down the turn order by a critical hit.
+/// Cosmetic and brief: the gauge loss already happened, and this is what tells the client to
+/// draw the blow that caused it.
+pub const RECOIL_STATUS: &str = "recoil";
+
+/// **PINNED** — a blow found what this fighter is weak to and its gauge is frozen while this
+/// holds. Unlike a recoil it takes nothing away; it stops progress rather than undoing it,
+/// which is why the client draws it as something holding the body still rather than as a hit.
+pub const PINNED_STATUS: &str = "pinned";
 
 /// A fighter that has just had its gauge knocked down cannot have it knocked down again
 /// while this holds.
@@ -1018,7 +1035,9 @@ pub struct Battle {
     explorer_haste_ticks: u64,
     /// Gauge fill-rate multiplier while BRACED (see [`BRACED_STATUS`]).
     defend_haste_mult: f64,
-    flinch_gauge_loss: f64,
+    recoil_gauge_loss: f64,
+    recoil_ticks: u64,
+    pinned_ticks: u64,
     flinch_guard_ticks: u64,
     surge_streak: u32,
     surge_gauge: f64,
@@ -1386,7 +1405,9 @@ impl Battle {
             explorer_haste_mult: balance.battle.explorer_haste_mult,
             explorer_haste_ticks: balance.battle.explorer_haste_ticks,
             defend_haste_mult: balance.battle.defend_haste_mult,
-            flinch_gauge_loss: balance.battle.flinch_gauge_loss,
+            recoil_gauge_loss: balance.battle.recoil_gauge_loss,
+            recoil_ticks: balance.battle.recoil_ticks,
+            pinned_ticks: balance.battle.pinned_ticks,
             flinch_guard_ticks: balance.battle.flinch_guard_ticks,
             surge_streak: balance.battle.surge_streak,
             surge_gauge: balance.battle.surge_gauge,
@@ -1661,6 +1682,14 @@ impl Battle {
         for i in 0..n {
             let f = &mut self.fighters[i];
             if !f.alive || f.awaiting || f.gauge >= 1.0 || f.channel.is_some() {
+                continue;
+            }
+            // HELD STILL by a blow that found its weakness: the gauge does not move at all
+            // while this lasts. It is a full stop rather than a slow because that is what the
+            // effect IS — and it is safe to be one only because `flinch_guard_ticks` is wider
+            // than `pinned_ticks`, so a pinned fighter is guaranteed windows in which it
+            // charges normally and can never be frozen out of the fight.
+            if f.timed_statuses.iter().any(|(n, until)| *until > now && n == PINNED_STATUS) {
                 continue;
             }
             let pinned = f
@@ -5551,15 +5580,17 @@ impl Battle {
     /// a streak, or be countered back — which for two braced fighters is an infinite volley.
     fn answer_the_blow(&mut self, res: &mut Resolution) {
         let Some(actor_i) = self.idx(&res.actor_id) else { return };
-        let landed: Vec<(usize, bool)> = res
+        // What each blow WAS, per body: a crit knocks its target back and a weakness holds it
+        // still, and the two are different effects rather than one "flinch" with two causes.
+        let landed: Vec<(usize, bool, bool)> = res
             .effects
             .iter()
             .filter(|e| matches!(e.kind, EffectKind::Damage) && e.amount.unwrap_or(0) > 0)
             .filter_map(|e| {
                 let t = self.idx(&e.target_id)?;
-                let good = e.modifier_flag == Some(ModifierFlag::Weak)
-                    || e.status.as_deref() == Some("crit");
-                Some((t, good))
+                let crit = e.status.as_deref() == Some("crit");
+                let weak = e.modifier_flag == Some(ModifierFlag::Weak);
+                Some((t, crit, weak))
             })
             .collect();
         if landed.is_empty() {
@@ -5567,16 +5598,25 @@ impl Battle {
             // spending its turn mending should not cost it the run-up it had going.
             return;
         }
-        // 1. THE FLINCH. Every body that took a good hit loses ground.
-        for (t, good) in landed.iter().copied() {
-            if good && t != actor_i {
-                let fx = self.flinch(t);
-                res.effects.extend(fx);
+        // 1. RECOIL and PIN. A crit takes ground; a weakness freezes it. A blow that is both
+        // RECOILS — losing ground is the worse of the two, and stacking them would let one
+        // hit spend the whole guard window twice.
+        for (t, crit, weak) in landed.iter().copied() {
+            if t == actor_i {
+                continue;
             }
+            let fx = if crit {
+                self.recoil(t)
+            } else if weak {
+                self.pin(t)
+            } else {
+                Vec::new()
+            };
+            res.effects.extend(fx);
         }
         // 2. THE CATCH-UP. One blow, however many bodies it found — five weaknesses in one
         // sweep is one good blow, so the streak is five consecutive TURNS.
-        let good_blow = landed.iter().any(|(_, good)| *good);
+        let good_blow = landed.iter().any(|(_, crit, weak)| *crit || *weak);
         if good_blow {
             self.fighters[actor_i].streak += 1;
             if self.fighters[actor_i].streak >= self.surge_streak {
@@ -5587,7 +5627,7 @@ impl Battle {
             self.fighters[actor_i].streak = 0;
         }
         // 3. THE COUNTER. A braced fighter answers the first blow that lands on it.
-        for (t, _) in landed {
+        for (t, _, _) in landed {
             if t == actor_i {
                 continue;
             }
@@ -5596,30 +5636,27 @@ impl Battle {
         }
     }
 
-    /// A slight stop in a fighter's ATB, for taking a blow it was weak to or a crit.
+    /// **RECOIL** — a critical hit knocks its target BACKWARDS down the turn order, and if
+    /// that pushes it all the way to the start of the track it is left STAGGERED.
     ///
-    /// ⚠️ **NOTHING HERE ARMS THE GAUGE-KNOCK REBUKE, and that is the point of it being its
-    /// own path rather than a small `deny_gauge`.** A knock is a turn TAKEN by an ability
-    /// that spent its own turn doing it, so it earns `staggered`, the guard countdown and a
-    /// boss's rarest-ability answer. A flinch is the consequence of hitting something where
-    /// it is soft — it happens several times a round, and a rebuke on each would make a
-    /// boss's SCARCEST ability its most common one, which is exactly the failure the raid
-    /// tier's note warns about for the same reason (`weight` is read as rarity).
+    /// ⚠️ **NOTHING HERE ARMS THE GAUGE-KNOCK REBUKE, and that is why this is its own path
+    /// rather than a small `deny_gauge`.** A knock is a turn TAKEN by an ability that spent
+    /// its own turn doing it, so it earns the guard countdown and a boss's rarest-ability
+    /// answer. A recoil is the consequence of a blow landing well — it happens several times
+    /// a round, and a rebuke on each would make a boss's SCARCEST ability its most common
+    /// one, the exact failure the raid tier's note warns about since `weight` is read as
+    /// rarity.
     ///
-    /// ⚠️ **A turn that has already arrived cannot be flinched away.** At a full gauge the
-    /// fighter owns its turn — a hero is already `awaiting` and the client is already
-    /// showing its menu — so knocking it back below the line there would cancel a turn
-    /// rather than delay one. Delaying a turn is what this is; cancelling one is what a
+    /// ⚠️ **A turn that has already arrived cannot be knocked away.** At a full gauge the
+    /// fighter owns its turn — a hero is already `awaiting` and its menu is on screen — so
+    /// taking ground there would CANCEL a turn rather than delay one. Cancelling is what a
     /// gauge knock is, and it is priced like one.
-    fn flinch(&mut self, target_i: usize) -> Vec<ResolvedEffect> {
-        if !self.fighters[target_i].alive
-            || self.fighters[target_i].gauge >= 1.0
-            || self.tick_count < self.fighters[target_i].flinch_guard_until
-        {
+    fn recoil(&mut self, target_i: usize) -> Vec<ResolvedEffect> {
+        if !self.can_be_jostled(target_i) {
             return Vec::new();
         }
         let before = self.fighters[target_i].gauge;
-        let after = (before - self.flinch_gauge_loss).max(0.0);
+        let after = (before - self.recoil_gauge_loss).max(0.0);
         if (before - after).abs() < f64::EPSILON {
             // Nothing was taken from an empty gauge, so nothing is guarded — the same rule
             // `deny_gauge` keeps, for the same reason: a bounce must not buy an immunity.
@@ -5627,14 +5664,70 @@ impl Battle {
         }
         self.fighters[target_i].gauge = after;
         self.fighters[target_i].flinch_guard_until = self.tick_count + self.flinch_guard_ticks;
-        vec![ResolvedEffect {
+        let until = self.tick_count + self.recoil_ticks;
+        self.fighters[target_i]
+            .timed_statuses
+            .retain(|(n, _)| n != RECOIL_STATUS);
+        self.fighters[target_i]
+            .timed_statuses
+            .push((RECOIL_STATUS.to_string(), until));
+        let mut fx = vec![self.mark(target_i, RECOIL_STATUS)];
+        // **PUSHED ALL THE WAY BACK IS A STAGGER.** Reaching the start of the track is the
+        // one outcome a run of recoils can reach that is worth more than the ground it took,
+        // and it lands on the flag the engine already has: a staggered fighter takes
+        // `staggered_damage_mult` more from everything until it acts. Nothing new to reason
+        // about, and "down means open" applies however the target got there.
+        if after <= f64::EPSILON && !self.fighters[target_i].staggered {
+            self.fighters[target_i].staggered = true;
+            fx.push(self.mark(target_i, "staggered"));
+        }
+        fx
+    }
+
+    /// **PINNED** — a blow that found what this fighter is weak to freezes its gauge.
+    ///
+    /// It takes NOTHING away: the ground already made is kept, and only progress stops. That
+    /// is the honest reading of hitting something where it is soft — it seizes up — and it
+    /// is what makes the two effects tell apart on the bar at a glance, one knocked back and
+    /// one held in place.
+    fn pin(&mut self, target_i: usize) -> Vec<ResolvedEffect> {
+        if !self.can_be_jostled(target_i) {
+            return Vec::new();
+        }
+        self.fighters[target_i].flinch_guard_until = self.tick_count + self.flinch_guard_ticks;
+        let until = self.tick_count + self.pinned_ticks;
+        self.fighters[target_i]
+            .timed_statuses
+            .retain(|(n, _)| n != PINNED_STATUS);
+        self.fighters[target_i]
+            .timed_statuses
+            .push((PINNED_STATUS.to_string(), until));
+        vec![self.mark(target_i, PINNED_STATUS)]
+    }
+
+    /// Whether a recoil or a pin may land on this fighter at all: it is alive, its turn has
+    /// not already arrived, and it is not still inside the guard window from the last one.
+    ///
+    /// ⚠️ **ONE GUARD COVERS BOTH,** and that is what stops them chaining. Gauge denial in
+    /// this engine composed into a 464-hero-turn lock once; these are small and frequent,
+    /// which is the same bug reached from the other direction — four heroes branded into one
+    /// creature's weakness would otherwise hold it still for the whole fight.
+    fn can_be_jostled(&self, target_i: usize) -> bool {
+        self.fighters[target_i].alive
+            && self.fighters[target_i].gauge < 1.0
+            && self.tick_count >= self.fighters[target_i].flinch_guard_until
+    }
+
+    /// A bare status effect on a fighter, for the client to draw.
+    fn mark(&self, target_i: usize, status: &str) -> ResolvedEffect {
+        ResolvedEffect {
             modifier_flag: None,
             target_id: self.fighters[target_i].combatant_id.clone(),
             kind: EffectKind::StatusApplied,
             amount: None,
-            status: Some("flinch".to_string()),
+            status: Some(status.to_string()),
             hp_after: self.fighters[target_i].hp,
-        }]
+        }
     }
 
     /// **THE CATCH-UP.** `surge_streak` good blows in a row and this fighter blazes ahead.
@@ -6068,7 +6161,31 @@ impl Battle {
             let floor = (raw as f64) * self.damage_floor_fraction;
             (((raw - shield) as f64).max(floor).round() as i32).max(self.min_damage)
         };
-        self.apply_typed_damage(target_i, mitigated, ty)
+        // **A SPELL CAN CRIT.** Crits used to exist only inside `resolve_attack`, so the
+        // entire ability half of the game — every hero skill, every creature ability, every
+        // Focus — could not land one. That made the crit stat worth nothing to a caster and
+        // meant the turn-order recoil a crit now causes was a martial-only mechanic.
+        //
+        // Rolled HERE because this is the one funnel every ability's damage passes through,
+        // so an ability written tomorrow can crit the day it is written. Per TARGET rather
+        // than per cast, which falls out of that: an all-enemy blow crits on some bodies and
+        // not others, exactly as several separate blows would.
+        //
+        // ⚠️ A DoT deliberately cannot crit: burn and poison are a fraction of the victim's
+        // OWN max HP and never come through here.
+        let crit = self.active_actor.is_some_and(|a| self.roll_crit(a));
+        let dealt = if crit {
+            ((mitigated as f64) * self.crit_mult).round() as i32
+        } else {
+            mitigated
+        };
+        let mut fx = self.apply_typed_damage(target_i, dealt, ty);
+        if crit {
+            if let Some(e) = fx.iter_mut().find(|e| matches!(e.kind, EffectKind::Damage)) {
+                e.status = Some("crit".to_string());
+            }
+        }
+        fx
     }
 
     fn apply_typed_damage(
@@ -6680,55 +6797,99 @@ mod tests {
         sided(&foes, &heroes);
     }
 
-    /// **A BLOW THAT FINDS A WEAKNESS PUTS A STOP IN THE ATB.** Hitting a creature's element
+    /// **A WEAKNESS HOLDS YOU STILL; IT DOES NOT TAKE GROUND.** Hitting a creature's element
     /// used to be worth a damage multiplier and nothing else, so "what is it made of" was an
-    /// arithmetic question. The flinch makes the answer felt on the turn order itself.
+    /// arithmetic question. It seizes the thing up now — and it keeps the ground it already
+    /// made, which is what tells it apart on the bar from a crit's knock backwards.
     #[test]
-    fn a_weak_hit_flinches_the_gauge_and_a_plain_one_does_not() {
+    fn a_weak_hit_pins_the_gauge_without_taking_it() {
         let b = Balance::load_default().unwrap();
-        let gauge_after = |weak: bool| {
-            let mut m = monster("m1", 5_000, 1);
-            m.damage_modifiers
-                .insert(DamageType::Slash, if weak { 2.0 } else { 1.0 });
-            let mut bt = Battle::new(
-                "b".into(),
-                EncounterClass::Standard,
-                vec![player("h1", 60)],
-                vec![m],
-                &b,
-                7,
-            );
-            bt.skip_opening();
-            let (h, mi) = (bt.idx("h1").unwrap(), bt.idx("m1").unwrap());
-            bt.fighters[h].basic_attack_type = DamageType::Slash;
-            bt.fighters[mi].gauge = 0.6;
-            bt.fighters[h].gauge = 1.0;
-            bt.fighters[h].awaiting = true;
-            bt.submit(
-                "h1",
-                "00000000-0000-7000-8000-000000000001".to_string(),
-                BattleActionKind::Attack,
-                Some(vec!["m1".to_string()]),
-                None,
-                None,
-            )
-            .expect("the swing lands");
-            bt.fighters[bt.idx("m1").unwrap()].gauge
-        };
-        let plain = gauge_after(false);
-        let weak = gauge_after(true);
-        assert!(
-            (plain - 0.6).abs() < 1e-9,
-            "an ordinary blow must not move the gauge: {plain}"
+        let mut m = monster("m1", 5_000, 1);
+        m.damage_modifiers.insert(DamageType::Slash, 2.0);
+        let mut bt = Battle::new(
+            "b".into(),
+            EncounterClass::Standard,
+            vec![player("h1", 60)],
+            vec![m],
+            &b,
+            7,
         );
-        assert!(weak < plain, "a weak hit did not flinch: {plain} -> {weak}");
+        bt.skip_opening();
+        let (h, mi) = (bt.idx("h1").unwrap(), bt.idx("m1").unwrap());
+        bt.fighters[h].basic_attack_type = DamageType::Slash;
+        bt.fighters[mi].gauge = 0.6;
+        bt.fighters[h].gauge = 1.0;
+        bt.fighters[h].awaiting = true;
+        bt.submit(
+            "h1",
+            "00000000-0000-7000-8000-000000000001".to_string(),
+            BattleActionKind::Attack,
+            Some(vec!["m1".to_string()]),
+            None,
+            None,
+        )
+        .expect("the swing lands");
+        let mi = bt.idx("m1").unwrap();
+        assert!(
+            bt.fighters[mi].gauge >= 0.6 - 1e-9,
+            "a weakness took ground instead of freezing it: {}",
+            bt.fighters[mi].gauge
+        );
+        assert!(
+            bt.fighters[mi].timed_statuses.iter().any(|(n, _)| n == PINNED_STATUS),
+            "a weak hit did not pin its target"
+        );
+        // …and while it holds, the gauge really does not move.
+        let held = bt.fighters[mi].gauge;
+        bt.tick();
+        assert_eq!(
+            bt.fighters[bt.idx("m1").unwrap()].gauge,
+            held,
+            "a pinned fighter kept charging"
+        );
     }
 
-    /// ⚠️ **AND IT CANNOT CHAIN INTO A LOCK.** Gauge denial in this engine has already
-    /// composed into a 464-hero-turn lock once. A flinch is small and frequent, so its guard
-    /// is what stops four heroes branded into one weakness from holding a creature at zero.
+    /// **A CRIT KNOCKS YOU BACKWARDS**, and being pushed all the way to the start of the
+    /// track leaves you STAGGERED — the flag the engine already had, so "down means open"
+    /// applies however the target got there.
     #[test]
-    fn a_flinch_cannot_be_chained_to_hold_a_creature_down() {
+    fn a_crit_knocks_the_gauge_back_and_bottoming_out_staggers() {
+        let b = Balance::load_default().unwrap();
+        let mut bt = Battle::new(
+            "b".into(),
+            EncounterClass::Standard,
+            vec![player("h1", 60)],
+            vec![monster("m1", 500_000, 1)],
+            &b,
+            7,
+        );
+        bt.skip_opening();
+        let mi = bt.idx("m1").unwrap();
+        bt.fighters[mi].gauge = 0.05;
+        // Force the crit rather than fishing for one: the rule under test is what a crit
+        // DOES, not how often it happens.
+        let before = bt.fighters[mi].gauge;
+        let fx = bt.recoil(mi);
+        let after = bt.fighters[bt.idx("m1").unwrap()].gauge;
+        assert!(after < before, "a recoil took no ground: {before} -> {after}");
+        assert_eq!(after, 0.0, "this one should have bottomed out");
+        assert!(
+            bt.fighters[bt.idx("m1").unwrap()].staggered,
+            "pushed all the way back and not staggered"
+        );
+        assert!(
+            fx.iter().any(|e| e.status.as_deref() == Some("staggered")),
+            "the stagger was never reported, so nothing can draw it"
+        );
+    }
+
+    /// ⚠️ **NEITHER CAN BE CHAINED TO HOLD A CREATURE DOWN.** Gauge denial in this engine has
+    /// already composed into a 464-hero-turn lock once. These are small and frequent, which
+    /// is that bug from the other direction — one guard covers both, so a party branded into
+    /// one creature's weakness is bounded to one effect per window and the creature is
+    /// guaranteed gaps in which it charges normally.
+    #[test]
+    fn a_pinned_creature_still_gets_to_charge() {
         let b = Balance::load_default().unwrap();
         let mut m = monster("m1", 500_000, 1);
         m.damage_modifiers.insert(DamageType::Slash, 2.0);
@@ -6746,30 +6907,62 @@ mod tests {
             bt.fighters[i].basic_attack_type = DamageType::Slash;
         }
         let mi = bt.idx("m1").unwrap();
-        bt.fighters[mi].gauge = 0.5;
-        let before = bt.fighters[mi].gauge;
-        for (n, h) in ["h1", "h2", "h3", "h4"].iter().enumerate() {
-            let i = bt.idx(h).unwrap();
-            bt.fighters[i].gauge = 1.0;
-            bt.fighters[i].awaiting = true;
-            bt.submit(
-                h,
-                format!("00000000-0000-7000-8000-{:012}", n + 1),
-                BattleActionKind::Attack,
-                Some(vec!["m1".to_string()]),
-                None,
-                None,
-            )
-            .expect("the swing lands");
+        bt.fighters[mi].gauge = 0.0;
+        // Four heroes hammering its weakness, over a span several guard windows long.
+        for round in 0..4 {
+            for (n, h) in ["h1", "h2", "h3", "h4"].iter().enumerate() {
+                let i = bt.idx(h).unwrap();
+                bt.fighters[i].gauge = 1.0;
+                bt.fighters[i].awaiting = true;
+                bt.submit(
+                    h,
+                    format!("00000000-0000-7000-8000-{:012}", round * 4 + n + 1),
+                    BattleActionKind::Attack,
+                    Some(vec!["m1".to_string()]),
+                    None,
+                    None,
+                )
+                .expect("the swing lands");
+            }
+            for _ in 0..10 {
+                bt.tick();
+            }
         }
-        let after = bt.fighters[bt.idx("m1").unwrap()].gauge;
-        let loss = before - after;
-        assert!(loss > 0.0, "the first weak hit should still flinch");
         assert!(
-            loss <= b.battle.flinch_gauge_loss + 1e-9,
-            "four heroes chained {loss:.3} of flinch out of one guard window — a gauge lock \
-             reached from the other direction"
+            bt.fighters[bt.idx("m1").unwrap()].gauge > 0.0,
+            "a party branded into one weakness froze a creature out of the fight entirely"
         );
+    }
+
+    /// **A SPELL CAN CRIT.** Crits lived only inside `resolve_attack`, so the whole ability
+    /// half of the game could not land one — which made the crit stat worth nothing to a
+    /// caster and the turn-order recoil a martial-only mechanic.
+    #[test]
+    fn an_ability_can_crit_not_just_a_weapon() {
+        let b = Balance::load_default().unwrap();
+        let mut saw_crit = false;
+        for seed in 0..60u64 {
+            let mut bt = Battle::new(
+                "b".into(),
+                EncounterClass::Standard,
+                vec![player("h1", 60)],
+                vec![monster("m1", 5_000_000, 1)],
+                &b,
+                seed,
+            );
+            bt.skip_opening();
+            let (h, mi) = (bt.idx("h1").unwrap(), bt.idx("m1").unwrap());
+            // A generous Dex, so the roll is about whether the PATH can crit at all rather
+            // than about the rate.
+            bt.fighters[h].dex = 500;
+            bt.active_actor = Some(h);
+            let fx = bt.apply_ability_damage(mi, 100, DamageType::Fire);
+            if fx.iter().any(|e| e.status.as_deref() == Some("crit")) {
+                saw_crit = true;
+                break;
+            }
+        }
+        assert!(saw_crit, "no ability crit in sixty rolls at a capped crit chance");
     }
 
     /// **A TURN THAT HAS ALREADY ARRIVED CANNOT BE FLINCHED AWAY.** At a full gauge the
@@ -6777,7 +6970,7 @@ mod tests {
     /// flinch there would CANCEL a turn rather than delay one, which is what a gauge knock is
     /// for and what a knock is priced like.
     #[test]
-    fn a_flinch_never_takes_a_turn_that_has_already_come_up() {
+    fn nothing_jostles_a_turn_that_has_already_come_up() {
         let b = Balance::load_default().unwrap();
         let mut m = monster("m1", 5_000, 1);
         m.damage_modifiers.insert(DamageType::Slash, 2.0);

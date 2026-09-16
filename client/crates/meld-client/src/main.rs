@@ -886,6 +886,7 @@ fn main() {
                 battle_fx::react_to_conditions,
                 mocks::mock_battle_fx,
                 mocks::mock_battle_opening,
+                mocks::mock_turn_recoil,
             )
                 .run_if(in_state(Screen::Battle)),
         )

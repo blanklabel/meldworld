@@ -5292,6 +5292,15 @@ only the things that can't be class-gated.
   Hitting a creature's weakness was worth a damage multiplier and nothing else, so "what is
   this thing made of" was an arithmetic question rather than a tempo one, and Defend bought
   half a blow and a faster gauge but never anything you could *do*.
+  - ⚠️ *The flinch became TWO effects, and crits learned to fire from spells.* A **critical
+    hit** (from a weapon or, now, any ability) knocks its target BACKWARDS down the turn
+    order; a blow that finds what it is **weak to** freezes the gauge where it is without
+    taking anything away. Knocked back versus held still is the read, and a recoil that
+    reaches the start of the track leaves the target **staggered** — the flag the engine
+    already had, so "down means open" applies however it got there. Crits are rolled in
+    `apply_ability_damage` now, the one funnel every ability's damage passes through: they
+    used to exist only inside `resolve_attack`, so the whole caster half of the game could
+    not land one.
   - *Shipped, all three through ONE funnel* (`Battle::answer_the_blow`, called from
     `stamped`, which every resolution already passes through): a **FLINCH** takes
     `[battle] flinch_gauge_loss` off anything hit where it is weak or crit; a **CATCH-UP**

@@ -245,6 +245,21 @@ impl UiMaterial for FireTrail {
     }
 }
 
+/// The momentary grey impact on an icon that was just knocked backwards by a critical hit.
+#[derive(Component)]
+pub(crate) struct TurnHit {
+    pub(crate) id: String,
+}
+
+/// The lasting ring on an icon that is being HELD (a blow found its weakness) or is
+/// STAGGERED (knocked all the way back to the start of the track). One node for both,
+/// because they are the same shape saying opposite things — something holding you still, and
+/// something having broken you open — and a fighter can only be drawn as one of them.
+#[derive(Component)]
+pub(crate) struct TurnWard {
+    pub(crate) id: String,
+}
+
 /// The one quad a fast fighter's flame is drawn on.
 #[derive(Component)]
 pub(crate) struct TurnFire {
@@ -264,6 +279,48 @@ const FIRE_TAIL: f32 = 150.0;
 /// its own node. Without it the hot core is cut by the node's right edge — a straight
 /// vertical line through the middle of the sprite.
 const FIRE_NOSE: f32 = ICON * 0.9;
+
+/// How long the grey impact of a recoil takes to fade, in seconds. Short: it is the punch
+/// that explains a jump backwards, not a status.
+const HIT_TTL: f32 = 0.45;
+/// How far a recoil throws the icon back ON TOP of the ground its gauge actually lost — the
+/// overshoot that makes the jump read as a HIT rather than as a slide.
+const HIT_KNOCK: f32 = 9.0;
+
+/// The extra backward offset a recoil is drawn with, `age` seconds in. It decays to nothing,
+/// so the icon settles onto the position its real gauge says it has.
+pub(crate) fn hit_knock(age: f32) -> f32 {
+    let t = (1.0 - age / HIT_TTL).clamp(0.0, 1.0);
+    -HIT_KNOCK * t * t
+}
+
+/// How bright the grey impact is, `age` seconds in.
+pub(crate) fn hit_flash(age: f32) -> f32 {
+    (1.0 - age / HIT_TTL).clamp(0.0, 1.0)
+}
+
+/// What a fighter's icon is wearing: nothing, the force field that HOLDS it still, or the
+/// broken ring of being knocked all the way back.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Ward {
+    None,
+    /// A blow found its weakness and it is frozen for a beat.
+    Held,
+    /// Pushed all the way to the start of the track — and taking extra damage until it acts.
+    Staggered,
+}
+
+/// Which ring a combatant wears. **Staggered outranks held**: being wide open is the worse
+/// news and the one a player has to act on, and a fighter can be both at once.
+pub(crate) fn ward_of(c: &CombatantView) -> Ward {
+    if c.statuses.iter().any(|s| s == "staggered") {
+        Ward::Staggered
+    } else if c.statuses.iter().any(|s| s == "pinned") {
+        Ward::Held
+    } else {
+        Ward::None
+    }
+}
 
 /// A stable 0..1 number for a combatant id — the per-fighter seed that stops every flame on
 /// the rail from flickering in lockstep.
@@ -307,6 +364,11 @@ pub(crate) struct TurnGlow {
 #[derive(Resource, Default)]
 pub(crate) struct TurnBarView {
     pub(crate) shown: HashMap<String, f32>,
+    /// Seconds since each fighter was last knocked backwards, for the impact that explains
+    /// it. Started on the RISING edge of the wire's `recoil`, so one knock draws one punch
+    /// however many ticks the status rides for.
+    pub(crate) hit: HashMap<String, f32>,
+    pub(crate) was_hit: std::collections::HashSet<String>,
     /// The cast the current node tree was built for.
     pub(crate) key: u64,
 }
@@ -544,7 +606,7 @@ pub(crate) fn rebuild_turn_bar(
                             },
                             BackgroundColor(glass::EDGE.with_alpha(0.75)),
                         ));
-                        for (id, ally, img, crop) in &rows {
+                        for (id, ally, _img, _crop) in &rows {
                             // Every y here is a placeholder: which LANE a fighter rides
                             // changes while the fight runs (a guard goes up, a haste lands,
                             // somebody blazes ahead), so `animate_turn_bar` writes every
@@ -606,6 +668,39 @@ pub(crate) fn rebuild_turn_bar(
                                     ..default()
                                 },
                             ));
+                            // The ring a held or staggered fighter wears, and the impact a
+                            // recoil leaves — both behind the icon so neither covers the art
+                            // they are describing.
+                            lane.spawn((
+                                TurnWard { id: id.clone() },
+                                Node {
+                                    border_radius: BorderRadius::all(Val::Px(ICON)),
+                                    position_type: PositionType::Absolute,
+                                    left: Val::Px(0.0),
+                                    top: Val::Px(0.0),
+                                    width: Val::Px(ICON + 9.0),
+                                    height: Val::Px(ICON + 9.0),
+                                    border: UiRect::all(Val::Px(2.0)),
+                                    display: Display::None,
+                                    ..default()
+                                },
+                                BackgroundColor(Color::NONE),
+                                BorderColor::all(Color::NONE),
+                            ));
+                            lane.spawn((
+                                TurnHit { id: id.clone() },
+                                Node {
+                                    border_radius: BorderRadius::all(Val::Px(ICON)),
+                                    position_type: PositionType::Absolute,
+                                    left: Val::Px(0.0),
+                                    top: Val::Px(0.0),
+                                    width: Val::Px(ICON),
+                                    height: Val::Px(ICON),
+                                    display: Display::None,
+                                    ..default()
+                                },
+                                BackgroundColor(Color::NONE),
+                            ));
                             // The halo, BEHIND the icon (spawned first) so a glowing turn
                             // reads as light coming off the sprite rather than a disc over it.
                             lane.spawn((
@@ -621,6 +716,14 @@ pub(crate) fn rebuild_turn_bar(
                                 },
                                 BackgroundColor(Color::NONE),
                             ));
+                        }
+                        // ⚠️ **EVERY LINE FIRST, THEN EVERY ICON.** Spawn order is draw
+                        // order in a UI hierarchy, so building each fighter's line and then
+                        // its icon interleaved meant a LATER fighter's charge line drew over
+                        // an EARLIER fighter's sprite — reported from play as the line going
+                        // through some of them. Two passes makes "a body is always on top of
+                        // every line" structural instead of an accident of cast order.
+                        for (id, _ally, img, crop) in &rows {
                             let zoom = if *crop { SPRITE_ZOOM } else { 1.0 };
                             let inner = ICON * zoom;
                             let inset = -(inner - ICON) * 0.5;
@@ -679,21 +782,25 @@ pub(crate) fn animate_turn_bar(
             Without<TurnSpark>,
             Without<TurnGlow>,
             Without<TurnFire>,
+            Without<TurnHit>,
+            Without<TurnWard>,
         ),
     >,
     mut trails: Query<
         (&TurnTrail, &mut Node, &mut BackgroundColor),
-        (Without<TurnSpark>, Without<TurnGlow>, Without<TurnFire>),
+        (Without<TurnSpark>, Without<TurnGlow>, Without<TurnFire>, Without<TurnHit>, Without<TurnWard>),
     >,
     mut sparks: Query<
         (&TurnSpark, &mut Node, &mut BackgroundColor),
-        (Without<TurnGlow>, Without<TurnFire>),
+        (Without<TurnGlow>, Without<TurnFire>, Without<TurnHit>, Without<TurnWard>),
     >,
     mut glows: Query<
         (&TurnGlow, &mut Node, &mut BackgroundColor),
-        Without<TurnFire>,
+        (Without<TurnFire>, Without<TurnHit>, Without<TurnWard>),
     >,
-    mut fires: Query<(&TurnFire, &mut Node)>,
+    mut fires: Query<(&TurnFire, &mut Node), (Without<TurnHit>, Without<TurnWard>)>,
+    mut hits: Query<(&TurnHit, &mut Node, &mut BackgroundColor), Without<TurnWard>>,
+    mut wards: Query<(&TurnWard, &mut Node, &mut BackgroundColor, &mut BorderColor)>,
     mut fire_mats: ResMut<Assets<FireTrail>>,
 ) {
     let t = time.elapsed_secs();
@@ -704,6 +811,26 @@ pub(crate) fn animate_turn_bar(
         let shown = view.shown.get(&c.id).copied().unwrap_or(target);
         view.shown.insert(c.id.clone(), glide(shown, target, dt));
     }
+    // **ONE PUNCH PER KNOCK.** `recoil` rides the wire for several ticks, so the impact is
+    // started on its RISING edge and aged locally — keyed off the status being newly present
+    // rather than present, or the flash would restart every frame the status holds.
+    let knocked: std::collections::HashSet<String> = battle
+        .combatants
+        .iter()
+        .filter(|c| c.statuses.iter().any(|s| s == "recoil"))
+        .map(|c| c.id.clone())
+        .collect();
+    for id in &knocked {
+        if !view.was_hit.contains(id) {
+            view.hit.insert(id.clone(), 0.0);
+        }
+    }
+    view.was_hit = knocked;
+    view.hit.retain(|_, age| {
+        *age += dt;
+        *age < HIT_TTL
+    });
+    let hit_age = |id: &str| view.hit.get(id).copied();
     let at = |id: &str| view.shown.get(id).copied().unwrap_or(0.0);
     // Which rail each body rides THIS frame — a guard going up or a catch-up landing moves
     // a fighter between lanes mid-fight, so the lane is read here rather than baked in at
@@ -751,7 +878,10 @@ pub(crate) fn animate_turn_bar(
 
     for (icon, mut node) in &mut icons {
         let lift = if up(&icon.id) { bounce_px(t) } else { 0.0 };
-        set_px(&mut node.left, at_x(&icon.id));
+        // The gauge it lost has already moved it; this is the overshoot on top, so the jump
+        // reads as something having HIT it rather than as the bar sliding.
+        let knock = hit_age(&icon.id).map(hit_knock).unwrap_or(0.0);
+        set_px(&mut node.left, (at_x(&icon.id) + knock).max(0.0));
         set_px(&mut node.top, set.top(lane_of_id(&icon.id)) + ICON_INSET + lift);
     }
     // A fast fighter's line is an ARC, so its smooth bar steps aside for the segments below.
@@ -812,6 +942,72 @@ pub(crate) fn animate_turn_bar(
             let fill = (FIRE_TAIL / w.max(1.0)).clamp(0.05, 1.0);
             mat.params = Vec4::new(t, fill, hash01(&fire.id), body / w.max(1.0));
             mat.tint = Vec4::new(col.red, col.green, col.blue, 1.0);
+        }
+    }
+    // **THE GREY HIT.** A knock backwards gets a colourless impact — grey rather than the
+    // fighter's own colour, because this is something done TO it and the side colour is
+    // already carried by everything else on its line.
+    for (hit, mut node, mut bg) in &mut hits {
+        let Some(age) = hit_age(&hit.id) else {
+            if node.display != Display::None {
+                node.display = Display::None;
+            }
+            continue;
+        };
+        if node.display != Display::Flex {
+            node.display = Display::Flex;
+        }
+        let f = hit_flash(age);
+        // ⚠️ **IT HAS TO BE BIGGER THAN THE ICON IT SITS BEHIND.** The first cut drew it at
+        // exactly `ICON`, centred, behind a 30px opaque sprite — so the punch was perfectly
+        // hidden by the body it was describing, and three captures in a row showed nothing
+        // at all. It starts wider than the body and blooms outward from there.
+        let size = ICON * (1.35 + 0.5 * (1.0 - f));
+        set_px(&mut node.width, size);
+        set_px(&mut node.height, size);
+        set_px(&mut node.left, at_x(&hit.id) + hit_knock(age) + ICON * 0.5 - size * 0.5);
+        set_px(
+            &mut node.top,
+            set.top(lane_of_id(&hit.id)) + ICON_INSET + ICON * 0.5 - size * 0.5,
+        );
+        bg.0 = Color::srgb(0.86, 0.88, 0.92).with_alpha(0.7 * f);
+    }
+    // **THE RING.** A force field holding a fighter still, or the broken one it wears after
+    // being knocked all the way back.
+    for (ward, mut node, mut bg, mut border) in &mut wards {
+        let kind = battle.view(&ward.id).map(ward_of).unwrap_or(Ward::None);
+        if kind == Ward::None {
+            if node.display != Display::None {
+                node.display = Display::None;
+            }
+            continue;
+        }
+        if node.display != Display::Flex {
+            node.display = Display::Flex;
+        }
+        let pulse = 0.5 + 0.5 * (t * 7.0).sin();
+        let size = ICON + 9.0 + 3.0 * pulse;
+        set_px(&mut node.width, size);
+        set_px(&mut node.height, size);
+        set_px(&mut node.left, at_x(&ward.id) + ICON * 0.5 - size * 0.5);
+        let lift = if up(&ward.id) { bounce_px(t) } else { 0.0 };
+        set_px(
+            &mut node.top,
+            set.top(lane_of_id(&ward.id)) + ICON_INSET + ICON * 0.5 - size * 0.5 + lift,
+        );
+        // Held reads as a barrier — the same steel blue a Barrier wears everywhere else in
+        // this game. Staggered reads as a warning, because it is one: everything hits it
+        // harder until it acts.
+        let (edge, fill) = match kind {
+            Ward::Held => (Color::srgb(0.55, 0.85, 1.0), Color::srgba(0.4, 0.75, 1.0, 0.16)),
+            _ => (Color::srgb(1.0, 0.45, 0.4), Color::srgba(1.0, 0.35, 0.3, 0.18)),
+        };
+        let a = 0.55 + 0.45 * pulse;
+        if border.top.alpha() != a {
+            *border = BorderColor::all(edge.with_alpha(a));
+        }
+        if bg.0 != fill {
+            bg.0 = fill;
         }
     }
     for (glow, mut node, mut bg) in &mut glows {
@@ -1060,6 +1256,44 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// **THE RING SAYS WHICH ONE, AND STAGGERED OUTRANKS HELD.** A fighter can be both; being
+    /// wide open is the worse news and the one a player has to act on.
+    #[test]
+    fn the_ring_says_held_or_broken_and_broken_wins() {
+        assert_eq!(ward_of(&cv("m1", false, &[])), Ward::None);
+        assert_eq!(ward_of(&cv("m1", false, &["pinned"])), Ward::Held);
+        assert_eq!(ward_of(&cv("m1", false, &["staggered"])), Ward::Staggered);
+        assert_eq!(
+            ward_of(&cv("m1", false, &["pinned", "staggered"])),
+            Ward::Staggered,
+            "a fighter that is both must read as the one you can act on"
+        );
+    }
+
+    /// **A KNOCK OVERSHOOTS AND THEN SETTLES.** The gauge it lost has already moved the icon;
+    /// the overshoot is what makes that jump read as a hit rather than as the bar sliding —
+    /// and it has to decay to nothing, or the icon lies about where its gauge is.
+    #[test]
+    fn a_knock_overshoots_backwards_and_settles() {
+        assert!(hit_knock(0.0) < 0.0, "a fresh knock throws the icon back");
+        assert!(hit_knock(0.0) >= -HIT_KNOCK, "…but never further than its own limit");
+        assert!(
+            hit_knock(0.15) > hit_knock(0.0),
+            "the knock must ease back toward the true position"
+        );
+        assert_eq!(hit_knock(HIT_TTL), 0.0, "the icon must settle exactly on its gauge");
+        assert_eq!(hit_knock(HIT_TTL * 3.0), 0.0, "…and stay there");
+    }
+
+    /// The grey impact fades with the same clock, so the punch and the flash are one event.
+    #[test]
+    fn the_impact_fades_out_with_the_knock() {
+        assert_eq!(hit_flash(0.0), 1.0);
+        assert!(hit_flash(HIT_TTL * 0.5) < 1.0);
+        assert_eq!(hit_flash(HIT_TTL), 0.0);
+        assert_eq!(hit_flash(HIT_TTL * 2.0), 0.0, "a stale flash must not linger");
     }
 
     /// A spark runs start → icon and wraps, brightening as it arrives: that direction is    /// A spark runs start → icon and wraps, brightening as it arrives: that direction is
