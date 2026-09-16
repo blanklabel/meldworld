@@ -146,6 +146,16 @@ pub struct PlayerRun {
     /// number because messages, the loot report and `base_run_level` all want one;
     /// the per-hero ladders in `hero_levels` are the source of truth.
     pub run_level: i32,
+    /// The level every hero in this dive STARTED at.
+    ///
+    /// ⚠️ **This is what a hero who has earned nothing is worth, and `run_level` is not.**
+    /// `run_level` is `max(hero_levels)`, so it climbs the moment ANY hero advances — and a
+    /// party's hero vectors are grown lazily, seeded with whatever that base says. Seeded
+    /// from `run_level`, a hero created after somebody else had levelled was born at the
+    /// party's BEST level having fought nothing: level up on the field and the rest of the
+    /// party silently gained a level after the first fight that grew the vectors. Held
+    /// separately because the two answers only agree until the first level-up.
+    pub start_level: i32,
     /// Per-hero level inside this dive, aligned with the party's slots. Levels are
     /// dive-scoped (XP never persists); what survives is the account's best-per-class
     /// record.
@@ -245,7 +255,8 @@ impl PlayerRun {
             xp
         };
         if self.hero_levels.len() < size {
-            let base = self.run_level;
+            // The level a hero STARTS at, never the party's best — see `start_level`.
+            let base = self.start_level;
             self.hero_levels.resize(size, base);
             self.hero_xp.resize(size, 0);
             self.sync_pouches();
@@ -459,6 +470,7 @@ impl InstanceRun {
                 username,
                 character_class,
                 run_level: self.base_run_level,
+                start_level: self.base_run_level,
                 hero_levels: Vec::new(),
                 hero_xp: Vec::new(),
                 xp: 0,
@@ -1780,6 +1792,7 @@ mod tests {
             username: "u".into(),
             character_class: CharacterClass::Explorer,
             run_level: 1,
+            start_level: 1,
             xp: 0,
             backpack: vec![],
             pouches: vec![],
@@ -2031,6 +2044,7 @@ mod tests {
             username: "u".into(),
             character_class: CharacterClass::Explorer,
             run_level: 1,
+            start_level: 1,
             xp: 0,
             backpack: vec![],
             pouches: vec![],
@@ -2609,6 +2623,40 @@ mod tests {
     }
 
 
+    /// **A HERO THAT HAS EARNED NOTHING IS WORTH WHAT IT STARTED AT.** The per-hero vectors
+    /// are grown lazily, and they were seeded from `run_level` — which is `max(hero_levels)`
+    /// and so climbs the moment ANY hero advances. Level one hero up on the field (a Mote is
+    /// drunk by one hero and grows the vectors to just that slot), and the first fight that
+    /// grows them the rest of the way created every remaining hero at the party's BEST
+    /// level, having fought nothing. Reported from play as gaining another level after the
+    /// first fight.
+    #[test]
+    fn a_hero_the_party_grows_into_starts_where_the_dive_started() {
+        let b = Balance::load_default().unwrap();
+        let mut r = fresh_run();
+        r.start_level = 1;
+        r.run_level = 1;
+
+        // One hero drinks a Mote on the field: its own slot alone, paid whole.
+        let one = xp_to_next(1, &b);
+        assert!(r.award_hero_xp(0, 1, 1, one, &b) > 0, "the mote did not level anybody");
+        assert_eq!(r.hero_level(0), 2);
+        assert_eq!(r.run_level, 2, "the headline level follows the best hero");
+        assert_eq!(r.hero_levels.len(), 1, "only the drinker's slot existed yet");
+
+        // …and now the first fight pays the whole party, growing the vectors.
+        r.award_hero_xp(1, 4, 4, 0, &b);
+        assert_eq!(
+            r.hero_level(1),
+            1,
+            "a hero that has fought nothing was born at the party's best level"
+        );
+        assert_eq!(r.hero_level(2), 1);
+        assert_eq!(r.hero_level(3), 1);
+        // The drinker keeps what it earned, so the fix costs nothing that was won.
+        assert_eq!(r.hero_level(0), 2);
+    }
+
     fn fresh_run() -> PlayerRun {
         PlayerRun {
             run_id: "r".into(),
@@ -2616,6 +2664,7 @@ mod tests {
             username: "u".into(),
             character_class: CharacterClass::Explorer,
             run_level: 1,
+            start_level: 1,
             xp: 0,
             backpack: vec![],
             pouches: vec![],
@@ -2725,6 +2774,7 @@ mod tests {
             username: "u".into(),
             character_class: CharacterClass::Explorer,
             run_level: 1,
+            start_level: 1,
             xp: 0,
             backpack: vec![],
             pouches: vec![],
@@ -2779,6 +2829,7 @@ mod tests {
                 username: "u".into(),
                 character_class: CharacterClass::Hunter,
                 run_level: 1,
+                start_level: 1,
                 xp: 0,
                 backpack: vec![],
                 pouches: vec![],
@@ -2878,6 +2929,7 @@ mod tests {
             username: "u".into(),
             character_class: CharacterClass::Hunter,
             run_level: 1,
+            start_level: 1,
             xp: 0,
             backpack: vec![],
             pouches: vec![Vec::new(); heroes],

@@ -13751,6 +13751,9 @@ mod unlock_gate_tests {
             username: "u".into(),
             character_class: CharacterClass::Explorer,
             run_level: *levels.iter().max().unwrap_or(&1),
+            // The dive's own floor, which is the LOWEST of these — a fixture standing in
+            // for a party partway through a run, not one that started at its best hero.
+            start_level: *levels.iter().min().unwrap_or(&1),
             xp: 0,
             backpack: vec![],
             pouches: vec![],
