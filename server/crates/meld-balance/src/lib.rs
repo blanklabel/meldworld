@@ -164,6 +164,11 @@ pub struct Battle {
     pub initiative_max: f64,
     /// Rolls kept-best for a fighter with innate dodge — see `[battle]` in balance.
     pub initiative_advantage_rolls: u32,
+    /// How wide a band each side rolls in when a fight opens SIDED (a surprise or an
+    /// ambush): the favoured side in the top `opening_spread` of the gauge, the other in
+    /// the bottom. Must stay well under 0.5 or the bands meet and the opening stops being
+    /// one-sided.
+    pub opening_spread: f64,
     /// The beat after the bell in which nothing acts and no gauge fills.
     pub open_grace_ms: u64,
     pub flee_base: f64,
@@ -195,6 +200,23 @@ pub struct Battle {
     pub crit_chance_per_dex: f64,
     pub crit_chance_cap: f64,
     pub crit_mult: f64,
+    /// Gauge a blow takes off a target it found a WEAKNESS in or landed a CRIT on.
+    pub flinch_gauge_loss: f64,
+    /// …and how long that body cannot be flinched again, in ticks. Without it, four heroes
+    /// branded into one creature's weakness chain-flinch it out of the fight.
+    pub flinch_guard_ticks: u64,
+    /// Consecutive damaging resolutions that found a weakness or crit before a fighter
+    /// blazes ahead.
+    pub surge_streak: u32,
+    /// How much gauge that catch-up hands the striker (1.0 = act immediately).
+    pub surge_gauge: f64,
+    /// A braced fighter's chance to answer the first blow that lands on it, and what that
+    /// chance is worth per point of Wll (see `balance.toml` for why Wll and not Dex).
+    pub counter_chance_base: f64,
+    pub counter_chance_per_wll: f64,
+    pub counter_chance_cap: f64,
+    /// A counter is a snap answer rather than a full swing.
+    pub counter_damage_mult: f64,
     pub psyker_focus_base: usize,
     pub psyker_focus_per_level: i32,
     pub psyker_focus_cap: usize,
