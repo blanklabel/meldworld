@@ -223,41 +223,79 @@ impl UiMaterial for FireTrail {
     /// `hd2d::sprite_material` records three separate times: a full-quad effect painting
     /// over the art it was supposed to decorate.
     fn specialize(descriptor: &mut RenderPipelineDescriptor, _key: UiMaterialKey<Self>) {
-        if let Some(target) = descriptor
-            .fragment
-            .as_mut()
-            .and_then(|f| f.targets.first_mut())
-            .and_then(|t| t.as_mut())
-        {
-            target.blend = Some(BlendState {
-                color: BlendComponent {
-                    src_factor: BlendFactor::One,
-                    dst_factor: BlendFactor::One,
-                    operation: BlendOperation::Add,
-                },
-                alpha: BlendComponent {
-                    src_factor: BlendFactor::One,
-                    dst_factor: BlendFactor::One,
-                    operation: BlendOperation::Add,
-                },
-            });
-        }
+        additive(descriptor);
     }
 }
 
-/// The momentary grey impact on an icon that was just knocked backwards by a critical hit.
+/// The grey ball that comes in from the right and punches a recoiled icon backwards. Painted
+/// by `StateFx`'s PUNCH kind, so it can be a ball with a streak and an impact ring rather
+/// than the flat disc a `Node` can manage.
 #[derive(Component)]
 pub(crate) struct TurnHit {
     pub(crate) id: String,
+    pub(crate) mat: Handle<StateFx>,
 }
 
-/// The lasting ring on an icon that is being HELD (a blow found its weakness) or is
-/// STAGGERED (knocked all the way back to the start of the track). One node for both,
-/// because they are the same shape saying opposite things — something holding you still, and
-/// something having broken you open — and a fighter can only be drawn as one of them.
+/// The quad that draws what is being done to a fighter — the wall it is pressed against, or
+/// the neon bearing down on it. One node for both: a fighter can only be in one of those
+/// states at a time, and `ward_of` decides which.
 #[derive(Component)]
 pub(crate) struct TurnWard {
     pub(crate) id: String,
+    pub(crate) mat: Handle<StateFx>,
+}
+
+/// **WHAT IS BEING DONE TO A FIGHTER'S PLACE IN THE QUEUE**, as a custom UI material: the
+/// little wall a PINNED fighter is pressed against, and the neon raining down on a STAGGERED
+/// one. One material with a `kind`, the way `ability_fx` carries sixteen damage types — a
+/// second shader is a second thing to keep in step.
+///
+/// ⚠️ **It replaced a coloured RING, which is the best a `Node` can do and looked it.** A UI
+/// node cannot ramp a colour or carry a pattern; the flame learned that over four attempts,
+/// and this is the same lesson applied without spending them again.
+#[derive(Asset, AsBindGroup, TypePath, Debug, Clone)]
+pub(crate) struct StateFx {
+    /// `(seconds | age, kind, seed | ball x, flash)` — see `turn_state.wgsl`.
+    #[uniform(0)]
+    pub(crate) params: Vec4,
+    /// The state's colour, with an overall opacity in `a`.
+    #[uniform(0)]
+    pub(crate) tint: Vec4,
+    /// PUNCH only: `(ball y, tail stretch, travel x, travel y)`. The travel direction is
+    /// handed over rather than derived in the shader, because the ball follows an ARC and a
+    /// tail that assumed it was moving horizontally would hang off the side of it.
+    #[uniform(0)]
+    pub(crate) extra: Vec4,
+}
+
+impl UiMaterial for StateFx {
+    fn fragment_shader() -> ShaderRef {
+        "shaders/turn_state.wgsl".into()
+    }
+
+    /// Additive, like everything else on this bar: the icon it describes is never occluded.
+    fn specialize(descriptor: &mut RenderPipelineDescriptor, _key: UiMaterialKey<Self>) {
+        additive(descriptor);
+    }
+}
+
+/// Turn a UI material's pipeline additive: light ADDS where it overlaps, and nothing it
+/// draws can occlude the art beneath it. Shared by both of this bar's materials so they
+/// cannot disagree about how they composite.
+fn additive(descriptor: &mut RenderPipelineDescriptor) {
+    if let Some(target) = descriptor
+        .fragment
+        .as_mut()
+        .and_then(|f| f.targets.first_mut())
+        .and_then(|t| t.as_mut())
+    {
+        let add = BlendComponent {
+            src_factor: BlendFactor::One,
+            dst_factor: BlendFactor::One,
+            operation: BlendOperation::Add,
+        };
+        target.blend = Some(BlendState { color: add, alpha: add });
+    }
 }
 
 /// The one quad a fast fighter's flame is drawn on.
@@ -286,17 +324,89 @@ const HIT_TTL: f32 = 0.45;
 /// How far a recoil throws the icon back ON TOP of the ground its gauge actually lost — the
 /// overshoot that makes the jump read as a HIT rather than as a slide.
 const HIT_KNOCK: f32 = 9.0;
+/// When in the punch the ball reaches the body, as a fraction of [`HIT_TTL`].
+const PUNCH_ARRIVE: f32 = 0.30;
+/// **HITSTOP.** How long everything holds still at the moment of contact. This beat is the
+/// whole effect: a blow that travels through at a constant speed reads as something passing
+/// BY, and the pause is what makes it read as something landing.
+const PUNCH_HOLD: f32 = 0.14;
+/// Where the ball starts and ends, in icon widths from the body. It comes in from the right —
+/// the direction the fighter was charging — and carries on THROUGH and out the far side,
+/// because a punch follows through and a projectile that stops on contact is a wall.
+const PUNCH_FROM: f32 = 2.6;
+const PUNCH_TO: f32 = -2.6;
+/// How far below the body the arc starts and ends, in icon heights. The ball comes UP from
+/// the bottom right, peaks ON the body — which is where the hit lands — and falls away to the
+/// bottom left until it is off the lane entirely.
+const PUNCH_DROP: f32 = 1.25;
 
-/// The extra backward offset a recoil is drawn with, `age` seconds in. It decays to nothing,
-/// so the icon settles onto the position its real gauge says it has.
-pub(crate) fn hit_knock(age: f32) -> f32 {
-    let t = (1.0 - age / HIT_TTL).clamp(0.0, 1.0);
-    -HIT_KNOCK * t * t
+/// Where the punch is along its arc: `-1` at the bottom right where it starts, `0` at the
+/// apex where it lands, `+1` at the bottom left where it leaves. The hitstop is the flat
+/// stretch at 0.
+///
+/// One parameter drives the whole thing — x, height, opacity and the icon's own jolt all read
+/// off it — so the ball cannot be somewhere its shadow, its fade or its impact disagree with.
+pub(crate) fn punch_u(age01: f32) -> f32 {
+    let a = age01.clamp(0.0, 1.0);
+    if a < PUNCH_ARRIVE {
+        // Thrown: fast out of the start, slowing into the body.
+        let k = a / PUNCH_ARRIVE;
+        -(1.0 - k * k)
+    } else if a < PUNCH_ARRIVE + PUNCH_HOLD {
+        0.0
+    } else {
+        let k = (a - PUNCH_ARRIVE - PUNCH_HOLD) / (1.0 - PUNCH_ARRIVE - PUNCH_HOLD);
+        k * k
+    }
 }
 
-/// How bright the grey impact is, `age` seconds in.
-pub(crate) fn hit_flash(age: f32) -> f32 {
-    (1.0 - age / HIT_TTL).clamp(0.0, 1.0)
+/// Where the ball is, in icon widths from the body — positive to the right of it.
+pub(crate) fn punch_travel(age01: f32) -> f32 {
+    let u = punch_u(age01);
+    if u < 0.0 {
+        -u * PUNCH_FROM
+    } else {
+        u * PUNCH_TO
+    }
+}
+
+/// How far BELOW the body the ball is, in icon heights. Zero at the apex, which is the moment
+/// it lands — the arc is what carries it up onto the body and back off the lane.
+pub(crate) fn punch_rise(age01: f32) -> f32 {
+    let u = punch_u(age01);
+    PUNCH_DROP * u * u
+}
+
+/// How solid the ball is: almost nothing where it starts, nearly opaque at the moment of
+/// impact, fading again as it passes beyond the body until it is gone.
+pub(crate) fn punch_alpha(age01: f32) -> f32 {
+    let u = punch_u(age01).abs();
+    (1.0 - u * u).clamp(0.0, 1.0)
+}
+
+/// How hard the impact is flashing, `age01` through. It exists only across the hitstop.
+pub(crate) fn punch_flash(age01: f32) -> f32 {
+    let a = age01.clamp(0.0, 1.0);
+    if a < PUNCH_ARRIVE || a > PUNCH_ARRIVE + PUNCH_HOLD {
+        return 0.0;
+    }
+    let k = (a - PUNCH_ARRIVE) / PUNCH_HOLD;
+    1.0 - k * k
+}
+
+/// The extra backward offset a recoil is drawn with, `age` seconds in.
+///
+/// ⚠️ **NOTHING MOVES UNTIL THE BALL ARRIVES.** The first cut decayed from full knock at
+/// `age = 0`, so the icon was already flying backwards before the thing that hit it had got
+/// there. It holds, jolts on contact, and then eases back onto the position its real gauge
+/// says it has.
+pub(crate) fn hit_knock(age: f32) -> f32 {
+    let a = (age / HIT_TTL).clamp(0.0, 1.0);
+    if a < PUNCH_ARRIVE {
+        return 0.0;
+    }
+    let after = ((a - PUNCH_ARRIVE) / (1.0 - PUNCH_ARRIVE)).clamp(0.0, 1.0);
+    -HIT_KNOCK * (1.0 - after) * (1.0 - after)
 }
 
 /// What a fighter's icon is wearing: nothing, the force field that HOLDS it still, or the
@@ -456,6 +566,14 @@ pub(crate) fn fan_pile(xs: &mut [f32]) {
     }
 }
 
+/// How far a STAGGERED icon is shoved down into its lane. A push, never a lift — it is being
+/// held down — and bounded to the room the lane has under an icon, so it cannot press through
+/// the rail of the lane below.
+pub(crate) fn press_down(t: f32) -> f32 {
+    let shove = 0.6 + 0.4 * (t * 5.0).sin();
+    (LANE_H - ICON - ICON_INSET) * shove
+}
+
 /// The bounce offset for a fighter whose turn is up: a lift, never a drop, so the icon
 /// never dips below the lane the others are sliding along.
 pub(crate) fn bounce_px(t: f32) -> f32 {
@@ -523,6 +641,7 @@ pub(crate) fn rebuild_turn_bar(
     wa: Option<Res<WorldAssets>>,
     mut view: ResMut<TurnBarView>,
     mut fires: ResMut<Assets<FireTrail>>,
+    mut states: ResMut<Assets<StateFx>>,
     existing: Query<Entity, With<TurnOrderBar>>,
 ) {
     let Some(wa) = wa else { return };
@@ -668,39 +787,6 @@ pub(crate) fn rebuild_turn_bar(
                                     ..default()
                                 },
                             ));
-                            // The ring a held or staggered fighter wears, and the impact a
-                            // recoil leaves — both behind the icon so neither covers the art
-                            // they are describing.
-                            lane.spawn((
-                                TurnWard { id: id.clone() },
-                                Node {
-                                    border_radius: BorderRadius::all(Val::Px(ICON)),
-                                    position_type: PositionType::Absolute,
-                                    left: Val::Px(0.0),
-                                    top: Val::Px(0.0),
-                                    width: Val::Px(ICON + 9.0),
-                                    height: Val::Px(ICON + 9.0),
-                                    border: UiRect::all(Val::Px(2.0)),
-                                    display: Display::None,
-                                    ..default()
-                                },
-                                BackgroundColor(Color::NONE),
-                                BorderColor::all(Color::NONE),
-                            ));
-                            lane.spawn((
-                                TurnHit { id: id.clone() },
-                                Node {
-                                    border_radius: BorderRadius::all(Val::Px(ICON)),
-                                    position_type: PositionType::Absolute,
-                                    left: Val::Px(0.0),
-                                    top: Val::Px(0.0),
-                                    width: Val::Px(ICON),
-                                    height: Val::Px(ICON),
-                                    display: Display::None,
-                                    ..default()
-                                },
-                                BackgroundColor(Color::NONE),
-                            ));
                             // The halo, BEHIND the icon (spawned first) so a glowing turn
                             // reads as light coming off the sprite rather than a disc over it.
                             lane.spawn((
@@ -755,6 +841,51 @@ pub(crate) fn rebuild_turn_bar(
                                 ));
                             });
                         }
+                        // ⚠️ **AND THE STATE QUADS COME LAST, OVER the icons.** The charge
+                        // lines go under a body because a line running through a sprite reads
+                        // as a rendering fault; the neon raining ON a staggered fighter is the
+                        // opposite — behind the art it was invisible except around the edges,
+                        // which is not what "pushed down" looks like. Additive, so it lights
+                        // the body rather than covering it.
+                        for (id, _ally, _img, _crop) in &rows {
+
+                                                        let hit_mat = states.add(StateFx {
+                                params: Vec4::new(0.0, 2.0, 0.5, 0.0),
+                                tint: Vec4::ZERO,
+                                extra: Vec4::ZERO,
+                            });
+                            lane.spawn((
+                                TurnHit { id: id.clone(), mat: hit_mat.clone() },
+                                MaterialNode(hit_mat),
+                                Node {
+                                    position_type: PositionType::Absolute,
+                                    left: Val::Px(0.0),
+                                    top: Val::Px(0.0),
+                                    width: Val::Px(0.0),
+                                    height: Val::Px(0.0),
+                                    display: Display::None,
+                                    ..default()
+                                },
+                            ));
+                            let ward_mat = states.add(StateFx {
+                                params: Vec4::new(0.0, 0.0, hash01(id), 0.0),
+                                tint: Vec4::ZERO,
+                                extra: Vec4::ZERO,
+                            });
+                            lane.spawn((
+                                TurnWard { id: id.clone(), mat: ward_mat.clone() },
+                                MaterialNode(ward_mat),
+                                Node {
+                                    position_type: PositionType::Absolute,
+                                    left: Val::Px(0.0),
+                                    top: Val::Px(0.0),
+                                    width: Val::Px(0.0),
+                                    height: Val::Px(0.0),
+                                    display: Display::None,
+                                    ..default()
+                                },
+                            ));
+                        }
                     });
             });
         });
@@ -799,8 +930,9 @@ pub(crate) fn animate_turn_bar(
         (Without<TurnFire>, Without<TurnHit>, Without<TurnWard>),
     >,
     mut fires: Query<(&TurnFire, &mut Node), (Without<TurnHit>, Without<TurnWard>)>,
-    mut hits: Query<(&TurnHit, &mut Node, &mut BackgroundColor), Without<TurnWard>>,
-    mut wards: Query<(&TurnWard, &mut Node, &mut BackgroundColor, &mut BorderColor)>,
+    mut hits: Query<(&TurnHit, &mut Node), Without<TurnWard>>,
+    mut wards: Query<(&TurnWard, &mut Node)>,
+    mut state_mats: ResMut<Assets<StateFx>>,
     mut fire_mats: ResMut<Assets<FireTrail>>,
 ) {
     let t = time.elapsed_secs();
@@ -877,7 +1009,13 @@ pub(crate) fn animate_turn_bar(
     };
 
     for (icon, mut node) in &mut icons {
-        let lift = if up(&icon.id) { bounce_px(t) } else { 0.0 };
+        let lift = if up(&icon.id) { bounce_px(t) } else { 0.0 }
+            // …and a staggered body is shoved the other way: down into the floor of its own
+            // lane, under the weight of what is raining on it.
+            + match battle.view(&icon.id).map(ward_of) {
+                Some(Ward::Staggered) => press_down(t),
+                _ => 0.0,
+            };
         // The gauge it lost has already moved it; this is the overshoot on top, so the jump
         // reads as something having HIT it rather than as the bar sliding.
         let knock = hit_age(&icon.id).map(hit_knock).unwrap_or(0.0);
@@ -944,10 +1082,11 @@ pub(crate) fn animate_turn_bar(
             mat.tint = Vec4::new(col.red, col.green, col.blue, 1.0);
         }
     }
-    // **THE GREY HIT.** A knock backwards gets a colourless impact — grey rather than the
-    // fighter's own colour, because this is something done TO it and the side colour is
-    // already carried by everything else on its line.
-    for (hit, mut node, mut bg) in &mut hits {
+    // **THE PUNCH.** A grey ball arcs up from the bottom right, peaks ON the body — which is
+    // where it lands, and where everything stops for a beat — and falls away to the bottom
+    // left until it is off the lane. Nearly transparent at the start, nearly solid at the
+    // moment of impact, gone by the end.
+    for (hit, mut node) in &mut hits {
         let Some(age) = hit_age(&hit.id) else {
             if node.display != Display::None {
                 node.display = Display::None;
@@ -957,24 +1096,44 @@ pub(crate) fn animate_turn_bar(
         if node.display != Display::Flex {
             node.display = Display::Flex;
         }
-        let f = hit_flash(age);
-        // ⚠️ **IT HAS TO BE BIGGER THAN THE ICON IT SITS BEHIND.** The first cut drew it at
-        // exactly `ICON`, centred, behind a 30px opaque sprite — so the punch was perfectly
-        // hidden by the body it was describing, and three captures in a row showed nothing
-        // at all. It starts wider than the body and blooms outward from there.
-        let size = ICON * (1.35 + 0.5 * (1.0 - f));
-        set_px(&mut node.width, size);
-        set_px(&mut node.height, size);
-        set_px(&mut node.left, at_x(&hit.id) + hit_knock(age) + ICON * 0.5 - size * 0.5);
-        set_px(
-            &mut node.top,
-            set.top(lane_of_id(&hit.id)) + ICON_INSET + ICON * 0.5 - size * 0.5,
-        );
-        bg.0 = Color::srgb(0.86, 0.88, 0.92).with_alpha(0.7 * f);
+        let age01 = (age / HIT_TTL).clamp(0.0, 1.0);
+        let body_x = at_x(&hit.id) + hit_knock(age) + ICON * 0.5;
+        let apex_y = set.top(lane_of_id(&hit.id)) + ICON_INSET + ICON * 0.5;
+        // The quad has to hold the WHOLE arc — both ends of the travel and the full drop —
+        // or the punch is clipped by its own node at exactly the moment it follows through.
+        let reach = PUNCH_FROM.max(-PUNCH_TO) * ICON + ICON;
+        let left = (body_x - reach).max(0.0);
+        let w = (body_x + reach - left).max(1.0);
+        let h = ICON + PUNCH_DROP * ICON + ICON;
+        let top = apex_y - ICON * 0.5;
+        set_px(&mut node.left, left);
+        set_px(&mut node.width, w);
+        set_px(&mut node.top, top);
+        set_px(&mut node.height, h);
+        if let Some(mat) = state_mats.get_mut(&hit.mat).as_mut() {
+            let ball_x = body_x + punch_travel(age01) * ICON;
+            let ball_y = apex_y + punch_rise(age01) * ICON;
+            // Where it is heading, so the tail can lie along the arc instead of hanging off
+            // the side of it. Sampled from the curve itself rather than derived, which keeps
+            // the tail honest through the hitstop (where the direction is undefined).
+            let ahead = (age01 + 0.04).min(1.0);
+            let dx = (body_x + punch_travel(ahead) * ICON) - ball_x;
+            let dy = (apex_y + punch_rise(ahead) * ICON) - ball_y;
+            // Normalised in the shader's own units: both components divided by the quad's
+            // HEIGHT, which is the space `d` is measured in over there.
+            let len = (dx * dx + dy * dy).sqrt().max(0.0001);
+            // `params.x` is the icon's height as a fraction of this quad's, so the ball can
+            // be sized against the BODY it is hitting rather than against a quad whose height
+            // changes whenever the arc is retuned.
+            mat.params = Vec4::new(ICON / h, 2.0, (ball_x - left) / w, punch_flash(age01));
+            mat.extra = Vec4::new((ball_y - top) / h, 0.5 + age01 * 0.8, dx / len, dy / len);
+            mat.tint = Vec4::new(1.0, 1.0, 1.0, punch_alpha(age01));
+        }
     }
-    // **THE RING.** A force field holding a fighter still, or the broken one it wears after
-    // being knocked all the way back.
-    for (ward, mut node, mut bg, mut border) in &mut wards {
+    // **THE WALL AND THE PRESS.** A pinned fighter is pressed up against a little wall
+    // standing across its lane; a staggered one has neon raining down on it. Both are the one
+    // `StateFx` material, which is why they can carry a pattern at all.
+    for (ward, mut node) in &mut wards {
         let kind = battle.view(&ward.id).map(ward_of).unwrap_or(Ward::None);
         if kind == Ward::None {
             if node.display != Display::None {
@@ -985,29 +1144,36 @@ pub(crate) fn animate_turn_bar(
         if node.display != Display::Flex {
             node.display = Display::Flex;
         }
-        let pulse = 0.5 + 0.5 * (t * 7.0).sin();
-        let size = ICON + 9.0 + 3.0 * pulse;
-        set_px(&mut node.width, size);
-        set_px(&mut node.height, size);
-        set_px(&mut node.left, at_x(&ward.id) + ICON * 0.5 - size * 0.5);
-        let lift = if up(&ward.id) { bounce_px(t) } else { 0.0 };
-        set_px(
-            &mut node.top,
-            set.top(lane_of_id(&ward.id)) + ICON_INSET + ICON * 0.5 - size * 0.5 + lift,
-        );
-        // Held reads as a barrier — the same steel blue a Barrier wears everywhere else in
-        // this game. Staggered reads as a warning, because it is one: everything hits it
-        // harder until it acts.
-        let (edge, fill) = match kind {
-            Ward::Held => (Color::srgb(0.55, 0.85, 1.0), Color::srgba(0.4, 0.75, 1.0, 0.16)),
-            _ => (Color::srgb(1.0, 0.45, 0.4), Color::srgba(1.0, 0.35, 0.3, 0.18)),
-        };
-        let a = 0.55 + 0.45 * pulse;
-        if border.top.alpha() != a {
-            *border = BorderColor::all(edge.with_alpha(a));
+        let lane_top = set.top(lane_of_id(&ward.id));
+        match kind {
+            Ward::Held => {
+                // Standing across the lane at the icon's NOSE — the direction it is trying
+                // to travel. A wall behind it would be scenery; in front, it is the reason
+                // the icon has stopped.
+                set_px(&mut node.left, at_x(&ward.id) + ICON * 0.82);
+                set_px(&mut node.top, lane_top + ICON_INSET - 4.0);
+                set_px(&mut node.width, 15.0);
+                set_px(&mut node.height, ICON + 8.0);
+            }
+            _ => {
+                // Bearing down over the whole body, from the top of the lane to its floor.
+                set_px(&mut node.left, at_x(&ward.id) - 6.0);
+                set_px(&mut node.top, lane_top);
+                set_px(&mut node.width, ICON + 12.0);
+                set_px(&mut node.height, LANE_H);
+            }
         }
-        if bg.0 != fill {
-            bg.0 = fill;
+        if let Some(mat) = state_mats.get_mut(&ward.mat).as_mut() {
+            // Held is the steel blue a Barrier wears everywhere else in this game; the press
+            // is neon purple, which nothing else on this bar uses — being wide open is the
+            // one state here a player has to act on.
+            let (kind_id, col) = match kind {
+                Ward::Held => (0.0, Color::srgb(0.55, 0.85, 1.0)),
+                _ => (1.0, Color::srgb(0.72, 0.35, 1.0)),
+            };
+            let c = col.to_linear();
+            mat.params = Vec4::new(t, kind_id, hash01(&ward.id), 0.0);
+            mat.tint = Vec4::new(c.red, c.green, c.blue, 1.0);
         }
     }
     for (glow, mut node, mut bg) in &mut glows {
@@ -1272,28 +1438,119 @@ mod tests {
         );
     }
 
-    /// **A KNOCK OVERSHOOTS AND THEN SETTLES.** The gauge it lost has already moved the icon;
-    /// the overshoot is what makes that jump read as a hit rather than as the bar sliding —
-    /// and it has to decay to nothing, or the icon lies about where its gauge is.
+    /// **A STAGGERED BODY IS PUSHED DOWN, NEVER LIFTED** — and never further than the room
+    /// its own lane has underneath it, or it presses through the rail of the lane below.
     #[test]
-    fn a_knock_overshoots_backwards_and_settles() {
-        assert!(hit_knock(0.0) < 0.0, "a fresh knock throws the icon back");
-        assert!(hit_knock(0.0) >= -HIT_KNOCK, "…but never further than its own limit");
-        assert!(
-            hit_knock(0.15) > hit_knock(0.0),
-            "the knock must ease back toward the true position"
-        );
-        assert_eq!(hit_knock(HIT_TTL), 0.0, "the icon must settle exactly on its gauge");
-        assert_eq!(hit_knock(HIT_TTL * 3.0), 0.0, "…and stay there");
+    fn a_staggered_icon_is_shoved_into_the_floor_of_its_lane() {
+        let room = LANE_H - ICON - ICON_INSET;
+        for i in 0..64 {
+            let t = i as f32 * 0.041;
+            let push = press_down(t);
+            assert!(push > 0.0, "the press lifted the body at t={t}");
+            assert!(push <= room + 0.001, "the press shoved it out of its lane at t={t}");
+        }
+        // It varies, or it is a static offset rather than something bearing down.
+        let a = press_down(0.0);
+        let b = press_down(0.31);
+        assert!((a - b).abs() > 0.01, "the press never moved: {a} vs {b}");
     }
 
-    /// The grey impact fades with the same clock, so the punch and the flash are one event.
+    /// **IT ARCS: UP FROM THE BOTTOM RIGHT, LANDS AT THE APEX, FALLS OFF THE LANE.** The
+    /// apex IS the impact — that is what makes the hit read as the top of the swing rather
+    /// than as something flying past at the body's height.
     #[test]
-    fn the_impact_fades_out_with_the_knock() {
-        assert_eq!(hit_flash(0.0), 1.0);
-        assert!(hit_flash(HIT_TTL * 0.5) < 1.0);
-        assert_eq!(hit_flash(HIT_TTL), 0.0);
-        assert_eq!(hit_flash(HIT_TTL * 2.0), 0.0, "a stale flash must not linger");
+    fn the_punch_arcs_up_onto_the_body_and_away_off_the_lane() {
+        // Starts low and to the right…
+        assert!(punch_travel(0.0) > 0.0, "it must come in from the right");
+        assert!(punch_rise(0.0) > 0.0, "…from below the lane's centre");
+        // …peaks ON the body, which is where it lands…
+        let impact = PUNCH_ARRIVE + PUNCH_HOLD * 0.5;
+        assert_eq!(punch_travel(impact), 0.0, "the apex must sit on the body");
+        assert_eq!(punch_rise(impact), 0.0, "the apex is the top of the arc");
+        // …and falls away to the other side.
+        assert!(punch_travel(1.0) < 0.0, "a punch follows through");
+        assert!(punch_rise(1.0) > 0.0, "…and drops off the lane as it goes");
+        // The rise is a real arc, not a step: it falls the whole way in and climbs the whole
+        // way out.
+        for i in 1..10 {
+            let a = PUNCH_ARRIVE * i as f32 / 10.0;
+            assert!(
+                punch_rise(a) <= punch_rise(a - PUNCH_ARRIVE / 10.0) + 1e-6,
+                "the ball stopped climbing on the way in, at {a}"
+            );
+        }
+    }
+
+    /// **NEARLY INVISIBLE AT THE START, NEARLY SOLID AT THE IMPACT, GONE BY THE END.**
+    #[test]
+    fn the_punch_fades_up_into_the_hit_and_out_again() {
+        let impact = PUNCH_ARRIVE + PUNCH_HOLD * 0.5;
+        assert!(punch_alpha(0.0) < 0.15, "it must come in almost transparent");
+        assert!(punch_alpha(impact) > 0.9, "it must be nearly solid when it lands");
+        assert!(punch_alpha(1.0) < 0.15, "…and be gone by the time it leaves");
+        assert!(
+            punch_alpha(PUNCH_ARRIVE * 0.5) < punch_alpha(PUNCH_ARRIVE * 0.9),
+            "it has to build toward the hit"
+        );
+        for i in 0..=20 {
+            let a = i as f32 / 20.0;
+            assert!((0.0..=1.0).contains(&punch_alpha(a)), "alpha left its range at {a}");
+        }
+    }
+
+    /// **THE BALL FLIES IN, STOPS DEAD, AND FOLLOWS THROUGH.** The hitstop is the whole
+    /// effect: a blow travelling at a constant speed reads as something passing BY.
+    #[test]
+    fn the_punch_flies_in_stops_dead_and_carries_on_through() {
+        // In from the right…
+        assert!(punch_travel(0.0) > 0.0, "the ball must start off to the right");
+        assert!(
+            punch_travel(0.15) < punch_travel(0.0),
+            "…and travel toward the body"
+        );
+        // …HOLDS on the body…
+        let mid = PUNCH_ARRIVE + PUNCH_HOLD * 0.5;
+        assert_eq!(punch_travel(PUNCH_ARRIVE), 0.0);
+        assert_eq!(punch_travel(mid), 0.0, "the hitstop is what makes it land");
+        assert!(punch_flash(mid) > 0.0, "the impact flashes across the hold");
+        assert_eq!(punch_flash(PUNCH_ARRIVE * 0.5), 0.0, "…and only across it");
+        assert_eq!(punch_flash(1.0), 0.0);
+        // …then carries on out the far side.
+        assert!(punch_travel(1.0) < 0.0, "a punch follows through");
+        assert!(
+            punch_travel(1.0) < punch_travel(PUNCH_ARRIVE + PUNCH_HOLD + 0.01),
+            "it must keep going, not drift back"
+        );
+        // …and the hold is FLAT: the ball does not creep during the hitstop.
+        assert_eq!(
+            punch_travel(PUNCH_ARRIVE),
+            punch_travel(PUNCH_ARRIVE + PUNCH_HOLD * 0.9),
+            "the ball crept through the hitstop"
+        );
+    }
+
+    /// **THE BODY DOES NOT MOVE UNTIL IT IS HIT.** The first cut decayed the knock from
+    /// `age = 0`, so the icon was already flying backwards before the thing that hit it had
+    /// arrived.
+    #[test]
+    fn nothing_moves_until_the_punch_lands() {
+        assert_eq!(hit_knock(0.0), 0.0, "the icon jumped before the ball got there");
+        assert_eq!(hit_knock(HIT_TTL * PUNCH_ARRIVE * 0.9), 0.0);
+        let on_impact = hit_knock(HIT_TTL * PUNCH_ARRIVE);
+        assert!(on_impact <= 0.0);
+        assert!(
+            hit_knock(HIT_TTL * (PUNCH_ARRIVE + 0.2)) > on_impact,
+            "the jolt must ease back toward the true position"
+        );
+        // …and it settles EXACTLY on the icon's real position, or the icon lies about where
+        // its gauge is for the rest of the fight.
+        assert_eq!(hit_knock(HIT_TTL), 0.0);
+        assert_eq!(hit_knock(HIT_TTL * 3.0), 0.0);
+        for i in 0..40 {
+            let age = HIT_TTL * i as f32 / 40.0;
+            assert!(hit_knock(age) >= -HIT_KNOCK, "the knock overshot its own limit");
+            assert!(hit_knock(age) <= 0.0, "a knock is backwards, never forwards");
+        }
     }
 
     /// A spark runs start → icon and wraps, brightening as it arrives: that direction is    /// A spark runs start → icon and wraps, brightening as it arrives: that direction is

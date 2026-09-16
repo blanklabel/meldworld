@@ -2152,12 +2152,46 @@ were sized in UV on a quad whose width IS the fighter's charge line (~30px at th
 the track, ~600 at the GO end), so the head glow swelled twentyfold as a fighter charged;
 both are in pixels now, off `UiVertexOutput::size`.
 
-**AND THE BAR DRAWS ALL THREE.** A recoil throws the icon backwards with a grey impact — the
-overshoot decays to nothing so the icon settles on the position its real gauge says it has,
-and the punch starts on the wire status's RISING edge, so one knock draws one hit however
-many ticks the status rides for. A held fighter wears a blue force field and a staggered one
-a red ring, from ONE node: a fighter can only be drawn as one of them, and **staggered
-outranks held** because being wide open is the news you act on.
+**AND THE BAR DRAWS ALL THREE.** A recoil is a **grey ball that arcs up from the bottom
+right** — the direction the fighter was charging — peaks ON the body, which is where it
+lands, and falls away to the bottom left until it is off the lane. It comes in almost
+transparent, is nearly solid at the moment of impact, and fades out as it passes beyond. The
+apex IS the hit: that is what makes it read as the top of a swing rather than as something
+flying past at the body's height. ⚠️ **The beat is the whole effect**: a blow travelling at a
+constant speed reads as something passing BY, and hitstop is what makes it read as something
+landing. Its whole path lives in Rust — one parameter (`punch_u`) drives the
+travel, the arc, the opacity and the icon's own jolt, so the ball cannot be somewhere its
+fade or its impact disagree with — rather than in the shader,
+so it can be tested and so the icon's own jolt runs off the same numbers — the body does not
+move at all until the ball arrives, which the first cut got wrong by decaying the knock from
+the moment the effect started, sending the icon flying before the thing that hit it got
+there. The overshoot then decays to nothing so the icon settles exactly on the position its
+real gauge says it has, and the punch starts on the wire status's RISING edge, so one knock
+draws one hit however many ticks the status rides for. A held fighter is pressed up against a **little
+wall** standing across its lane, and a staggered one has **purple neon raining down on it**,
+shoving its icon into the lane's floor. Both come out of ONE `UiMaterial` with a `kind`
+(`turn_state.wgsl`), the way `ability_fx` carries sixteen damage types — and **staggered
+outranks held**, because being wide open is the news you act on.
+⚠️ **A ring was the first cut and it looked like what it was**: the best a rounded rectangle
+can do. A wall says *impeded* in a way a ring around a body cannot — the thing is trying to
+go somewhere and cannot — and neon bearing down says *held open* rather than merely marked.
+⚠️ **Two bugs that only a captured frame could show, both in the tail.** Its direction is
+handed IN, because the ball follows an arc and a tail that assumed horizontal motion hangs
+off the side of the curve — and `dir` arrives already in the shader's units, so scaling its x
+by the aspect a second time skewed it back toward horizontal. Then the falloff used
+`max(along, 0)`, which gives every pixel IN FRONT of the ball a distance of zero, i.e. full
+tail brightness: the streak drew ahead of the ball on every frame, pointing the punch
+backwards.
+⚠️ **Everything in that shader is measured in QUAD HEIGHTS, not in uv** — except the ball,
+which is sized against the ICON it is hitting. The quad's height changes with the arc's drop,
+so a ball in quad-heights silently doubled the moment the arc was made taller. These quads
+are several times wider than they are tall, so a radius in raw uv draws an ellipse the width
+of the lane — the punch's first cut was a forty-pixel white blob with an eighty-pixel streak
+that swallowed the icon and half the rail. `UiVertexOutput` carries the node's pixel `size`,
+so the aspect never has to be passed in.
+⚠️ **The state quads draw OVER the icons while the charge lines draw under them.** A line
+through a sprite reads as a rendering fault; rain that only shows around a sprite's edges is
+not pressing on anything. Additive, so it lights the body rather than covering it.
 ⚠️ **Every line is spawned before every icon**, in two passes — spawn order is draw order in
 a UI hierarchy, so building each fighter's line and then its icon interleaved let a LATER
 fighter's charge line draw over an EARLIER fighter's sprite.

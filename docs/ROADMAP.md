@@ -5301,6 +5301,14 @@ only the things that can't be class-gated.
     `apply_ability_damage` now, the one funnel every ability's damage passes through: they
     used to exist only inside `resolve_attack`, so the whole caster half of the game could
     not land one.
+  - *And the bar draws each one as what it IS.* A pinned fighter is pressed against a little
+    wall standing across its lane, lit where its icon touches; a staggered one has purple
+    neon raining down on it, dark at each line's edge and light at its core, shoving the body
+    into the floor of its lane; and a recoiled one is punched by a grey ball thrown in from
+    the right that stops dead on contact and follows through. All three from one `UiMaterial`
+    with a `kind`. ⚠️ A coloured ring was the first cut for the first two — the best a rounded
+    rectangle can do, and it looked it — and the punch's **hitstop** lives in Rust so it can
+    be tested, because a blow at a constant speed reads as something passing by.
   - *Shipped, all three through ONE funnel* (`Battle::answer_the_blow`, called from
     `stamped`, which every resolution already passes through): a **FLINCH** takes
     `[battle] flinch_gauge_loss` off anything hit where it is weak or crit; a **CATCH-UP**
