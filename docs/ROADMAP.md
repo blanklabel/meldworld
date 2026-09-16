@@ -5519,6 +5519,17 @@ only the things that can't be class-gated.
     about to leave is exactly the moment you want it and the one place that never mentioned
     it. The Threshold names it now, and its purpose line says what the room is for.
 
+- [x] **PG-4 — A hero the party grows into starts where the dive started.** Reported from
+  play as levelling up on the field and then gaining another level after the first fight —
+  and it is a real double-grant, not a card arriving late. `PlayerRun`'s per-hero vectors
+  (`hero_levels` / `hero_xp`) are grown LAZILY, seeded from `run_level`, and `run_level` is
+  `max(hero_levels)`: it climbs the moment ANY hero advances. A Mote is drunk by one hero
+  and grows the vectors to just that slot, so the first fight that grows them the rest of
+  the way created every remaining hero at the party's BEST level, having fought nothing.
+  `PlayerRun::start_level` holds the level the dive began at and is what a hero who has
+  earned nothing is now worth; the two answers only ever agreed until the first level-up,
+  which is exactly why one of them had to be written down.
+
 - [ ] **UX-1 — Last City minimap & compass (town-only).** A minimap and compass
   **for Last City itself** so players can navigate the hub — locate the districts
   (Vault-Deep, Market, Forge/Alembic, Bounty Board, Drill Yard, Vanguard Wall),
