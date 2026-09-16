@@ -202,6 +202,7 @@ pub fn inset(focused: bool) -> impl Bundle {
         },
         BackgroundColor(GLASS_DEEP),
         BorderColor::all(if focused { EDGE } else { EDGE_SOFT }),
+        ChipBase { rest: GLASS_DEEP, warn: false },
     )
 }
 
@@ -224,6 +225,35 @@ pub fn chip_sized(on: bool, min_width: Val) -> impl Bundle {
         },
         BackgroundColor(if on { CHIP_ON } else { CHIP_OFF }),
         BorderColor::all(if on { EDGE } else { EDGE_SOFT }),
+        ChipBase { rest: if on { CHIP_ON } else { CHIP_OFF }, warn: false },
+    )
+}
+
+/// A chip whose action cannot be undone — unequip, discard, demolish. The same pill, but
+/// it lights RED under the cursor, so "this one takes something away" is said by the
+/// surface and not only by the word printed on it.
+///
+/// Built from the parts rather than wrapping [`chip`] and adding a second [`ChipBase`]:
+/// two of one component in a single bundle is the runtime panic [`inset`]'s own comment
+/// already records for `BorderColor`.
+pub fn chip_warn(on: bool) -> impl Bundle {
+    chip_sized_warn(on, Val::Auto)
+}
+
+/// [`chip_warn`] with a floor on its width. See [`chip_sized`].
+pub fn chip_sized_warn(on: bool, min_width: Val) -> impl Bundle {
+    (
+        Node {
+            border_radius: BorderRadius::all(Val::Px(5.0)),
+            min_width,
+            justify_content: JustifyContent::Center,
+            padding: UiRect::axes(Val::Px(12.0), Val::Px(7.0)),
+            border: UiRect::all(Val::Px(1.0)),
+            ..default()
+        },
+        BackgroundColor(if on { CHIP_ON } else { CHIP_OFF }),
+        BorderColor::all(if on { EDGE } else { EDGE_SOFT }),
+        ChipBase { rest: if on { CHIP_ON } else { CHIP_OFF }, warn: true },
     )
 }
 
@@ -244,6 +274,7 @@ pub fn row_chip(on: bool) -> impl Bundle {
         },
         BackgroundColor(if on { CHIP_ON } else { CHIP_OFF }),
         BorderColor::all(if on { EDGE } else { EDGE_SOFT }),
+        ChipBase { rest: if on { CHIP_ON } else { CHIP_OFF }, warn: false },
     )
 }
 
@@ -258,6 +289,60 @@ pub const CHIP_OFF: Color = GLASS_THIN;
 pub const CHIP_HOVER: Color = Color::srgba(0.2, 0.26, 0.46, 0.8);
 /// Hover fill for a row whose action is destructive (unequip, discard).
 pub const CHIP_HOVER_WARN: Color = Color::srgba(0.4, 0.2, 0.22, 0.75);
+/// Fill while the button is actually held down. Between the rest fill and the hover fill
+/// there was nothing at all, so a click had no tell of its own: the row lit on approach
+/// and then looked identical whether you had pressed it or merely arrived.
+pub const CHIP_PRESS: Color = Color::srgba(0.34, 0.42, 0.68, 0.92);
+
+/// What an interactive chip repaints back TO once the cursor leaves it — carried by the
+/// chip itself, and the whole reason hover works everywhere.
+///
+/// **A CONTROL WITH NO HOVER STATE READS AS SCENERY.** Every town counter — the Forge, the
+/// Apothecary, the Broker, the Bounty Board, the Vanguard Wall — spawned its rows as real
+/// `Button`s that really did fire, and repainted NOTHING under the cursor. So the one
+/// signal a mouse user has that a thing is pressable was absent from every menu in the
+/// city, and the counters read exactly as dead as the status line they replaced. Reported
+/// from play as *"I can't use the forge or anything"* — while the clicks were landing.
+///
+/// Five screens had solved it privately, each with its own `Interaction::Hovered` arm
+/// repainting to its own idea of the rest colour — which is why a worn gear chip hovered
+/// gold and came back transparent. It is the chip's own property now, so a chip cannot be
+/// spawned without it and a new panel gets hover the day it is written rather than the day
+/// somebody remembers. Same argument as `audience_of` and `blocking_field`: one funnel, not
+/// a list every new caller has to be added to.
+#[derive(Component, Clone, Copy)]
+pub struct ChipBase {
+    /// The fill it was spawned with, restored on `Interaction::None`.
+    pub rest: Color,
+    /// Destructive: lights [`CHIP_HOVER_WARN`] rather than [`CHIP_HOVER`].
+    pub warn: bool,
+}
+
+/// Light every hovered chip, everywhere, from one system.
+///
+/// `Changed<Interaction>` makes this cost nothing on a still cursor, and the fill is
+/// written only when it actually moved — a `DerefMut` on `BackgroundColor` flags the
+/// component changed whether or not the value did, and a flagged node is re-extracted.
+pub fn repaint_hovered_chips(
+    mut chips: Query<(&Interaction, &ChipBase, &mut BackgroundColor), Changed<Interaction>>,
+) {
+    for (interaction, base, mut bg) in &mut chips {
+        let want = match *interaction {
+            Interaction::Pressed => CHIP_PRESS,
+            Interaction::Hovered => {
+                if base.warn {
+                    CHIP_HOVER_WARN
+                } else {
+                    CHIP_HOVER
+                }
+            }
+            Interaction::None => base.rest,
+        };
+        if bg.0 != want {
+            *bg = BackgroundColor(want);
+        }
+    }
+}
 
 /// A horizontal rule between sections of a panel.
 pub fn divider() -> impl Bundle {
@@ -441,6 +526,63 @@ mod tests {
         assert!(on.red > off.red && on.blue < on.red, "the selected chip is not a gold wash");
         assert!(CHIP_HOVER.alpha() > CHIP_OFF.alpha());
         assert_eq!(CHIP_ON, ACTIVE, "two definitions of 'selected'");
+    }
+
+    /// **EVERY INTERACTIVE SURFACE CARRIES ITS OWN REST COLOUR**, and it is the one it was
+    /// spawned with.
+    ///
+    /// This is what makes hover a property of the widget instead of a list of screens that
+    /// remembered to implement it — the list the whole of Last City was missing from. It
+    /// spawns each helper into a real `World` rather than asserting on the source, because
+    /// the failure being guarded is a *bundle* that drifts from its own `BackgroundColor`:
+    /// a chip whose `ChipBase` says one thing and whose fill says another comes back to the
+    /// WRONG colour the first time a cursor crosses it, which is precisely the bug the
+    /// Equip tab's worn rows had.
+    #[test]
+    fn every_chip_repaints_back_to_the_fill_it_was_spawned_with() {
+        let mut world = World::new();
+        for on in [true, false] {
+            let cases: Vec<(&str, Entity)> = vec![
+                ("chip", world.spawn(chip(on)).id()),
+                ("chip_sized", world.spawn(chip_sized(on, Val::Px(80.0))).id()),
+                ("chip_warn", world.spawn(chip_warn(on)).id()),
+                ("chip_sized_warn", world.spawn(chip_sized_warn(on, Val::Px(34.0))).id()),
+                ("row_chip", world.spawn(row_chip(on)).id()),
+                ("inset", world.spawn(inset(on)).id()),
+            ];
+            for (name, e) in cases {
+                let base = *world
+                    .get::<ChipBase>(e)
+                    .unwrap_or_else(|| panic!("{name}({on}) has no ChipBase, so it can never \
+                                               light under the cursor"));
+                let fill = world.get::<BackgroundColor>(e).unwrap().0;
+                assert_eq!(
+                    base.rest, fill,
+                    "{name}({on}) would repaint back to a colour it was never drawn in"
+                );
+                assert_eq!(
+                    base.warn,
+                    name.ends_with("warn"),
+                    "{name}({on}) disagrees with itself about being destructive"
+                );
+            }
+        }
+    }
+
+    /// Hover, press and rest have to be three READABLE states: two that land on the same
+    /// colour is a control that says nothing when you press it, which is where this whole
+    /// complaint started.
+    #[test]
+    fn a_chip_says_something_different_when_hovered_and_when_held() {
+        for rest in [CHIP_ON, CHIP_OFF, GLASS_DEEP] {
+            assert_ne!(rest, CHIP_HOVER);
+            assert_ne!(rest, CHIP_PRESS);
+        }
+        assert_ne!(CHIP_HOVER, CHIP_PRESS);
+        assert_ne!(CHIP_HOVER, CHIP_HOVER_WARN);
+        // Pressing is the loudest of the three — it is the only one that means "this is
+        // happening" rather than "this could happen".
+        assert!(CHIP_PRESS.alpha() > CHIP_HOVER.alpha());
     }
 
     /// And the floors have to fit inside the fractions they belong to at the smallest window

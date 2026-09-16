@@ -3905,6 +3905,34 @@ budgeted so the creature sim never threatens the single-owner loop or the server
     being TAKEN, and an opening is one being GIVEN.
   - ⚠️ **And it rides `battle.started` as a word**, because both openings were otherwise
     invisible — the only tell was gauges starting somewhere different.
+- [x] **CR-18 — The first affliction waits until d200.** Poison and web do not wear off
+  (`meld_proto::statuses`: an affliction holds until something CURES it), and the cures that
+  answer them — a Keeper's **Poultice** (L5), a Resonant's **Sanctuary** (L35), a bought
+  antidote — are not reliably in a party's hands in the on-ramp. Mire is `[biome_gate]` **0**,
+  so a `bog_serpent`'s Venom Fang and a `bog_stinger`'s Sting were both `min_level 1`: you
+  could be permanently poisoned by roughly the first thing you met, with nothing in the game
+  you could do about it. That is the "condition with no reachable answer is a delayed loss"
+  argument this repo already made when it stopped afflictions carrying between fights.
+  - *Shipped:* `[encounters] affliction_min_distance = 200` and
+    `abilities::AFFLICTION_MIN_LEVEL` (16 = `mlevel(200)`). Eight rows moved up to it —
+    `web_bind`, `toxic_spores`, `venom_fang`, `sting`, `silt_claw`, `bog_miasma`,
+    `bramble_bind`, `briar_court`. Poison **damage** is untouched: it resolves and is over,
+    so it is a hit like any other, and gating the type would have emptied a swamp creature's
+    whole kit. `no_affliction_lands_before_the_depth_it_is_gated_to` derives the level from
+    balance rather than writing 16 down twice — the same construction
+    `every_boss_can_go_wide_at_the_level_a_gatekeeper_is_first_met` uses.
+  - *And the existing invariant caught the lazy version.* Raising those rows outright left
+    four kinds — the stalker, the serpent, the stinger and the miredrowned — with **nothing
+    authored to do** below level 16, which
+    `every_creature_kind_has_a_pool_and_all_pools_are_well_formed` already forbids (every
+    pool must open by level 4). So the signature rows are SPLIT instead: the bite, the sting
+    and the claw stay at level 1 and keep their damage, and the venom is a row of its own at
+    16 (`venom_fang`, `venom_sting`, `rot_claw`), on a longer cooldown and a lower weight so
+    it reads as the notable version rather than a coin flip. The stalker gains a
+    `thorn_lash`. A creature gains venom with depth instead of going quiet without it — and
+    the weights were chosen to leave every boss's `signature_ability` rebuke (`CN-7`, the
+    rarest row) exactly where it was.
+
 - [x] **CR-16 — Four bugs from the battle work, and the slot ladder that CR-14 broke.**
   - **The party-slot bars had to come down.** `encounter_party_scale` had been almost
     exactly cancelling the XP split (per-hero rate 0.95x / 1.00x / 1.10x); retiring it made
@@ -5301,6 +5329,43 @@ only the things that can't be class-gated.
   - *And the bar grew a third rail:* anyone charging faster than they should be — braced,
     hastened, or fresh off a catch-up — hops onto it, so "why is that one moving quicker"
     is answered by where it is standing. The lane says SPEED, the colour still says SIDE.
+
+- [x] **UX-17 — Every chip lights under the cursor, and a control that cannot act says
+  so.** Reported from play as *"I can't use the forge or anything"* — while the clicks were
+  landing. Hover had been solved five times privately (the Equip tab's gear rows, its
+  categories, the unequip and back rows, the party screen's formation toggle) and the whole
+  of Last City was not one of the five, so every town counter — the Forge, the Apothecary,
+  the Broker, the Bounty Board, the Vanguard Wall — repainted **nothing** under the cursor.
+  The one signal a mouse user has that a thing is pressable was absent from every menu in
+  the city, and `UX-12`'s counters read exactly as dead as the status line they replaced.
+  - *Shipped:* `glass::ChipBase` is the fill a chip repaints back to, carried by the chip
+    itself and set by `chip` / `chip_sized` / `row_chip` / `inset`, with ONE
+    `repaint_hovered_chips` registered ungated on `Update`. A chip cannot now be spawned
+    without hover, so a new panel gets it the day it is written rather than the day
+    somebody remembers — the `audience_of` / `blocking_field` argument, one screen over.
+    A third state came with it (`CHIP_PRESS`): rest, hover and *held* were two states
+    doing three jobs, so a click looked identical to merely arriving. The five private
+    implementations are deleted, which also fixed a worn gear chip hovering gold and
+    coming back **transparent** — each of them had its own idea of the rest colour, and
+    `GearButton::worn` existed only to feed that guess.
+  - *And greying is the other half.* The anvil's `[F] forge from nothing refined` was
+    `enabled` unconditionally, so a fresh account got a bright row and a live **Forge**
+    button and learned it could not work by pressing it; same for `[R] reroll` with no
+    refined stock, and for a quench armed with no trophy. All three are dim and labelled
+    `(short)` now, with the fix named in the detail column — the rule the shelf has had
+    since `EC-2`. Still PICKABLE while dim, deliberately: a row you cannot act on is a row
+    you are still allowed to read, and only the commit stands down.
+  - *And it closed the dead chips `UX-12` shipped knowing about.* Every nav entry was
+    spawned as a `Button` while `counter_click`'s nav arm was gated on `city.shop_open`,
+    so the Forge's three column headings, the Wall's season and — worse — the Bounty
+    Board's own **Hunts / Bounties** pair were pressable and inert. Survivable while
+    nothing lit; a chip that lights and does nothing is a worse lie than a label. A tab
+    NAMES its action (`CounterTab`) exactly as a row does and the handler resolves it by
+    name, legends draw as text, and the tabs are built ABOVE the empty/loading early
+    returns — the hunts side previously showed no Bounties chip at all, so **the Den was
+    reachable only by knowing `[B]`**, a key printed in the footer of the side you were
+    already on. `every_nav_chip_either_turns_the_counter_around_or_is_not_a_chip` holds
+    both halves, since an action nothing handles is as dead as no action at all.
 
 - [ ] **UX-1 — Last City minimap & compass (town-only).** A minimap and compass
   **for Last City itself** so players can navigate the hub — locate the districts

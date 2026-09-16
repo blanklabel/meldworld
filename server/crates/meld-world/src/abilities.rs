@@ -105,6 +105,30 @@ use DamageType::{
 };
 use ScalingBase::{Attack, Level, Magic, MaxHp};
 
+/// The creature level at which POISON and WEB first appear — `[encounters]
+/// affliction_min_distance` (200) read through `Scaling::mlevel`.
+///
+/// Neither of those two wears off (`meld_proto::statuses`): an affliction holds until
+/// something CURES it, and the cures that answer them — a Keeper's Poultice, a Resonant's
+/// Sanctuary, a bought antidote — are not reliably in a party's hands in the on-ramp. A
+/// bog serpent's bite at d20 was therefore a condition with no reachable answer, which is
+/// a delayed loss rather than a decision. Below this the creature CLAWS, exactly as the
+/// tutorial-band stalker's own comment already established.
+///
+/// Damage of the Poison TYPE is deliberately untouched: it resolves and is over, so it is
+/// a hit like any other. It is the lingering half that had to wait.
+///
+/// A creature whose signature row WAS the venomous one keeps the blow and loses only the
+/// lingering half — a bog serpent still bites at d20, and gains its venom at d200 as a row
+/// of its own. Stripping the row outright would have left four kinds with nothing authored
+/// to do in the on-ramp, which
+/// `every_creature_kind_has_a_pool_and_all_pools_are_well_formed` already forbids.
+///
+/// Written here rather than derived because this table is authored content with no balance
+/// in reach; `no_affliction_lands_before_the_depth_it_is_gated_to` holds it to the
+/// `[TUNABLE]` so the two cannot drift.
+pub const AFFLICTION_MIN_LEVEL: i32 = 16;
+
 /// The full (level-unfiltered) ability pool for a creature kind. The battle
 /// engine gates entries by the spawn's level (`min_level`), cooldown, and
 /// `hp_threshold_pct` at selection time — the pool itself is permanent per
@@ -113,12 +137,14 @@ pub fn creature_abilities(kind: &str) -> Vec<MonsterAbility> {
     match kind {
         // ---------------------------------------------------------- forest --
         "forest_bloom_stalker" => vec![
-            // min_level 4: the tutorial-band stalker (L1–3) just claws — its
-            // webs come out once the world starts scaling (keeps the very
-            // first fight legible AND lethal to a passive party).
-            ability("web_bind", "Web Bind!", 3, 60, 0, 4, None,
+            // The shallow stalker just claws — its webs come out at
+            // `AFFLICTION_MIN_LEVEL` (d200), which keeps the first fights legible AND
+            // keeps a permanent binding out of the hands of a party with no cure.
+            ability("thorn_lash", "Thorn Lash!", 3, 40, 0, 1, None,
+                vec![dmg(Attack, 1.1, Slash, SingleEnemy)]),
+            ability("web_bind", "Web Bind!", 3, 60, 0, AFFLICTION_MIN_LEVEL, None,
                 vec![status("web", 60, SingleEnemy)]),
-            ability("toxic_spores", "Toxic Spores!", 2, 100, 10, 8, None,
+            ability("toxic_spores", "Toxic Spores!", 2, 100, 10, AFFLICTION_MIN_LEVEL, None,
                 vec![dmg(Magic, 0.9, Poison, AllEnemies), status("poison", 60, AllEnemies)]),
             ability("verdant_mend", "Verdant Mend!", 2, 150, 0, 15, Some(0.5),
                 vec![heal(MaxHp, 0.25, SelfCast)]),
@@ -222,7 +248,9 @@ pub fn creature_abilities(kind: &str) -> Vec<MonsterAbility> {
         ],
         // ------------------------------------------------------------ mire --
         "bog_serpent" => vec![
-            ability("venom_fang", "Venom Fang!", 3, 50, 0, 1, None,
+            ability("fang", "Fang!", 3, 50, 0, 1, None,
+                vec![dmg(Attack, 1.0, Poison, SingleEnemy)]),
+            ability("venom_fang", "Venom Fang!", 2, 70, 0, AFFLICTION_MIN_LEVEL, None,
                 vec![dmg(Attack, 1.0, Poison, SingleEnemy), status("poison", 60, SingleEnemy)]),
             ability("constrict", "Constrict!", 2, 100, 0, 12, None,
                 vec![dmg(Attack, 0.6, Blunt, SingleEnemy), status("bind", 50, SingleEnemy)]),
@@ -239,6 +267,8 @@ pub fn creature_abilities(kind: &str) -> Vec<MonsterAbility> {
         ],
         "bog_stinger" => vec![
             ability("sting", "Sting!", 3, 30, 0, 1, None,
+                vec![dmg(Attack, 1.0, Pierce, SingleEnemy)]),
+            ability("venom_sting", "Venom Sting!", 2, 60, 0, AFFLICTION_MIN_LEVEL, None,
                 vec![dmg(Attack, 1.0, Pierce, SingleEnemy), status("poison", 40, SingleEnemy)]),
             ability("swarm_frenzy", "Swarm Frenzy!", 2, 140, 0, 14, None,
                 vec![atb(0.3, MonsterGroup)]),
@@ -348,10 +378,12 @@ pub fn creature_abilities(kind: &str) -> Vec<MonsterAbility> {
         ],
         "miredrowned" => vec![
             ability("silt_claw", "Silt Claw!", 3, 40, 0, 1, None,
+                vec![dmg(Attack, 1.0, Poison, SingleEnemy)]),
+            ability("rot_claw", "Rot Claw!", 2, 70, 0, AFFLICTION_MIN_LEVEL, None,
                 vec![dmg(Attack, 1.0, Poison, SingleEnemy), status("poison", 60, SingleEnemy)]),
             ability("drowning_grip", "Drowning Grip!", 2, 170, 10, 8, None,
                 vec![dmg(Attack, 0.7, Water, SingleEnemy), status("bind", 60, SingleEnemy)]),
-            ability("bog_miasma", "Bog Miasma!", 2, 220, 0, 14, None,
+            ability("bog_miasma", "Bog Miasma!", 2, 220, 0, AFFLICTION_MIN_LEVEL, None,
                 vec![status("poison", 100, AllEnemies)]),
             ability("depths_reclaim", "THE DEPTHS RECLAIM!", 1, 340, 30, 24, Some(0.4),
                 vec![dmg(Magic, 1.4, Poison, AllEnemies), status("poison", 80, AllEnemies)]),
@@ -379,13 +411,13 @@ pub fn creature_abilities(kind: &str) -> Vec<MonsterAbility> {
                 vec![dmg(Attack, 1.1, Slash, SingleEnemy)]),
             // Takes the turn AND the tempo: the court does not hurry, so it makes sure
             // you do not either.
-            ability("bramble_bind", "Bramble Bind!", 2, 150, 0, 8, None,
+            ability("bramble_bind", "Bramble Bind!", 2, 150, 0, AFFLICTION_MIN_LEVEL, None,
                 vec![status("web", 90, SingleEnemy), atb(-0.25, SingleEnemy)]),
             ability("courtly_glamour", "Courtly Glamour!", 2, 190, 12, 14, None,
                 vec![dmg(Magic, 1.2, Mind, SingleEnemy), status("confused", 70, SingleEnemy)]),
             // Its mid-tier WIDE row, reachable at the level the first gate stands and NOT
             // hp-gated — `every_boss_can_go_wide_at_the_level_a_gatekeeper_is_first_met`.
-            ability("briar_court", "THE BRIAR COURT!", 2, 250, 22, 12, None,
+            ability("briar_court", "THE BRIAR COURT!", 2, 250, 22, AFFLICTION_MIN_LEVEL, None,
                 vec![dmg(Magic, 1.0, Earth, AllEnemies), status("web", 60, AllEnemies)]),
             // The RAREST row, so `signature_ability` picks it as the rebuke (CN-7) — and
             // it is deliberately not a bigger hit: interrupt a fae lord and it takes the
@@ -963,6 +995,50 @@ mod tests {
 
 
 
+
+    /// Nothing that APPLIES a poison or a web may be rolled before `[encounters]
+    /// affliction_min_distance`.
+    ///
+    /// Both are afflictions: they hold until something CURES them, and the cures that answer
+    /// them are not reliably in a party's hands in the on-ramp — so one taken at d20 is a
+    /// condition with no reachable answer, which is a delayed loss rather than a decision.
+    /// Reported from play as being poisoned and webbed by the first things you meet.
+    ///
+    /// The threshold is DERIVED from balance rather than written down twice, the same way
+    /// `every_boss_can_go_wide_at_the_level_a_gatekeeper_is_first_met` derives its own: move
+    /// the tunable and this test moves with it, so a new ability authored under the old
+    /// number fails here rather than shipping.
+    ///
+    /// Damage of the Poison TYPE is deliberately NOT gated — it resolves and is over, so it
+    /// is a hit like any other, and gating it would empty a swamp creature's whole kit.
+    #[test]
+    fn no_affliction_lands_before_the_depth_it_is_gated_to() {
+        let b = meld_balance::Balance::load_default().unwrap();
+        let gate = crate::Scaling::new(&b).mlevel(b.encounters.affliction_min_distance);
+        assert_eq!(
+            gate, AFFLICTION_MIN_LEVEL,
+            "the authored gate and the [TUNABLE] disagree about what level d{} is",
+            b.encounters.affliction_min_distance
+        );
+        for kind in crate::all_creature_kinds().into_iter().chain(ALL_BOSSES.iter().copied()) {
+            for a in creature_abilities(kind) {
+                let lingering: Vec<&str> = a
+                    .effects
+                    .iter()
+                    .filter_map(|e| e.status_name.as_deref())
+                    .filter(|s| *s == "poison" || *s == "web")
+                    .collect();
+                assert!(
+                    lingering.is_empty() || a.min_level >= gate,
+                    "{kind}'s {} applies {lingering:?} at level {}, below the level d{} \
+                     grants ({gate}) - an affliction with no cure in reach is a delayed loss",
+                    a.ability_kind,
+                    a.min_level,
+                    b.encounters.affliction_min_distance
+                );
+            }
+        }
+    }
 
     /// Every named boss must be able to go WIDE at the shallowest level a gatekeeper is ever
     /// met at — not merely somewhere in its pool.
