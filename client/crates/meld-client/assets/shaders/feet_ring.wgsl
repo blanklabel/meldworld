@@ -1,210 +1,159 @@
-// THE RING AT A COMBATANT'S FEET: its health, painted on the ground it is standing on.
+// THE LIQUID INSIDE A COMBATANT'S HEALTH RING.
 //
-// A bar kept anywhere other than the body it belongs to makes "how is the Knight doing" a
-// question you answer by looking away from the Knight. A ring around the feet puts the answer
-// where the body already is, and because it lies on the GROUND it reads in perspective with
-// the scene instead of floating in front of it.
+// The ring is a glass TUBE lying on the ground at a fighter's feet, and this is what is in it:
+// a green pool filling it round from the arc nearest the camera, the red bed a hit opens
+// behind the pool, and nothing at all past that — where the tube is empty you see empty glass,
+// because the shell (a plain `StandardMaterial` with specular transmission) is always there.
 //
-// ⚠️ **IT IS A DISC MESH, NOT A TORUS.** The annulus, the pool and the drained bed are all cut
-// in the fragment shader, which is what lets the level be an arbitrary fraction that changes
-// every time something takes damage — a torus would need its geometry rebuilt for every HP
-// change, on every body, every tick.
+// ⚠️ **AND IT IS ONE TORUS, VESSEL AND CONTENTS TOGETHER.** The glass was a SECOND, fatter
+// torus wrapped around this one, a `StandardMaterial` with real specular transmission. Two
+// concentric tori do not read as liquid in a vessel at the size a feet ring draws — they read
+// as **two rings stacked on one body**, which is how it came back from play — and the shell
+// greyed the pool out from in front of it, so a fighter at FULL health drew as a bare grey
+// ring. The vessel is the `d > ghost` branch below now: same mesh, same normals, same light,
+// so the glass cannot separate from the liquid it holds because it IS the liquid's own mesh.
 //
-// ⚠️ **GREEN IS LIFE AND RED IS WHAT IT COST, AND NEITHER IS A SIDE.** The ring is read as
-// LIQUID: a green pool, the red bed it drains back over, and a dark vessel under both. Which
-// side a body is on rides the outer rim instead — one hairline, because "whose is this" is
-// answered by the body standing inside the ring long before the ring says anything.
+// ⚠️ **IT IS A TORUS, NOT AN ANNULUS CUT FROM A DISC.** The flat version was shaded to look
+// round with three hand-written terms — a specular, a far wall, a fresnel — and still came back
+// from play as not reading as a tube. It never could: the light was a guess about a surface
+// that was not there. A torus carries real normals and real depth, so the scene's own light
+// does the work, and its UVs are already the two coordinates this bar needs.
 //
-// ⚠️ **THE POOL IS CENTRED ON THE FRONT AND EMPTIES TOWARD THE BACK.** A clock-style bar
-// starting at the front would put the empty half exactly where the number is written and
-// where the player is looking; draining symmetrically keeps the readable arc — the one
-// nearest the camera and never behind the body — full until the fighter is nearly gone.
+// ⚠️ **AND THE LEVEL IS MEASURED FROM THE CAMERA, NOT FROM THE MESH.** `u` starts wherever the
+// torus generator began winding; the pool has to start at the arc NEAREST THE VIEWER, so the
+// Rust side hands in that bearing (`front`). Reading the mesh's own seam instead is what put
+// the pool behind the body for a whole build.
 
 #import bevy_pbr::forward_io::VertexOutput
 
 struct RingParams {
-    // x = filled fraction 0..1, y = the fraction the pool is draining FROM (the red bed a hit
-    // leaves behind), z = seconds, w = flags: 1 = this body owns the turn.
+    // x = filled fraction 0..1, y = the fraction the red bed reaches, z = seconds,
+    // w = 1 while this body owns the turn.
     params: vec4<f32>,
-    // The SIDE this body is on, worn as the outer rim only, with an overall opacity in `a`.
+    // The SIDE this body is on, worn as a tint on the liquid's rim, opacity in `a`.
     tint: vec4<f32>,
-    // x = a heal just landed (1 → 0), y = a hit just landed (1 → 0), z = the Barrier this
-    // body is holding as a fraction of its own max HP, w = the level's FLOW: positive while
-    // it is draining, negative while it is filling, and zero the moment it settles.
+    // x = a heal just landed (1 → 0), y = a hit just landed (1 → 0), z = the Barrier held as a
+    // fraction of max HP, w = the level's FLOW (positive draining, negative filling).
     pulse: vec4<f32>,
+    // x = the bearing of the camera-facing arc, in turns round `u`. y/z/w spare.
+    view: vec4<f32>,
+    // The surface: 48 heights round the ring, four to a vec4, simulated in Rust as a damped
+    // wave equation (`battle_rings::RingWave`).
+    //
+    // ⚠️ std140 gives a bare `f32` array a 16-byte stride, so the packing is four-to-a-`vec4`
+    // on both sides — and ⚠️ the FIELD ORDER of this struct is the ABI: `AsBindGroup` packs one
+    // `#[uniform(100)]` block in declaration order, so a member added in a different place on
+    // one side makes the shader read another's bytes, silently and with no error.
+    wave: array<vec4<f32>, 12>,
 };
 
 @group(#{MATERIAL_BIND_GROUP}) @binding(100) var<uniform> ring: RingParams;
 
 const TAU: f32 = 6.2831853;
-// Where the ring's stroke sits, as a fraction of the mesh's radius. The gap between them is
-// the stroke's thickness, and it is wide because the HP number is written INSIDE it.
-// ⚠️ `battle_rings::R_IN`/`R_OUT` mirror these, because the Rust side has to know where the
-// middle of the stroke is to lay the digits along it. A test reads them back out of this file.
-const R_IN: f32 = 0.60;
-const R_OUT: f32 = 0.96;
-
-// Life, what life cost, and the vessel both sit in.
+// Life, and what life cost. Green is ALWAYS life — the level is read from how much there is,
+// never from what colour it is.
 const LIFE: vec3<f32> = vec3<f32>(0.16, 0.86, 0.36);
 const LOSS: vec3<f32> = vec3<f32>(0.93, 0.20, 0.22);
-const EMPTY: vec3<f32> = vec3<f32>(0.05, 0.06, 0.09);
-// Temp HP is not health: it is a shell standing in front of it, so it gets the steel blue the
-// rest of the game already spends on Barrier rather than a shade of the liquid.
-const WARD: vec3<f32> = vec3<f32>(0.55, 0.78, 1.0);
-// How wide a gradient between two sections is, in fractions of the half-ring. Wide enough to
-// read as one liquid shading into another rather than as two painted arcs meeting.
-//
-// ⚠️ **IT IS WIDEST ON SCREEN EXACTLY WHERE A HEALTHY RING PUTS IT.** The ring is an ellipse,
-// so a fixed angular band covers far more pixels at the left and right extremes than at the
-// front or back — and those extremes are where the waterline sits at around four-fifths of a
-// bar. A blend that reads right in the middle of the ring reads as a pale WEDGE there.
+// How wide the gradient between the two is, in fractions of the half-ring.
 const BLEND: f32 = 0.024;
 
-// ⚠️ **THE POOL IS CONTINUOUS. DO NOT TICK IT INTO SEGMENTS.** The reference art draws its
-// bars as blocks and a segmented version was built and thrown away: at this radius, on ground
-// seen in perspective, twenty-six gaps read as a row of dashes rather than as a quantity —
-// "ugly", and the liquid it spends is the whole reading. A block bar earns its gaps on a flat
-// HUD bar with room for them; this one is a curve around a body.
+fn wave_at(i: i32) -> f32 {
+    let q = ring.wave[i / 4];
+    let k = i % 4;
+    if (k == 0) { return q.x; }
+    if (k == 1) { return q.y; }
+    if (k == 2) { return q.z; }
+    return q.w;
+}
 
 @fragment
 fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     let fill = clamp(ring.params.x, 0.0, 1.0);
-    // The bed can never be shallower than the pool standing in it.
     let ghost = clamp(max(ring.params.y, ring.params.x), 0.0, 1.0);
     let t = ring.params.z;
-    // ⚠️ Not `active`: that is a reserved word in WGSL, and naming a local after it fails the
-    // shader at PIPELINE BUILD — which `make check` never reaches.
+    // ⚠️ Not `active`: a reserved word in WGSL, and naming a local after it fails the shader at
+    // PIPELINE BUILD — which `make check` never reaches.
     let is_turn = ring.params.w;
     let heal = clamp(ring.pulse.x, 0.0, 1.0);
     let hit = clamp(ring.pulse.y, 0.0, 1.0);
-    let ward = clamp(ring.pulse.z, 0.0, 1.0);
 
-    // The mesh is a unit `Circle`, so its uv is the bounding square: recentre to get a local
-    // position, and work in polar from there.
-    let p = (in.uv - vec2<f32>(0.5, 0.5)) * 2.0;
-    let r = length(p);
-    if (r < R_IN || r > R_OUT) {
-        discard;
+    // How far round from the camera-facing arc, as a fraction of the half-ring. The pool is
+    // symmetric about that arc, so both ends of it are the same number — which keeps the half
+    // the player is looking at full until the fighter is nearly gone.
+    let rel = fract(in.uv.x - ring.view.x + 1.0);
+    let signed = rel - select(0.0, 1.0, rel > 0.5);
+    let d = abs(signed) * 2.0;
+
+    // ── real light on a real surface ──────────────────────────────────────────────────────
+    // The torus gives us its own normal, so this is shading rather than an impression of it.
+    // ⚠️ It is computed BEFORE the empty branch, because the EMPTY glass is lit by the same
+    // normal the liquid is — that shared light is what makes one tube out of two states.
+    let n = normalize(in.world_normal);
+    let key = normalize(vec3<f32>(-0.35, 0.85, 0.40));
+    let lambert = clamp(dot(n, key), 0.0, 1.0);
+    // The tube's upper half catches the light; `v` runs round the cross-section, so this is
+    // the meniscus — liquid climbing the glass — sitting where it physically would.
+    let climb = pow(clamp(sin(in.uv.y * TAU), 0.0, 1.0), 2.0);
+    // A hot line where the eye grazes the tube's silhouette: the tube's own edges, which is
+    // what says "cylinder" rather than "painted stripe" whether or not anything is inside it.
+    let sheen = pow(clamp(1.0 - abs(sin(in.uv.y * TAU)), 0.0, 1.0), 3.0);
+
+    // ⚠️ **PAST THE BED IS EMPTY GLASS, NOT A HOLE.** `discard` here is what forced a second
+    // mesh to exist: something has to draw the part of the tube that has no liquid in it, or
+    // the vessel simply stops where the health does and the bar has no length to read against.
+    // Drawn by this mesh, the empty end is unmistakably the same tube — dark, cool, and lit by
+    // the same key — and there is no second object to stack.
+    if (d > ghost + BLEND) {
+        let glass = vec3<f32>(0.20, 0.24, 0.31) * (0.55 + 0.75 * lambert);
+        // The rim is the brightest thing on empty glass: with nothing inside to carry light,
+        // the silhouette IS the read.
+        let lit = mix(glass, vec3<f32>(0.62, 0.71, 0.86), sheen * 0.55 + climb * 0.18);
+        return vec4<f32>(lit, ring.tint.a);
     }
 
-    // Distance from the FRONT of the ring — the arc nearest the camera — as a fraction of the
-    // half-ring, so both ends of the pool are the same number and the level is symmetric.
-    // ⚠️ **MEASURED FROM +y, WHICH THE -90° TURN ABOUT X LAYS TOWARD THE CAMERA.** Negating it
-    // centres the pool BEHIND the body and drains it across the one arc the number is written
-    // on — verified by rendering it, because which way a flattened mesh faces is not something
-    // to reason out from the transform.
-    let d = abs(atan2(p.x, p.y)) / (TAU * 0.5);
-    // Across the stroke: 0 at the inner wall, 1 at the outer.
-    let u = (r - R_IN) / (R_OUT - R_IN);
-    let a = fract((atan2(p.x, p.y) + TAU) / TAU);
+    let green = 1.0 - smoothstep(fill - BLEND, fill + BLEND, d);
+    let red = clamp(1.0 - green, 0.0, 1.0) * (1.0 - smoothstep(ghost - BLEND, ghost + BLEND, d));
 
-    // ── the two surfaces ──────────────────────────────────────────────────────────────────
-    // Each is a gradient, never a cut: a step between green and red reads as two stacked bars,
-    // and the whole point of the ring is that it is ONE body of liquid at a level.
-    // ⚠️ A full ring has its edge at d = 1, which is the seam at the back — `step` pins it
-    // open, or a body at full health wears a dark notch behind it.
-    // ⚠️ **WAVES RUN THE WAY THE LEVEL IS GOING, AND ONLY WHILE IT IS GOING.** An ambient
-    // swell was built first and did not land: a sine travelling round a stroke twenty pixels
-    // thick, on textured ground, seen in perspective, is not liquid — it is a bar that will
-    // not hold still. What reads as liquid is the surface breaking up WHEN IT MOVES, so the
-    // ripple's amplitude is the flow itself and a settled bar is perfectly flat.
-    //
-    // The phase runs in `d` — distance from the near arc, which is the axis the pool actually
-    // drains along — so a crest travels toward the empty end while it is draining and back
-    // toward full while it is filling, mirrored on both halves the way the pool itself is.
-    let flow = clamp(ring.pulse.w, -1.0, 1.0);
-    let surge = sign(flow) * min(abs(flow), 1.0);
-    let lvl = fill + 0.017 * abs(surge) * sin(d * 34.0 - t * 9.0 * surge);
+    // The simulated surface, sampled round the ring and interpolated so it reads as one sheet
+    // rather than as 48 stripes. HIGH PARTS ARE LIGHTER.
+    let wpos = fract(in.uv.x) * 48.0;
+    let w0 = i32(floor(wpos)) % 48;
+    let wf = fract(wpos);
+    let h = mix(wave_at(w0), wave_at((w0 + 1) % 48), wf);
+    let crest = clamp(h * 9.0, -1.0, 1.0);
 
-    var green = 1.0 - smoothstep(lvl - BLEND, lvl + BLEND, d);
-    green = max(green, step(0.999, fill));
-    let has_bed = smoothstep(0.0, 0.01, ghost - fill);
-    var red = smoothstep(lvl - BLEND, lvl + BLEND, d)
-        * (1.0 - smoothstep(ghost - BLEND, ghost + BLEND, d));
-    red = max(red, step(0.999, ghost) * smoothstep(lvl - BLEND, lvl + BLEND, d)) * has_bed;
 
-    // Light gathers along the inner wall. This does NOT move — depth is a property of the
-    // vessel, and the only thing that animates is the surface, and only when it is going
-    // somewhere.
-    let across = 1.0 - smoothstep(0.12, 1.0, u);
-    let shade = 0.88 + 0.12 * across;
+    // ⚠️ **THE LIQUID CARRIES ITS OWN LIGHT.** It is seen THROUGH a shell, and anything that
+    // only reflects the scene comes out the far side as grey — the bar went pale the moment the
+    // glass became visible enough to read. A pool that glows survives its own container, which
+    // is also what a health bar should do: be the brightest thing on the body.
+    var col = mix(LOSS, LIFE, green);
+    col = col * (1.05 + 0.45 * lambert + 0.20 * crest);
+    // A bright meniscus where the liquid meets the glass, lifted by the wave passing under it.
+    col = mix(col, mix(col, vec3<f32>(1.0), 0.55), climb * (0.30 + 0.25 * crest));
 
-    var col = EMPTY;
-    var alpha = 0.72;
-    // The drained bed keeps its own dark shading, so an empty ring is a vessel with something
-    // missing from it rather than a hole in the picture.
-    col = mix(col, LOSS * shade, red);
-    alpha = mix(alpha, 0.98, red);
-    col = mix(col, LIFE * shade, green);
-    alpha = mix(alpha, 1.0, green);
-
-    // THE WATERLINE: a bright meniscus where the pool ends. It is what makes a change of level
-    // legible at a glance — the eye tracks the line, not the area.
-    let edge = 1.0 - smoothstep(0.0, BLEND * 0.8, abs(d - lvl));
+    // THE WATERLINE, and the two things that happen at it. ⚠️ Neither ever MOVES it: the
+    // boundary is the health number, and a boundary that wobbles reads as the number changing
+    // — which came back from play as people thinking they were being healed.
+    let edge = 1.0 - smoothstep(0.0, BLEND * 0.9, abs(d - fill));
     let has_line = (1.0 - step(0.999, fill)) * step(0.001, fill);
     col = mix(col, mix(LIFE, vec3<f32>(1.0), 0.5), edge * has_line * 0.45);
-    alpha = max(alpha, edge * has_line * 0.7);
-
-    // A heal FLOWS IN over the red: the waterline runs white-green as it rises.
     col = mix(col, vec3<f32>(0.72, 1.0, 0.80), edge * heal * 0.8);
-    alpha = max(alpha, edge * heal * 0.9);
-    // A hit lights the bed it just opened, so the cost is visible for the beat it takes the
-    // pool to settle — the same argument hitstop makes one screen over.
-    // ⚠️ **KEEP THE RED.** A generous wash toward white over a bed that is already bright
-    // leaves it reading as PINK — the flash is meant to say "this just happened", not to spend
-    // the one colour that says what happened.
     col = mix(col, vec3<f32>(1.0, 0.72, 0.62), red * hit * 0.4);
 
-    // THE SHELL IN FRONT OF THE HEALTH: a Barrier lining the inner wall, on its own arc from
-    // the same front, so "how much does this buy me" is read against the pool it is standing
-    // in front of rather than off a number somewhere else. Inside the stroke, because it is
-    // literally what a blow meets first.
-    if (ward > 0.001) {
-        let lining = 1.0 - smoothstep(0.20, 0.30, u);
-        let held = 1.0 - smoothstep(ward - BLEND, ward + BLEND, d);
-        let w = lining * max(held, step(0.999, ward));
-        // It BREATHES, so a shell that is holding reads as something doing work.
-        let lit = 0.72 + 0.28 * sin(t * 2.2 + a * TAU);
-        col = mix(col, WARD * lit, w * 0.92);
-        alpha = max(alpha, w * 0.92);
-    }
+    // WHOSE BODY THIS IS, on the liquid's own rim — one hairline, because the body standing
+    // inside the ring has already answered that. Same `sheen` the empty glass wears, so the
+    // tube's silhouette runs unbroken through the waterline instead of starting at it.
+    col = mix(col, ring.tint.rgb, sheen * 0.30);
+    col = mix(col, mix(col, vec3<f32>(1.0), 0.6), sheen * 0.22);
 
-    // THE BLOW ITSELF, as a wave crossing the stroke from the inner wall outward — the ring's
-    // own hitstop. It rides the SAME fading pulse the bed's flash does, so one hit is one
-    // event drawn twice rather than two effects that can disagree about whether it happened.
-    if (hit > 0.004) {
-        let front = 1.0 - hit;
-        // ⚠️ **NARROW AND THIN.** A wide bright wave washes the whole stroke, which spends
-        // the pool's own colour — and the pool is the reading. It is a line crossing the
-        // liquid, not a flash over it.
-        let wave = 1.0 - smoothstep(0.0, 0.14, abs(u - front));
-        col = mix(col, vec3<f32>(1.0, 0.92, 0.86), wave * hit * 0.40);
-        alpha = max(alpha, wave * hit * 0.55);
-    }
-
-    // WHOSE BODY THIS IS, as a hairline on the outer wall — and a dark inner wall so the ring
-    // reads as a drawn object on grass rather than as a smear of colour.
-    let outer = smoothstep(0.84, 1.0, u);
-    let inner = 1.0 - smoothstep(0.0, 0.13, u);
-    col = mix(col, ring.tint.rgb, outer * 0.85);
-    alpha = max(alpha, outer * 0.8);
-    col = mix(col, vec3<f32>(0.02, 0.02, 0.04), inner * 0.7);
-    alpha = max(alpha, inner * 0.75);
-
-    // WHOSE TURN IT IS, on the ring itself: a light that runs round the stroke. The turn-order
-    // bar says who is NEXT; this says who is being asked right now, on the body the player is
-    // about to give an order to.
-    //
-    // ⚠️ **IT RIDES THE LIQUID'S COLOUR, IT DOES NOT REPLACE IT.** A wide cream spark painted
-    // over the pool reads as a GAP in it — a sixth of the ring going pale looks exactly like a
-    // section of bar that is neither full nor empty, on the one readout whose whole job is to
-    // say which. Narrow, and brightening what is already there.
+    // WHOSE TURN IT IS: a light running round the tube. The turn-order bar says who is NEXT;
+    // this says who is being asked right now, on the body about to be given an order.
     if (is_turn > 0.5) {
-        let chase = fract(a - t * 0.55);
+        let chase = fract(in.uv.x - t * 0.18);
         let spark = 1.0 - smoothstep(0.0, 0.07, chase);
-        col = mix(col, mix(col, vec3<f32>(1.0, 0.97, 0.86), 0.8), spark * 0.6);
-        alpha = max(alpha, spark * 0.7);
+        col = mix(col, mix(col, vec3<f32>(1.0, 0.97, 0.86), 0.85), spark * 0.7);
     }
 
-    return vec4<f32>(col, alpha * ring.tint.a);
+    return vec4<f32>(col, ring.tint.a);
 }

@@ -34,6 +34,8 @@ use bevy::reflect::TypePath;
 use bevy::render::render_resource::AsBindGroup;
 use bevy::shader::ShaderRef;
 
+use std::f32::consts::FRAC_PI_2;
+
 use meld_client::glass;
 
 use super::*;
@@ -149,11 +151,17 @@ const TILE_MIN_H: f32 = 62.0;
 const TILE_MAX_H: f32 = 132.0;
 /// How much of its own wedge a tile takes, leaving the wheel's gaps and walls showing round it.
 const TILE_INSET: f32 = 0.88;
-/// How far up-screen a label sits from its wedge's own centre. The near wedge would otherwise
-/// touch the health ring's HP digits, which sit on the band directly below it — and lifting
-/// every label uniformly keeps the wheel reading as one control, where lifting the one that
-/// collides would be a special case nothing else on the wheel obeys.
-const LABEL_RISE: f32 = 14.0;
+/// How far up-screen a label sits from its wedge's own centre.
+///
+/// ⚠️ **ZERO: A LABEL SITS ON ITS BAND.** Any lift at all reads as the word floating off the
+/// tile it names, and at this radius a uniform one put every verb near the outer wall of its
+/// own wedge — reported from play as the action items being off centre. The near wedge's
+/// crowding against the HP digits is answered by the digits' own radius, not by shoving the
+/// menu around.
+const LABEL_RISE: f32 = 0.0;
+/// How much of the band's own tangent a label takes, and the most it may ever tilt.
+const LABEL_FOLLOW: f32 = 0.34;
+const LABEL_TILT_MAX: f32 = 0.60;
 /// The caption block (who is being commanded, and what the cursor's wedge does) sits above the
 /// wheel — the one direction with room at every hero's position, since the party stands at the
 /// bottom edge of the frame.
@@ -170,6 +178,12 @@ const CAPTION_LIFT: f32 = 312.0;
 /// wedge carries — so a wedge pointing at the wrong one silently gives a different order.
 pub(crate) struct Slot {
     pub(crate) index: usize,
+    /// What this verb IS, as a colour. ⚠️ **ONE LANGUAGE FOR THE WHOLE FIGHT:** the wedge you
+    /// are about to press and the body you are about to press it on wear the same colour, so
+    /// "red" means a blow wherever it appears rather than meaning one thing on the menu and
+    /// another on the arena. Red strikes, blue is a skill, green mends, steel guards, amber
+    /// leaves.
+    pub(crate) hue: Color,
     /// The mdi glyph, set ABOVE the word — the reference art stacks them, and a wedge is
     /// taller than it is wide at this radius, so the shape wants the icon on its own line.
     pub(crate) glyph: &'static str,
@@ -190,12 +204,21 @@ pub(crate) struct Slot {
 pub(crate) const SLOTS: [Slot; 5] = [
     // mdi glyphs (see UiFont): run-fast=Flee, shield=Defend, sword=Attack, auto-fix=Skill,
     // flask=Item. Wedge order IS array order, clockwise from the arc nearest the camera.
-    Slot { index: 4, glyph: "\u{f070e}", word: "FLEE", key: "F" },
-    Slot { index: 1, glyph: "\u{f132}", word: "DEFEND", key: "D" },
-    Slot { index: 0, glyph: "\u{f04e5}", word: "ATTACK", key: "A" },
-    Slot { index: 3, glyph: "\u{f0068}", word: "SKILL", key: "S" },
-    Slot { index: 2, glyph: "\u{f0093}", word: "ITEM", key: "I" },
+    Slot { index: 4, glyph: "\u{f070e}", word: "FLEE", key: "F", hue: INTENT_FLEE },
+    Slot { index: 1, glyph: "\u{f132}", word: "DEFEND", key: "D", hue: INTENT_GUARD },
+    Slot { index: 0, glyph: "\u{f04e5}", word: "ATTACK", key: "A", hue: INTENT_STRIKE },
+    Slot { index: 3, glyph: "\u{f0068}", word: "SKILL", key: "S", hue: INTENT_SKILL },
+    Slot { index: 2, glyph: "\u{f0093}", word: "ITEM", key: "I", hue: INTENT_MEND },
 ];
+
+/// **THE COLOUR OF AN INTENT.** Shared by the wheel's wedges and — once it lands — the glow on
+/// whichever body a verb is aimed at, because a player who has learned that red means a blow
+/// has learned it everywhere rather than twice.
+pub(crate) const INTENT_STRIKE: Color = Color::srgb(1.0, 0.34, 0.28);
+pub(crate) const INTENT_SKILL: Color = Color::srgb(0.42, 0.62, 1.0);
+pub(crate) const INTENT_MEND: Color = Color::srgb(0.38, 0.95, 0.52);
+pub(crate) const INTENT_GUARD: Color = Color::srgb(0.72, 0.82, 0.95);
+pub(crate) const INTENT_FLEE: Color = Color::srgb(1.0, 0.72, 0.30);
 
 /// Which way round the wheel a rising wedge number goes, in world space.
 ///
@@ -215,6 +238,16 @@ pub(crate) fn slot_turns(n: usize) -> f32 {
 /// there — a sector whose edge is the thing the eye lands on reads as a seam.
 pub(crate) fn wheel_bearing() -> f32 {
     -0.5 / SLOTS.len() as f32
+}
+
+/// Every wedge's own colour, packed for the shader in wedge order.
+pub(crate) fn wedge_hues() -> [Vec4; 5] {
+    let mut out = [Vec4::ONE; 5];
+    for (i, slot) in SLOTS.iter().enumerate() {
+        let c = slot.hue.to_linear();
+        out[i] = Vec4::new(c.red, c.green, c.blue, 1.0);
+    }
+    out
 }
 
 /// Where wedge `n`'s label stands in the world, given the body's feet and the direction from
@@ -361,8 +394,6 @@ pub(crate) fn rebuild_radial_menu(
     .unwrap_or_default();
 
     let gold = Color::srgb(1.0, 0.85, 0.45);
-    let red = Color::srgb(1.0, 0.55, 0.5);
-    let neutral = Color::srgb(0.92, 0.94, 1.0);
 
     commands
         .spawn((
@@ -380,13 +411,21 @@ pub(crate) fn rebuild_radial_menu(
         ))
         .with_children(|root| {
             for (n, slot) in SLOTS.iter().enumerate() {
-                let (edge, text, step) = match slot.index {
-                    0 => (gold, gold, Some(BattleIntroStep::Attack)),
-                    1 => (glass::EDGE_SOFT, neutral, Some(BattleIntroStep::Defend)),
-                    3 => (glass::EDGE_SOFT, neutral, Some(BattleIntroStep::Skill)),
-                    4 => (red, red, Some(BattleIntroStep::Flee)),
-                    _ => (glass::EDGE_SOFT, neutral, None),
+                // ⚠️ **THE ICON CARRIES THE COLOUR; THE WORD STAYS LEGIBLE.** Colouring the
+                // word too put red text on a red wedge the moment that wedge lit — the same
+                // gold-on-gold mistake as the old selected chip, where the one label the player
+                // is about to press is the hardest to read. The wedge is the colour; the glyph
+                // repeats it at a size where contrast does not matter; the word is white on
+                // both a dark wedge and a lit one.
+                let text = Color::srgb(0.96, 0.97, 1.0);
+                let step = match slot.index {
+                    0 => Some(BattleIntroStep::Attack),
+                    1 => Some(BattleIntroStep::Defend),
+                    3 => Some(BattleIntroStep::Skill),
+                    4 => Some(BattleIntroStep::Flee),
+                    _ => None,
                 };
+                let edge = glass::EDGE_SOFT;
                 // The guided dive's paced explainer brightens whichever verb it is describing.
                 // It lit the chip's BORDER before; with the wedge carrying the face, the only
                 // thing left that belongs to one verb is its own word.
@@ -420,12 +459,13 @@ pub(crate) fn rebuild_radial_menu(
                     // the whole thing the wheel exists to be. What is left here is an icon, a
                     // word, and a hit box.
                     BackgroundColor(Color::NONE),
+                    UiTransform::IDENTITY,
                 ))
                 .with_children(|chip| {
                     chip.spawn((
                         Text::new(slot.glyph),
                         TextFont { font_size: FontSize::Px(21.0), ..default() },
-                        TextColor(text),
+                        TextColor(slot.hue),
                     ));
                     chip.spawn((
                         Text::new(slot.word),
@@ -503,6 +543,9 @@ pub(crate) struct CommandWheel {
     /// `(hovered wedge, openness, _, _)` — see `command_wheel.wgsl`.
     #[uniform(100)]
     pub(crate) state: Vec4,
+    /// One colour per wedge, in wedge order: what each verb IS.
+    #[uniform(100)]
+    pub(crate) hues: [Vec4; 5],
 }
 
 impl Material for CommandWheel {
@@ -550,6 +593,7 @@ pub(crate) fn drive_command_wheel(
                     params: Vec4::new(SLOTS.len() as f32, -1.0, 0.0, wheel_bearing()),
                     tint: Vec4::new(0.40, 0.82, 1.0, 1.0),
                     state: Vec4::new(-1.0, 0.0, 0.0, 0.0),
+                    hues: wedge_hues(),
                 });
                 commands.spawn((
                     CommandWheelDisc { open: 0.0 },
@@ -623,14 +667,17 @@ pub(crate) fn follow_radial_menu(
     // The wheel's own openness, so a tile rides the push out instead of snapping to where the
     // wheel will end up — the growth IS the tell, and half of it is the labels moving with it.
     wheel: Query<&CommandWheelDisc>,
-    mut labels: Query<(&WheelLabel, &mut Node, &mut Visibility), Without<WheelCaption>>,
+    mut labels: Query<
+        (&WheelLabel, &mut Node, &mut UiTransform, &mut Visibility),
+        Without<WheelCaption>,
+    >,
     mut caption: Query<&mut Node, With<WheelCaption>>,
 ) {
     let Some(active) = battle.active.as_deref() else { return };
     let Some((cam, cam_tf)) = cam_q.iter().next() else { return };
     let Some(feet) = rings.iter().find(|(r, _)| r.id == active).map(|(_, t)| t.translation())
     else {
-        for (_, _, mut vis) in &mut labels {
+        for (_, _, _, mut vis) in &mut labels {
             if *vis != Visibility::Hidden {
                 *vis = Visibility::Hidden;
             }
@@ -645,7 +692,7 @@ pub(crate) fn follow_radial_menu(
     let (r_in, r_out) = band_radii(scale);
     let lr = label_radius(scale);
 
-    for (label, mut node, mut vis) in &mut labels {
+    for (label, mut node, mut tf, mut vis) in &mut labels {
         let turns = slot_turns(label.wedge);
         // The wedge's OWN corners: its two arc ends at the label radius, and its inner and
         // outer wall at its centre bearing. A tile cut to those sits in the ring rather than
@@ -677,6 +724,32 @@ pub(crate) fn follow_radial_menu(
         if node.left != Val::Px(x) || node.top != Val::Px(y) {
             node.left = Val::Px(x);
             node.top = Val::Px(y);
+        }
+        // **THE WORD FOLLOWS THE CURVE — PART OF THE WAY.** A label set square on a ring drawn
+        // in perspective is the one thing on the wheel that is not part of it. The angle is
+        // taken from the PROJECTION (the two arc ends this tile was measured between), for the
+        // same reason the HP digits take theirs there: the ring is an ellipse on screen, so the
+        // tangent at a bearing is not that bearing.
+        //
+        // ⚠️ **BUT ONLY A SHARE OF IT, AND CAPPED.** On a ground ellipse at this camera the
+        // tangent at the side wedges is nearly VERTICAL, so following it fully stands ATTACK
+        // and ITEM on their ends — unreadable, and not what the reference art does either,
+        // where every label is upright. A third of the angle reads as belonging to the curve
+        // while the word still reads as a word.
+        let along = r - l;
+        let full = along.y.atan2(along.x);
+        // Keep it the short way round: a tangent measured the other way is the same line, and
+        // taking the raw angle would flip a label upside down on half the wheel.
+        let folded = if full > FRAC_PI_2 {
+            full - std::f32::consts::PI
+        } else if full < -FRAC_PI_2 {
+            full + std::f32::consts::PI
+        } else {
+            full
+        };
+        let rot = Rot2::radians((folded * LABEL_FOLLOW).clamp(-LABEL_TILT_MAX, LABEL_TILT_MAX));
+        if tf.rotation != rot {
+            tf.rotation = rot;
         }
         if node.width != Val::Px(w) || node.height != Val::Px(h) {
             node.width = Val::Px(w);

@@ -51,7 +51,15 @@ pub(crate) fn enter_battle(
     mut menu: ResMut<BattleMenu>,
     mut target: ResMut<BattleTarget>,
     mut bcam: ResMut<BattleCam>,
+    mut overlay: ResMut<Overlay>,
 ) {
+    // ⚠️ **A FIGHT CLOSES WHATEVER WAS OPEN.** Walking into a creature with the inventory up
+    // left a full-screen panel over the arena, and the one thing that screen wants is for you
+    // to look at it — the fight had already started underneath, the grace beat was running,
+    // and the only tell was a menu that suddenly would not answer its own keys. Nothing here
+    // is a decision the player is part-way through; every one of these panels is re-openable
+    // in a keystroke, and none of them survives being unreachable.
+    overlay.kind = None;
     reset_menu(&mut menu);
     bcam.zoom = 1.0; // each fight starts at the automatic fit
     if !battle_mockup_flag() {
@@ -355,7 +363,7 @@ pub(crate) fn spawn_hero_actor(
                 // …and its health, on the ground it is standing on.
                 crate::battle_rings::spawn_ring(
                     p,
-                    wa.shadow_mesh.clone(),
+                    wa.ring_liquid_mesh.clone(),
                     rings,
                     &c.id,
                     crate::battle_rings::ring_color(c, battle.your_ids.contains(&c.id)),
@@ -530,7 +538,7 @@ pub(crate) fn spawn_enemy_actor(
             // its ring always wears the foe colour.
             crate::battle_rings::spawn_ring(
                 p,
-                wa.shadow_mesh.clone(),
+                wa.ring_liquid_mesh.clone(),
                 rings,
                 &c.id,
                 crate::battle_rings::ring_color(c, false),
@@ -2912,20 +2920,33 @@ pub(crate) fn render_ring_labels(
                 // wrong somewhere, and choosing one per state makes the digits change colour
                 // for reasons that have nothing to do with what they say.
                 let ink = if is_target { Color::srgb(1.0, 0.94, 0.72) } else { Color::WHITE };
-                // WHOSE BODY THIS IS, INSIDE THE CIRCLE. The ring's interior is the one piece
-                // of ground in the arena with nothing drawn on it, it belongs to exactly one
-                // fighter, and it sits where the eye already is — so the name goes there
-                // rather than on a plate hanging over the head, where four of them in a row
-                // become a line of text across the middle of a fight. In the SIDE's colour,
-                // which is the one fact the liquid gave up when green became life.
+                // WHOSE BODY THIS IS, INSIDE THE CIRCLE — **ONLY WHILE IT IS THE ONE BEING
+                // POINTED AT.** The ring's interior belongs to exactly one fighter and sits
+                // where the eye already is, which is why the name goes there rather than on a
+                // plate over the head. But a name on EVERY body is nine labels around a fight
+                // happening in the middle — the same crowding the old HUD row was, drawn one
+                // layer down. A name answers "which one is this", and that question is only
+                // ever live for the body you are choosing.
+                // ⚠️ **AND NOT TWICE.** The wheel's caption already names the hero being
+                // commanded, so drawing it in that hero's circle as well is the same word in
+                // two places a hand's width apart. The circle names the body you are POINTING
+                // AT, which is the one question the caption does not answer.
+                let named = is_target && battle.active.as_deref() != Some(c.id.as_str());
                 // ⚠️ **BEHIND THE FEET, NOT IN FRONT OF THEM.** Three things want the
                 // front-bottom of the same body — the HP digits on the band, the command
                 // wheel's near wedge, and this — and on screen they stack into one unreadable
                 // pile. The inside-back of the circle is the only part of that disc nothing
                 // else claims, and a UI plate draws over the sprite standing in it anyway.
-                if let Ok(name_at) =
-                    cam.world_to_viewport(cam_tf, centre - front * (battle_rings::TEXT_RADIUS * 0.44))
-                {
+                let name_at = named
+                    .then(|| {
+                        cam.world_to_viewport(
+                            cam_tf,
+                            centre - front * (battle_rings::TEXT_RADIUS * 0.44),
+                        )
+                        .ok()
+                    })
+                    .flatten();
+                if let Some(name_at) = name_at {
                     let nfs = (fs * 0.82).max(8.0);
                     let w = nfs * 0.62 * (commanding_name.chars().count() as f32) + 10.0;
                     p.spawn((
@@ -3813,29 +3834,12 @@ pub(crate) fn render_hit_fx(
                 });
             }
 
-            // Auto-battle: a passive top-right readout whenever nobody is being commanded,
-            // so the control is discoverable from the very first fight. While a hero IS being
-            // commanded the command window carries the interactive toggle instead.
-            if battle.active.is_none() {
-                let (label, col) = if auto.0 {
-                    ("AUTO-BATTLE: ON  [T]", Color::srgb(0.55, 0.95, 0.65))
-                } else {
-                    ("AUTO-BATTLE: OFF  [T]", Color::srgb(0.6, 0.65, 0.8))
-                };
-                p.spawn((
-                    Node {
-                        position_type: PositionType::Absolute,
-                        right: Val::Px(14.0),
-                        // Clear of the charging line's panel, which is centred across the
-                        // top and reaches ~104px down on a narrow window.
-                        top: Val::Px(112.0),
-                        ..default()
-                    },
-                    Text::new(label),
-                    TextFont { font_size: FontSize::Px(14.0), ..default() },
-                    TextColor(col),
-                ));
-            }
+            // ⚠️ **AUTO-BATTLE IS ONE CONTROL, IN ONE PLACE.** A passive top-right readout
+            // lived here for as long as the toggle was buried in a panel that came and went
+            // with a hero's turn — it was the only way to make the feature discoverable. The
+            // toggle is its own corner chip now (`battle_radial::rebuild_auto_chip`), up the
+            // whole fight, so this second copy was the same state stated twice in two corners,
+            // which is how they end up disagreeing.
         });
 }
 
