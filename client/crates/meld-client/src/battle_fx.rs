@@ -1211,3 +1211,215 @@ pub(crate) fn advance_death_bursts(
         }
     }
 }
+
+/// **THE FIGHT'S OWN STATES GET THEIR OWN PARTICLES** (`UX-29`).
+///
+/// Two things the engine models carefully and the arena never showed:
+///
+/// - **A Barrier** is temp HP that goes UP when somebody spends a turn on it and BREAKS when
+///   it is spent. It rode the wire as `barrier:<n>` and drew as a steel-blue line inside the
+///   health ring — a readout of a number, with no moment attached to either end of it. The
+///   turn a Smithwright spends on Plant the Bulwark deserves to look like something, and the
+///   blow that finally takes it deserves to sound the same way a shield breaking does.
+/// - **The catch-up** (`UX-15`): five good blows in a row fill the striker's gauge outright.
+///   It rides as `surged`, and only the turn bar reacted — so the reward for having worked
+///   out what you are fighting was a bar moving slightly faster.
+///
+/// ⚠️ All three fire on an EDGE, never on a state. `barrier:<n>` is restated in every gauge
+/// update, so drawing it while it is held would light the shell ten times a second.
+#[derive(Resource, Default)]
+pub(crate) struct StateFx {
+    /// Per combatant: the barrier it had last frame, and whether it was surging.
+    seen: std::collections::HashMap<String, (i32, bool)>,
+    pub(crate) form: Option<Handle<bevy_hanabi::EffectAsset>>,
+    pub(crate) shatter: Option<Handle<bevy_hanabi::EffectAsset>>,
+    pub(crate) surge: Option<Handle<bevy_hanabi::EffectAsset>>,
+    pub(crate) dot: Option<Handle<Image>>,
+}
+
+/// What a state burst looks like: the three differ in direction, speed and colour.
+struct StateBurst {
+    name: &'static str,
+    /// Where the motes start, as a radius around the body.
+    radius: f32,
+    /// Positive throws them outward, negative draws them in.
+    speed: (f32, f32),
+    colour: Vec3,
+    lifetime: (f32, f32),
+    size: (f32, f32),
+    count: f32,
+    /// Downward pull, for the one burst that is debris rather than magic.
+    gravity: f32,
+}
+
+fn state_burst(
+    effects: &mut Assets<bevy_hanabi::EffectAsset>,
+    b: StateBurst,
+) -> Handle<bevy_hanabi::EffectAsset> {
+    use bevy_hanabi::*;
+
+    let writer = ExprWriter::new();
+    let texture_slot = writer.lit(0u32).expr();
+
+    let init_pos = SetPositionSphereModifier {
+        center: writer.lit(Vec3::Y * 0.95).expr(),
+        radius: writer.lit(b.radius).expr(),
+        dimension: ShapeDimension::Surface,
+    };
+    // A NEGATIVE speed draws the motes toward the body instead of throwing them away from
+    // it, which is the whole difference between a shell closing and a shell breaking.
+    let init_vel = SetVelocitySphereModifier {
+        center: writer.lit(Vec3::Y * 0.95).expr(),
+        speed: writer.lit(b.speed.0).uniform(writer.lit(b.speed.1)).expr(),
+    };
+    let init_life = SetAttributeModifier::new(
+        Attribute::LIFETIME,
+        writer.lit(b.lifetime.0).uniform(writer.lit(b.lifetime.1)).expr(),
+    );
+    let init_age = SetAttributeModifier::new(Attribute::AGE, writer.lit(0.).expr());
+    let init_colour = SetAttributeModifier::new(
+        Attribute::COLOR,
+        writer.lit(b.colour).vec4_xyz_w(writer.lit(1.)).pack4x8unorm().expr(),
+    );
+    let accel = AccelModifier::new(writer.lit(Vec3::Y * b.gravity).expr());
+
+    let mut colour = Gradient::new();
+    colour.add_key(0.0, Vec4::new(1.0, 1.0, 1.0, 1.0));
+    colour.add_key(0.6, Vec4::new(1.0, 1.0, 1.0, 0.85));
+    colour.add_key(1.0, Vec4::new(1.0, 1.0, 1.0, 0.0));
+
+    let mut size = Gradient::new();
+    size.add_key(0.0, Vec3::splat(b.size.0));
+    size.add_key(1.0, Vec3::splat(b.size.1));
+
+    let mut module = writer.finish();
+    module.add_texture_slot("dot");
+
+    effects.add(
+        EffectAsset::new(256, SpawnerSettings::once(b.count.into()), module)
+            .with_name(b.name)
+            .with_alpha_mode(bevy_hanabi::AlphaMode::Add)
+            .init(init_pos)
+            .init(init_vel)
+            .init(init_life)
+            .init(init_age)
+            .init(init_colour)
+            .update(accel)
+            .render(ParticleTextureModifier {
+                texture_slot,
+                sample_mapping: ImageSampleMapping::ModulateOpacityFromR,
+            })
+            .render(ColorOverLifetimeModifier { gradient: colour, ..default() })
+            .render(SizeOverLifetimeModifier { gradient: size, screen_space_size: false }),
+    )
+}
+
+pub(crate) fn init_state_fx(
+    mut fx: ResMut<StateFx>,
+    mut effects: ResMut<Assets<bevy_hanabi::EffectAsset>>,
+    mut images: ResMut<Assets<Image>>,
+) {
+    // The steel blue a Barrier already wears on the health ring, so the shell and the
+    // readout are plainly the same thing.
+    const STEEL: Vec3 = Vec3::new(0.62, 0.78, 0.96);
+
+    fx.dot = Some(crate::world_fx::soft_dot(&mut images));
+    fx.form = Some(state_burst(
+        &mut effects,
+        StateBurst {
+            name: "barrier_form",
+            // Starting WIDE and drawn in: a shell closes onto the body.
+            radius: 1.6,
+            speed: (-2.4, -1.2),
+            colour: STEEL,
+            lifetime: (0.45, 0.7),
+            size: (0.13, 0.26),
+            count: 60.0,
+            gravity: 0.0,
+        },
+    ));
+    fx.shatter = Some(state_burst(
+        &mut effects,
+        StateBurst {
+            name: "barrier_shatter",
+            // Starting ON the shell and thrown outward, hard, then falling: this is the one
+            // burst here made of debris rather than of magic.
+            radius: 0.95,
+            speed: (3.0, 6.5),
+            colour: STEEL,
+            lifetime: (0.5, 0.9),
+            size: (0.28, 0.04),
+            count: 72.0,
+            gravity: -7.0,
+        },
+    ));
+    fx.surge = Some(state_burst(
+        &mut effects,
+        StateBurst {
+            name: "catch_up",
+            radius: 0.5,
+            speed: (2.6, 5.2),
+            // White-gold: the same currency the level-up spends, because both are the game
+            // handing something back for having played well.
+            colour: Vec3::new(1.0, 0.95, 0.66),
+            lifetime: (0.35, 0.6),
+            size: (0.21, 0.03),
+            count: 54.0,
+            gravity: 1.2,
+        },
+    ));
+}
+
+/// Fire on the edges: a Barrier raised, a Barrier broken, a catch-up landed.
+pub(crate) fn spawn_state_fx(
+    mut commands: Commands,
+    mut fx: ResMut<StateFx>,
+    battle: Res<crate::BattleData>,
+    actors: Query<(&crate::battle::BattleActor, &GlobalTransform)>,
+) {
+    let (Some(form), Some(shatter), Some(surge), Some(dot)) =
+        (fx.form.clone(), fx.shatter.clone(), fx.surge.clone(), fx.dot.clone())
+    else {
+        return;
+    };
+    let mut live: std::collections::HashMap<String, (i32, bool)> = Default::default();
+    for c in &battle.combatants {
+        let barrier = crate::status_num(&c.statuses, "barrier:");
+        let surging = c.statuses.iter().any(|s| s == "surged");
+        live.insert(c.id.clone(), (barrier, surging));
+
+        let (was_barrier, was_surging) = fx.seen.get(&c.id).copied().unwrap_or((0, false));
+        // A body that is already gone cannot show anything, and one that just arrived has no
+        // previous state to have changed FROM — a fresh combatant carrying a Barrier is a
+        // hero who walked in wearing one, not one that was just raised.
+        let known = fx.seen.contains_key(&c.id);
+        let at = actors.iter().find(|(a, _)| a.id == c.id).map(|(_, gt)| gt.translation());
+        let Some(at) = at else { continue };
+        if !known {
+            continue;
+        }
+
+        let mut fire = |effect: Handle<bevy_hanabi::EffectAsset>| {
+            commands.spawn((
+                BattleFxRoot,
+                DeathBurstTtl(1.3),
+                bevy_hanabi::ParticleEffect::new(effect),
+                bevy_hanabi::EffectMaterial { images: vec![dot.clone()] },
+                Transform::from_translation(at),
+            ));
+        };
+        if barrier > was_barrier {
+            fire(form.clone());
+        } else if was_barrier > 0 && barrier == 0 {
+            // ⚠️ Broken, not merely decayed: a Barrier ticks down at the start of its
+            // holder's turn, so only the step that empties it is the moment worth showing.
+            fire(shatter.clone());
+        }
+        if surging && !was_surging {
+            fire(surge.clone());
+        }
+    }
+    // Rebuilt rather than updated, so a combatant that left the fight stops being tracked and
+    // one that comes back is treated as new.
+    fx.seen = live;
+}

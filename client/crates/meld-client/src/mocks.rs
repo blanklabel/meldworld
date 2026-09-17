@@ -945,3 +945,40 @@ pub(crate) fn mock_shift(
         rgb_to: Vec3::from(meld_proto::regions::biome_rgb(biome)),
     });
 }
+
+/// Cycle a hero's Barrier and catch-up so `UX-29`'s bursts can be captured (`MELD_STATES=1`).
+///
+/// They fire on an EDGE — a Barrier raised, a Barrier broken, a surge landing — and the
+/// static battle mockup sets its statuses once and never moves them, so every one of these
+/// is unreachable in a still frame without something to move them. Same argument as
+/// `mock_ring_liquid`, which drains and refills a hero for exactly this reason.
+pub(crate) fn mock_states(
+    time: Res<Time>,
+    mut battle: ResMut<crate::BattleData>,
+    mut next_at: Local<f32>,
+    mut step: Local<usize>,
+) {
+    if std::env::var("MELD_STATES").is_err() || !battle_mockup_flag() {
+        return;
+    }
+    let now = time.elapsed_secs();
+    if now < *next_at {
+        return;
+    }
+    // Just UNDER the bursts' own lives, for the reason `mock_battle_fx` re-fires under the
+    // impact's: a capture is one frame at an arbitrary moment, and a cadence longer than the
+    // effect means most screenshots catch the gap and report the burst as missing.
+    *next_at = now + 0.8;
+    let Some(c) = battle.combatants.iter_mut().find(|c| c.is_player) else {
+        return;
+    };
+    c.statuses.retain(|s| !s.starts_with("barrier:") && s != "surged");
+    match *step % 3 {
+        // Raised, then broken, then a catch-up — the three edges in the order a fight
+        // actually produces them.
+        0 => c.statuses.push("barrier:24".into()),
+        1 => {}
+        _ => c.statuses.push("surged".into()),
+    }
+    *step += 1;
+}
