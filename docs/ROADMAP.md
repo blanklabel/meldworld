@@ -5701,7 +5701,11 @@ only the things that can't be class-gated.
     and tested directly, which is the half a gate *can* hold. The burst itself still needs a
     captured frame.
 
-- [x] **UX-24 — Aiming happens in the arena: the gem is the target picker.**
+- [x] **UX-27 — Aiming happens in the arena: the gem is the target picker.**
+  - ⚠️ *Renumbered from UX-24 on rebase*: `main` landed its own UX-24 (the Shift's debris) while
+    this was in flight, and UX-25/26 with it. The commits on this branch still say UX-24 —
+    the ID moved, the work did not. Same collision the UX-18 → UX-20 → UX-21 renumbering hit;
+    `ROADMAP.md` is a merge hotspot and a claimed number is not reserved until it is merged.
   - *The Target page is gone.* While an order is in flight every body it can legally land on
     wears a floating gem over its own head, in that order's own colour, and the one under the
     cursor burns brightest and spins. ←/→ walk the line (↑/↓ too, since that page used to be a
