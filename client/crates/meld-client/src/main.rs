@@ -947,6 +947,9 @@ fn main() {
                 battle_radial::follow_radial_menu,
                 battle_radial::rebuild_auto_chip,
                 battle_radial::style_radial,
+                // The `MELD_AIM` fixture: its own entry for the same arity reason, and here
+                // rather than at startup because the menu it opens is reset on the way in.
+                mock_aim,
             )
                 .run_if(in_state(Screen::Battle)),
         )
@@ -3196,6 +3199,39 @@ mod tests {
         }
         b.ready.insert("h1".into());
         assert_eq!(pick_active(&b), None);
+    }
+
+    /// **RED STRIKES, BLUE IS A SKILL, GREEN MENDS** — and the orb over a body wears the same
+    /// colour the wedge that chose the order does, because they are the same constants.
+    ///
+    /// ⚠️ **AN ORDER'S COLOUR COMES FROM ITS SIDE, NOT ITS NAME.** The obvious reading is "a
+    /// skill is blue", and it is wrong for half the roster: the Resonant's whole kit is
+    /// skills, aimed at allies, and a blue orb over a hero you are about to heal says the
+    /// wrong thing about what is coming. Asking `order_side` also keeps this from becoming
+    /// the hand-written list of ability keys this repo has already had to delete twice.
+    #[test]
+    fn an_order_wears_its_intent_and_takes_it_from_the_side_it_lands_on() {
+        use crate::battle::intent_hue;
+        use crate::battle_radial::{INTENT_MEND, INTENT_SKILL, INTENT_STRIKE};
+        assert_eq!(intent_hue(QueuedKind::Attack), INTENT_STRIKE);
+        assert_eq!(intent_hue(QueuedKind::Skill("power_strike")), INTENT_SKILL);
+        // The mender's rows: skills every one, and care rather than harm.
+        assert_eq!(intent_hue(QueuedKind::Skill("transfuse")), INTENT_MEND);
+        assert_eq!(intent_hue(QueuedKind::Skill("regen_boon")), INTENT_MEND);
+        // A bottle is always poured into somebody.
+        assert_eq!(intent_hue(QueuedKind::Item("salve")), INTENT_MEND);
+        // A Psyker's Foci take the same rule: what it lands on decides.
+        assert_eq!(intent_hue(QueuedKind::Focus("cast", "gravity_well")), INTENT_SKILL);
+        // ⚠️ And the three must be TELLABLE APART. They are hand-picked constants, so
+        // nothing but this stops a retune landing two of them on the same colour and making
+        // the orb say nothing at all.
+        let far = |a: Color, b: Color| {
+            let (x, y) = (a.to_linear(), b.to_linear());
+            (x.red - y.red).abs() + (x.green - y.green).abs() + (x.blue - y.blue).abs() > 0.5
+        };
+        assert!(far(INTENT_STRIKE, INTENT_SKILL), "strike and skill read alike");
+        assert!(far(INTENT_SKILL, INTENT_MEND), "skill and mend read alike");
+        assert!(far(INTENT_STRIKE, INTENT_MEND), "strike and mend read alike");
     }
 
     #[test]

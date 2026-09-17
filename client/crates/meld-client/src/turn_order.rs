@@ -111,13 +111,21 @@ pub(crate) enum Lane {
 
 /// Which rails this fight actually has, and therefore where each one sits.
 ///
-/// The ALLY rail only exists when somebody else's heroes are in the fight, so a solo dive
-/// draws three lines rather than a permanently empty fourth. The FAST rail is always drawn
-/// even when empty: fighters hop onto it mid-fight, and a rail that appeared under them
-/// would resize the whole panel at the moment the player is trying to read it.
+/// **A RAIL EXISTS WHEN SOMEBODY IS ON IT.** The ALLY rail only when somebody else's heroes
+/// are in the fight, and the FAST rail only while somebody is actually braced, hastened or
+/// fresh off a catch-up — so an ordinary solo fight draws TWO lines, not four.
+///
+/// ⚠️ **THIS REVERSES WHAT THIS COMMENT USED TO SAY ABOUT THE FAST RAIL**, and the argument
+/// it replaces was not wrong, it was outweighed: a rail that appears when a fighter hops onto
+/// it resizes the panel at the moment the player is reading it, which is a real cost and is
+/// still paid. What is paid the rest of the time is worse — an empty line across the top of
+/// every fight, which is the same "no empty rail under a lane" note two paragraphs down,
+/// applied to the one rail that was exempt from it. Most fights never have anybody fast in
+/// them at all, so the permanent version was a line that mostly meant nothing.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) struct LaneSet {
     pub(crate) ally: bool,
+    pub(crate) fast: bool,
 }
 
 impl LaneSet {
@@ -129,7 +137,9 @@ impl LaneSet {
         if self.ally {
             v.push(Lane::Ally);
         }
-        v.push(Lane::Fast);
+        if self.fast {
+            v.push(Lane::Fast);
+        }
         v
     }
 
@@ -163,10 +173,18 @@ pub(crate) fn bar_bottom(battle: &BattleData) -> f32 {
 
 /// The rails this battle needs: an ally lane only when somebody else's heroes are here.
 pub(crate) fn lane_set(battle: &BattleData) -> LaneSet {
+    let cast = bar_cast(battle);
     LaneSet {
-        ally: bar_cast(battle)
+        ally: cast
             .iter()
             .any(|c| c.is_player && !battle.your_ids.contains(&c.id)),
+        // ⚠️ **ASKED THROUGH `lane_of`, never by re-reading the statuses.** Which tokens mean
+        // "fast" is one rule, and a second copy here would drift the first time one is added
+        // — into the worst shape available, a rail that exists with nobody on it or a fighter
+        // sent to a rail that was never drawn.
+        fast: cast
+            .iter()
+            .any(|c| lane_of(c, battle.your_ids.contains(&c.id)) == Lane::Fast),
     }
 }
 
@@ -1317,18 +1335,29 @@ mod tests {
         }
     }
 
-    /// **FOUR RAILS AT MOST, AND THREE WHEN YOU ARE ALONE.** A co-op merge can field
-    /// sixteen heroes across four parties; a rail each would be a stave, so every ally
-    /// shares one. And a solo dive must not carry a permanently empty ally rail.
+    /// **FOUR RAILS AT MOST, AND EVERY ONE OF THEM HAS SOMEBODY ON IT.** A co-op merge can
+    /// field sixteen heroes across four parties; a rail each would be a stave, so every ally
+    /// shares one. And neither the ally rail nor the FAST rail may be drawn empty — an
+    /// ordinary solo fight with nobody braced is two lines.
     #[test]
     fn the_bar_never_grows_past_four_rails() {
-        let solo = LaneSet { ally: false };
-        let coop = LaneSet { ally: true };
+        let plain = LaneSet { ally: false, fast: false };
+        let solo = LaneSet { ally: false, fast: true };
+        let coop = LaneSet { ally: true, fast: true };
+        assert_eq!(plain.rails().len(), 2, "an ordinary fight drew rails nobody is on");
         assert_eq!(solo.rails().len(), 3, "a solo fight drew an empty ally rail");
         assert_eq!(coop.rails().len(), 4);
         assert!(coop.rails().len() <= 4, "the bar grew a fifth rail");
+        // ⚠️ Whatever is drawn is drawn in the SAME order however many there are, or a lane
+        // would change height depending on which other lanes happen to exist.
+        for set in [plain, solo, coop] {
+            let r = set.rails();
+            assert_eq!(r[0], Lane::Foe);
+            assert_eq!(r[1], Lane::Mine);
+            assert_eq!(*r.last().unwrap(), if set.fast { Lane::Fast } else { Lane::Mine });
+        }
         // Every rail sits on its own row, in reading order, with no two sharing a y.
-        for set in [solo, coop] {
+        for set in [plain, solo, coop] {
             let ys: Vec<f32> = set.rails().iter().map(|l| set.rail_y(*l)).collect();
             for pair in ys.windows(2) {
                 assert!(

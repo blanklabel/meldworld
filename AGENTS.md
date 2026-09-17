@@ -962,6 +962,25 @@ ring. The pool is centred on the arc nearest the camera and empties toward the B
 readable half stays full until the fighter is nearly gone; the HP number is written into the
 stroke along its own curve, a glyph at a time, each turned to the tangent taken from the
 PROJECTION (the ring is an ellipse on screen, so the tangent at an angle is not that angle).
+⚠️ **AND IT RIDES THE SURFACE FACING THE VIEWER, NOT THE CENTRE-LINE.** `TEXT_RADIUS` is the
+torus's MAJOR radius — the circle through the MIDDLE of the tube, where nothing is drawn — so
+digits written there straddle the rim, half on the green and half over the bare ground inside
+the hole. That is what *"the text isn't on the glass tube"* looks like, and two attempts to
+nudge it with a constant both failed and had to: **the offset is a DIRECTION, not a height.**
+The part of a fat tube a camera sees is its centre-line pushed one minor radius straight AT
+the camera — outward and upward together, in proportions that change with the pitch — so it is
+taken from the camera each frame and stays seated at any angle. A shade past the surface
+(1.15x), because a glyph is placed by its centre and read by its mass.
+⚠️ **A `ForwardDecal` is the better answer and it is BLOCKED.** Projecting the number onto the
+tube would wrap the curve for free, and `bevy_pbr`'s forward decals require a `DepthPrepass` on
+the camera rendering them — which this camera deliberately does not have, because
+`ground_biome.wgsl` displaces the ground in its vertex stage and does not override
+`prepass_vertex_shader`, so the prepass rasterises the ground FLAT and the world renders as a
+strip of land over open sky. The prerequisite is a prepass vertex entry applying the same
+`total_height`, exactly as `spawn_camera`'s own note says. Note also that the obvious spawn
+(`ForwardDecal` + a plain `StandardMaterial`) does not compile: it wants
+`ForwardDecalMaterial<StandardMaterial>`, an `ExtendedMaterial`. And a live number cannot be a
+static PNG, so it needs a glyph atlas or a procedural font in the decal's own shader.
 ⚠️ The red bed **holds** before it drains — a bar that starts closing on the frame it opened
 shows a fifth of a bar for a third of a second, which neither a capture nor an eye catches.
 
@@ -1019,15 +1038,118 @@ it grew out of — at the first scale that left the ring as a green thread under
 Nesting it INSIDE the ring the way the reference art does is impossible here: that caps an
 inner wheel at ~73px of screen radius for five words.
 
+**THE RING HAS A HOLE IN IT, AND THE HOLE FACES THE ENEMY.** It carries one more sector than it
+has verbs and the spare one is centred on the FAR arc, so nothing stands between the hero and
+the creatures it is being pointed at. ⚠️ The first cut put the hole on the NEAR arc and that was
+backwards twice over: the near arc is the half you look THROUGH to read the fight, and it is
+where the wheel is widest on screen, so it is at once the worst place to spend on nothing and
+the best place to put buttons. ⚠️ **And the hole is what lets every bearing rule hold at once** —
+with it at the front, FLEE could not also be due south and the rules genuinely fought; with it
+at the back the sector opposite is due south, so **Flee is south, Attack and Skill flank the
+hole facing the enemy line, and Item and Defend take the flanks**. A layout in which every
+stated rule is satisfiable is the tell that the hole is on the right side.
+⚠️ **TWO ORIGINS MEET IN `slot_turns` AND THEY ARE HALF A TURN APART**: sectors are numbered
+from the GAP (far arc) while `wheel_point` measures from the NEAR arc. Forgetting the half turn
+put FLEE exactly in the hole — the one sector nothing is drawn in.
+⚠️ **THE DISC MUST NOT CAST A SHADOW.** The mesh is a full circle and the wedges are cut out in
+the fragment stage — but a shadow is rasterised from the GEOMETRY, not from what the shader kept,
+so the sun threw a solid disc on the ground and everything the material discards (the hub the
+hero stands in, the seams, the gap) came back as a dark ellipse underneath. Reported as the
+missing spot "not being transparent", which is exactly what it was: transparent, over its own
+shadow. `NotShadowCaster`.
+
+**AND THE WEDGES CARRY ICONS, NOT WORDS.** A sector seen in perspective is a different shape at
+every bearing and every camera distance, and a six-character word is the thing that will not fit
+the narrow ones — DEFEND ran over the hero standing beside the wheel, and each attempt to make
+it fit was a smaller word in a shape that was still wrong. An icon is one glyph: it fits any
+sector at any zoom by construction. What the highlighted verb IS is said once, in full, in the
+CAPTION above the wheel, where there is room for a sentence.
+⚠️ **AND THE GLYPH IS SIZED FROM ITS SECTOR EVERY FRAME, WITH NO FLOOR.** Reported from play:
+*"when I scale out or scale in with the camera, the text moves."* It did, and it had to — a
+label is a screen-space node laid over a world-space shape, so unless its size tracks the
+projection the two diverge the moment the camera moves, and a floor makes that certain (past the
+zoom where the clamp bites, the sector keeps shrinking and the glyph does not). The HIT BOX
+keeps its minimum, because a target too small to click is the one failure this menu may not
+have — it is invisible, so it may diverge where a glyph may not.
+
+⚠️ **AND THE WHEEL IS SMALL, BECAUSE A BIG ONE READS AS UNCENTRED.** A thicker band was asked
+for; the only way to get one is to shrink the hole and grow the wheel, since `W_OUT` is already
+at the disc's own edge and the hole is pinned by the health ring beneath it. Grown that way
+(`W_IN` 0.46, scale 2.95) the band really is ~28% thicker and the outer wall lands 2.00 world
+units out against heroes standing 2.7 apart — reported at once as *"the circle is TOO huge
+now"*, and it also made the sectors so large that an icon at a sector's true centre read as
+lost in it rather than centred on it. **The band is squeezed between the health ring's outer
+wall at 0.915 and the next hero at 2.7, and only the OUTER wall can move** — so every unit the
+wheel comes in is a unit off the button's depth. At scale 2.40 / `W_IN` 0.56 the inner wall is
+0.941 (clear by 0.026, the tightest number here) and the band is 0.689: a calm wheel that sits
+well clear of the bodies either side, bought with ~16% of the button's thickness.
+
+⚠️ **AND THE WORD IS SIZED AND PLACED BY THE WEDGE, NOT BY A CONSTANT.** The wheel lies on the
+GROUND, so its five sectors are five different shapes on screen — the near and far ones face the
+camera, the side ones are nearly edge-on at a fraction of the width. Three consequences, all of
+them things a fixed layout got wrong: a fixed word size that is comfortable on the near wedge is
+wider than the whole sector on a side one (**DEFEND ran off its wedge and over the hero standing
+beside it**); the hit box must be clamped UP to stay clickable while the word is fitted DOWN to
+the sector, so the two are sized by different rules on purpose; and the band's radial midpoint
+is NOT its midpoint on screen, because perspective widens the half nearer the camera's line of
+sight through the hub — so `label_radius` is weighted toward the outer wall, which is what
+*"all the action items are off centre"* actually was. The tilt cap matters for the same reason a
+sector is not a rectangle: its far corners are the first thing a rotated word runs out of.
+Every line carries a `TextShadow`, because the face beneath is dark GROUND seen in perspective
+with grass, a sprite and a health ring showing through — a thin unshadowed word on that reads as
+scratched into the dirt rather than printed on a face.
+
 ⚠️ **A TILE IS A WEDGE, NOT A PLATE ON ONE.** The wedge is the button's face — the UI carries
 only an icon, a word and a hit box, and both the cursor and the hover are drawn by the shader.
 A rectangle lit on top of a sector is what made the tiles read as five plates parked near a
 hero, which is the one thing the wheel exists not to be.
+⚠️ **EVERY LABEL READS LEFT TO RIGHT.** They used to take a share of the arc's tangent so they
+would "belong to the curve", damped and capped because following it fully stands the side
+wedges on their ends. It was wrong at any strength: on a wheel you do not read round, you read
+the wedge you are pointing at — and a tilted word is also the thing that leaves a sector through
+its corners, so the whole class of overhang went with the tilt.
+
 ⚠️ **AND THE ARROWS ARE NOT A D-PAD ANY MORE.** The cross mapped `ArrowDown` to FLEE and
 `ArrowRight` to DEFEND — the hazard `swallow_the_key_you_walked_in_on` exists to catch. ←/→
 run the cursor round the wheel (it WRAPS; a wheel has no ends), Enter picks, every wedge
 carries its own letter key, and **Flee is off the arrows entirely**. Auto-battle is its own corner chip, because it
 is a decision about the FIGHT and the menu it used to sit in is gone between turns.
+
+**AND AIMING HAPPENS IN THE ARENA, NOT IN A LIST.** There is no Target page any more. While
+an order is in flight every body it may legally land on wears a **floating gem** over its own
+head, in that order's own colour, and the one under the cursor burns brightest and spins —
+so choosing who to hit is done by looking at the fight. The page it replaces was a column of
+`Bog Stinger  31/48` rows, and every fact in it is already drawn on the body it belongs to:
+the name under its own ring, the numbers inside it. It was a second, worse copy of the arena,
+printed over the arena. ←/→ walk the line (↑/↓ too, since that page used to be a list), Enter
+commits, and clicking a body has always worked.
+
+**RED STRIKES, BLUE IS A SKILL, GREEN MENDS** (`battle_radial`'s `INTENT_*`) — the wedge that
+chooses an order and the gem that aims it wear the SAME constants, so the menu teaches the
+language and the arena speaks it. ⚠️ **An order's colour comes from the side it lands on, not
+from its name**: the obvious reading is "a skill is blue", and that is wrong for the whole
+mender roster, whose kit is skills aimed at allies. `intent_hue` asks `order_side`, which also
+keeps it from becoming the hand-written list of ability keys this repo has twice deleted.
+⚠️ **The gem is a MESH** (`hd2d::diamond_mesh`), and that is a revert: #83 swapped it for a
+PixelLab billboard and it was asked for back by name. A faceted solid glints facet by facet as
+it turns, which is the entire read of a gem, and a flat diamond on a camera-facing quad
+presents the same silhouette from every angle however fast it spins. It is also what makes the
+tint work — a mesh takes its hue off its own material instead of fighting the pixels already
+painted on it.
+⚠️ **AND A HERO IS A TARGET TOO.** The gem was spawned on creatures alone, which was invisible
+while aiming was a list and would have been fatal without one: a heal, a barrier or a poured
+potion would have had nothing to put a marker on. ⚠️ **It carries its OWN light rather than a
+`NightLamp`** — every other carried light in the arena is night-scaled by
+`illuminate_players`, which is right for a lantern and wrong for a readout: an orb that says
+*this is what your blow lands on* cannot go out because the sun is up. `highlight_target` is
+its one writer, the same single-writer rule `animate_battle_actors` follows for a battle
+sprite's emissive.
+⚠️ `MELD_AIM=attack|skill|heal` is the fixture — aiming lives between two key presses and the
+mockup resolves nothing, so the gems are otherwise unreachable in a capture. It runs in
+**Update, not at startup**: `mock_battle_setup` only asks for `Screen::Battle` and
+`enter_battle` resets the menu on the way in, so an order begun at startup is wiped before
+anything draws — a fixture that silently does nothing, which is what `MELD_GEAR_TIER` and
+`MELD_WIN` are recorded here for.
 
 **AND THE ARENA BUILDS OUT FROM THE CENTRE.** `x = (i - (n-1)/2) * 2.7` at every party size —
 the retired HUD row spawned four slots and filled the empty ones with flex-grow spacers, so
@@ -2195,8 +2317,18 @@ is spent.
 (a co-op merge fields sixteen across four parties — a rail each would be a stave, so every
 ally shares one), and whoever is **charging faster than they should be** — braced, hastened,
 or fresh off a catch-up. So "why is that one moving quicker" is answered by where it is
-standing. The lane says SPEED, the colour says SIDE, and the ally rail only exists when
-somebody else's heroes are actually here (`LaneSet`), so a solo dive draws three.
+standing. The lane says SPEED, the colour says SIDE, and **a rail exists only when somebody is on it**
+(`LaneSet`): the ally rail when somebody else's heroes are actually here, the FAST rail only
+while somebody is actually braced, hastened or fresh off a catch-up. An ordinary solo fight
+draws TWO.
+⚠️ **The fast rail used to be permanent, and its own comment argued for that** — a rail that
+appears when a fighter hops onto it resizes the panel at the moment the player is reading it.
+That cost is real and is still paid; what it bought was worse. Most fights never have anybody
+fast in them, so the permanent version was an empty line across the top of nearly every fight
+— the same "no empty rail under a lane" rule below, applied to the one rail that was exempt
+from it. ⚠️ Whether a fighter is fast is asked through `lane_of` and never by re-reading the
+statuses, or the two copies drift into the worst shape available: a rail with nobody on it, or
+a fighter sent to a rail that was never drawn.
 ⚠️ **The lane is written EVERY FRAME, never baked in at spawn**: a fighter hops rails
 mid-fight the moment a guard goes up, and rebuilding the bar for that would tear the node
 tree down on a state change the animator absorbs for free. The same goes for a PILE — every

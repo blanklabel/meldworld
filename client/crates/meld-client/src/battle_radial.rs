@@ -30,11 +30,11 @@
 //! Every chip carries its own letter key, so a direct press is never hidden.
 
 use bevy::asset::Asset;
+use bevy::light::NotShadowCaster;
 use bevy::reflect::TypePath;
 use bevy::render::render_resource::AsBindGroup;
 use bevy::shader::ShaderRef;
 
-use std::f32::consts::FRAC_PI_2;
 
 use meld_client::glass;
 
@@ -80,7 +80,7 @@ pub(crate) struct AutoChipRoot;
 /// The band the wedges occupy, as a fraction of the wheel mesh's radius — mirrored from
 /// `command_wheel.wgsl`, which cuts them, and held against it by test. The Rust side needs
 /// them because every label is placed along the middle of that band.
-pub(crate) const W_IN: f32 = 0.52;
+pub(crate) const W_IN: f32 = 0.56;
 pub(crate) const W_OUT: f32 = 0.97;
 /// `WorldAssets::shadow_mesh` is a `Circle::new(0.7)`; the wheel borrows it exactly as the
 /// health ring does rather than carrying a third disc.
@@ -88,30 +88,111 @@ const MESH_RADIUS: f32 = 0.7;
 /// How big the wheel is in world units.
 ///
 /// ⚠️ **ITS INNER WALL MUST CLEAR THE HEALTH RING'S OUTER ONE.** `W_IN × 0.7 × scale` has to
-/// exceed 0.907 world units or the wheel is drawn straight over the bar, which at 2.05 left
-/// the health ring as a thin green thread under a dark plate. 2.62 is the first scale that
-/// clears it with a hair of gap.
+/// exceed the feet ring's outer wall (`RING_MAJOR + RING_MINOR` = 0.915) or the wheel is drawn
+/// straight over the bar, which at 2.05 left the health ring as a thin green thread under a
+/// dark plate.
+///
+/// ⚠️ **A THICKER BAND WAS ASKED FOR AND IT IS NOT AVAILABLE AT THIS SIZE — I TRIED.** The
+/// outer wall cannot help (`W_OUT` is in mesh units and 0.97 is already the disc's own edge),
+/// so the only way to thicken is to shrink the hole and grow the wheel to keep the inner wall
+/// off the health ring. At `W_IN` 0.46 and scale 2.95 the band really is ~28% thicker — and the
+/// outer wall lands 2.00 world units out, against heroes standing 2.7 apart. Reported at once
+/// as *"the circle is TOO huge now"*, and it also made the wedges so large that an icon at a
+/// sector's true centre read as lost in it rather than centred on it.
+///
+/// **The band is squeezed between two fixed things**: the health ring's outer wall at 0.915 and
+/// the next hero at 2.7. ⚠️ **And shrinking the wheel spends the band, because only the OUTER
+/// wall can move** — the hole is pinned where it is by the health ring under it, so every unit
+/// the wheel comes in is a unit off the button's depth. At 2.40 the inner wall is 0.941 (clear
+/// by 0.026, the tightest number here) and the band is 0.689: a smaller, calmer wheel that sits
+/// well clear of the hero either side, bought with ~16% of the button's thickness. That is the
+/// whole trade, in one place, for whoever turns this dial next.
 ///
 /// ⚠️ **IT STANDS OUTSIDE THE HEALTH RING, WHICH THE REFERENCE DOES NOT.** In the art the
 /// health arcs are the wheel's own outer rim. Nesting it that way is not merely tight here, it
 /// is impossible: the health band's inner wall is 0.567 world units out, so a wheel inside it
 /// caps at about a third of this scale — roughly 73px of screen radius for five words. The two
 /// rings are concentric instead, and neither is a caption on the other.
-const WHEEL_SCALE: f32 = 2.62;
+const WHEEL_SCALE: f32 = 2.40;
 /// Where the wheel starts before it opens: its outer wall exactly on the health ring's, so the
 /// tiles are seen to PUSH the circle out rather than to appear beside it.
 ///
-/// ⚠️ **THE GROWTH IS THE TELL.** `0.97 × 0.7 × 1.336 = 0.907`, which is the health band's own
-/// outer radius — pick this number by arithmetic from that one, not by eye, or the wheel opens
-/// out of thin air a few pixels off the bar and the whole gesture reads as two rings blinking
-/// rather than as one becoming the other.
-const WHEEL_SHUT_SCALE: f32 = 1.336;
+/// ⚠️ **THE GROWTH IS THE TELL.** `0.97 × 0.7 × 1.348 = 0.915`, which is the health band's own
+/// outer radius (`RING_MAJOR + RING_MINOR`) — pick this number by arithmetic from that one, not
+/// by eye, or the wheel opens out of thin air a few pixels off the bar and the whole gesture
+/// reads as two rings blinking rather than as one becoming the other.
+const WHEEL_SHUT_SCALE: f32 = 1.348;
 /// How long the push takes. Long enough to be a movement the eye catches on its own, short
 /// enough that it is never between you and an order you already knew you wanted.
 const WHEEL_OPEN_SECS: f32 = 0.22;
-/// World-space radius of the middle of the band at a given scale: the line the tiles sit on.
+/// **THE CENTRE OF A SECTOR AS THE PLAYER SEES IT**: the area centroid of its PROJECTED
+/// outline, by the shoelace formula over points sampled round its own boundary.
+///
+/// ⚠️ **THE PROJECTION OF THE CENTROID IS NOT THE CENTROID OF THE PROJECTION, and that is the
+/// whole bug.** The wheel lies on the ground under a perspective camera, so a sector's near
+/// half is magnified and its far half compressed — the shape on screen is not a scaled copy of
+/// the shape on the ground, and no point computed in the GROUND plane lands where the eye puts
+/// the middle. Three tries died on that: the mid-radius, a weighting toward the outer wall, and
+/// the exact planar area centroid `(2/3)·(b³−a³)/(b²−a²)·sin(α)/α`, which is right about a
+/// shape nobody is looking at. The corner average failed for a second reason on top — a sector
+/// is not a quadrilateral, its arcs bulge.
+///
+/// So the outline is walked in the ground plane, each point is projected, and the centroid is
+/// taken in SCREEN space where the answer is wanted. `ARC_STEPS` per arc is enough that the
+/// bulge is represented; the cost is ~34 projections per wedge on a panel that already projects
+/// five points per wedge, and it is exact for any camera, any band, any wedge count.
+fn sector_centre(
+    feet: Vec3,
+    front: Vec3,
+    turns: f32,
+    scale: f32,
+    project: impl Fn(Vec3) -> Option<Vec2>,
+) -> Option<Vec2> {
+    const ARC_STEPS: usize = 16;
+    let edge = half_wedge() * TILE_INSET;
+    let (r_in, r_out) = band_radii(scale);
+    let mut poly: Vec<Vec2> = Vec::with_capacity(ARC_STEPS * 2 + 2);
+    // Out along the near wall, back along the far one: one closed ring, wound consistently.
+    for i in 0..=ARC_STEPS {
+        let t = turns - edge + (2.0 * edge) * (i as f32 / ARC_STEPS as f32);
+        poly.push(project(wheel_point(feet, front, t, r_out, scale))?);
+    }
+    for i in 0..=ARC_STEPS {
+        let t = turns + edge - (2.0 * edge) * (i as f32 / ARC_STEPS as f32);
+        poly.push(project(wheel_point(feet, front, t, r_in, scale))?);
+    }
+    // Shoelace. ⚠️ A degenerate outline — the wheel seen exactly edge-on, or a sector entirely
+    // behind the camera — has zero area, and dividing by it would fling the label to infinity.
+    let mut area = 0.0f32;
+    let mut c = Vec2::ZERO;
+    for i in 0..poly.len() {
+        let (p, q) = (poly[i], poly[(i + 1) % poly.len()]);
+        let cross = p.x * q.y - q.x * p.y;
+        area += cross;
+        c += (p + q) * cross;
+    }
+    (area.abs() > 1.0).then(|| c / (3.0 * area))
+}
+
+/// The line the tiles sit on: **the AREA CENTROID of the sector**, not a weighting of its walls.
+///
+/// ⚠️ **A SECTOR'S MIDDLE IS NOT ITS MIDDLE RADIUS, AND NO AMOUNT OF TUNING MAKES IT ONE.** An
+/// annular sector has more of itself near its outer wall — the arc out there is longer — so a
+/// label at `(W_IN + W_OUT)/2` sits visibly inside the shape it is naming. That is what *"all
+/// the action items are off centre"* was. Two guesses were tried and both were guesses: a
+/// weighting toward the outer wall, then the average of the sector's four projected corners,
+/// which is the centroid of a QUADRILATERAL and the sector is not one — the arcs bulge.
+///
+/// The closed form is standard and exact:
+/// `r_c = (2/3) · (b³ − a³)/(b² − a²) · sin(α)/α` for an annular sector of radii `a..b` and
+/// half-angle `α`. Every term is already a constant of this wheel, so the centre is derived
+/// rather than tuned, and it stays correct if the band is made thicker or a verb is added.
 pub(crate) fn label_radius(scale: f32) -> f32 {
-    MESH_RADIUS * scale * (W_IN + W_OUT) * 0.5
+    let r = MESH_RADIUS * scale;
+    let (a, b) = (W_IN * r, W_OUT * r);
+    // Half the sector, in radians. `half_wedge` is in turns.
+    let alpha = half_wedge() * std::f32::consts::TAU;
+    (2.0 / 3.0) * (b.powi(3) - a.powi(3)) / (b.powi(2) - a.powi(2)) * (alpha.sin() / alpha)
 }
 
 /// How far open the wheel is, 0..1, eased so it arrives rather than stops.
@@ -158,10 +239,22 @@ const TILE_INSET: f32 = 0.88;
 /// own wedge — reported from play as the action items being off centre. The near wedge's
 /// crowding against the HP digits is answered by the digits' own radius, not by shoving the
 /// menu around.
+/// **THE ICON IS A FIXED SIZE, AND THAT IS THE POINT.**
+///
+/// ⚠️ **IT USED TO BE FITTED TO ITS SECTOR EVERY FRAME AND THAT WAS THE BUG.** Reported from
+/// play: *"when I scale out or scale in with the camera, the text moves."* The first answer was
+/// to make the glyph track the projection exactly — which does stop it drifting relative to its
+/// wedge, and leaves it growing and shrinking under the player's hand as the camera breathes.
+/// Neither is what a BUTTON does. A control holds still: same size, same place, whatever the
+/// camera is doing. So the size is a constant and the position is the sector's own centre, and
+/// the only thing the zoom moves is the wheel underneath it.
+///
+/// ⚠️ The trade is real and bounded: zoom far enough out and fixed-size icons crowd a shrinking
+/// wheel. The battle camera auto-fits to the party rather than being free, so that range is
+/// small — if a future camera opens it up, this is the constant that has to become a clamp.
+const GLYPH_PX: f32 = 33.0;
+
 const LABEL_RISE: f32 = 0.0;
-/// How much of the band's own tangent a label takes, and the most it may ever tilt.
-const LABEL_FOLLOW: f32 = 0.34;
-const LABEL_TILT_MAX: f32 = 0.60;
 /// The caption block (who is being commanded, and what the cursor's wedge does) sits above the
 /// wheel — the one direction with room at every hero's position, since the party stands at the
 /// bottom edge of the frame.
@@ -190,7 +283,19 @@ pub(crate) struct Slot {
     /// Upper case, as the art has it: these are five short commands rather than prose, and
     /// caps is what makes them read as the labels ON a control rather than as text near one.
     pub(crate) word: &'static str,
+    /// ⚠️ Read only by the test that holds it to being the word's own INITIAL — which is what
+    /// lets the caption print `ATTACK` rather than `ATTACK [A]`. A verb whose key is not its
+    /// initial makes that caption a lie, and the test is what says so.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) key: &'static str,
+    /// The font's OWN name for `glyph`. ⚠️ **A codepoint with nothing checking it is how this
+    /// repo drew a keyboard where a chest plate should have been** (`icons.rs`): this face's
+    /// Material Design block is shifted from the upstream table, so a hand-copied codepoint
+    /// lands on a neighbour and renders perfectly as the wrong picture. These five were exactly
+    /// that — five hand-copied codepoints with no test on them — while every icon in `icons.rs`
+    /// had been held to its name since the keyboard.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) icon: &'static str,
 }
 
 /// The five verbs around the wheel, **laid out on the battlefield rather than on a list**.
@@ -202,13 +307,20 @@ pub(crate) struct Slot {
 /// since both are things you do to yourself and neither has a direction. A player who has
 /// understood the arena has already understood the menu.
 pub(crate) const SLOTS: [Slot; 5] = [
-    // mdi glyphs (see UiFont): run-fast=Flee, shield=Defend, sword=Attack, auto-fix=Skill,
-    // flask=Item. Wedge order IS array order, clockwise from the arc nearest the camera.
-    Slot { index: 4, glyph: "\u{f070e}", word: "FLEE", key: "F", hue: INTENT_FLEE },
-    Slot { index: 1, glyph: "\u{f132}", word: "DEFEND", key: "D", hue: INTENT_GUARD },
-    Slot { index: 0, glyph: "\u{f04e5}", word: "ATTACK", key: "A", hue: INTENT_STRIKE },
-    Slot { index: 3, glyph: "\u{f0068}", word: "SKILL", key: "S", hue: INTENT_SKILL },
-    Slot { index: 2, glyph: "\u{f0093}", word: "ITEM", key: "I", hue: INTENT_MEND },
+    // mdi glyphs (see UiFont): auto-fix=Skill, flask=Item, run-fast=Flee, shield=Defend,
+    // sword=Attack. Array order IS the order round the ring, clockwise from the GAP — and the
+    // gap is on the FAR arc, so slot 0 is the sector just clockwise of the enemy-facing hole
+    // and slot 2 lands dead south. Read it as a clock with the enemies at twelve: Skill and
+    // Attack either side of twelve, Item and Defend at nine and three, Flee at six.
+    Slot { index: 3, glyph: "\u{f0068}", icon: "md-auto_fix", word: "SKILL", key: "S", hue: INTENT_SKILL },
+    Slot { index: 2, glyph: "\u{f0093}", icon: "md-flask", word: "ITEM", key: "I", hue: INTENT_MEND },
+    // ⚠️ U+F070E is `md-run`, NOT `md-run_fast` — this drew a plain walker while the comment
+    // above claimed the sprinter, and nothing checked it until the test below existed. The
+    // verified codepoint is the one `icons.rs::nf::RUN_FAST` already carries.
+    Slot { index: 4, glyph: "\u{f046e}", icon: "md-run_fast", word: "FLEE", key: "F", hue: INTENT_FLEE },
+    // ⚠️ A HALVED shield, asked for by name — `fa-shield_halved`, not `fa-shield`.
+    Slot { index: 1, glyph: "\u{ED25}", icon: "fa-shield_halved", word: "DEFEND", key: "D", hue: INTENT_GUARD },
+    Slot { index: 0, glyph: "\u{f04e5}", icon: "md-sword", word: "ATTACK", key: "A", hue: INTENT_STRIKE },
 ];
 
 /// **THE COLOUR OF AN INTENT.** Shared by the wheel's wedges and — once it lands — the glow on
@@ -229,29 +341,68 @@ pub(crate) const INTENT_FLEE: Color = Color::srgb(1.0, 0.72, 0.30);
 /// screen; flip this if it does not.
 const SPIN: f32 = 1.0;
 
-/// Where wedge `n`'s centre sits, in turns clockwise from the arc nearest the camera.
+/// **THE RING HAS ONE MORE SECTOR THAN IT HAS VERBS, AND THE SPARE ONE IS THE FRONT.**
+///
+/// The near arc is left EMPTY. Three things wanted that exact patch of ground — the HP digits
+/// written into the health ring below, the fighter's name, and whatever verb happened to sit
+/// due south — and on screen they stacked into one unreadable pile; the reference art solves it
+/// by simply not putting a button there. It also gives the wheel an axis, so the two halves
+/// read as a pair of banks rather than as a wreath.
+///
+/// ⚠️ **AND THE HOLE FACES THE ENEMY, NOT THE CAMERA.** The first cut put it on the near arc —
+/// the front of the wheel, nearest the player — which is the wrong half twice over: it is the
+/// half you are looking THROUGH to read the fight, so a solid bank of buttons there is exactly
+/// what you do not want, and the near arc is where the wheel is widest on screen and so has the
+/// most room for buttons. Opening the FAR side means nothing stands between the hero and the
+/// creatures it is being pointed at.
+///
+/// ⚠️ **AND IT DISSOLVES A CONTRADICTION RATHER THAN CREATING ONE.** With the gap at the front,
+/// FLEE could not be due south and the two rules genuinely fought. With the gap at the BACK,
+/// the sector opposite it IS due south — so Flee is due south again, Attack and Skill take the
+/// two sectors flanking the hole (the ones facing the enemy line), and Item and Defend take
+/// the flanks. Every bearing rule this menu has ever had holds at once, which is the tell that
+/// this is the right way round.
+pub(crate) const WEDGES: usize = SLOTS.len() + 1;
+
+/// Where verb `n`'s sector sits, in turns clockwise from the arc nearest the camera.
+///
+/// ⚠️ **TWO ORIGINS MEET HERE AND THEY ARE HALF A TURN APART.** Sectors are numbered from the
+/// GAP, which is on the far arc; `wheel_point` measures turns from the NEAR arc, because that
+/// is the direction the rest of the file reasons in (the camera's). So verb `n` is sector
+/// `n + 1` counted from the back, which is `0.5 + (n + 1)/WEDGES` counted from the front.
+/// Forgetting the half turn put FLEE exactly in the hole — the one sector nothing is drawn in.
 pub(crate) fn slot_turns(n: usize) -> f32 {
-    n as f32 / SLOTS.len() as f32
+    (0.5 + (n + 1) as f32 / WEDGES as f32).fract()
 }
 
-/// The bearing handed to the shader so wedge 0 is CENTRED on the near arc rather than starting
-/// there — a sector whose edge is the thing the eye lands on reads as a seam.
+/// The bearing handed to the shader so sector 0 — the GAP — is centred on the FAR arc, the one
+/// pointing at the enemy line. A gap centred on an arc is a space the eye reads as deliberate;
+/// a gap starting there is a seam.
 pub(crate) fn wheel_bearing() -> f32 {
-    -0.5 / SLOTS.len() as f32
+    0.5 - 0.5 / WEDGES as f32
 }
 
 /// Every wedge's own colour, packed for the shader in wedge order.
-pub(crate) fn wedge_hues() -> [Vec4; 5] {
-    let mut out = [Vec4::ONE; 5];
+pub(crate) fn wedge_hues() -> [Vec4; WEDGES] {
+    // Sector 0 is the GAP and is discarded in the shader, so its entry is never read — it is
+    // present only so a hue can be indexed by sector number rather than by verb number, which
+    // is the kind of off-by-one that shows up as the whole wheel wearing the wrong colours.
+    let mut out = [Vec4::ONE; WEDGES];
     for (i, slot) in SLOTS.iter().enumerate() {
         let c = slot.hue.to_linear();
-        out[i] = Vec4::new(c.red, c.green, c.blue, 1.0);
+        out[i + 1] = Vec4::new(c.red, c.green, c.blue, 1.0);
     }
     out
 }
 
 /// Where wedge `n`'s label stands in the world, given the body's feet and the direction from
 /// the body toward the camera (flattened onto the ground the wheel lies on).
+/// ⚠️ **TEST-ONLY.** The renderer centres a tile with `sector_centre`, in SCREEN space, because
+/// the projection of a ground-plane centroid is not the centroid of the projection. This stays
+/// because the BEARING rules — Flee due south, Attack and Skill facing the enemy line, the gap
+/// on the far arc — are about where a wedge points, which is a fact about the ground and not
+/// about the camera looking at it.
+#[cfg(test)]
 pub(crate) fn slot_world(feet: Vec3, front: Vec3, n: usize, scale: f32) -> Vec3 {
     wheel_point(feet, front, slot_turns(n), label_radius(scale), scale)
 }
@@ -276,7 +427,7 @@ pub(crate) fn band_radii(scale: f32) -> (f32, f32) {
 
 /// Half a wedge, in turns.
 pub(crate) fn half_wedge() -> f32 {
-    0.5 / SLOTS.len() as f32
+    0.5 / WEDGES as f32
 }
 
 /// Where the wheel's own middle sits: behind the body it belongs to, by [`WHEEL_BACK`].
@@ -302,7 +453,9 @@ pub(crate) fn style_radial(
     let over = chips
         .iter()
         .find(|(_, i)| matches!(**i, Interaction::Hovered | Interaction::Pressed))
-        .map(|(l, _)| l.wedge as f32)
+        // +1 for the same reason the cursor is shifted: the shader counts SECTORS, and
+        // sector 0 is the empty front.
+        .map(|(l, _)| (l.wedge + 1) as f32)
         .unwrap_or(-1.0);
     let Ok(mat) = disc.single() else { return };
     if let Some(mut m) = mats.get_mut(&mat.0) {
@@ -429,11 +582,14 @@ pub(crate) fn rebuild_radial_menu(
                 // The guided dive's paced explainer brightens whichever verb it is describing.
                 // It lit the chip's BORDER before; with the wedge carrying the face, the only
                 // thing left that belongs to one verb is its own word.
-                let text = step
+                // The guided dive's explainer brightens whichever verb it is describing — and
+                // the icon is the only thing on a wedge that belongs to one verb now, so the
+                // highlight lands there rather than on a word that no longer exists.
+                let icon_col = step
                     .filter(|s| tutorial_run.battle_intro == Some(*s))
                     .map(|_| glass::ACTIVE_EDGE)
-                    .unwrap_or(text);
-                let _ = edge;
+                    .unwrap_or(slot.hue);
+                let _ = (edge, text);
                 root.spawn((
                     Button,
                     RadialChip,
@@ -462,22 +618,31 @@ pub(crate) fn rebuild_radial_menu(
                     UiTransform::IDENTITY,
                 ))
                 .with_children(|chip| {
+                    // ⚠️ **THE ICON IS THE WHOLE BUTTON: no word under it and no key letter.**
+                    // A sector seen in perspective is a different shape at every bearing and
+                    // every camera distance, and a six-character word is the thing that will
+                    // not fit the narrow ones — DEFEND ran over the hero standing beside the
+                    // wheel, and each attempt to make it fit was a smaller word in a shape
+                    // that was still wrong. One glyph fits any sector by construction. It is
+                    // also the only way it lands CENTRED: a stack of icon-over-letter centres
+                    // the STACK, which puts the icon itself above the middle of its wedge.
+                    // The verb's name and its key are said in the caption, once, where there
+                    // is room for them.
                     chip.spawn((
                         Text::new(slot.glyph),
-                        TextFont { font_size: FontSize::Px(21.0), ..default() },
-                        TextColor(slot.hue),
-                    ));
-                    chip.spawn((
-                        Text::new(slot.word),
-                        TextFont { font_size: FontSize::Px(17.0), ..default() },
-                        TextColor(text),
-                    ));
-                    // The key on the wedge, not in a legend. A wheel has no reading order, so
-                    // "press F to flee" has nowhere else to be said.
-                    chip.spawn((
-                        Text::new(slot.key),
-                        TextFont { font_size: FontSize::Px(11.0), ..default() },
-                        TextColor(glass::DIM),
+                        TextFont { font_size: FontSize::Px(GLYPH_PX), ..default() },
+                        // **THE ICON WEARS ITS VERB'S COLOUR** — the same `INTENT_*` the wedge
+                        // lights in and the targeting gem burns in, so the three say one thing.
+                        // It went white for one build while the words were being removed and
+                        // was asked for back immediately, which is the answer to whether the
+                        // colour was carrying anything: it was.
+                        TextColor(icon_col),
+                        // The face beneath is dark, but it is dark GROUND in perspective with
+                        // grass, a sprite and a health ring showing through the gaps.
+                        TextShadow {
+                            offset: Vec2::splat(2.0),
+                            color: Color::srgba(0.0, 0.0, 0.0, 0.85),
+                        },
                     ));
                 });
             }
@@ -519,6 +684,23 @@ pub(crate) fn rebuild_radial_menu(
                         TextColor(Color::srgb(0.6, 0.66, 0.8)),
                     ));
                 }
+                // ⚠️ **THE CAPTION NAMES THE VERB, BECAUSE THE WEDGES NO LONGER DO.** With the
+                // words off the wheel the icons carry the choice and this carries the word —
+                // once, in full, in its own intent colour, where there is room for it. Said on
+                // every wedge it was five cramped words in five shapes none of them fit; said
+                // here it is one, and it is already rebuilt whenever the cursor moves.
+                // ⚠️ **AND IT DOES NOT PRINT THE KEY, because the key is the word.** Every
+                // verb's letter is its own initial — A for ATTACK, F for FLEE, all five — so
+                // `ATTACK [A]` spends a bracket saying what the first character already said.
+                // `every_verbs_key_is_its_own_initial` is what keeps that true: the day a verb
+                // is added whose key is not its initial, this has to start printing it again.
+                if let Some(slot) = SLOTS.iter().find(|s| s.index == menu.cursor) {
+                    cap.spawn((
+                        Text::new(slot.word),
+                        TextFont { font_size: FontSize::Px(17.0), ..default() },
+                        TextColor(slot.hue),
+                    ));
+                }
                 if !tooltip.is_empty() {
                     cap.spawn((
                         Text::new(tooltip),
@@ -543,9 +725,10 @@ pub(crate) struct CommandWheel {
     /// `(hovered wedge, openness, _, _)` — see `command_wheel.wgsl`.
     #[uniform(100)]
     pub(crate) state: Vec4,
-    /// One colour per wedge, in wedge order: what each verb IS.
+    /// One colour per SECTOR, sector 0 being the empty front. `wedge_hues` says why it is
+    /// indexed by sector rather than by verb.
     #[uniform(100)]
-    pub(crate) hues: [Vec4; 5],
+    pub(crate) hues: [Vec4; WEDGES],
 }
 
 impl Material for CommandWheel {
@@ -590,7 +773,7 @@ pub(crate) fn drive_command_wheel(
         if show {
             if let Some(wa) = assets {
                 let mat = mats.add(CommandWheel {
-                    params: Vec4::new(SLOTS.len() as f32, -1.0, 0.0, wheel_bearing()),
+                    params: Vec4::new(WEDGES as f32, -1.0, 0.0, wheel_bearing()),
                     tint: Vec4::new(0.40, 0.82, 1.0, 1.0),
                     state: Vec4::new(-1.0, 0.0, 0.0, 0.0),
                     hues: wedge_hues(),
@@ -599,6 +782,16 @@ pub(crate) fn drive_command_wheel(
                     CommandWheelDisc { open: 0.0 },
                     Mesh3d(wa.shadow_mesh.clone()),
                     MeshMaterial3d(mat),
+                    // ⚠️ **AND IT MUST NOT CAST A SHADOW.** The mesh is a full DISC and the
+                    // wedges are cut out of it in the fragment stage — but a shadow is
+                    // rasterised from the geometry, not from what the shader decided to keep,
+                    // so the sun threw a solid circle onto the ground underneath. Everything
+                    // this material carefully discards — the hub the hero stands in, the seams
+                    // between wedges, and now the gap facing the enemy — came back as a dark
+                    // ellipse in exactly those places. Reported as the missing spot "not being
+                    // transparent", which is precisely what it was: transparent, over its own
+                    // shadow.
+                    NotShadowCaster,
                     Visibility::Hidden,
                     Transform::from_xyz(0.0, WHEEL_LIFT, 0.0)
                         .with_rotation(Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2))
@@ -641,10 +834,35 @@ pub(crate) fn drive_command_wheel(
         tf.translation.z = c.z;
         tf.translation.y = c.y + WHEEL_LIFT;
     }
-    let cursor = SLOTS.iter().position(|s| s.index == menu.cursor).map(|n| n as f32);
+    // ⚠️ **THE DISC HAS TO TURN TO FACE THE CAMERA, AND FOR A LONG TIME IT DID NOT.**
+    // `command_wheel.wgsl` measures its sectors with `atan2` in the MESH's own space, so the
+    // bearing it is handed is relative to a fixed world axis — while every label here is placed
+    // relative to `front`, the direction from THIS body toward the camera. Those are the same
+    // line only for a hero standing on the arena's centre line. For anybody else the two frames
+    // are rotated apart by that hero's own bearing, so the wedges were drawn in one place and
+    // their icons stood in another — worst for the outermost hero, which is exactly where it
+    // was reported ("those icons are WAY off from center"), and invisible on the middle of the
+    // line, which is where a four-hero mock puts the eye first.
+    //
+    // Yawing the disc is the fix rather than folding the angle into the bearing uniform,
+    // because it makes the shader's frame BE the frame the rest of this file reasons in
+    // instead of leaving two conventions that have to be kept in step by hand.
+    // ⚠️ **AND THE SIGN IS SETTLED BY RENDERING IT, exactly as `SPIN`'s note says.** The
+    // shader's bearing zero lies along the mesh's local −Y, so the disc is yawed to put local
+    // +Y on the direction AWAY from the camera. Reasoning it out from the flatten gives the
+    // opposite answer, and the opposite answer also *looks* like a fix, because every wedge
+    // moves — it just moves half a turn, and the cursor's red wedge ends up opposite the icon
+    // it is lighting. That is the check: the lit wedge must appear under the icon it names.
+    let yaw = Quat::from_rotation_y(front.x.atan2(front.z))
+        * Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2);
+    if tf.rotation != yaw {
+        tf.rotation = yaw;
+    }
+    // +1: the shader counts sectors and sector 0 is the gap.
+    let cursor = SLOTS.iter().position(|s| s.index == menu.cursor).map(|n| (n + 1) as f32);
     if let Some(mut m) = mats.get_mut(&mat.0) {
         m.params = Vec4::new(
-            SLOTS.len() as f32,
+            WEDGES as f32,
             cursor.unwrap_or(-1.0),
             time.elapsed_secs(),
             wheel_bearing(),
@@ -699,8 +917,16 @@ pub(crate) fn follow_radial_menu(
         // on it — which is the whole difference between the reference art's wheel and five
         // plates parked near a hero.
         let edge = half_wedge() * TILE_INSET;
+        // ⚠️ **THE CENTRE IS THE AVERAGE OF THE SECTOR'S OWN FOUR CORNERS, NOT A RADIUS.**
+        // A wheel drawn flat on the ground is a sector in perspective, and no single radius is
+        // its middle: the half nearer the camera's line of sight through the hub projects wider
+        // than the half beyond it, so the true radial midpoint lands in the inner third of the
+        // shape. Guessing a weighting got closer and was still a guess. Projecting the corners
+        // and averaging them is the centre of the quad the player is actually looking at, at
+        // any camera, for any wedge count.
         let (Some(p), Some(l), Some(r), Some(i), Some(o)) = (
-            project(slot_world(feet, front, label.wedge, scale)),
+            // Where the sector's own outline says its middle is, ON SCREEN.
+            sector_centre(feet, front, turns, scale, project),
             project(wheel_point(feet, front, turns - edge, lr, scale)),
             project(wheel_point(feet, front, turns + edge, lr, scale)),
             project(wheel_point(feet, front, turns, r_in, scale)),
@@ -714,42 +940,48 @@ pub(crate) fn follow_radial_menu(
         if *vis != Visibility::Inherited {
             *vis = Visibility::Inherited;
         }
-        let w = (l.distance(r) * TILE_INSET).clamp(TILE_MIN_W, TILE_MAX_W);
+        // ⚠️ **THE HIT BOX AND THE WORD ARE SIZED BY DIFFERENT RULES, ON PURPOSE.** The box is
+        // clamped UP to a minimum because a target too small to click is the one failure this
+        // menu may not have; the word is fitted DOWN to the wedge's true width because a word
+        // wider than its own sector runs onto the next one — and clamping both the same way is
+        // what put DEFEND across the hero standing beside it.
+        let span = l.distance(r) * TILE_INSET;
+        let w = span.clamp(TILE_MIN_W, TILE_MAX_W);
         let h = (i.distance(o) * TILE_INSET).clamp(TILE_MIN_H, TILE_MAX_H);
         // Kept inside the window: a wedge at the edge of a wide formation would otherwise hang
         // its label off the side, and an order you cannot click is the one failure this menu
         // is not allowed to have.
         let x = (p.x - w * 0.5).clamp(2.0, (sw - w - 2.0).max(2.0));
         let y = (p.y - h * 0.5 - LABEL_RISE).clamp(2.0, (sh - h - 2.0).max(2.0));
+        if std::env::var("MELD_WHEEL_TRACE").is_ok() {
+            let edge = half_wedge() * TILE_INSET;
+            let (r_in2, r_out2) = band_radii(scale);
+            let corner = |t: f32, rr: f32| project(wheel_point(feet, front, t, rr, scale));
+            bevy::log::info!(
+                "wedge {} {:>7} turns={:.4} centre=({:.0},{:.0})                  near_l={:?} near_r={:?} far_l={:?} far_r={:?}",
+                label.wedge,
+                SLOTS[label.wedge].word,
+                turns,
+                p.x,
+                p.y,
+                corner(turns - edge, r_in2).map(|v| (v.x as i32, v.y as i32)),
+                corner(turns + edge, r_in2).map(|v| (v.x as i32, v.y as i32)),
+                corner(turns - edge, r_out2).map(|v| (v.x as i32, v.y as i32)),
+                corner(turns + edge, r_out2).map(|v| (v.x as i32, v.y as i32)),
+            );
+        }
         if node.left != Val::Px(x) || node.top != Val::Px(y) {
             node.left = Val::Px(x);
             node.top = Val::Px(y);
         }
-        // **THE WORD FOLLOWS THE CURVE — PART OF THE WAY.** A label set square on a ring drawn
-        // in perspective is the one thing on the wheel that is not part of it. The angle is
-        // taken from the PROJECTION (the two arc ends this tile was measured between), for the
-        // same reason the HP digits take theirs there: the ring is an ellipse on screen, so the
-        // tangent at a bearing is not that bearing.
-        //
-        // ⚠️ **BUT ONLY A SHARE OF IT, AND CAPPED.** On a ground ellipse at this camera the
-        // tangent at the side wedges is nearly VERTICAL, so following it fully stands ATTACK
-        // and ITEM on their ends — unreadable, and not what the reference art does either,
-        // where every label is upright. A third of the angle reads as belonging to the curve
-        // while the word still reads as a word.
-        let along = r - l;
-        let full = along.y.atan2(along.x);
-        // Keep it the short way round: a tangent measured the other way is the same line, and
-        // taking the raw angle would flip a label upside down on half the wheel.
-        let folded = if full > FRAC_PI_2 {
-            full - std::f32::consts::PI
-        } else if full < -FRAC_PI_2 {
-            full + std::f32::consts::PI
-        } else {
-            full
-        };
-        let rot = Rot2::radians((folded * LABEL_FOLLOW).clamp(-LABEL_TILT_MAX, LABEL_TILT_MAX));
-        if tf.rotation != rot {
-            tf.rotation = rot;
+        // **EVERY WORD READS LEFT TO RIGHT.** The labels used to take a share of the arc's
+        // tangent so they would "belong to the curve", damped and capped because following it
+        // fully stands the side wedges' words on their ends. It was wrong at any strength, and
+        // the reference art says so plainly: on a wheel you do not read round, you read the
+        // wedge you are pointing at. A tilted word is also the thing that leaves a sector
+        // through its corners, so the whole class of overhang goes with it.
+        if tf.rotation != Rot2::IDENTITY {
+            tf.rotation = Rot2::IDENTITY;
         }
         if node.width != Val::Px(w) || node.height != Val::Px(h) {
             node.width = Val::Px(w);
@@ -757,6 +989,8 @@ pub(crate) fn follow_radial_menu(
         }
     }
 
+    // The caption rides above the hero it is speaking for, clamped into the window so it can
+    // never be pushed off the edge by a body standing at the end of a wide formation.
     if let Ok(mut node) = caption.single_mut() {
         if let Ok(p) = cam.world_to_viewport(cam_tf, feet) {
             let x = (p.x - CAPTION_W * 0.5).clamp(2.0, (sw - CAPTION_W - 2.0).max(2.0));
@@ -825,6 +1059,108 @@ pub(crate) fn rebuild_auto_chip(
 mod tests {
     use super::*;
 
+    /// **THE DISC'S OWN FRAME IS THE ONE THE LABELS ARE PLACED IN.**
+    ///
+    /// ⚠️ `command_wheel.wgsl` measures its sectors with `atan2` in the MESH's space, so the
+    /// wedge at bearing zero is wherever the mesh points. Every label is placed relative to
+    /// `front` — the direction from THIS body toward the camera — and the disc carried **no yaw
+    /// at all**, so the two frames were the same one only for a hero standing on the arena's
+    /// centre line. For anybody else the wedges were drawn rotated away from their own icons:
+    /// worst at the ends of the line, and invisible in the middle, which is where a four-hero
+    /// mock puts the eye first and why it survived so long.
+    ///
+    /// ⚠️ **The SIGN is settled by rendering, like `SPIN` above it.** Deriving it from the
+    /// flatten gives the opposite answer, which also looks like a fix because every wedge
+    /// moves — half a turn, leaving the cursor's lit wedge opposite the icon it is lighting.
+    /// What this test holds is the part that is pure arithmetic: the wheel turns with the body
+    /// and stays flat on the ground.
+    #[test]
+    fn the_disc_turns_to_face_the_camera() {
+        let yaw_for = |front: Vec3| {
+            Quat::from_rotation_y(front.x.atan2(front.z))
+                * Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2)
+        };
+        for front in [
+            Vec3::Z,
+            Vec3::new(0.6, 0.0, 0.8).normalize(),
+            Vec3::new(-0.9, 0.0, 0.44).normalize(),
+            Vec3::X,
+            Vec3::new(-0.2, 0.0, -0.98).normalize(),
+        ] {
+            let yaw = yaw_for(front);
+            // FLAT. The disc's own normal comes out straight up whatever the body's bearing —
+            // a wheel standing on its edge is the failure a yaw applied in the wrong order gives.
+            let up = yaw * Vec3::Z;
+            assert!(up.y > 0.999, "the wheel is not lying on the ground for {front:?}: {up:?}");
+            // AND IT TURNS WITH THE BODY: the mesh's own axis stays on the body's own bearing
+            // line, so a hero at the end of the line gets its wedges rotated exactly as much as
+            // its labels are. (Which END of that line is the rendered question above.)
+            let axis = yaw * Vec3::Y;
+            assert!(
+                axis.y.abs() < 1e-4,
+                "the wheel's bearing axis left the ground plane: {axis:?}",
+            );
+            assert!(
+                axis.cross(front).length() < 1e-3,
+                "the wheel's bearing axis {axis:?} is off the body's own line {front:?}",
+            );
+        }
+    }
+
+    /// **EVERY VERB'S KEY IS ITS OWN INITIAL**, which is why the caption prints `ATTACK` and
+    /// not `ATTACK [A]` — the bracket would spend itself saying what the first letter already
+    /// said. It is a real constraint rather than a coincidence: the day a verb arrives whose
+    /// key is not its initial, the caption has to start printing keys again, and this is what
+    /// will say so.
+    #[test]
+    fn every_verbs_key_is_its_own_initial() {
+        for slot in SLOTS {
+            let first = slot.word.chars().next().expect("a verb has a name");
+            let key = slot.key.chars().next().expect("a verb has a key");
+            assert_eq!(
+                first.to_ascii_uppercase(),
+                key.to_ascii_uppercase(),
+                "{}'s key is {} — the caption stops being able to leave it out",
+                slot.word,
+                slot.key,
+            );
+        }
+        // And no two verbs share one, or the letter stops identifying anything.
+        for (i, a) in SLOTS.iter().enumerate() {
+            for b in SLOTS.iter().skip(i + 1) {
+                assert_ne!(a.key, b.key, "{} and {} share a key", a.word, b.word);
+            }
+        }
+    }
+
+    /// **EVERY WEDGE'S ICON IS THE GLYPH IT CLAIMS TO BE.**
+    ///
+    /// ⚠️ The wheel's five codepoints were hand-copied and nothing checked them, which is the
+    /// exact gap `icons.rs` closed for every other icon in the game after `md-tshirt_crew` drew
+    /// a KEYBOARD — present in the font, rendered happily, and the wrong picture. This face's
+    /// Material Design block is shifted from the upstream table, so "is it in the font" is not
+    /// the question; the face knows its own glyph names, so ask it.
+    #[test]
+    fn every_wedge_icon_is_the_glyph_it_claims_to_be() {
+        let face = ttf_parser::Face::parse(crate::netglue::UI_FONT_BYTES, 0)
+            .expect("the bundled UI font parses");
+        for slot in SLOTS {
+            let ch = slot.glyph.chars().next().expect("a glyph is at least one char");
+            let gid = face.glyph_index(ch).unwrap_or_else(|| {
+                panic!("{} (U+{:X}) is not in the font at all", slot.icon, ch as u32)
+            });
+            assert_eq!(
+                face.glyph_name(gid),
+                Some(slot.icon),
+                "{}'s icon U+{:X} is {:?}, not {} — the codepoint is off",
+                slot.word,
+                ch as u32,
+                face.glyph_name(gid),
+                slot.icon,
+            );
+        }
+    }
+
     /// **A CHIP FIRES THE INDEX IT CARRIES.** `menu_click` looks up `menu_entries`' Root list
     /// by index, so a slot pointing at the wrong one hands the server a different order than
     /// the word the player read. All five are present, exactly once.
@@ -863,20 +1199,42 @@ mod tests {
         assert!(mid > W_IN && mid < W_OUT, "the labels stand off the band: {mid}");
     }
 
-    /// **A WEDGE IS CENTRED ON THE NEAR ARC, NOT SEAMED ACROSS IT.** The bearing handed to the
-    /// shader has to put wedge 0's MIDDLE at the point the eye lands on; half a wedge out and
-    /// the first thing the player sees is the gap between two choices.
+    /// **THE GAP FACES THE ENEMY LINE, AND NO VERB STANDS THERE.** The ring carries one more
+    /// sector than it has verbs and the spare one is centred on the FAR arc, so nothing stands
+    /// between the hero and the creatures it is being pointed at.
+    ///
+    /// ⚠️ **THE FIRST CUT PUT IT ON THE NEAR ARC AND THAT WAS BACKWARDS.** The near arc is the
+    /// half you look THROUGH to read the fight, and it is where the wheel is widest on screen —
+    /// so it is simultaneously the worst place to spend on nothing and the best place to put
+    /// buttons. Half a sector out in either direction and the gap stops being a space and
+    /// becomes a seam between two buttons, which reads as a crack.
     #[test]
-    fn the_first_wedge_faces_the_camera() {
-        let half = 0.5 / SLOTS.len() as f32;
-        assert!((wheel_bearing() + half).abs() < 1e-6, "wedge 0 is not centred on the front");
-        assert_eq!(slot_turns(0), 0.0, "wedge 0 is not on the near arc");
+    fn the_gap_faces_the_enemy_line() {
+        let half = 0.5 / WEDGES as f32;
+        assert!(
+            (wheel_bearing() - (0.5 - half)).abs() < 1e-6,
+            "sector 0 is not centred on the far arc",
+        );
+        // No verb may stand on the far arc: that half-turn bearing is the gap's alone.
+        for (n, slot) in SLOTS.iter().enumerate() {
+            let from_back = (slot_turns(n) - 0.5).abs();
+            assert!(from_back > half - 1e-6, "{} stands in the gap", slot.word);
+        }
+        // And the gap is exactly one sector wide — not a wider hole that eats a neighbour, nor
+        // a hairline that reads as a join.
+        assert!((half_wedge() * 2.0 - 1.0 / WEDGES as f32).abs() < 1e-6);
     }
 
-    /// **THE MENU IS LAID OUT ON THE BATTLEFIELD.** The enemies are north of every hero and the
-    /// way out is south, so Flee points at the retreat, Attack and Skill face the enemy line,
-    /// and the two verbs with no direction — Item and Defend — take the sides. Asserted by
-    /// BEARING rather than by array index, because the rule is about where a wedge points.
+    /// **THE MENU IS LAID OUT ON THE BATTLEFIELD.** The enemies are north of every hero, so
+    /// Attack and Skill face the enemy line and the two verbs with no direction — Item and
+    /// Defend — take the sides. Asserted by BEARING rather than by array index, because the
+    /// rule is about where a wedge points.
+    ///
+    /// ⚠️ **AND THE HOLE IS WHAT LETS ALL THREE RULES HOLD AT ONCE.** With the gap on the near
+    /// arc, Flee could not also be due south and the rules genuinely fought. With it on the FAR
+    /// arc the sector opposite is due south, so Flee is back where it belongs and the two
+    /// sectors flanking the hole are the two facing the enemies. A layout in which every stated
+    /// rule is satisfiable is the tell that the hole is on the right side.
     #[test]
     fn the_wheel_is_laid_out_on_the_arena() {
         let feet = Vec3::ZERO;
@@ -887,17 +1245,20 @@ mod tests {
             slot_world(feet, front, n, WHEEL_SCALE)
         };
         let (attack, skill, item, defend, flee) = (at(0), at(3), at(2), at(1), at(4));
-        // Flee is the southernmost thing on the wheel.
+        // Flee is the southernmost thing on the wheel — the way out is behind you.
         for (name, p) in [("attack", attack), ("skill", skill), ("item", item), ("defend", defend)]
         {
             assert!(flee.z > p.z, "flee is not south of {name}");
         }
-        // Attack and Skill are the two facing the enemies…
+        // Attack and Skill are the two facing the enemies, and they are the two FLANKING THE
+        // GAP — so the pair of buttons either side of the hole are the pair that reach across
+        // it, which is the whole reason the hole is on that side.
         for (name, p) in [("item", item), ("defend", defend), ("flee", flee)] {
             assert!(attack.z < p.z, "attack does not face the enemies against {name}");
             assert!(skill.z < p.z, "skill does not face the enemies against {name}");
         }
-        // …and they are on opposite sides of the centre line, so neither is straight ahead.
+        // …and they are on opposite sides of the centre line, so neither is straight ahead —
+        // straight ahead is the gap.
         assert!(attack.x * skill.x < 0.0, "attack and skill are on the same flank");
         // Item and Defend take the flanks, one each.
         assert!(item.x * defend.x < 0.0, "item and defend are on the same side");

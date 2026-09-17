@@ -982,3 +982,46 @@ pub(crate) fn mock_states(
     }
     *step += 1;
 }
+
+/// `MELD_AIM=attack|skill|heal` opens the mockup with an order already being AIMED, so the
+/// targeting orbs — their intent colour, the light they throw, the dim ones marking the other
+/// legal choices — can be looked at in a still frame. In play this state lives between two key
+/// presses, and the mockup resolves nothing and would never enter it.
+///
+/// ⚠️ **IT CANNOT BE DONE AT STARTUP, which is where the rest of the mockup is built.**
+/// `mock_battle_setup` only ASKS for `Screen::Battle`; the transition lands a frame later and
+/// `enter_battle` resets the menu to its root on the way in, so an order begun before that is
+/// wiped before anything draws — a fixture that silently does nothing, which is exactly the
+/// failure mode `MELD_GEAR_TIER` and `MELD_WIN` are recorded here for. It runs in Update and
+/// spends itself once the picker is actually open.
+pub(crate) fn mock_aim(
+    mut battle: ResMut<BattleData>,
+    mut menu: ResMut<BattleMenu>,
+    mut tutorial_run: ResMut<TutorialRun>,
+    mut done: Local<bool>,
+) {
+    if *done || !battle_mockup_flag() {
+        return;
+    }
+    let Some(aim) = crate::flags::aim_flag() else {
+        *done = true;
+        return;
+    };
+    if battle.combatants.is_empty() {
+        return;
+    }
+    let kind = match aim.as_str() {
+        // A mend is aimed at the PARTY, so this is also the fixture for a hero wearing an orb
+        // — the half of the picker that had no body to land on until heroes got one.
+        "heal" => QueuedKind::Skill("transfuse"),
+        "skill" => QueuedKind::Skill("power_strike"),
+        _ => QueuedKind::Attack,
+    };
+    battle.active = Some("h1".to_string());
+    crate::battle::begin_order(&mut battle, &mut menu, "h1", kind, &mut tutorial_run);
+    // Only a picker that actually OPENED counts as spent: `begin_order` queues outright when
+    // exactly one target is legal, and retrying then would re-queue every frame forever.
+    if menu.level == MenuLevel::Target {
+        *done = true;
+    }
+}

@@ -34,6 +34,17 @@ pub(crate) const RING_LIFT: f32 = 0.115;
 /// The torus's major radius — the line the tube runs along, and where the HP digits sit.
 /// ⚠️ Mirrored from `world_render`'s `ring_liquid_mesh`; a test holds the two together.
 pub(crate) const RING_MAJOR: f32 = 0.78;
+
+/// Half the tube's thickness — the torus's minor radius, mirrored from `world_render`'s mesh
+/// (a test holds the two together).
+///
+/// ⚠️ **IT IS WHAT THE DIGITS RIDE ON.** The number sits at `RING_MAJOR`, which is the tube's
+/// CENTRE-LINE — and a centre-line projects onto the tube's upper EDGE, not its middle, because
+/// a camera looking down at a fat tube sees its crown. Written at the centre-line height the
+/// digits straddled the rim: half on the green, half over the hole, which is what "the text
+/// isn't on the tube" looks like. They ride the crown now, which is the surface actually facing
+/// the player.
+pub(crate) const RING_MINOR: f32 = 0.135;
 /// How fast the red bed a hit opened closes back up, as a fraction of the ring per second.
 const GHOST_CHASE: f32 = 0.28;
 /// How long it stays open at full width first, in seconds.
@@ -616,6 +627,9 @@ mod tests {
         let major = read("ring_liquid_mesh", "major_radius");
         let minor = read("ring_liquid_mesh", "minor_radius");
         assert_eq!(major, RING_MAJOR, "the digits sit off the tube");
+        // The digits are lifted onto the tube's crown by `RING_MINOR`, so a mesh whose tube got
+        // fatter without that constant moving would write them back inside the hole.
+        assert_eq!(minor, RING_MINOR, "the digits ride a tube of a different thickness");
         // ⚠️ **AND THERE IS EXACTLY ONE OF THEM.** A second concentric torus is what
         // `spawn_ring`'s note calls the double-stacked reading; re-adding one is re-adding
         // that bug, so the absence is asserted rather than left to memory.
