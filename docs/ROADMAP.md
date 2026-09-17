@@ -5811,6 +5811,25 @@ only the things that can't be class-gated.
     does not — measured, a fresh mire world sat at `weather = 0` for as long as anyone
     watched, and the weather is the one effect that cannot be reached by standing somewhere.
 
+- [x] **UX-26 — A payout leaves the thing that paid it.** Opening a chest, digging a unit
+  out of a node and walking over dropped loot were all the same event to the eye: a line of
+  text over your own head. Nothing connected the reward to the thing that gave it, so a
+  chest you had just opened looked exactly like one you had not — the same complaint
+  `net::payout_of` was written to answer one layer down, where ground loot was collected in
+  silence.
+  - Motes are thrown FROM the source ALONG the line to the player, which is what makes it
+    read as collection rather than as scenery sparkling. The source is whatever is in
+    REACH — the one predicate the interact prompt already asks, so a harvest, a chest and a
+    pickup all find their own origin without a second rule.
+  - ⚠️ Loot lying on the ground has nothing in reach to have come from, so it falls back to
+    the player's own feet rather than inventing a source: a burst thrown from the wrong
+    place is worse than one thrown from under you.
+  - Each kind wears its own colour (`payout_rgb`) — gold for treasure, green for what you
+    dug up, pale for something that was merely lying there. Three is a distinction the eye
+    can hold in one dive, and `every_payout_has_its_own_colour` keeps them apart.
+  - The motes rise rather than fall: gravity here would read as the reward being dropped on
+    the floor.
+
 - [ ] **UX-1 — Last City minimap & compass (town-only).** A minimap and compass
   **for Last City itself** so players can navigate the hub — locate the districts
   (Vault-Deep, Market, Forge/Alembic, Bounty Board, Drill Yard, Vanguard Wall),

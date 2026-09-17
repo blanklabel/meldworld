@@ -70,6 +70,28 @@ pub(crate) fn load_ui_font(mut fonts: ResMut<Assets<Font>>) {
 
 /// Drain server messages every frame, update resources, drive transitions.
 #[allow(clippy::too_many_arguments)]
+/// Where a payout came FROM and where it is going, for `UX-26`'s motes.
+///
+/// The source is whatever is in REACH — which is what a harvest, a chest and a pickup all
+/// have in common, and is already the one predicate the interact prompt asks. Loot lying on
+/// the ground has nothing in reach to have come from, so it falls back to the player's own
+/// feet rather than inventing a source: a burst thrown from the wrong place is worse than
+/// one thrown from under you.
+fn payout_path(world: &Overworld, session: &Session) -> Option<(Vec3, Vec3)> {
+    let me = world.entities.get(&session.player_id)?;
+    let to = Vec3::new(me.x, crate::world_render::terrain_height(me.x, me.y) + 1.1, me.y);
+    let from = match crate::overworld::interact_target(world, session) {
+        Some(crate::overworld::Interact::Harvest { entity_id, .. })
+        | Some(crate::overworld::Interact::OpenChest { entity_id }) => world
+            .entities
+            .get(&entity_id)
+            .map(|e| Vec3::new(e.x, crate::world_render::terrain_height(e.x, e.y) + 0.4, e.y))
+            .unwrap_or(to),
+        _ => to,
+    };
+    Some((from, to))
+}
+
 pub(crate) fn pump_net(
     net: NonSend<NetRes>,
     mut session: ResMut<Session>,
@@ -471,6 +493,13 @@ pub(crate) fn pump_net(
                 }
             }
             ServerMsg::LootPickedUp { items } => {
+                if let Some((from, toward)) = payout_path(&world, &session) {
+                    world_fx.payouts.push(crate::world_fx::PayoutBurst {
+                        from,
+                        toward,
+                        rgb: crate::world_fx::payout_rgb(meld_client::net::Payout::Pickup),
+                    });
+                }
                 // The same banner a chest raises, because it answers the same question.
                 // Auto-pickup used to be silent, so a creature that died fighting another
                 // creature and left something behind was indistinguishable from one that
@@ -727,6 +756,13 @@ pub(crate) fn pump_net(
                 }
             }
             ServerMsg::ChestOpened { chits, items, gear } => {
+                if let Some((from, toward)) = payout_path(&world, &session) {
+                    world_fx.payouts.push(crate::world_fx::PayoutBurst {
+                        from,
+                        toward,
+                        rgb: crate::world_fx::payout_rgb(meld_client::net::Payout::Chest),
+                    });
+                }
                 report.raise("TREASURE!", None, chits, items, gear);
                 // Order-independent: a curious player can open the chest before
                 // harvesting (nothing blocks it, and a chest can't be reopened to
@@ -846,6 +882,13 @@ pub(crate) fn pump_net(
             }
             ServerMsg::Harvested { kind, qty } => {
                 pops.banked(&kind, qty);
+                if let Some((from, toward)) = payout_path(&world, &session) {
+                    world_fx.payouts.push(crate::world_fx::PayoutBurst {
+                        from,
+                        toward,
+                        rgb: crate::world_fx::payout_rgb(meld_client::net::Payout::Harvest),
+                    });
+                }
                 // Order-independent (see the matching comment on ChestOpened): a
                 // player may open the chest before harvesting, so this only
                 // requires this half to advance the shared step.

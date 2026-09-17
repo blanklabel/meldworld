@@ -3541,7 +3541,7 @@ impl Inner {
 /// each other (`== "chest"` against `starts_with("harvest")`), which is how a fourth
 /// payout gets added and shows up on none of the surfaces that were supposed to greet it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Payout {
+pub enum Payout {
     /// A treasure chest was opened: the loot-report banner.
     Chest,
     /// A harvest channel paid out a unit: the over-head "+1 Bog Myrrh" pop.
