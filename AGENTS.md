@@ -1072,6 +1072,18 @@ zoom where the clamp bites, the sector keeps shrinking and the glyph does not). 
 keeps its minimum, because a target too small to click is the one failure this menu may not
 have — it is invisible, so it may diverge where a glyph may not.
 
+⚠️ **AND THE WHEEL IS SMALL, BECAUSE A BIG ONE READS AS UNCENTRED.** A thicker band was asked
+for; the only way to get one is to shrink the hole and grow the wheel, since `W_OUT` is already
+at the disc's own edge and the hole is pinned by the health ring beneath it. Grown that way
+(`W_IN` 0.46, scale 2.95) the band really is ~28% thicker and the outer wall lands 2.00 world
+units out against heroes standing 2.7 apart — reported at once as *"the circle is TOO huge
+now"*, and it also made the sectors so large that an icon at a sector's true centre read as
+lost in it rather than centred on it. **The band is squeezed between the health ring's outer
+wall at 0.915 and the next hero at 2.7, and only the OUTER wall can move** — so every unit the
+wheel comes in is a unit off the button's depth. At scale 2.40 / `W_IN` 0.56 the inner wall is
+0.941 (clear by 0.026, the tightest number here) and the band is 0.689: a calm wheel that sits
+well clear of the bodies either side, bought with ~16% of the button's thickness.
+
 ⚠️ **AND THE WORD IS SIZED AND PLACED BY THE WEDGE, NOT BY A CONSTANT.** The wheel lies on the
 GROUND, so its five sectors are five different shapes on screen — the near and far ones face the
 camera, the side ones are nearly edge-on at a fraction of the width. Three consequences, all of

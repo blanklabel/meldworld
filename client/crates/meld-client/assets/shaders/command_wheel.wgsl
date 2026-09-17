@@ -46,7 +46,7 @@ const TAU: f32 = 6.2831853;
 // The band the wedges occupy, as a fraction of the mesh radius. Thick, because a wedge has to
 // hold an icon over a word — a thin one is a pie chart with writing on it.
 // ⚠️ `battle_radial::W_IN`/`W_OUT` mirror these; a test reads them back out of this file.
-const W_IN: f32 = 0.46;
+const W_IN: f32 = 0.56;
 const W_OUT: f32 = 0.97;
 // Half the gap between two wedges, in turns. It is what makes them read as separate choices
 // rather than as one ring with text on it.

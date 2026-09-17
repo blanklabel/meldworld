@@ -80,7 +80,7 @@ pub(crate) struct AutoChipRoot;
 /// The band the wedges occupy, as a fraction of the wheel mesh's radius — mirrored from
 /// `command_wheel.wgsl`, which cuts them, and held against it by test. The Rust side needs
 /// them because every label is placed along the middle of that band.
-pub(crate) const W_IN: f32 = 0.46;
+pub(crate) const W_IN: f32 = 0.56;
 pub(crate) const W_OUT: f32 = 0.97;
 /// `WorldAssets::shadow_mesh` is a `Circle::new(0.7)`; the wheel borrows it exactly as the
 /// health ring does rather than carrying a third disc.
@@ -92,19 +92,28 @@ const MESH_RADIUS: f32 = 0.7;
 /// straight over the bar, which at 2.05 left the health ring as a thin green thread under a
 /// dark plate.
 ///
-/// ⚠️ **AND THE BAND WAS MADE THICKER BY MOVING THE INNER WALL, WHICH IS WHY THIS GREW.**
-/// A thicker button was asked for and the outer wall cannot help: `W_OUT` is in mesh units and
-/// 0.97 is already at the disc's own edge. So the hole shrank (`W_IN` 0.52 → 0.46) and the
-/// wheel grew to keep the inner wall off the health ring — `0.46 × 0.7 × 2.95 = 0.950`, clear
-/// by 0.035. The band is ~28% thicker for it. The ceiling on growing further is the party
-/// spacing: heroes stand 2.7 apart and the outer wall is now 2.00 out.
+/// ⚠️ **A THICKER BAND WAS ASKED FOR AND IT IS NOT AVAILABLE AT THIS SIZE — I TRIED.** The
+/// outer wall cannot help (`W_OUT` is in mesh units and 0.97 is already the disc's own edge),
+/// so the only way to thicken is to shrink the hole and grow the wheel to keep the inner wall
+/// off the health ring. At `W_IN` 0.46 and scale 2.95 the band really is ~28% thicker — and the
+/// outer wall lands 2.00 world units out, against heroes standing 2.7 apart. Reported at once
+/// as *"the circle is TOO huge now"*, and it also made the wedges so large that an icon at a
+/// sector's true centre read as lost in it rather than centred on it.
+///
+/// **The band is squeezed between two fixed things**: the health ring's outer wall at 0.915 and
+/// the next hero at 2.7. ⚠️ **And shrinking the wheel spends the band, because only the OUTER
+/// wall can move** — the hole is pinned where it is by the health ring under it, so every unit
+/// the wheel comes in is a unit off the button's depth. At 2.40 the inner wall is 0.941 (clear
+/// by 0.026, the tightest number here) and the band is 0.689: a smaller, calmer wheel that sits
+/// well clear of the hero either side, bought with ~16% of the button's thickness. That is the
+/// whole trade, in one place, for whoever turns this dial next.
 ///
 /// ⚠️ **IT STANDS OUTSIDE THE HEALTH RING, WHICH THE REFERENCE DOES NOT.** In the art the
 /// health arcs are the wheel's own outer rim. Nesting it that way is not merely tight here, it
 /// is impossible: the health band's inner wall is 0.567 world units out, so a wheel inside it
 /// caps at about a third of this scale — roughly 73px of screen radius for five words. The two
 /// rings are concentric instead, and neither is a caption on the other.
-const WHEEL_SCALE: f32 = 2.95;
+const WHEEL_SCALE: f32 = 2.40;
 /// Where the wheel starts before it opens: its outer wall exactly on the health ring's, so the
 /// tiles are seen to PUSH the circle out rather than to appear beside it.
 ///
@@ -243,7 +252,7 @@ const TILE_INSET: f32 = 0.88;
 /// ⚠️ The trade is real and bounded: zoom far enough out and fixed-size icons crowd a shrinking
 /// wheel. The battle camera auto-fits to the party rather than being free, so that range is
 /// small — if a future camera opens it up, this is the constant that has to become a clamp.
-const GLYPH_PX: f32 = 38.0;
+const GLYPH_PX: f32 = 33.0;
 
 const LABEL_RISE: f32 = 0.0;
 /// The caption block (who is being commanded, and what the cursor's wedge does) sits above the
