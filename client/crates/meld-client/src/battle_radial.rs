@@ -116,18 +116,25 @@ const WHEEL_SHUT_SCALE: f32 = 1.348;
 /// How long the push takes. Long enough to be a movement the eye catches on its own, short
 /// enough that it is never between you and an order you already knew you wanted.
 const WHEEL_OPEN_SECS: f32 = 0.22;
-/// The line the tiles sit on, at a given scale.
+/// The line the tiles sit on: **the AREA CENTROID of the sector**, not a weighting of its walls.
 ///
-/// ⚠️ **BIASED OUTWARD, BECAUSE THE BAND'S MIDDLE IS NOT ITS MIDDLE ON SCREEN.** The wheel lies
-/// on the GROUND and is seen in perspective, so the band's inner half — the half nearer the
-/// camera's line of sight through the hub — projects WIDER than its outer half. A label at the
-/// true radial midpoint therefore lands in the inner third of the sector it is naming, which is
-/// what *"all the action items are off centre"* was, and what a first pass at that complaint
-/// only half fixed. Weighting toward the outer wall puts the word in the middle of the shape
-/// the player actually sees. It stays strictly inside both walls (a test holds that), so the
-/// tile can never climb out of its own band.
+/// ⚠️ **A SECTOR'S MIDDLE IS NOT ITS MIDDLE RADIUS, AND NO AMOUNT OF TUNING MAKES IT ONE.** An
+/// annular sector has more of itself near its outer wall — the arc out there is longer — so a
+/// label at `(W_IN + W_OUT)/2` sits visibly inside the shape it is naming. That is what *"all
+/// the action items are off centre"* was. Two guesses were tried and both were guesses: a
+/// weighting toward the outer wall, then the average of the sector's four projected corners,
+/// which is the centroid of a QUADRILATERAL and the sector is not one — the arcs bulge.
+///
+/// The closed form is standard and exact:
+/// `r_c = (2/3) · (b³ − a³)/(b² − a²) · sin(α)/α` for an annular sector of radii `a..b` and
+/// half-angle `α`. Every term is already a constant of this wheel, so the centre is derived
+/// rather than tuned, and it stays correct if the band is made thicker or a verb is added.
 pub(crate) fn label_radius(scale: f32) -> f32 {
-    MESH_RADIUS * scale * (W_IN * 0.38 + W_OUT * 0.62)
+    let r = MESH_RADIUS * scale;
+    let (a, b) = (W_IN * r, W_OUT * r);
+    // Half the sector, in radians. `half_wedge` is in turns.
+    let alpha = half_wedge() * std::f32::consts::TAU;
+    (2.0 / 3.0) * (b.powi(3) - a.powi(3)) / (b.powi(2) - a.powi(2)) * (alpha.sin() / alpha)
 }
 
 /// How far open the wheel is, 0..1, eased so it arrives rather than stops.
@@ -218,6 +225,10 @@ pub(crate) struct Slot {
     /// Upper case, as the art has it: these are five short commands rather than prose, and
     /// caps is what makes them read as the labels ON a control rather than as text near one.
     pub(crate) word: &'static str,
+    /// ⚠️ Read only by the test that holds it to being the word's own INITIAL — which is what
+    /// lets the caption print `ATTACK` rather than `ATTACK [A]`. A verb whose key is not its
+    /// initial makes that caption a lie, and the test is what says so.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) key: &'static str,
     /// The font's OWN name for `glyph`. ⚠️ **A codepoint with nothing checking it is how this
     /// repo drew a keyboard where a chest plate should have been** (`icons.rs`): this face's
@@ -328,11 +339,6 @@ pub(crate) fn wedge_hues() -> [Vec4; WEDGES] {
 
 /// Where wedge `n`'s label stands in the world, given the body's feet and the direction from
 /// the body toward the camera (flattened onto the ground the wheel lies on).
-/// ⚠️ **TEST-ONLY NOW.** The layout centres a tile on its sector's own projected CORNERS, so
-/// nothing in the renderer asks for "the point at slot n" any more. It stays because the
-/// bearing rules — Flee due south, Attack and Skill facing the enemy line — are asserted
-/// against it, and those are a design rule rather than an artefact of how a tile is placed.
-#[cfg(test)]
 pub(crate) fn slot_world(feet: Vec3, front: Vec3, n: usize, scale: f32) -> Vec3 {
     wheel_point(feet, front, slot_turns(n), label_radius(scale), scale)
 }
@@ -512,11 +518,14 @@ pub(crate) fn rebuild_radial_menu(
                 // The guided dive's paced explainer brightens whichever verb it is describing.
                 // It lit the chip's BORDER before; with the wedge carrying the face, the only
                 // thing left that belongs to one verb is its own word.
-                let text = step
+                // The guided dive's explainer brightens whichever verb it is describing — and
+                // the icon is the only thing on a wedge that belongs to one verb now, so the
+                // highlight lands there rather than on a word that no longer exists.
+                let icon_col = step
                     .filter(|s| tutorial_run.battle_intro == Some(*s))
                     .map(|_| glass::ACTIVE_EDGE)
-                    .unwrap_or(text);
-                let _ = edge;
+                    .unwrap_or(slot.hue);
+                let _ = (edge, text);
                 root.spawn((
                     Button,
                     RadialChip,
@@ -558,7 +567,12 @@ pub(crate) fn rebuild_radial_menu(
                     chip.spawn((
                         Text::new(slot.glyph),
                         TextFont { font_size: FontSize::Px(GLYPH_PX), ..default() },
-                        TextColor(text),
+                        // **THE ICON WEARS ITS VERB'S COLOUR** — the same `INTENT_*` the wedge
+                        // lights in and the targeting gem burns in, so the three say one thing.
+                        // It went white for one build while the words were being removed and
+                        // was asked for back immediately, which is the answer to whether the
+                        // colour was carrying anything: it was.
+                        TextColor(icon_col),
                         // The face beneath is dark, but it is dark GROUND in perspective with
                         // grass, a sprite and a health ring showing through the gaps.
                         TextShadow {
@@ -611,13 +625,14 @@ pub(crate) fn rebuild_radial_menu(
                 // once, in full, in its own intent colour, where there is room for it. Said on
                 // every wedge it was five cramped words in five shapes none of them fit; said
                 // here it is one, and it is already rebuilt whenever the cursor moves.
-                // ⚠️ **AND IT CARRIES THE KEY, because the wedge no longer can.** A wheel has
-                // no reading order, so "press F to flee" has nowhere to be said except beside
-                // the verb it belongs to — and the letters were the second thing crowding an
-                // icon that had to be the whole button.
+                // ⚠️ **AND IT DOES NOT PRINT THE KEY, because the key is the word.** Every
+                // verb's letter is its own initial — A for ATTACK, F for FLEE, all five — so
+                // `ATTACK [A]` spends a bracket saying what the first character already said.
+                // `every_verbs_key_is_its_own_initial` is what keeps that true: the day a verb
+                // is added whose key is not its initial, this has to start printing it again.
                 if let Some(slot) = SLOTS.iter().find(|s| s.index == menu.cursor) {
                     cap.spawn((
-                        Text::new(format!("{}  [{}]", slot.word, slot.key)),
+                        Text::new(slot.word),
                         TextFont { font_size: FontSize::Px(17.0), ..default() },
                         TextColor(slot.hue),
                     ));
@@ -821,13 +836,13 @@ pub(crate) fn follow_radial_menu(
         // shape. Guessing a weighting got closer and was still a guess. Projecting the corners
         // and averaging them is the centre of the quad the player is actually looking at, at
         // any camera, for any wedge count.
-        let (Some(l), Some(r), Some(i), Some(o), Some(li), Some(ro)) = (
+        let (Some(p), Some(l), Some(r), Some(i), Some(o)) = (
+            // The sector's own centroid, projected — one point, derived, not averaged.
+            project(slot_world(feet, front, label.wedge, scale)),
             project(wheel_point(feet, front, turns - edge, lr, scale)),
             project(wheel_point(feet, front, turns + edge, lr, scale)),
             project(wheel_point(feet, front, turns, r_in, scale)),
             project(wheel_point(feet, front, turns, r_out, scale)),
-            project(wheel_point(feet, front, turns - edge, r_in, scale)),
-            project(wheel_point(feet, front, turns + edge, r_out, scale)),
         ) else {
             if *vis != Visibility::Hidden {
                 *vis = Visibility::Hidden;
@@ -842,15 +857,6 @@ pub(crate) fn follow_radial_menu(
         // menu may not have; the word is fitted DOWN to the wedge's true width because a word
         // wider than its own sector runs onto the next one — and clamping both the same way is
         // what put DEFEND across the hero standing beside it.
-        // The four corners: near-left, near-right, far-left, far-right. `li`/`ro` are the two
-        // diagonal ones; the other two fall out of the same two bearings at the other wall.
-        let (Some(lo), Some(ri)) = (
-            project(wheel_point(feet, front, turns - edge, r_out, scale)),
-            project(wheel_point(feet, front, turns + edge, r_in, scale)),
-        ) else {
-            continue;
-        };
-        let p = (li + ro + lo + ri) * 0.25;
         let span = l.distance(r) * TILE_INSET;
         let w = span.clamp(TILE_MIN_W, TILE_MAX_W);
         let h = (i.distance(o) * TILE_INSET).clamp(TILE_MIN_H, TILE_MAX_H);
@@ -951,6 +957,32 @@ pub(crate) fn rebuild_auto_chip(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **EVERY VERB'S KEY IS ITS OWN INITIAL**, which is why the caption prints `ATTACK` and
+    /// not `ATTACK [A]` — the bracket would spend itself saying what the first letter already
+    /// said. It is a real constraint rather than a coincidence: the day a verb arrives whose
+    /// key is not its initial, the caption has to start printing keys again, and this is what
+    /// will say so.
+    #[test]
+    fn every_verbs_key_is_its_own_initial() {
+        for slot in SLOTS {
+            let first = slot.word.chars().next().expect("a verb has a name");
+            let key = slot.key.chars().next().expect("a verb has a key");
+            assert_eq!(
+                first.to_ascii_uppercase(),
+                key.to_ascii_uppercase(),
+                "{}'s key is {} — the caption stops being able to leave it out",
+                slot.word,
+                slot.key,
+            );
+        }
+        // And no two verbs share one, or the letter stops identifying anything.
+        for (i, a) in SLOTS.iter().enumerate() {
+            for b in SLOTS.iter().skip(i + 1) {
+                assert_ne!(a.key, b.key, "{} and {} share a key", a.word, b.word);
+            }
+        }
+    }
 
     /// **EVERY WEDGE'S ICON IS THE GLYPH IT CLAIMS TO BE.**
     ///
