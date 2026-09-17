@@ -1029,6 +1029,42 @@ run the cursor round the wheel (it WRAPS; a wheel has no ends), Enter picks, eve
 carries its own letter key, and **Flee is off the arrows entirely**. Auto-battle is its own corner chip, because it
 is a decision about the FIGHT and the menu it used to sit in is gone between turns.
 
+**AND AIMING HAPPENS IN THE ARENA, NOT IN A LIST.** There is no Target page any more. While
+an order is in flight every body it may legally land on wears a **floating gem** over its own
+head, in that order's own colour, and the one under the cursor burns brightest and spins —
+so choosing who to hit is done by looking at the fight. The page it replaces was a column of
+`Bog Stinger  31/48` rows, and every fact in it is already drawn on the body it belongs to:
+the name under its own ring, the numbers inside it. It was a second, worse copy of the arena,
+printed over the arena. ←/→ walk the line (↑/↓ too, since that page used to be a list), Enter
+commits, and clicking a body has always worked.
+
+**RED STRIKES, BLUE IS A SKILL, GREEN MENDS** (`battle_radial`'s `INTENT_*`) — the wedge that
+chooses an order and the gem that aims it wear the SAME constants, so the menu teaches the
+language and the arena speaks it. ⚠️ **An order's colour comes from the side it lands on, not
+from its name**: the obvious reading is "a skill is blue", and that is wrong for the whole
+mender roster, whose kit is skills aimed at allies. `intent_hue` asks `order_side`, which also
+keeps it from becoming the hand-written list of ability keys this repo has twice deleted.
+⚠️ **The gem is a MESH** (`hd2d::diamond_mesh`), and that is a revert: #83 swapped it for a
+PixelLab billboard and it was asked for back by name. A faceted solid glints facet by facet as
+it turns, which is the entire read of a gem, and a flat diamond on a camera-facing quad
+presents the same silhouette from every angle however fast it spins. It is also what makes the
+tint work — a mesh takes its hue off its own material instead of fighting the pixels already
+painted on it.
+⚠️ **AND A HERO IS A TARGET TOO.** The gem was spawned on creatures alone, which was invisible
+while aiming was a list and would have been fatal without one: a heal, a barrier or a poured
+potion would have had nothing to put a marker on. ⚠️ **It carries its OWN light rather than a
+`NightLamp`** — every other carried light in the arena is night-scaled by
+`illuminate_players`, which is right for a lantern and wrong for a readout: an orb that says
+*this is what your blow lands on* cannot go out because the sun is up. `highlight_target` is
+its one writer, the same single-writer rule `animate_battle_actors` follows for a battle
+sprite's emissive.
+⚠️ `MELD_AIM=attack|skill|heal` is the fixture — aiming lives between two key presses and the
+mockup resolves nothing, so the gems are otherwise unreachable in a capture. It runs in
+**Update, not at startup**: `mock_battle_setup` only asks for `Screen::Battle` and
+`enter_battle` resets the menu on the way in, so an order begun at startup is wiped before
+anything draws — a fixture that silently does nothing, which is what `MELD_GEAR_TIER` and
+`MELD_WIN` are recorded here for.
+
 **AND THE ARENA BUILDS OUT FROM THE CENTRE.** `x = (i - (n-1)/2) * 2.7` at every party size —
 the retired HUD row spawned four slots and filled the empty ones with flex-grow spacers, so
 two heroes bunched against the LEFT edge with a hole on the right, which reads as a missing
@@ -2195,8 +2231,18 @@ is spent.
 (a co-op merge fields sixteen across four parties — a rail each would be a stave, so every
 ally shares one), and whoever is **charging faster than they should be** — braced, hastened,
 or fresh off a catch-up. So "why is that one moving quicker" is answered by where it is
-standing. The lane says SPEED, the colour says SIDE, and the ally rail only exists when
-somebody else's heroes are actually here (`LaneSet`), so a solo dive draws three.
+standing. The lane says SPEED, the colour says SIDE, and **a rail exists only when somebody is on it**
+(`LaneSet`): the ally rail when somebody else's heroes are actually here, the FAST rail only
+while somebody is actually braced, hastened or fresh off a catch-up. An ordinary solo fight
+draws TWO.
+⚠️ **The fast rail used to be permanent, and its own comment argued for that** — a rail that
+appears when a fighter hops onto it resizes the panel at the moment the player is reading it.
+That cost is real and is still paid; what it bought was worse. Most fights never have anybody
+fast in them, so the permanent version was an empty line across the top of nearly every fight
+— the same "no empty rail under a lane" rule below, applied to the one rail that was exempt
+from it. ⚠️ Whether a fighter is fast is asked through `lane_of` and never by re-reading the
+statuses, or the two copies drift into the worst shape available: a rail with nobody on it, or
+a fighter sent to a rail that was never drawn.
 ⚠️ **The lane is written EVERY FRAME, never baked in at spawn**: a fighter hops rails
 mid-fight the moment a guard goes up, and rebuilding the bar for that would tear the node
 tree down on a state change the animator absorbs for free. The same goes for a PILE — every

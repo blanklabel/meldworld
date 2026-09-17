@@ -183,6 +183,17 @@ pub(crate) fn battle_mockup_flag() -> bool {
     std::env::var("MELD_BATTLE").is_ok()
 }
 
+/// Open the battle mockup with an order already being AIMED, so the targeting orbs can be
+/// looked at: `MELD_AIM=attack|skill|heal`.
+///
+/// Same argument as `MELD_FX` one flag down. Aiming is a state that exists between two key
+/// presses in a real fight — the mockup resolves nothing and never enters it — so without
+/// this the orbs, their intent colour and the light they throw are unreachable in a capture,
+/// and `make check` never boots the app to find out whether any of it draws.
+pub(crate) fn aim_flag() -> Option<String> {
+    std::env::var("MELD_AIM").ok().filter(|v| !v.is_empty())
+}
+
 /// Fire an ability's VFX on a loop in the battle mockup, so the elemental bursts and the
 /// screen wash can be looked at. `MELD_FX=fire|ice|lightning|water|wind|earth|mind|poison|
 /// celestial|shadow|slash|blunt|pierce|all`.

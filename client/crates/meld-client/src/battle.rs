@@ -181,6 +181,61 @@ pub(crate) struct TargetDiamond {
     base_y: f32,
 }
 
+/// **THE ORB IS HOW YOU AIM.** One per combatant, hero and creature alike, floating over its
+/// own head and hidden until something is being aimed. While the picker is open every VALID
+/// target wears one — dim — and the one under the cursor burns bright, so the choice is read
+/// on the bodies rather than off a list beside them.
+///
+/// ⚠️ **IT CARRIES ITS OWN LIGHT, AND DELIBERATELY NOT A `NightLamp`.** Every other carried
+/// light in the arena is night-scaled by `illuminate_players`, which is right for a lantern
+/// and wrong for a readout: an orb that says *this is what your blow lands on* cannot be
+/// switched off because the sun is up. `highlight_target` is its ONE writer — the same
+/// single-writer rule `animate_battle_actors` follows for a battle sprite's emissive, and for
+/// the same reason, since two unordered writers to one field is a coin flip per frame.
+fn spawn_target_orb(
+    p: &mut ChildSpawnerCommands,
+    wa: &WorldAssets,
+    mats: &mut Assets<StandardMaterial>,
+    id: &str,
+    base_y: f32,
+) {
+    // ⚠️ **THE GEM IS A MESH, NOT A BILLBOARD — asked for back by name after #83 swapped it
+    // for a PixelLab sprite.** A faceted solid turning in the arena's own light glints facet
+    // by facet, which is the whole read of a gem; the flat diamond on a camera-facing quad
+    // could only ever be a picture of one, and it presented the identical silhouette from
+    // every angle however fast it span. It is also what makes the intent colour work at all:
+    // a mesh takes its hue straight off its own material, where a textured quad has to fight
+    // the pixels already painted on it.
+    //
+    // Its own material per body, because orbs are lit APART: the cursor's burns and its
+    // neighbours sit dim. One shared handle would make the whole set one lamp.
+    let mat = mats.add(StandardMaterial {
+        base_color: Color::WHITE,
+        perceptual_roughness: 0.35,
+        metallic: 0.1,
+        // Double-sided, so a facet never drops out as it turns.
+        cull_mode: None,
+        ..default()
+    });
+    p.spawn((
+        TargetDiamond { id: id.to_string(), base_y },
+        PointLight {
+            color: Color::WHITE,
+            intensity: 0.0,
+            range: LAMP_REACH,
+            radius: LAMP_RADIUS,
+            // Same reasoning as every other light in the arena: a shadowed point light is SIX
+            // scene passes a frame, and a pack being aimed at would be several at once.
+            shadow_maps_enabled: false,
+            ..default()
+        },
+        Mesh3d(wa.target_gem_mesh.clone()),
+        MeshMaterial3d(mat),
+        Transform::from_xyz(0.0, base_y, 0.0),
+        Visibility::Hidden,
+    ));
+}
+
 /// The arrow marking whose turn is active — tip pointing down, right above that
 /// hero's own head — so the command menu's "who am I ordering right now" has a
 /// visible answer in the arena itself. Hidden for every hero but the one
@@ -383,11 +438,13 @@ pub(crate) fn spawn_hero_actor(
             // keeps this arrow honest if `HERO_SPRITE_SCALE` is ever retuned,
             // instead of a literal that quietly stops matching the sprite under
             // it.
-            let hero_top = hd2d::grounded_sprite_y(hd2d::HERO_SPRITE_SCALE)
-                + 0.5 * hd2d::SPRITE_QUAD_HEIGHT * hd2d::HERO_SPRITE_SCALE;
-            // Same clearance the enemy target diamond floats above its own top
+            // The art's own head, by the one rule (`hd2d::sprite_head_y`) — the quad's top
+            // edge is a quarter of a canvas above it, and hanging things there is what made
+            // the target gem read as detached from the body it marks.
+            let hero_top = hd2d::sprite_head_y(hd2d::SPRITE_QUAD_HEIGHT * hd2d::HERO_SPRITE_SCALE);
+            // Same clearance the enemy target gem floats above its own head
             // (`marker_y` in `spawn_enemy_actor`).
-            let arrow_y = hero_top + 0.45;
+            let arrow_y = hero_top + 0.35;
             p.spawn((
                 ActiveTurnArrow { id: c.id.clone(), base_y: arrow_y },
                 Mesh3d(wa.turn_arrow_mesh.clone()),
@@ -398,6 +455,12 @@ pub(crate) fn spawn_hero_actor(
                     .with_rotation(Quat::from_rotation_x(std::f32::consts::PI)),
                 Visibility::Hidden,
             ));
+            // ⚠️ **A HERO IS A TARGET TOO, AND FOR HALF THE MENU IT IS THE ONLY KIND.**
+            // The orb was spawned on creatures alone, so the picker had nothing to put on a
+            // body when the order was aimed at an ALLY — a heal, a barrier, a potion poured
+            // into somebody else. That was survivable while the aiming was a list; with the
+            // list gone it would mean the mender's whole kit aims at nothing you can see.
+            spawn_target_orb(p, wa, mats, &c.id, arrow_y);
         });
 }
 
@@ -472,17 +535,10 @@ pub(crate) fn spawn_enemy_actor(
             .and_then(|n| n.parse::<u8>().ok())
             .unwrap_or(0),
     );
-    // The diamond marker hovers just above the sprite's head (its tip reaches down
-    // toward the head, so keep a small gap above `h`).
-    let marker_y = h + 0.45;
-    // Bespoke HD-2D selection diamond (PixelLab) instead of the old 3D faceted mesh.
-    let marker_mat = mats.add(hd2d::sprite_material(
-        Color::WHITE,
-        wa.prop_sprites
-            .get("marker_target_marker")
-            .cloned()
-            .unwrap_or_default(),
-    ));
+    // The gem hovers just above the sprite's HEAD — `hd2d::sprite_head_y`, not `h`, because a
+    // billboard's quad runs a quarter of its own height past the art at each end. At `h` the
+    // marker over a boss floated a whole creature above the creature.
+    let marker_y = hd2d::sprite_head_y(h) + 0.35;
     let mut root_cmds = commands.spawn((
         // Enemies never carry a `class:` status, and never swap sprite sets
         // mid-fight — this stays empty so the set-plus-class diff in
@@ -576,35 +632,7 @@ pub(crate) fn spawn_enemy_actor(
                     Transform::from_xyz(0.0, h + 1.0, 0.0),
                 ));
             }
-            p.spawn((
-                TargetDiamond { id: c.id.clone(), base_y: marker_y },
-                // ⚠️ THE GEM CASTS LIGHT, and the SAME light a hero's lamp does. It span
-                // for "a gem glint" and lit nothing, so the one enemy your order is aimed at
-                // was no better lit than the rank beside it — the marker said "this one" and
-                // the picture did not.
-                //
-                // It rides `NightLamp` rather than driving its own intensity, so it is
-                // night-scaled by the one system that scales every other carried light: the
-                // same amount of light as the lamp means the same code path, not a matching
-                // literal that drifts. And it needs no show/hide logic — Bevy skips a light
-                // whose `ViewVisibility` is false (`bevy_pbr` light.rs: `if
-                // !view_visibility.get() { continue; }`), so it goes out with the diamond
-                // that `highlight_target` already hides.
-                NightLamp { strength: LAMP_STRENGTH },
-                PointLight {
-                    color: Color::srgb(1.0, 0.93, 0.72),
-                    intensity: 0.0,
-                    range: LAMP_REACH,
-                    radius: LAMP_RADIUS,
-                    shadow_maps_enabled: false,
-                    ..default()
-                },
-                Mesh3d(wa.sprite_quad.clone()),
-                MeshMaterial3d(marker_mat),
-                Transform::from_xyz(0.0, marker_y, 0.0).with_scale(Vec3::splat(0.8 / 2.2)),
-                hd2d::Billboard,
-                Visibility::Hidden,
-            ));
+            spawn_target_orb(p, wa, mats, &c.id, marker_y);
         });
         return;
     }
@@ -642,35 +670,7 @@ pub(crate) fn spawn_enemy_actor(
         ));
         // Target marker — a camera-facing selection diamond sprite, hidden until
         // this enemy is the picked target (bobbed by `highlight_target`).
-        p.spawn((
-            TargetDiamond { id: c.id.clone(), base_y: marker_y },
-                // ⚠️ THE GEM CASTS LIGHT, and the SAME light a hero's lamp does. It span
-            // for "a gem glint" and lit nothing, so the one enemy your order is aimed at
-            // was no better lit than the rank beside it — the marker said "this one" and
-            // the picture did not.
-            //
-            // It rides `NightLamp` rather than driving its own intensity, so it is
-            // night-scaled by the one system that scales every other carried light: the
-            // same amount of light as the lamp means the same code path, not a matching
-            // literal that drifts. And it needs no show/hide logic — Bevy skips a light
-            // whose `ViewVisibility` is false (`bevy_pbr` light.rs: `if
-            // !view_visibility.get() { continue; }`), so it goes out with the diamond
-            // that `highlight_target` already hides.
-            NightLamp { strength: LAMP_STRENGTH },
-            PointLight {
-                color: Color::srgb(1.0, 0.93, 0.72),
-                intensity: 0.0,
-                range: LAMP_REACH,
-                radius: LAMP_RADIUS,
-                shadow_maps_enabled: false,
-                ..default()
-            },
-            Mesh3d(wa.sprite_quad.clone()),
-            MeshMaterial3d(marker_mat),
-            Transform::from_xyz(0.0, marker_y, 0.0).with_scale(Vec3::splat(0.8 / 2.2)),
-            hd2d::Billboard,
-            Visibility::Hidden,
-        ));
+        spawn_target_orb(p, wa, mats, &c.id, marker_y);
     });
 }
 
@@ -826,16 +826,51 @@ pub(crate) fn sync_battle_actors(
     }
 }
 
-/// Which enemy carries the target marker this frame: the Target picker's cursor
-/// while aiming an action (so keyboard target-scrolling moves the diamond too),
-/// otherwise the sticky tap-selected enemy. `None` if that enemy is gone or dead.
+/// **WHAT COLOUR AN ORDER IS.** Red strikes, blue is a manifestation or a martial skill,
+/// green mends — the same five-colour language the command wheel's wedges wear
+/// ([`crate::battle_radial`]'s `INTENT_*`), so the menu teaches it and the arena speaks it.
+/// A player who has learned that ATTACK is red has already learned what a red orb over a
+/// creature means; nothing has to be explained twice.
+pub(crate) fn intent_hue(kind: QueuedKind) -> Color {
+    use crate::battle_radial::{INTENT_MEND, INTENT_SKILL, INTENT_STRIKE};
+    match kind {
+        QueuedKind::Attack => INTENT_STRIKE,
+        // An ITEM is always poured into somebody, so it is care whatever it does.
+        QueuedKind::Item(_) => INTENT_MEND,
+        // Everything else takes its colour from WHO it is aimed at rather than from what it
+        // is called: a skill pointed at an ally is care, the identical row pointed at a
+        // creature is not. Asking `order_side` is also what keeps this from becoming the
+        // hand-written list of ability keys this repo has twice had to delete.
+        other => match order_side(other) {
+            Some(Side::Ally) => INTENT_MEND,
+            _ => INTENT_SKILL,
+        },
+    }
+}
+
+/// Every body an order in flight may legally land on, as arena ids. Empty when nothing is
+/// being aimed — which is what hides every orb.
+///
+/// ⚠️ **IT READS THE PICKER'S OWN ROWS, NOT A FRESH FILTER.** `begin_order` already resolved
+/// which side an order takes and which bodies are alive on it; deriving that a second time
+/// here is the two-copies-of-one-rule trap, and the copies would differ the moment an order
+/// gained a targeting rule (reach, a rank, a phased Rift Knight) that only one of them knew.
+pub(crate) fn target_candidates(menu: &BattleMenu) -> Vec<String> {
+    if menu.level != MenuLevel::Target {
+        return Vec::new();
+    }
+    menu.rows.iter().map(|(_, v)| v.clone()).collect()
+}
+
+/// Which body carries the bright orb this frame: the picker's cursor while an order is being
+/// aimed (so the keys move the orb, and the orb IS the picker), otherwise the sticky
+/// tap-selected enemy. `None` if that body is gone or dead.
 pub(crate) fn highlight_focus(battle: &BattleData, menu: &BattleMenu, target: &BattleTarget) -> Option<String> {
-    let living = |id: &str| {
-        battle
-            .combatants
-            .iter()
-            .any(|c| c.id == id && !c.is_player && c.hp > 0)
-    };
+    // ⚠️ **NOT `!c.is_player` ANY MORE.** This filtered to creatures, which was invisible
+    // while only creatures had an orb and became a bug the moment heroes got one: aiming a
+    // heal put the cursor on an ally and then refused to mark it, so the mender's half of the
+    // menu had a picker with nothing lit in it. The picker's rows already carry the side.
+    let living = |id: &str| battle.combatants.iter().any(|c| c.id == id && c.hp > 0);
     let id = if menu.level == MenuLevel::Target {
         menu.rows.get(menu.cursor).map(|(_, v)| v.clone())
     } else {
@@ -844,15 +879,28 @@ pub(crate) fn highlight_focus(battle: &BattleData, menu: &BattleMenu, target: &B
     id.filter(|id| living(id))
 }
 
-/// Float the target marker over the picked enemy: show its diamond, slowly bounce
-/// it above the head, and spin it for a gem glint. Every other diamond is hidden, so
-/// exactly one enemy is marked as "this is who your order hits."
+/// **AIMING HAPPENS IN THE ARENA.** Light an orb over every body the order in flight can
+/// legally land on, in that order's own colour, and burn the one under the cursor brightest —
+/// so choosing a target is done by looking at the fight rather than at a list of names beside
+/// it. Every other orb is dark.
+///
+/// ⚠️ **THIS REPLACED A MENU, WHICH IS THE POINT.** The Target page was a column of
+/// `Bog Stinger  31/48` rows, and every one of those facts is already drawn on the body it
+/// belongs to — the name under its own ring, the numbers inside it. The list was a second,
+/// worse copy of the arena, printed over the arena.
 pub(crate) fn highlight_target(
     time: Res<Time>,
     battle: Res<BattleData>,
     menu: Res<BattleMenu>,
     mut target: ResMut<BattleTarget>,
-    mut diamonds: Query<(&TargetDiamond, &mut Transform, &mut Visibility)>,
+    mut mats: ResMut<Assets<StandardMaterial>>,
+    mut orbs: Query<(
+        &TargetDiamond,
+        &mut Transform,
+        &mut Visibility,
+        &MeshMaterial3d<StandardMaterial>,
+        &mut PointLight,
+    )>,
 ) {
     // Drop a stale sticky pick (its enemy died / the battle moved on).
     if let Some(sel) = target.selected.clone() {
@@ -865,17 +913,74 @@ pub(crate) fn highlight_target(
         }
     }
     let focus = highlight_focus(&battle, &menu, &target);
+    let candidates = target_candidates(&menu);
+    // The colour of whatever is being aimed. With nothing pending — the sticky tap-selection,
+    // which is a hero saying "that one" before choosing a verb — the orb is a plain strike:
+    // tapping a creature is how a martial hero opens, and red is what that becomes.
+    let hue = menu
+        .pending
+        .as_ref()
+        .map(|(_, kind)| intent_hue(*kind))
+        .unwrap_or(crate::battle_radial::INTENT_STRIKE);
+    let lin = hue.to_linear();
+
     let t = time.elapsed_secs();
     // A slow, gentle bob (≈0.4 Hz) and an unhurried spin.
     let bob = 0.22 * (t * 2.4).sin();
     let spin = Quat::from_rotation_y(t * 1.1);
+    // ⚠️ **THE PULSE IS QUANTISED, because writing a material re-uploads its bind group.**
+    // A continuous breath on a handful of orbs is a handful of GPU uploads every frame for a
+    // change no eye can resolve; eight steps a cycle reads identically and lands a few writes
+    // a second (`UI REDRAWS ON CHANGE`, one rule over).
+    let breath = ((0.72 + 0.28 * (t * 3.2).sin()) * 8.0).round() / 8.0;
 
-    for (d, mut tf, mut vis) in &mut diamonds {
+    for (d, mut tf, mut vis, mh, mut light) in &mut orbs {
         let on = focus.as_deref() == Some(d.id.as_str());
-        *vis = if on { Visibility::Visible } else { Visibility::Hidden };
+        let candidate = !on && candidates.iter().any(|c| c == &d.id);
+        *vis = if on || candidate { Visibility::Visible } else { Visibility::Hidden };
+        if !(on || candidate) {
+            continue;
+        }
+        // The cursor's orb bobs, spins and sits full size; the others hold still and small, so
+        // "these are your options" and "this is the one" are two states and not two brightnesses.
         if on {
             tf.translation.y = d.base_y + bob;
             tf.rotation = spin;
+            tf.scale = Vec3::ONE;
+        } else {
+            tf.translation.y = d.base_y;
+            tf.rotation = Quat::IDENTITY;
+            tf.scale = Vec3::splat(0.45);
+        }
+        // ⚠️ **ONE OF THEM IS THE CHOICE; THE REST ARE ONLY LEGAL.** A dim gem beside a bright
+        // one at similar size reads as "two diamonds going at once" rather than as a cursor
+        // among options, which is how the first cut came back. The gap is wide on BOTH axes —
+        // under half the size and about a sixth of the light — so the answer is instant.
+        let gain = if on { breath } else { 0.16 };
+        let want = LinearRgba::rgb(lin.red * gain, lin.green * gain, lin.blue * gain);
+        // Read before write: `get_mut` alone flags the material modified and re-uploads it
+        // every frame whether or not the glow moved.
+        if mats.get(&mh.0).is_some_and(|m| m.emissive != want) {
+            if let Some(mut m) = mats.get_mut(&mh.0) {
+                m.emissive = want;
+                m.base_color = hue;
+            }
+        }
+        // ⚠️ **AND IT THROWS ITS OWN COLOUR ON THE GROUND.** The marker used to light in a warm
+        // lantern white, so the one body your order was aimed at was lit no differently from
+        // the rank beside it. The light is the order's colour now — the ground under a creature
+        // you are about to hit goes red, under an ally you are about to mend goes green — and
+        // it is intensity the system owns outright rather than a `NightLamp`, or the whole
+        // readout would go out in daylight.
+        // Sized against the lamps the party already carries (`LAMP_STRENGTH`), because that
+        // is the amount of light this arena is built around — a marker that lights the ground
+        // less than a hero's lantern does is a marker nobody sees it throw.
+        let intensity = if on { LAMP_STRENGTH * 1.7 * breath } else { LAMP_STRENGTH * 0.28 };
+        if light.color != hue {
+            light.color = hue;
+        }
+        if (light.intensity - intensity).abs() > 1.0 {
+            light.intensity = intensity;
         }
     }
 }
@@ -2033,10 +2138,23 @@ pub(crate) fn menu_keyboard(
     let spent = battle.active.clone().map(|a| spent_tokens(&battle, &a)).unwrap_or_default();
     let foci = battle.active.clone().map(|a| held_foci(&battle, &a)).unwrap_or_default();
     let n = page_len(&menu, &class, hero_level, &held, &spent, &foci).max(1);
-    if keys.just_pressed(KeyCode::ArrowDown) {
+    // ⚠️ **AIMING IS SIDEWAYS, because the things being aimed at stand in a ROW.** Every
+    // other sub-page is a vertical list and ↑/↓ is right for it; the Target page is no longer
+    // a list at all, it is the arena, and its options are laid out left to right across the
+    // field. Both axes move the cursor rather than only the correct one — a player who
+    // reaches for ↓ on the page that used to be a list should not find the keys dead.
+    let (back, fwd) = if menu.level == MenuLevel::Target {
+        (
+            keys.just_pressed(KeyCode::ArrowUp) || keys.just_pressed(KeyCode::ArrowLeft),
+            keys.just_pressed(KeyCode::ArrowDown) || keys.just_pressed(KeyCode::ArrowRight),
+        )
+    } else {
+        (keys.just_pressed(KeyCode::ArrowUp), keys.just_pressed(KeyCode::ArrowDown))
+    };
+    if fwd {
         menu.cursor = (menu.cursor + 1) % n;
     }
-    if keys.just_pressed(KeyCode::ArrowUp) {
+    if back {
         menu.cursor = (menu.cursor + n - 1) % n;
     }
     for (i, key) in digits.iter().enumerate() {
@@ -2146,7 +2264,14 @@ pub(crate) fn rebuild_command_menu(
     // starts and would otherwise keep Attack/Flee live and clickable on top of the
     // summary. Hiding the WINDOW is also what stops `menu_click`: with no rows spawned
     // there is no `Interaction` to press, so the click path needs no guard of its own.
-    let show = battle.active.is_some() && !results_showing(&report, &levelup);
+    // ⚠️ **AND THE TARGET PAGE DRAWS NOTHING AT ALL.** Aiming is done on the bodies now
+    // (`highlight_target`): every legal target wears an orb in the order's own colour and the
+    // cursor's one burns brightest. The panel it replaces was a column of
+    // `Bog Stinger  31/48` rows — a second, worse copy of facts already written on the
+    // creature itself, printed on top of the creature itself.
+    let show = battle.active.is_some()
+        && !results_showing(&report, &levelup)
+        && menu.level != MenuLevel::Target;
     let level = menu.level;
     let active_id = battle.active.clone().unwrap_or_default();
     // Include the dynamic row count so re-opening a Target page (same level) rebuilds,

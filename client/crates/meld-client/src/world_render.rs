@@ -958,6 +958,14 @@ pub(crate) struct WorldAssets {
     /// The glass is a term in `feet_ring.wgsl` now — the empty part of the tube is drawn by
     /// this same mesh — so there is nothing left to stack.
     pub(crate) ring_liquid_mesh: Handle<Mesh>,
+    /// **THE WEIRD YELLOW ONE.** The floating target gem: a small faceted diamond that
+    /// hovers, bobs and slowly spins over whichever body an order is aimed at. #83 swapped
+    /// it for a PixelLab billboard and it was asked for back by name — a real mesh catches
+    /// the light on each facet as it turns, which a flat pixel diamond seen through a
+    /// camera-facing quad cannot, and it takes a tint on its own material rather than
+    /// fighting a texture for its colour. Only the MESH is shared; each orb owns its
+    /// material, since they are lit apart (see `battle::spawn_target_orb`).
+    pub(crate) target_gem_mesh: Handle<Mesh>,
     pub(crate) shadow_mat: Handle<StandardMaterial>,
     /// The active-turn arrow's cone, apex up as `Cone` spawns it — flipped per-instance
     /// at each hero's own spawn site (`spawn_hero_actor`), not baked in here, since every
@@ -1546,6 +1554,7 @@ pub(crate) fn setup(
         // already the two coordinates the bar needs: `u` round the ring (the level) and `v`
         // round the tube (the cross-section).
         ring_liquid_mesh: meshes.add(Torus { major_radius: 0.78, minor_radius: 0.135 }),
+        target_gem_mesh: meshes.add(hd2d::diamond_mesh(0.32, 0.5)),
         shadow_mat: mats.add(hd2d::contact_shadow_material()),
         // A small, bright, unlit cone — noticeable without needing new PixelLab art
         // the way the target diamond has. Unlit so it reads the same colour at

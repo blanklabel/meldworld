@@ -80,6 +80,22 @@ pub const GROUNDED_CENTRE: f32 = 0.5 - SPRITE_BOTTOM_PAD;
 pub fn grounded_centre(height: f32) -> f32 {
     height * GROUNDED_CENTRE
 }
+
+/// **THE TOP OF THE ART, not the top of the quad** — where a thing's head actually is.
+///
+/// ⚠️ The same padding that made every sprite hover over its own shadow ([`GROUNDED_CENTRE`])
+/// bites again at the other end, and anything hung ABOVE a sprite hits it: the canvas is
+/// ~50% empty, roughly half of that above the art, so `quad_height + a small gap` floats at
+/// about TWICE head height. Measured on the battle arena's target gem, the marker for a boss
+/// — the tallest thing in the game and so the worst case — sat a clear creature's height
+/// above the creature and read as unattached to anything.
+///
+/// The art is centred in its canvas, so the top pad is the bottom pad and the head is exactly
+/// as far above the quad's centre as the feet are below it: `2 × GROUNDED_CENTRE`. Derived
+/// from the same constant rather than measured again, so the two ends cannot drift apart.
+pub fn sprite_head_y(height: f32) -> f32 {
+    height * 2.0 * GROUNDED_CENTRE
+}
 use bevy::light::NotShadowCaster;
 use bevy::pbr::{DistanceFog, FogFalloff};
 use bevy::prelude::*;

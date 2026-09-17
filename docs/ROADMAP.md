@@ -5701,6 +5701,30 @@ only the things that can't be class-gated.
     and tested directly, which is the half a gate *can* hold. The burst itself still needs a
     captured frame.
 
+- [x] **UX-24 — Aiming happens in the arena: the gem is the target picker.**
+  - *The Target page is gone.* While an order is in flight every body it can legally land on
+    wears a floating gem over its own head, in that order's own colour, and the one under the
+    cursor burns brightest and spins. ←/→ walk the line (↑/↓ too, since that page used to be a
+    list), Enter commits, clicking a body has always worked. The page it replaces was a column
+    of `Bog Stinger  31/48` rows — every fact in it already drawn on the body it belongs to.
+  - *Red strikes, blue is a skill, green mends*, from the `INTENT_*` constants the command
+    wheel already wears. ⚠️ An order's colour comes from the SIDE it lands on, not its name:
+    "a skill is blue" is wrong for the whole mender roster, whose kit is skills aimed at
+    allies. `intent_hue` asks `order_side` rather than growing a list of ability keys.
+  - *The gem is a mesh again* (`hd2d::diamond_mesh`) — a revert of #83's billboard swap, asked
+    for by name. A faceted solid glints as it turns; a flat diamond on a camera-facing quad
+    shows the same silhouette from every angle. It is also what lets the tint work.
+  - *A hero is a target too*, and the gem **casts its own colour** — its own `PointLight`,
+    deliberately not a `NightLamp`, since a readout cannot go out because the sun is up.
+  - ⚠️ *Two things only a captured frame could find*: the gem hung at quad height and so
+    floated a body-length above big creatures (`hd2d::sprite_head_y` now derives the art's top
+    from the same constant that grounds its feet), and a dim gem beside a bright one read as
+    "two diamonds going at once" rather than as a cursor among options.
+  - *The turn tracker's FAST rail is only drawn while somebody is on it*, like the ally rail.
+    Its own comment argued for permanence — an appearing rail resizes the panel mid-read — and
+    that cost is still paid; an empty line across nearly every fight was worse.
+  - `MELD_AIM=attack|skill|heal` is the fixture, in Update rather than at startup.
+
 - [x] **UX-23 — A felled body leaves, and a blow leaves the mark its weapon makes.**
   - *A felled creature stayed standing for the rest of the fight.* `sync_battle_actors`
     keyed its roster on `(id, class)` with **no HP filter at all**, so every body that ever
