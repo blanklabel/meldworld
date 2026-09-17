@@ -16,11 +16,6 @@ use bevy::shader::ShaderRef;
 /// rather than in `meld_proto::coast`: it decides how water LOOKS, not where it is.
 pub(crate) const SEA_DEPTH: f32 = 7.0;
 
-/// How wide a disc of snow follows the player, and how high it starts. Wider and lower
-/// than the rain's: snow is legible further out because it falls slowly, and starting it
-/// too high wastes flakes above the camera where nobody sees them.
-const SNOW_RADIUS: f32 = 34.0;
-const SNOW_FALL_TOP: f32 = 16.0;
 
 use meld_client::hd2d::{self, CharacterFrames};
 
@@ -1883,77 +1878,7 @@ pub(crate) fn setup(
         Visibility::Hidden,
     ));
 
-    // Rain — thin streaks confined to a DISK under the rain cloud (radius
-    // `RAIN_RADIUS`), so the shower tracks the cloud rather than filling the screen.
-    // `off.xz` is the drop's position within that disk; `off.y` is its fall height.
-    // Faint, translucent streaks — NOT glowing white slabs. The old drops were bright
-    // (high emissive) + numerous (900), so a shower read as sheets of white. Fewer,
-    // thinner, dimmer, and barely-emissive → a subtle drizzle you can see through.
-    let drop_mesh = meshes.add(Cuboid::new(0.028, 1.1, 0.028));
-    let drop_mat = mats.add(StandardMaterial {
-        base_color: Color::srgba(0.72, 0.80, 0.94, 0.32),
-        emissive: LinearRgba::rgb(0.04, 0.05, 0.07),
-        unlit: true,
-        alpha_mode: AlphaMode::Blend,
-        ..default()
-    });
-    for _ in 0..460 {
-        // Uniform over the disk: sqrt(u) keeps it from clustering at the centre. A super
-        // storm scales these offsets up (see `drive_rain`) to soak the whole area.
-        let ang = rnd() * std::f32::consts::TAU;
-        let r = rnd().sqrt() * RAIN_RADIUS;
-        let off = Vec3::new(ang.cos() * r, rnd() * RAIN_FALL_TOP, ang.sin() * r);
-        commands.spawn((
-            RainDrop { off },
-            hd2d::NoShadowEver,
-            NotShadowCaster,
-            Mesh3d(drop_mesh.clone()),
-            MeshMaterial3d(drop_mat.clone()),
-            Transform::from_translation(off),
-            Visibility::Hidden,
-        ));
-    }
 
-    // ── Snow (tundra) ───────────────────────────────────────────────────────
-    // Soft, slow flakes anchored on the player, shown only in the tundra. They reuse the
-    // cloud puff texture rather than adding art: at flake scale it is just a soft dot,
-    // which is exactly what a snowflake needs to be at this resolution.
-    // ⚠️ WHITE SNOW ON WHITE GROUND IS INVISIBLE. The tundra's tile is the brightest in the
-    // game (mean luminance 243), so a white flake at 85% alpha simply vanishes into it —
-    // which is exactly how the first pass rendered: animating correctly, and unseeable.
-    // A flake reads by being BRIGHTER than even that, so it is pushed emissive and lifted
-    // into bloom's range rather than tinted darker, which would read as ash.
-    let flake_mat = mats.add(StandardMaterial {
-        base_color: Color::srgba(1.0, 1.0, 1.0, 0.95),
-        base_color_texture: Some(images.add(hd2d::cloud_texture(48))),
-        emissive: LinearRgba::rgb(1.9, 2.0, 2.3), // brighter than the snowfield it falls on
-        unlit: true,
-        alpha_mode: AlphaMode::Blend,
-        double_sided: true,
-        cull_mode: None,
-        ..default()
-    });
-    let flake_mesh = meshes.add(Rectangle::new(1.0, 1.0));
-    for _ in 0..420 {
-        let ang = rnd() * std::f32::consts::TAU;
-        let r = rnd() * rnd() * SNOW_RADIUS; // biased inward: distant flakes are invisible anyway
-        let off = Vec3::new(ang.cos() * r, rnd() * SNOW_FALL_TOP, ang.sin() * r);
-        // ⚠️ FLAKES ARE BIGGER THAN THEY SOUND. At 0.16-0.36 units these were physically
-        // right and visually nothing: a few pixels of white against the brightest ground in
-        // the game. Snow reads at this camera distance by being generous — closer to a
-        // drifting mote than a crystal.
-        let sz = 0.34 + rnd() * 0.40;
-        commands.spawn((
-            Snowflake { off, phase: rnd() * std::f32::consts::TAU },
-            hd2d::NoShadowEver,
-            NotShadowCaster,
-            Mesh3d(flake_mesh.clone()),
-            MeshMaterial3d(flake_mat.clone()),
-            Transform::from_translation(off).with_scale(Vec3::splat(sz)),
-            hd2d::Billboard,
-            Visibility::Hidden,
-        ));
-    }
 
     // ── Cosmetic ground detail (client-only) ────────────────────────────────
     // Small Kenney nature props (flowers/bushes/mushrooms/pebbles) scattered to
@@ -2003,89 +1928,7 @@ pub(crate) fn setup(
     }
     commands.insert_resource(DetailKit { scenes: detail_scenes });
 
-    // ── Atmosphere motes (client-only) ──────────────────────────────────────
-    // Drifting dust/pollen: soft billboarded discs anchored around the camera so
-    // the near air always reads as alive. `drift_motes` bobs them; `billboard`
-    // faces them at the camera.
-    let mote_tex = images.add(hd2d::soft_disc_texture(64));
-    let mote_mesh = meshes.add(Rectangle::new(0.16, 0.16));
-    let mote_mat = mats.add(StandardMaterial {
-        base_color: Color::srgba(1.0, 0.95, 0.8, 0.6),
-        base_color_texture: Some(mote_tex),
-        emissive: LinearRgba::rgb(1.2, 1.0, 0.5), // a warm glow that reads clearly as a firefly
-        unlit: true,
-        alpha_mode: AlphaMode::Blend,
-        double_sided: true,
-        cull_mode: None,
-        ..default()
-    });
-    // Fireflies pinned to fixed world spots, scattered over a disk around the origin;
-    // `drift_motes` shimmers them in place and re-scatters any that fall far behind.
-    // Every 4th also carries a soft warm point light (kept few + short-range so the
-    // light clusters don't overflow → no flicker), so they cast a gentle glow.
-    for i in 0..88 {
-        let ang = rnd() * std::f32::consts::TAU;
-        let r = rnd().sqrt() * 52.0;
-        let pos = Vec2::new(ang.cos() * r, ang.sin() * r);
-        let mut ent = commands.spawn((
-            Mote {
-                pos,
-                base_y: 0.6 + rnd() * 3.4,
-                phase: rnd() * std::f32::consts::TAU,
-                amp: 0.25 + rnd() * 0.5,
-                speed: 0.2 + rnd() * 0.5,
-                seed: (i as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ 0xF17E,
-            },
-            hd2d::NoShadowEver,
-            NotShadowCaster,
-            Mesh3d(mote_mesh.clone()),
-            MeshMaterial3d(mote_mat.clone()),
-            Transform::from_translation(Vec3::new(pos.x, 1.0, pos.y))
-                .with_scale(Vec3::splat(0.5 + rnd() * 1.1)),
-            hd2d::Billboard,
-        ));
-        if i % 4 == 0 {
-            ent.insert(PointLight {
-                color: Color::srgb(1.0, 0.85, 0.5),
-                intensity: 14_000.0,
-                range: 4.5,
-                radius: 0.1,
-                shadow_maps_enabled: false,
-                ..default()
-            });
-        }
-    }
 
-    // ── Falling ash (Ashfall biome only) ────────────────────────────────────
-    // A column of drifting grey ash flecks anchored around the camera, hidden
-    // everywhere but the Ashfall band, where `drive_ashfall` fades them in as they
-    // sift down (with the reddened haze + charred ground) so the biome reads as a
-    // volcanic wasteland, not "the forest again".
-    let ash_tex = images.add(hd2d::soft_disc_texture(64));
-    let ash_mesh = meshes.add(Rectangle::new(0.2, 0.2));
-    let ash_mat = mats.add(StandardMaterial {
-        base_color: Color::srgba(0.82, 0.78, 0.74, 0.9), // pale drifting ash
-        base_color_texture: Some(ash_tex),
-        emissive: LinearRgba::rgb(0.35, 0.30, 0.27),
-        unlit: true,
-        alpha_mode: AlphaMode::Blend,
-        double_sided: true,
-        cull_mode: None,
-        ..default()
-    });
-    for _ in 0..ASH_COUNT {
-        let off = Vec3::new((rnd() - 0.5) * 64.0, rnd() * ASH_FALL_TOP, (rnd() - 0.5) * 48.0);
-        commands.spawn((
-            AshFleck { off, sway: rnd() * std::f32::consts::TAU, fall: 3.2 + rnd() * 3.6 },
-            hd2d::NoShadowEver,
-            NotShadowCaster,
-            Mesh3d(ash_mesh.clone()),
-            MeshMaterial3d(ash_mat.clone()),
-            Transform::from_translation(off).with_scale(Vec3::splat(0.6 + rnd() * 1.1)),
-            hd2d::Billboard,
-            Visibility::Hidden,
-        ));
-    }
 
     // ── Giant volcanoes (Ashfall biome only) ────────────────────────────────
     // A ring of huge dark cones with glowing lava craters, looming on the horizon
@@ -2139,9 +1982,6 @@ pub(crate) struct VolcanoProp {
     dist: f32,
 }
 
-/// Number of ash flecks in the recycled Ashfall pool, and the top of their fall
-/// column (they wrap to the top when they sift below the ground).
-pub(crate) const ASH_COUNT: usize = 150;
 pub(crate) const ASH_FALL_TOP: f32 = 26.0;
 
 /// A single drifting ash fleck: `off` is its position relative to the camera focus
@@ -2159,7 +1999,7 @@ pub(crate) struct AshFleck {
 /// and `apply_sky` reads to redden the haze + dim the light (reduced visibility).
 #[derive(Resource, Default)]
 pub(crate) struct Ashfall {
-    intensity: f32,
+    pub(crate) intensity: f32,
 }
 
 /// Grid cell size (world units) for the cosmetic ground-detail field.
@@ -2239,19 +2079,6 @@ impl GroundDetail {
     }
 }
 
-/// A firefly: a soft glowing dot pinned to a FIXED world spot (`pos`) that shimmers in
-/// place — you walk past it, it does not follow. When it falls far behind the player it
-/// re-scatters to a fresh random spot around them (via `seed`), keeping a lively
-/// density nearby without any mote trailing you. Some fireflies also emit a soft light.
-#[derive(Component)]
-pub(crate) struct Mote {
-    pos: Vec2, // fixed world xz until recycled
-    base_y: f32,
-    phase: f32,
-    amp: f32,
-    speed: f32,
-    seed: u64,
-}
 
 /// Deterministic hash of a world cell → 64 bits of stable per-cell randomness.
 /// **WHERE DOES A 3.7-SECOND FRAME GO?** Reported from play as "the overworld chugs", and this
@@ -2355,7 +2182,6 @@ pub(crate) fn detail_hash(c: IVec2) -> u64 {
 
 /// Height of the drifting rain cloud, and the footprint the rain falls within.
 pub(crate) const RAIN_CLOUD_Y: f32 = 32.0;
-pub(crate) const RAIN_RADIUS: f32 = 18.0;
 pub(crate) const RAIN_FALL_TOP: f32 = 30.0;
 
 /// Marks a cloud's ground shadow (flat, dark) vs a sky cloud puff — both drift via
@@ -3928,48 +3754,6 @@ pub(crate) fn biome_at_world(x: f32, z: f32) -> &'static str {
     meld_proto::regions::BIOMES[rg.biome_at(x, z)]
 }
 
-/// Bob the atmosphere motes and keep them anchored around the PLAYER (in the
-/// overworld) so the near air around you is always alive as you travel. Anchoring to
-/// the player — not the camera's ground-aim point — keeps the fireflies centred on
-/// you at any camera pitch/zoom (the aim point drifts up-screen as the camera tilts
-/// down, which used to bunch every mote into the mid-distance). Off the overworld
-/// (city/battle) there's no player, so fall back to the camera's ground focus.
-pub(crate) fn drift_motes(
-    time: Res<Time>,
-    state: Res<State<Screen>>,
-    world: Res<Overworld>,
-    session: Res<Session>,
-    mut q: Query<(&mut Mote, &mut Transform)>,
-) {
-    // Fireflies are pinned to the WORLD, not the player — you walk past them. Only when
-    // one falls far behind (so you'd never see it again) does it re-scatter to a fresh
-    // spot around you, keeping density nearby without any mote following you.
-    let player = (*state.get() == Screen::Overworld)
-        .then(|| world.entities.get(&session.player_id))
-        .flatten()
-        .map(|e| Vec2::new(e.x, e.y));
-    let t = time.elapsed_secs();
-    for (mut m, mut tf) in &mut q {
-        if let Some(p) = player {
-            if m.pos.distance(p) > 62.0 {
-                // splitmix64 step → a fresh angle + radius on a ring around the player.
-                let mut z = m.seed.wrapping_add(0x9E37_79B9_7F4A_7C15);
-                z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-                z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-                z ^= z >> 31;
-                m.seed = z;
-                let ang = (z % 62831) as f32 / 10_000.0;
-                let rad = 42.0 + ((z >> 20) % 18_000) as f32 / 1_000.0; // 42..60
-                m.pos = p + Vec2::new(ang.cos() * rad, ang.sin() * rad);
-                m.base_y = 0.6 + ((z >> 40) % 3400) as f32 / 1_000.0;
-            }
-        }
-        // A gentle in-place shimmer around the fixed spot.
-        tf.translation.x = m.pos.x + (t * m.speed + m.phase).sin() * m.amp * 0.4;
-        tf.translation.z = m.pos.y + (t * m.speed * 0.7 + m.phase).cos() * m.amp * 0.4;
-        tf.translation.y = m.base_y + (t * 0.6 + m.phase).sin() * m.amp * 0.5;
-    }
-}
 
 /// Ramp the Ashfall atmosphere up while the local player is in the Ashfall band and
 /// down everywhere else (and outside the overworld), then sift the ash flecks down
@@ -4184,19 +3968,6 @@ pub(crate) struct RainDrop {
     off: Vec3,
 }
 
-/// A snowflake, camera-anchored like the rain. `off` is its position relative to the
-/// player; `phase` gives each flake its own sideways wander so they do not fall as a sheet.
-///
-/// ⚠️ Snow is NOT rain with a different colour, and the difference is the whole effect.
-/// Rain falls fast and straight and only during a storm. Snow is slow, it drifts sideways,
-/// and in the tundra it falls in FAIR weather too — a cold biome is snowing most of the
-/// time, and gating it on the storm phase would leave the ice fields looking like a
-/// summer meadow between weather cycles.
-#[derive(Component)]
-pub(crate) struct Snowflake {
-    off: Vec3,
-    phase: f32,
-}
 
 /// The single storm cloud that carries the rain. `off` is its xz offset from the
 /// camera; it drifts on the wind and the rain falls in the disk beneath it.
@@ -4695,79 +4466,6 @@ pub(crate) fn anchor_sky_fx(
     }
 }
 
-/// Drift the rain cloud over the play area and rain ONLY in the disk beneath it, so
-/// the shower reads as "that cloud is raining" rather than a screen-wide slab. The
-/// cloud + drops are shown only while it's raining.
-/// Fall, drift and wrap the snow — and show it only where it belongs.
-///
-/// Snow is anchored on the player and wraps within a disc, the same trick the rain uses: a
-/// bounded pool of flakes that never runs out because it recycles. What differs is the
-/// MOTION, and that is the whole read: rain falls fast and straight, snow falls slowly and
-/// wanders sideways, each flake on its own phase so they never descend as a sheet.
-///
-/// ⚠️ It falls in FAIR weather too. Gating snow on the storm phase — which is what rain
-/// does — would leave the ice fields looking like a summer meadow between weather cycles,
-/// and a tundra that is only occasionally cold is not a tundra. Weather scales how HARD it
-/// snows, never whether it snows at all.
-pub(crate) fn drive_snow(
-    cam_q: Query<&Transform, With<Camera3d>>,
-    time: Res<Time>,
-    sky: Res<Sky>,
-    stats: Res<crate::RunStats>,
-    state: Res<State<Screen>>,
-    mut flakes: Query<(&mut Snowflake, &mut Transform, &mut Visibility), Without<Camera3d>>,
-) {
-    let cam = cam_q.single().map(|t| t.translation).unwrap_or(Vec3::ZERO);
-    // Tundra only, and only out in the world: Last City is a separate scene with its own
-    // weather-free framing, and snow over the plaza would be a permanent blizzard indoors.
-    // ⚠️ CASE-INSENSITIVE, because `RunStats.biome` is TITLE-CASED for the HUD readout
-    // ("336 m · T3 · Tundra") while every biome key in the codebase is lowercase. Comparing
-    // against `"tundra"` matches nothing, and the failure is silent: the snow animates
-    // perfectly and simply never becomes visible. It cost two wrong hypotheses here — first
-    // contrast, then falling through displaced terrain — before a garish diagnostic proved
-    // the flakes were not being drawn at all.
-    let snowing =
-        *state.get() == Screen::Overworld && stats.biome.eq_ignore_ascii_case("tundra");
-    let dt = time.delta_secs();
-    let t = time.elapsed_secs();
-    // A storm drives it harder and slants it further; fair weather is a gentle fall.
-    let hard = 0.45 + sky.weather * 0.55;
-    let slant = (0.6 + sky.wind * 2.4) * hard;
-    let vis = if snowing { Visibility::Inherited } else { Visibility::Hidden };
-    for (mut f, mut tf, mut v) in &mut flakes {
-        if *v != vis {
-            *v = vis;
-        }
-        if !snowing {
-            continue;
-        }
-        f.off.y -= (2.6 + 3.4 * hard) * dt;
-        // Downwind travel, so a storm visibly blows the fall sideways.
-        f.off.x += slant * dt;
-        if f.off.y < 0.0 {
-            f.off.y = SNOW_FALL_TOP;
-        }
-        // Wrap in x so the downwind drift never empties the upwind side.
-        if f.off.x > SNOW_RADIUS {
-            f.off.x -= 2.0 * SNOW_RADIUS;
-        }
-        // The wander: each flake on its own phase, so the fall reads as air moving rather
-        // than as a curtain sliding.
-        let wob = ((t * 0.8 + f.phase).sin() * 0.55 + (t * 1.9 + f.phase * 1.7).sin() * 0.22)
-            * (0.4 + hard);
-        // ⚠️ HEIGHT IS RELATIVE TO THE CAMERA, NOT ABSOLUTE. The rain gets away with an
-        // absolute `y` because it falls from a cloud at a fixed altitude; snow anchored the
-        // same way falls through terrain that `total_height` displaces by up to ±15 units,
-        // so on any raised ground the whole snowfall is UNDERGROUND. It animated perfectly
-        // and could not be seen — including against a cloud shadow, which is what proved it
-        // was not a contrast problem.
-        tf.translation = Vec3::new(
-            cam.x + f.off.x + wob,
-            cam.y + f.off.y - SNOW_FALL_TOP * 0.62,
-            cam.z + f.off.z + wob * 0.6,
-        );
-    }
-}
 
 pub(crate) fn drive_rain(
     cam_q: Query<&Transform, With<Camera3d>>,
