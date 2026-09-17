@@ -157,12 +157,15 @@ pub(crate) struct Element {
 pub(crate) fn element_of(ty: DamageType) -> Element {
     let e = |kind: f32, r: f32, g: f32, b: f32| Element { kind, rgb: Vec3::new(r, g, b) };
     match ty {
-        // Physical (kind 0): the three weapon types share the slash-and-spark shape and
-        // differ only in colour temperature, because a hammer and a sword should read as
-        // the same CATEGORY of thing — the fight already tells you which weapon it was.
+        // **THE THREE WEAPON TYPES DRAW THREE DIFFERENT SHAPES**: a cut, a punch and a
+        // chevron. They used to share kind 0 and differ only in colour temperature, on the
+        // argument that the fight already tells you which weapon it was — true of the hero
+        // swinging and useless for the blow landing, and colour is the channel already
+        // spent on WHAT WAS HIT (`struck_rgb`). A sword, a hammer and a spear leave three
+        // different marks.
         DamageType::Slash => e(0.0, 1.9, 1.9, 2.0),
-        DamageType::Pierce => e(0.0, 1.7, 1.85, 2.1),
-        DamageType::Blunt => e(0.0, 2.0, 1.8, 1.4),
+        DamageType::Pierce => e(12.0, 1.7, 1.85, 2.1),
+        DamageType::Blunt => e(11.0, 2.0, 1.8, 1.4),
         DamageType::Fire => e(1.0, 3.4, 1.1, 0.25),
         DamageType::Infernal => e(1.0, 3.2, 0.5, 0.9),
         DamageType::Ice => e(2.0, 1.1, 2.4, 3.2),
@@ -254,6 +257,8 @@ pub(crate) struct BattleFx {
     /// runs off an incoming message and has no access to the arena's transforms, and a
     /// death has to be drawn where the BODY is.
     pub(crate) deaths: Vec<String>,
+    /// Bodies struck this frame as `(id, was it a crit)`, drained by [`spawn_hit_sparks`].
+    pub(crate) sparks: Vec<(String, bool)>,
     /// ONE unit quad, shared by every burst ever spawned, sized through the transform.
     ///
     /// A `Rectangle::new(scale, scale)` per burst allocates a mesh asset per target per
@@ -602,6 +607,7 @@ pub(crate) fn reset_battle_fx(mut fx: ResMut<BattleFx>) {
     // A death queued on the frame the fight ended would otherwise be the first thing the
     // NEXT fight drew, over a body that is not there — the same trap as `queue` above.
     fx.deaths.clear();
+    fx.sparks.clear();
     fx.seed = 0;
     // A shake left running would follow the camera onto the overworld, where nothing is
     // hitting anybody.
@@ -659,8 +665,8 @@ mod tests {
         ] {
             let e = element_of(ty);
             assert!(
-                (0.0..=10.0).contains(&e.kind),
-                "{ty:?} draws kind {} — the shader only implements 0..=10",
+                (0.0..=12.0).contains(&e.kind),
+                "{ty:?} draws kind {} — the shader only implements 0..=12",
                 e.kind
             );
             assert_eq!(e.kind, e.kind.floor(), "{ty:?}'s kind is not a whole number");
@@ -691,6 +697,11 @@ mod tests {
             ("KIND_POISON", DamageType::Poison),
             ("KIND_HOLY", DamageType::Celestial),
             ("KIND_SHADOW", DamageType::Shadow),
+            // The three weapon marks. A cut, a punch and a chevron are three shapes, so
+            // they are three kinds — and the shader branches on the NUMBER, which means a
+            // renumber on one side draws a hammer blow as a spear thrust, silently.
+            ("KIND_BLUNT", DamageType::Blunt),
+            ("KIND_PIERCE", DamageType::Pierce),
         ];
         for (name, ty) in want {
             let line = src
@@ -855,6 +866,27 @@ pub(crate) struct DeathBurst {
     pub(crate) effect: Handle<bevy_hanabi::EffectAsset>,
 }
 
+/// **WHAT A BLOW THROWS OFF THE BODY IT LANDS ON.** Two effects, because a crit is not a
+/// louder ordinary hit — it is a different event and should read as one at a glance.
+///
+/// ⚠️ **This replaces a PROHIBITION SIGN.** The shader's untyped-physical branch drew a
+/// diagonal slash across an expanding ring, which is a circle with a line through it: the
+/// universal "no". Every unelemental blow in the game — most of them — announced itself
+/// with the symbol for *denied*, which is close to the opposite of what had just happened.
+/// Sparks have no such reading, and they are the one shape a symmetric shader cannot
+/// accidentally make into a glyph.
+#[derive(Resource)]
+pub(crate) struct HitSparks {
+    /// An ordinary blow: a short, tight spray.
+    pub(crate) normal: Handle<bevy_hanabi::EffectAsset>,
+    /// A critical: more of it, thrown further and faster, with a hotter core.
+    pub(crate) crit: Handle<bevy_hanabi::EffectAsset>,
+}
+
+/// How long a spent spark burst lingers before its entity is despawned. Shorter than a
+/// death — a hit is over in a few frames or it is wallpaper.
+const SPARK_TTL: f32 = 0.9;
+
 /// How long a spent burst lingers before its entity is despawned.
 ///
 /// ⚠️ A ONE-SHOT EFFECT DOES NOT CLEAN ITSELF UP. `SpawnerSettings::once` emits a single
@@ -870,6 +902,90 @@ pub(crate) struct DeathBurstTtl(pub(crate) f32);
 
 /// Build the one death effect. Registered at startup, so the pipeline is compiled before
 /// anything dies rather than on the frame something does.
+/// Build the two hit effects. One asset each, tinted per burst exactly as the death burst
+/// is — see [`DeathBurst`] for why that is a property rather than an asset per lineage.
+pub(crate) fn init_hit_sparks(
+    mut commands: Commands,
+    mut effects: ResMut<Assets<bevy_hanabi::EffectAsset>>,
+) {
+    use bevy_hanabi::*;
+
+    // `heavy` is the crit: the SAME shape thrown harder and hotter, rather than a second
+    // unrelated effect. A crit has to be recognisable as the thing that just happened to
+    // you, only worse — a different silhouette would read as a different attack.
+    let build = |effects: &mut Assets<EffectAsset>, heavy: bool| -> Handle<EffectAsset> {
+        let writer = ExprWriter::new();
+        let tint = writer.add_property("tint", Value::Vector(Vec3::ONE.into()));
+        let tint = writer.prop(tint);
+
+        let (count, speed_lo, speed_hi, life_lo, life_hi, size) = if heavy {
+            (34.0f32, 3.4f32, 7.0f32, 0.30f32, 0.52f32, 0.15f32)
+        } else {
+            (14.0, 1.8, 3.6, 0.18, 0.32, 0.10)
+        };
+
+        // Thrown from the point of contact, around chest height on the body.
+        let init_pos = SetPositionSphereModifier {
+            center: writer.lit(Vec3::Y * 1.0).expr(),
+            radius: writer.lit(if heavy { 0.30 } else { 0.18 }).expr(),
+            dimension: ShapeDimension::Volume,
+        };
+        let init_vel = SetVelocitySphereModifier {
+            center: writer.lit(Vec3::Y * 1.0).expr(),
+            speed: writer.lit(speed_lo).uniform(writer.lit(speed_hi)).expr(),
+        };
+        let init_life = SetAttributeModifier::new(
+            Attribute::LIFETIME,
+            writer.lit(life_lo).uniform(writer.lit(life_hi)).expr(),
+        );
+        let init_age = SetAttributeModifier::new(Attribute::AGE, writer.lit(0.).expr());
+        // The body's own lineage colour, per particle at birth. A crit keeps a hotter core
+        // by being lifted toward white — the hue still says WHAT was hit, the brightness
+        // says how hard.
+        let hue = if heavy {
+            (tint.clone() * writer.lit(0.55) + writer.lit(0.45)).vec4_xyz_w(writer.lit(1.))
+        } else {
+            tint.clone().vec4_xyz_w(writer.lit(1.))
+        };
+        let init_colour =
+            SetAttributeModifier::new(Attribute::COLOR, hue.pack4x8unorm().expr());
+        // Gravity and drag, so the spray arcs and settles rather than flying off forever.
+        let accel = AccelModifier::new(writer.lit(Vec3::Y * -9.0).expr());
+        let drag = LinearDragModifier::new(writer.lit(if heavy { 3.0 } else { 4.5 }).expr());
+
+        // Colourless: `Attribute::COLOR` carries the hue and this carries the FADE, the
+        // same split the death burst uses.
+        let mut fade = Gradient::new();
+        fade.add_key(0.0, Vec4::new(1.0, 1.0, 1.0, 1.0));
+        fade.add_key(1.0, Vec4::new(1.0, 1.0, 1.0, 0.0));
+        let mut shrink = Gradient::new();
+        shrink.add_key(0.0, Vec3::splat(size));
+        shrink.add_key(1.0, Vec3::splat(size * 0.15));
+
+        effects.add(
+            EffectAsset::new(
+                if heavy { 128 } else { 64 },
+                SpawnerSettings::once(count.into()),
+                writer.finish(),
+            )
+            .with_name(if heavy { "crit_sparks" } else { "hit_sparks" })
+            .init(init_pos)
+            .init(init_vel)
+            .init(init_life)
+            .init(init_age)
+            .init(init_colour)
+            .update(accel)
+            .update(drag)
+            .render(ColorOverLifetimeModifier { gradient: fade, ..default() })
+            .render(SizeOverLifetimeModifier { gradient: shrink, screen_space_size: false }),
+        )
+    };
+
+    let normal = build(&mut effects, false);
+    let crit = build(&mut effects, true);
+    commands.insert_resource(HitSparks { normal, crit });
+}
+
 pub(crate) fn init_death_burst(
     mut commands: Commands,
     mut effects: ResMut<Assets<bevy_hanabi::EffectAsset>>,
@@ -961,6 +1077,57 @@ pub(crate) fn is_enemy_death(
 ) -> bool {
     kind.eq_ignore_ascii_case("ko")
         && combatants.iter().any(|c| c.id == target && !c.is_player)
+}
+
+/// The lineage colour a blow on this body throws off, from the shared registry.
+///
+/// ⚠️ **A HERO IS NOT A LINEAGE.** Your own party has no `faction:` on the wire, and
+/// falling through to the unknown case would paint every blow you take in the same bone
+/// white a missing faction uses — which is exactly the tell that table reserves for a
+/// faction nobody authored. Heroes get their own steel instead.
+pub(crate) fn struck_rgb(view: Option<&meld_client::net::CombatantView>) -> Vec3 {
+    let Some(v) = view else {
+        return Vec3::new(0.86, 0.84, 0.80);
+    };
+    if v.is_player {
+        return Vec3::new(0.78, 0.82, 0.90);
+    }
+    let faction = v.statuses.iter().find_map(|s| s.strip_prefix("faction:")).unwrap_or("");
+    let [r, g, b] = meld_proto::factions::faction_rgb(faction);
+    Vec3::new(r, g, b)
+}
+
+/// Drain the queued hits into spark bursts, at the body each one landed on.
+pub(crate) fn spawn_hit_sparks(
+    mut commands: Commands,
+    mut fx: ResMut<BattleFx>,
+    sparks: Option<Res<HitSparks>>,
+    battle: Res<crate::BattleData>,
+    actors: Query<(&crate::battle::BattleActor, &GlobalTransform)>,
+) {
+    if fx.sparks.is_empty() {
+        return;
+    }
+    let Some(sparks) = sparks else {
+        fx.sparks.clear();
+        return;
+    };
+    for (id, crit) in std::mem::take(&mut fx.sparks) {
+        let Some((_, gt)) = actors.iter().find(|(a, _)| a.id == id) else {
+            continue;
+        };
+        let rgb = struck_rgb(battle.combatants.iter().find(|c| c.id == id));
+        let mut props = bevy_hanabi::EffectProperties::default();
+        props.set("tint", bevy_hanabi::Value::Vector(rgb.into()));
+        let effect = if crit { sparks.crit.clone() } else { sparks.normal.clone() };
+        commands.spawn((
+            BattleFxRoot,
+            DeathBurstTtl(SPARK_TTL),
+            bevy_hanabi::ParticleEffect::new(effect),
+            props,
+            Transform::from_translation(gt.translation()),
+        ));
+    }
 }
 
 /// Drain the queued deaths into bursts, at the body each one belongs to.

@@ -587,6 +587,17 @@ pub(crate) fn pump_net(
                 // deliberately not in `struck` (it did 0), so "your fire did nothing"
                 // reads as the number it is rather than as a fireball that worked.
                 crate::battle_fx::queue_cast(battle_fx, damage_type, &struck, crit);
+                // …and the body throws off sparks in its own lineage's colour. Per TARGET
+                // rather than per cast: an all-enemy blow lands on four different creatures
+                // and each one should burst in what IT is made of.
+                //
+                // ⚠️ `crit` is the RESOLUTION's flag, so a sweep that crit on one body
+                // draws the heavy spray on all of them. That is the same granularity the
+                // wire carries (`HitEffect::crit` is per effect, but `queue_cast` already
+                // folds it) and is worth knowing if per-body crits ever matter here.
+                for (id, _, _) in &struck {
+                    battle_fx.sparks.push((id.clone(), crit));
+                }
                 // A mend only lifts the screen when the action did NOTHING else: an
                 // ability that damages and heals (the Resonant's Transfuse pays out of its
                 // own HP, the Keeper drains as it strikes) is a blow, and it should read

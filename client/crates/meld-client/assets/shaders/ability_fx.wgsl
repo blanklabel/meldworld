@@ -38,6 +38,16 @@ const KIND_MIND:     f32 = 7.0;
 const KIND_POISON:   f32 = 8.0;
 const KIND_HOLY:     f32 = 9.0;
 const KIND_SHADOW:   f32 = 10.0;
+// **THE THREE WEAPON TYPES DRAW THREE DIFFERENT SHAPES.** They shared `KIND_PHYSICAL` and
+// differed only in colour temperature, on the argument that "the fight already tells you
+// which weapon it was" — which is true of the hero swinging and useless for the blow
+// landing, and colour temperature is the one channel already spent on WHAT WAS HIT. A
+// sword, a hammer and a spear leave three different marks on a body; drawing one mark for
+// all three threw away the only physical read the arena had.
+//
+// `KIND_PHYSICAL` stays the slash, so untyped/true damage keeps the generic mark.
+const KIND_BLUNT:    f32 = 11.0;
+const KIND_PIERCE:   f32 = 12.0;
 
 fn hash21(p: vec2<f32>) -> f32 {
     var q = fract(p * vec2<f32>(123.34, 456.21));
@@ -176,15 +186,59 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
         let close = mix(1.15, 0.15, t);
         a = smoothstep(close, close - 0.55, r) * pow(tend, 2.0) * 1.9;
         col = mix(fx.tint.rgb, vec3<f32>(0.05, 0.0, 0.09), 0.35);
+    } else if (kind == KIND_BLUNT) {
+        // BLUNT: the PUNCH — the same impact the turn-order bar throws at a recoiled
+        // icon, which is already the game's word for "something heavy landed". A solid
+        // round core with a compression ring squeezed out of it, and no cut anywhere: a
+        // hammer does not open a body, it moves it.
+        let core = smoothstep(0.42, 0.0, r) * (1.0 - t * 0.6);
+        // The ring is squashed along the blow, so the impact reads as a direction rather
+        // than as a bubble.
+        let sq = length(uv * vec2<f32>(1.0, 1.45));
+        let squeeze = shock_ring(sq, t, 0.22) * 1.3;
+        a = core * 2.4 + squeeze;
+        col = mix(fx.tint.rgb, vec3<f32>(1.0, 0.95, 0.82), 0.35);
+    } else if (kind == KIND_PIERCE) {
+        // PIERCE: an open-bottomed triangle — a chevron driving IN — with two more lines
+        // outside it running parallel to its own two sides, like the speed lines behind a
+        // thrust. Open at the bottom on purpose: a closed triangle is a solid, and what a
+        // spear leaves is a hole with the point still travelling through it.
+        //
+        // Both sides come from one distance: `abs(uv.x) * slope - uv.y` is zero exactly on
+        // the chevron, so the shape and its echoes are the same expression at three
+        // offsets and can never drift apart from each other.
+        let slope = 1.35;
+        let d = abs(uv.x) * slope - uv.y;
+        let stroke = 0.085;
+        let apex = smoothstep(stroke, 0.0, abs(d + 0.34));
+        // …and the two trailing lines, further out and fainter the further they are.
+        let echo_a = smoothstep(stroke * 0.8, 0.0, abs(d - 0.08)) * 0.7;
+        let echo_b = smoothstep(stroke * 0.7, 0.0, abs(d - 0.46)) * 0.45;
+        // Cut the arms off before they reach the quad's corners, or the chevron becomes a
+        // pair of full-width diagonals and reads as a cross.
+        let arms = smoothstep(1.0, 0.45, abs(uv.x));
+        a = (apex + echo_a + echo_b) * arms * (1.0 - t) * 2.3;
+        col = mix(fx.tint.rgb, vec3<f32>(0.92, 0.97, 1.0), 0.4);
     } else {
-        // PHYSICAL: a short bright slash across the impact plus a tight spark ring. No
-        // element, so it must not look like a spell — it is over in a few frames.
-        let slash = smoothstep(0.17, 0.0, abs(uv.y * 0.72 + uv.x * 0.69))
-            * smoothstep(1.05, 0.25, r);
-        a = slash * (1.0 - t) * 2.2 + shock_ring(r, t, 0.13) * 1.1;
-        // A handful of sparks thrown along the cut.
-        let sp = hash21(floor(uv * 7.0) + seed);
-        a += step(0.93, sp) * (1.0 - t) * smoothstep(1.0, 0.2, r) * 1.6;
+        // SLASH (and untyped/true damage): ONE cut, top-left to bottom-right, thrown off
+        // centre so it is a stroke across the body rather than a symbol centred on it.
+        //
+        // ⚠️ **IT USED TO DRAW A PROHIBITION SIGN.** A slash through the middle plus a
+        // `shock_ring` around it is a circle with a line through it — the universal "no" —
+        // and it fired on every unelemental blow in the game, which is most of them. The
+        // symbol read as *denied* at the exact moment something had connected. The ring is
+        // gone and the cut is off centre; the debris that sells the hit is
+        // `battle_fx::HitSparks`, real particles, which cannot form a glyph however they
+        // are tuned.
+        //
+        // `uv.y + uv.x` is the top-left → bottom-right diagonal (y is up), so the cut runs
+        // the way a right-handed downswing does.
+        let cut = uv - vec2<f32>(0.10, -0.06);
+        let line = smoothstep(0.13, 0.0, abs(cut.y + cut.x) * 0.7071);
+        // Tapered at both ends, so it is a stroke with a beginning and an end rather than
+        // a chord across the whole quad.
+        let taper = smoothstep(1.0, 0.25, length(cut));
+        a = line * taper * (1.0 - t) * 2.6;
         col = mix(fx.tint.rgb, vec3<f32>(1.0, 1.0, 0.9), 0.4);
     }
 
