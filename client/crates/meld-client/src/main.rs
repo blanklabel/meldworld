@@ -449,7 +449,7 @@ fn main() {
         .init_resource::<GearHold>()
         .add_systems(
             Startup,
-            (setup, load_ui_font, apply_class_flag, mock_battle_setup, mock_overlay_setup, ambient::setup_ambient, music::setup_music, minimap::setup, battle_fx::init_death_burst, battle_fx::init_hit_sparks, world_fx::init_shift_dust, weather_fx::init_weather_fx, world_fx::init_payout_fx),
+            (setup, load_ui_font, apply_class_flag, mock_battle_setup, mock_overlay_setup, ambient::setup_ambient, music::setup_music, minimap::setup, battle_fx::init_death_burst, battle_fx::init_hit_sparks, world_fx::init_shift_dust, weather_fx::init_weather_fx, world_fx::init_payout_fx, world_fx::init_extract_fx),
         )
         // run in every state: net pump, demo autopilot, the HD-2D file channel
         // (hot-reload look params + honour screenshot requests), cloud drift, and
@@ -698,6 +698,7 @@ fn main() {
             (
                 world_fx::spawn_shift_dust,
                 world_fx::spawn_payout_motes,
+                world_fx::drive_extract_plume,
                 world_fx::advance_shift_dust,
                 mocks::mock_shift,
                 weather_fx::drive_weather_fx,
@@ -1113,6 +1114,11 @@ struct Session {
     connecting: bool,
     entered: bool,
     channeling: bool,
+    /// Whether the running channel is an EXTRACTION rather than a harvest. The method only
+    /// ever survived as a status string ("extracting..." / "gathering..."), and deciding
+    /// what to draw by parsing prose back out of a label is a rule that breaks the day
+    /// somebody rewords it.
+    extracting: bool,
     /// Milliseconds one fill of the channel bar takes (from `run.channel_started`).
     /// 0 = nothing to draw.
     channel_fill_ms: u64,
@@ -1150,6 +1156,7 @@ impl Default for Session {
             entered: false,
             channeling: false,
             channel_fill_ms: 0,
+            extracting: false,
             status: String::new(),
             // A diverse default so newcomers see a spread of classes at once.
             party: vec![

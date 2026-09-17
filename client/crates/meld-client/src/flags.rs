@@ -212,6 +212,15 @@ pub(crate) fn battle_opening_flag() -> Option<String> {
     std::env::var("MELD_OPENING").ok().filter(|s| !s.is_empty())
 }
 
+/// Hold the extraction plume up, for a capture. `MELD_EXTRACT=1`.
+///
+/// Extracting for real needs a Town Portal in the bag or an hour's walk to the deep portal,
+/// and the channel is over in seconds — so the one effect that marks the act a whole dive is
+/// pointed at is otherwise unreachable in a still frame.
+pub(crate) fn extract_mock_flag() -> bool {
+    std::env::var("MELD_EXTRACT").is_ok()
+}
+
 /// Force a kind of weather on, for a capture. `MELD_WEATHER=rain|storm|snow|ash`.
 ///
 /// Whether it is raining is a pure function of `(world_seed, world tick)` (`FS-5`), so a
