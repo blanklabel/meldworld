@@ -71,11 +71,32 @@ pub(crate) struct ShiftBurst {
     pub(crate) rgb_to: Vec3,
 }
 
+/// A payout leaving the thing that paid it.
+pub(crate) struct PayoutBurst {
+    /// Where it came FROM — the node, the chest, the ground the loot was lying on.
+    pub(crate) from: Vec3,
+    /// Where it is going: the player. The motes are thrown along this, which is what makes
+    /// the burst read as something being COLLECTED rather than as scenery sparkling.
+    pub(crate) toward: Vec3,
+    pub(crate) rgb: Vec3,
+}
+
 /// The world's own effect queue, the overworld's counterpart to `BattleFx`.
 #[derive(Resource, Default)]
 pub(crate) struct WorldFx {
     pub(crate) shifts: Vec<ShiftBurst>,
+    pub(crate) payouts: Vec<PayoutBurst>,
 }
+
+/// The payout motes. One asset, tinted per burst, like the debris above.
+#[derive(Resource)]
+pub(crate) struct PayoutFx {
+    pub(crate) effect: Handle<bevy_hanabi::EffectAsset>,
+    pub(crate) dot: Handle<Image>,
+}
+
+/// How long a payout's emitter is kept. Comfortably past the motes' own lives.
+const PAYOUT_TTL: f32 = 1.4;
 
 /// Marks a spawned emitter so the sweep can find it.
 #[derive(Component)]
@@ -389,6 +410,143 @@ pub(crate) fn advance_shift_dust(
     }
 }
 
+
+
+/// **A PAYOUT LEAVES THE THING THAT PAID IT** (`UX-26`).
+///
+/// Opening a chest, digging a unit out of a node and walking over dropped loot were all the
+/// same event to the eye: a line of text over your own head. Nothing connected the reward to
+/// the thing that gave it, so a chest you just opened looked exactly like one you had not —
+/// which is the same complaint `net::payout_of` was written to answer one layer down, where
+/// ground loot was collected in silence.
+///
+/// The motes are thrown FROM the source ALONG the line to the player, which is what makes it
+/// read as collection rather than as scenery sparkling.
+pub(crate) fn init_payout_fx(
+    mut commands: Commands,
+    mut effects: ResMut<Assets<bevy_hanabi::EffectAsset>>,
+    mut images: ResMut<Assets<Image>>,
+) {
+    use bevy_hanabi::*;
+
+    let dot = soft_dot(&mut images);
+    let writer = ExprWriter::new();
+    let texture_slot = writer.lit(0u32).expr();
+
+    let init_pos = SetPositionSphereModifier {
+        center: writer.lit(Vec3::Y * 0.5).expr(),
+        radius: writer.lit(0.45).expr(),
+        dimension: ShapeDimension::Volume,
+    };
+
+    // Up, and along the line to the player. The bias is a property rather than a fixed
+    // direction because which way "toward you" points is different for every payout.
+    let toward = writer.add_property("toward", Value::Vector(Vec3::Y.into()));
+    let toward = writer.prop(toward);
+    let vel = toward
+        + writer.lit(Vec3::new(0.9, 1.8, 0.9))
+            * (writer.rand(ValueType::Vector(VectorType::VEC3F)) - writer.lit(Vec3::splat(0.5)));
+    let init_vel = SetAttributeModifier::new(Attribute::VELOCITY, vel.expr());
+
+    let init_life =
+        SetAttributeModifier::new(Attribute::LIFETIME, writer.lit(0.5).uniform(writer.lit(0.95)).expr());
+    let init_age = SetAttributeModifier::new(Attribute::AGE, writer.lit(0.).expr());
+
+    let tint = writer.add_property("tint", Value::Vector(Vec3::ONE.into()));
+    let tint = writer.prop(tint);
+    let init_colour = SetAttributeModifier::new(
+        Attribute::COLOR,
+        tint.vec4_xyz_w(writer.lit(1.)).pack4x8unorm().expr(),
+    );
+
+    // A gentle lift rather than a fall: a payout rises to you, and gravity here would read
+    // as the reward being dropped on the floor.
+    let accel = AccelModifier::new(writer.lit(Vec3::Y * 1.4).expr());
+    let drag = LinearDragModifier::new(writer.lit(1.6).expr());
+
+    let mut colour = Gradient::new();
+    colour.add_key(0.0, Vec4::new(1.0, 1.0, 1.0, 0.0));
+    colour.add_key(0.2, Vec4::new(1.0, 1.0, 1.0, 1.0));
+    colour.add_key(1.0, Vec4::new(1.0, 1.0, 1.0, 0.0));
+
+    let mut size = Gradient::new();
+    size.add_key(0.0, Vec3::splat(0.14));
+    size.add_key(1.0, Vec3::splat(0.03));
+
+    let mut module = writer.finish();
+    module.add_texture_slot("dot");
+
+    let effect = effects.add(
+        EffectAsset::new(128, SpawnerSettings::once(26.0.into()), module)
+            .with_name("payout_motes")
+            // Additive: a reward is light. It is also small and brief, so it can afford to
+            // be bright where the Shift's debris could not.
+            .with_alpha_mode(bevy_hanabi::AlphaMode::Add)
+            .init(init_pos)
+            .init(init_vel)
+            .init(init_life)
+            .init(init_age)
+            .init(init_colour)
+            .update(accel)
+            .update(drag)
+            .render(ParticleTextureModifier {
+                texture_slot,
+                sample_mapping: ImageSampleMapping::ModulateOpacityFromR,
+            })
+            .render(ColorOverLifetimeModifier { gradient: colour, ..default() })
+            .render(SizeOverLifetimeModifier { gradient: size, screen_space_size: false }),
+    );
+    commands.insert_resource(PayoutFx { effect, dot });
+}
+
+/// The colour a payout wears, by where it came from.
+///
+/// Authored rather than derived from the item, for the reason the lineage colours are: a
+/// player learns "gold means a chest" in one dive, and three kinds is a distinction the eye
+/// can actually hold. A free function so the mapping is testable without a world.
+pub(crate) fn payout_rgb(p: meld_client::net::Payout) -> Vec3 {
+    use meld_client::net::Payout;
+    match p {
+        // Treasure is gold. It is the only payout a player goes out of their way for.
+        Payout::Chest => Vec3::new(1.0, 0.82, 0.32),
+        // What you dug out of the ground, in the green of the thing you dug it from.
+        Payout::Harvest => Vec3::new(0.52, 0.92, 0.46),
+        // Something that was lying there — pale, because nobody earned it.
+        Payout::Pickup => Vec3::new(0.78, 0.86, 1.0),
+    }
+}
+
+/// Drain queued payouts into emitters standing where the reward came from.
+pub(crate) fn spawn_payout_motes(
+    mut commands: Commands,
+    mut fx: ResMut<WorldFx>,
+    pay: Option<Res<PayoutFx>>,
+) {
+    if fx.payouts.is_empty() {
+        return;
+    }
+    let Some(pay) = pay else {
+        fx.payouts.clear();
+        return;
+    };
+    for b in std::mem::take(&mut fx.payouts) {
+        // Toward the player, at a speed that covers the gap inside the motes' own lives —
+        // a burst that is still in flight when it fades reads as the reward not arriving.
+        let gap = b.toward - b.from;
+        let dir = gap.normalize_or_zero() * (gap.length() * 1.1).clamp(1.0, 6.0);
+        let mut props = bevy_hanabi::EffectProperties::default();
+        props.set("tint", bevy_hanabi::Value::Vector(b.rgb.into()));
+        props.set("toward", bevy_hanabi::Value::Vector(dir.into()));
+        commands.spawn((
+            ShiftDustTtl(PAYOUT_TTL),
+            bevy_hanabi::ParticleEffect::new(pay.effect.clone()),
+            bevy_hanabi::EffectMaterial { images: vec![pay.dot.clone()] },
+            props,
+            Transform::from_translation(b.from),
+        ));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -402,6 +560,26 @@ mod tests {
             rgb_from: Vec3::ONE,
             rgb_to: Vec3::ONE,
         }
+    }
+
+    /// Each kind of payout wears its own colour. Three is a distinction the eye can hold in
+    /// one dive; two that matched would make the chest — the only payout a player goes out
+    /// of their way for — indistinguishable from scenery they walked over.
+    #[test]
+    fn every_payout_has_its_own_colour() {
+        use meld_client::net::Payout::*;
+        let all = [payout_rgb(Chest), payout_rgb(Harvest), payout_rgb(Pickup)];
+        for (i, a) in all.iter().enumerate() {
+            for b in all.iter().skip(i + 1) {
+                assert_ne!(a, b, "two payouts share a colour");
+            }
+        }
+        // Treasure is gold: warmer than it is blue, which is what separates it at a glance
+        // from the pale of something that was merely lying there.
+        let gold = payout_rgb(Chest);
+        assert!(gold[0] > gold[2], "a chest should not pay out in blue: {gold:?}");
+        let pick = payout_rgb(Pickup);
+        assert!(pick[2] >= pick[0], "ground loot should stay cool: {pick:?}");
     }
 
     /// Every emitter lands inside the patch that is actually Shifting. Ground outside it
