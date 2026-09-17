@@ -116,6 +116,55 @@ const WHEEL_SHUT_SCALE: f32 = 1.348;
 /// How long the push takes. Long enough to be a movement the eye catches on its own, short
 /// enough that it is never between you and an order you already knew you wanted.
 const WHEEL_OPEN_SECS: f32 = 0.22;
+/// **THE CENTRE OF A SECTOR AS THE PLAYER SEES IT**: the area centroid of its PROJECTED
+/// outline, by the shoelace formula over points sampled round its own boundary.
+///
+/// ⚠️ **THE PROJECTION OF THE CENTROID IS NOT THE CENTROID OF THE PROJECTION, and that is the
+/// whole bug.** The wheel lies on the ground under a perspective camera, so a sector's near
+/// half is magnified and its far half compressed — the shape on screen is not a scaled copy of
+/// the shape on the ground, and no point computed in the GROUND plane lands where the eye puts
+/// the middle. Three tries died on that: the mid-radius, a weighting toward the outer wall, and
+/// the exact planar area centroid `(2/3)·(b³−a³)/(b²−a²)·sin(α)/α`, which is right about a
+/// shape nobody is looking at. The corner average failed for a second reason on top — a sector
+/// is not a quadrilateral, its arcs bulge.
+///
+/// So the outline is walked in the ground plane, each point is projected, and the centroid is
+/// taken in SCREEN space where the answer is wanted. `ARC_STEPS` per arc is enough that the
+/// bulge is represented; the cost is ~34 projections per wedge on a panel that already projects
+/// five points per wedge, and it is exact for any camera, any band, any wedge count.
+fn sector_centre(
+    feet: Vec3,
+    front: Vec3,
+    turns: f32,
+    scale: f32,
+    project: impl Fn(Vec3) -> Option<Vec2>,
+) -> Option<Vec2> {
+    const ARC_STEPS: usize = 16;
+    let edge = half_wedge() * TILE_INSET;
+    let (r_in, r_out) = band_radii(scale);
+    let mut poly: Vec<Vec2> = Vec::with_capacity(ARC_STEPS * 2 + 2);
+    // Out along the near wall, back along the far one: one closed ring, wound consistently.
+    for i in 0..=ARC_STEPS {
+        let t = turns - edge + (2.0 * edge) * (i as f32 / ARC_STEPS as f32);
+        poly.push(project(wheel_point(feet, front, t, r_out, scale))?);
+    }
+    for i in 0..=ARC_STEPS {
+        let t = turns + edge - (2.0 * edge) * (i as f32 / ARC_STEPS as f32);
+        poly.push(project(wheel_point(feet, front, t, r_in, scale))?);
+    }
+    // Shoelace. ⚠️ A degenerate outline — the wheel seen exactly edge-on, or a sector entirely
+    // behind the camera — has zero area, and dividing by it would fling the label to infinity.
+    let mut area = 0.0f32;
+    let mut c = Vec2::ZERO;
+    for i in 0..poly.len() {
+        let (p, q) = (poly[i], poly[(i + 1) % poly.len()]);
+        let cross = p.x * q.y - q.x * p.y;
+        area += cross;
+        c += (p + q) * cross;
+    }
+    (area.abs() > 1.0).then(|| c / (3.0 * area))
+}
+
 /// The line the tiles sit on: **the AREA CENTROID of the sector**, not a weighting of its walls.
 ///
 /// ⚠️ **A SECTOR'S MIDDLE IS NOT ITS MIDDLE RADIUS, AND NO AMOUNT OF TUNING MAKES IT ONE.** An
@@ -339,6 +388,12 @@ pub(crate) fn wedge_hues() -> [Vec4; WEDGES] {
 
 /// Where wedge `n`'s label stands in the world, given the body's feet and the direction from
 /// the body toward the camera (flattened onto the ground the wheel lies on).
+/// ⚠️ **TEST-ONLY.** The renderer centres a tile with `sector_centre`, in SCREEN space, because
+/// the projection of a ground-plane centroid is not the centroid of the projection. This stays
+/// because the BEARING rules — Flee due south, Attack and Skill facing the enemy line, the gap
+/// on the far arc — are about where a wedge points, which is a fact about the ground and not
+/// about the camera looking at it.
+#[cfg(test)]
 pub(crate) fn slot_world(feet: Vec3, front: Vec3, n: usize, scale: f32) -> Vec3 {
     wheel_point(feet, front, slot_turns(n), label_radius(scale), scale)
 }
@@ -770,6 +825,30 @@ pub(crate) fn drive_command_wheel(
         tf.translation.z = c.z;
         tf.translation.y = c.y + WHEEL_LIFT;
     }
+    // ⚠️ **THE DISC HAS TO TURN TO FACE THE CAMERA, AND FOR A LONG TIME IT DID NOT.**
+    // `command_wheel.wgsl` measures its sectors with `atan2` in the MESH's own space, so the
+    // bearing it is handed is relative to a fixed world axis — while every label here is placed
+    // relative to `front`, the direction from THIS body toward the camera. Those are the same
+    // line only for a hero standing on the arena's centre line. For anybody else the two frames
+    // are rotated apart by that hero's own bearing, so the wedges were drawn in one place and
+    // their icons stood in another — worst for the outermost hero, which is exactly where it
+    // was reported ("those icons are WAY off from center"), and invisible on the middle of the
+    // line, which is where a four-hero mock puts the eye first.
+    //
+    // Yawing the disc is the fix rather than folding the angle into the bearing uniform,
+    // because it makes the shader's frame BE the frame the rest of this file reasons in
+    // instead of leaving two conventions that have to be kept in step by hand.
+    // ⚠️ **AND THE SIGN IS SETTLED BY RENDERING IT, exactly as `SPIN`'s note says.** The
+    // shader's bearing zero lies along the mesh's local −Y, so the disc is yawed to put local
+    // +Y on the direction AWAY from the camera. Reasoning it out from the flatten gives the
+    // opposite answer, and the opposite answer also *looks* like a fix, because every wedge
+    // moves — it just moves half a turn, and the cursor's red wedge ends up opposite the icon
+    // it is lighting. That is the check: the lit wedge must appear under the icon it names.
+    let yaw = Quat::from_rotation_y(front.x.atan2(front.z))
+        * Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2);
+    if tf.rotation != yaw {
+        tf.rotation = yaw;
+    }
     // +1: the shader counts sectors and sector 0 is the gap.
     let cursor = SLOTS.iter().position(|s| s.index == menu.cursor).map(|n| (n + 1) as f32);
     if let Some(mut m) = mats.get_mut(&mat.0) {
@@ -837,8 +916,8 @@ pub(crate) fn follow_radial_menu(
         // and averaging them is the centre of the quad the player is actually looking at, at
         // any camera, for any wedge count.
         let (Some(p), Some(l), Some(r), Some(i), Some(o)) = (
-            // The sector's own centroid, projected — one point, derived, not averaged.
-            project(slot_world(feet, front, label.wedge, scale)),
+            // Where the sector's own outline says its middle is, ON SCREEN.
+            sector_centre(feet, front, turns, scale, project),
             project(wheel_point(feet, front, turns - edge, lr, scale)),
             project(wheel_point(feet, front, turns + edge, lr, scale)),
             project(wheel_point(feet, front, turns, r_in, scale)),
@@ -865,6 +944,23 @@ pub(crate) fn follow_radial_menu(
         // is not allowed to have.
         let x = (p.x - w * 0.5).clamp(2.0, (sw - w - 2.0).max(2.0));
         let y = (p.y - h * 0.5 - LABEL_RISE).clamp(2.0, (sh - h - 2.0).max(2.0));
+        if std::env::var("MELD_WHEEL_TRACE").is_ok() {
+            let edge = half_wedge() * TILE_INSET;
+            let (r_in2, r_out2) = band_radii(scale);
+            let corner = |t: f32, rr: f32| project(wheel_point(feet, front, t, rr, scale));
+            bevy::log::info!(
+                "wedge {} {:>7} turns={:.4} centre=({:.0},{:.0})                  near_l={:?} near_r={:?} far_l={:?} far_r={:?}",
+                label.wedge,
+                SLOTS[label.wedge].word,
+                turns,
+                p.x,
+                p.y,
+                corner(turns - edge, r_in2).map(|v| (v.x as i32, v.y as i32)),
+                corner(turns + edge, r_in2).map(|v| (v.x as i32, v.y as i32)),
+                corner(turns - edge, r_out2).map(|v| (v.x as i32, v.y as i32)),
+                corner(turns + edge, r_out2).map(|v| (v.x as i32, v.y as i32)),
+            );
+        }
         if node.left != Val::Px(x) || node.top != Val::Px(y) {
             node.left = Val::Px(x);
             node.top = Val::Px(y);
@@ -884,12 +980,8 @@ pub(crate) fn follow_radial_menu(
         }
     }
 
-    // ⚠️ **NOW CUT EVERY WORD TO THE WEDGE IT IS STANDING IN.** The face ships Regular only and
-    // is monospace, so a word's width is exactly `chars x 0.62em` — which makes the fit
-    // arithmetic rather than a guess, and makes DEFEND (six characters on the narrowest sector
-    // on screen) the case that sets the size. The whole stack rides one number so the icon and
-    // the key shrink with the word instead of standing over a smaller one.
-
+    // The caption rides above the hero it is speaking for, clamped into the window so it can
+    // never be pushed off the edge by a body standing at the end of a wide formation.
     if let Ok(mut node) = caption.single_mut() {
         if let Ok(p) = cam.world_to_viewport(cam_tf, feet) {
             let x = (p.x - CAPTION_W * 0.5).clamp(2.0, (sw - CAPTION_W - 2.0).max(2.0));
@@ -957,6 +1049,54 @@ pub(crate) fn rebuild_auto_chip(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **THE DISC'S OWN FRAME IS THE ONE THE LABELS ARE PLACED IN.**
+    ///
+    /// ⚠️ `command_wheel.wgsl` measures its sectors with `atan2` in the MESH's space, so the
+    /// wedge at bearing zero is wherever the mesh points. Every label is placed relative to
+    /// `front` — the direction from THIS body toward the camera — and the disc carried **no yaw
+    /// at all**, so the two frames were the same one only for a hero standing on the arena's
+    /// centre line. For anybody else the wedges were drawn rotated away from their own icons:
+    /// worst at the ends of the line, and invisible in the middle, which is where a four-hero
+    /// mock puts the eye first and why it survived so long.
+    ///
+    /// ⚠️ **The SIGN is settled by rendering, like `SPIN` above it.** Deriving it from the
+    /// flatten gives the opposite answer, which also looks like a fix because every wedge
+    /// moves — half a turn, leaving the cursor's lit wedge opposite the icon it is lighting.
+    /// What this test holds is the part that is pure arithmetic: the wheel turns with the body
+    /// and stays flat on the ground.
+    #[test]
+    fn the_disc_turns_to_face_the_camera() {
+        let yaw_for = |front: Vec3| {
+            Quat::from_rotation_y(front.x.atan2(front.z))
+                * Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2)
+        };
+        for front in [
+            Vec3::Z,
+            Vec3::new(0.6, 0.0, 0.8).normalize(),
+            Vec3::new(-0.9, 0.0, 0.44).normalize(),
+            Vec3::X,
+            Vec3::new(-0.2, 0.0, -0.98).normalize(),
+        ] {
+            let yaw = yaw_for(front);
+            // FLAT. The disc's own normal comes out straight up whatever the body's bearing —
+            // a wheel standing on its edge is the failure a yaw applied in the wrong order gives.
+            let up = yaw * Vec3::Z;
+            assert!(up.y > 0.999, "the wheel is not lying on the ground for {front:?}: {up:?}");
+            // AND IT TURNS WITH THE BODY: the mesh's own axis stays on the body's own bearing
+            // line, so a hero at the end of the line gets its wedges rotated exactly as much as
+            // its labels are. (Which END of that line is the rendered question above.)
+            let axis = yaw * Vec3::Y;
+            assert!(
+                axis.y.abs() < 1e-4,
+                "the wheel's bearing axis left the ground plane: {axis:?}",
+            );
+            assert!(
+                axis.cross(front).length() < 1e-3,
+                "the wheel's bearing axis {axis:?} is off the body's own line {front:?}",
+            );
+        }
+    }
 
     /// **EVERY VERB'S KEY IS ITS OWN INITIAL**, which is why the caption prints `ATTACK` and
     /// not `ATTACK [A]` — the bracket would spend itself saying what the first letter already
