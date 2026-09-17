@@ -335,6 +335,9 @@ fn main() {
         .add_plugins(bevy::ui_render::UiMaterialPlugin::<turn_order::StateFx>::default())
         .add_plugins(MaterialPlugin::<battle_rings::FeetRing>::default())
         .add_plugins(MaterialPlugin::<battle_radial::CommandWheel>::default())
+        // GPU particles, for the one tier of battle VFX a quad cannot do: a felled body
+        // coming apart. See `battle_fx::DeathBurst`.
+        .add_plugins(bevy_hanabi::HanabiPlugin)
         .add_plugins(MaterialPlugin::<battle_fx::AbilityFx>::default())
         .add_plugins(MaterialPlugin::<battle_fx::ScreenWash>::default())
         // The corner map's ground. A map is a GRID, and it was being drawn as one
@@ -442,7 +445,7 @@ fn main() {
         .init_resource::<GearHold>()
         .add_systems(
             Startup,
-            (setup, load_ui_font, apply_class_flag, mock_battle_setup, mock_overlay_setup, ambient::setup_ambient, music::setup_music, minimap::setup),
+            (setup, load_ui_font, apply_class_flag, mock_battle_setup, mock_overlay_setup, ambient::setup_ambient, music::setup_music, minimap::setup, battle_fx::init_death_burst),
         )
         // run in every state: net pump, demo autopilot, the HD-2D file channel
         // (hot-reload look params + honour screenshot requests), cloud drift, and
@@ -888,6 +891,8 @@ fn main() {
             Update,
             (
                 battle_fx::spawn_ability_fx,
+                battle_fx::spawn_death_bursts,
+                battle_fx::advance_death_bursts,
                 battle_fx::advance_ability_fx,
                 battle_fx::advance_screen_wash,
                 battle_fx::react_to_conditions,

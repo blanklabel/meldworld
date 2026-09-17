@@ -5678,6 +5678,29 @@ only the things that can't be class-gated.
     staleness is checked on the rim's OWN material, because a rim spawned mid-walk starts on
     a stale pose while the body's material is already correct.
 
+- [x] **UX-22 — A felled creature comes apart.** A body that simply stops being drawn is
+  the one moment in a fight with no feedback at all: the thing you have been hitting is
+  replaced by nothing between two frames, and the KO! number is the only evidence it was
+  ever there.
+  - GPU particles (`bevy_hanabi`), which is the **fourth** VFX tier and the only one that
+    is not a quad — a pack of five going down at once costs a handful of draw calls rather
+    than hundreds of entities. Motes start scattered through the body's own volume, are
+    thrown outward and a little up, then fall under gravity with drag, shrinking and fading.
+  - **ONE asset for every death, tinted per burst** through a hanabi *property* read off
+    the body's own `SpriteQuad::base`. The same argument the impact shader makes for its
+    `kind` uniform: an `EffectAsset` per creature kind is a pipeline per creature kind,
+    compiled the first time each one dies — a hitch mid-fight, once per species, forever.
+  - ⚠️ **Enemies only.** A hero going down is somebody you are about to raise, and showering
+    your own party in ash reads as a loss rather than as the setback it is.
+  - ⚠️ **A one-shot effect does not clean itself up.** `SpawnerSettings::once` emits and then
+    sits there, so every creature felled in a fight would leave an idle effect entity behind
+    for the rest of it — `BattleFxRoot` only collects them when the whole fight ends.
+    `DeathBurstTtl` ages each one out at the particle lifetime plus a beat.
+  - ⚠️ **`make check` cannot see this one.** It never boots the app, and hanabi builds its
+    pipeline at runtime — so the rule that earns a burst is pulled out as `is_enemy_death`
+    and tested directly, which is the half a gate *can* hold. The burst itself still needs a
+    captured frame.
+
 - [ ] **UX-1 — Last City minimap & compass (town-only).** A minimap and compass
   **for Last City itself** so players can navigate the hub — locate the districts
   (Vault-Deep, Market, Forge/Alembic, Bounty Board, Drill Yard, Vanguard Wall),

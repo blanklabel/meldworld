@@ -111,7 +111,9 @@ pub(crate) struct ActiveTurnArrow {
 pub(crate) struct SpriteQuad {
     pub(crate) id: String,
     mat: Handle<StandardMaterial>,
-    base: Color,
+    /// The body's own colour. Read by the death burst so a felled creature comes apart in
+    /// the colour it was, rather than in one generic ash for the whole bestiary.
+    pub(crate) base: Color,
     forward: Vec3,
 }
 
