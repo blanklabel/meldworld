@@ -23,6 +23,16 @@ struct WheelParams {
     params: vec4<f32>,
     // rgb = the acting side's colour, a = the wheel's overall opacity.
     tint: vec4<f32>,
+    // x = which wedge the pointer is over (-1 for none), y = how far open the wheel is.
+    // ⚠️ **HOVER LIVES HERE, NOT ON A UI PLATE.** The wedge IS the button, so the thing that
+    // lights under the cursor has to be the wedge — a rectangle lighting up on top of it is
+    // the "five plates parked near a hero" reading this whole file exists to retire.
+    state: vec4<f32>,
+
+    // ⚠️ **THE ORDER OF THESE FIELDS IS THE ABI.** `AsBindGroup` packs one `#[uniform(100)]`
+    // struct in DECLARATION order, so a field added here in a different place than in the Rust
+    // makes the shader read one member's bytes as another's — which shows up as a wedge in
+    // completely the wrong colour and nothing else, no error anywhere.
 };
 
 @group(#{MATERIAL_BIND_GROUP}) @binding(100) var<uniform> wheel: WheelParams;
@@ -69,14 +79,21 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     let dish = 1.0 - smoothstep(0.35, 1.0, abs(u - 0.5) * 2.0);
 
     let chosen = abs(slot - cursor) < 0.5;
+    let hovered = abs(slot - wheel.state.x) < 0.5;
     // The one under the cursor lifts toward the acting side's own colour and breathes, so
     // "this is what Enter presses" needs no second marker.
     let pulse = 0.78 + 0.22 * sin(t * 3.4);
-    var col = vec3<f32>(0.05, 0.06, 0.10);
-    var alpha = 0.72 * cut * (0.55 + 0.45 * dish);
+    // ⚠️ **SOLID ENOUGH TO SIT A WORD ON.** The label has no plate of its own any more — the
+    // wedge is its plate — so this fill is what the text is read against, over grass, a
+    // sprite and a health ring at once.
+    var col = vec3<f32>(0.04, 0.05, 0.09);
+    var alpha = 0.90 * cut * (0.72 + 0.28 * dish);
     if (chosen) {
         col = mix(col, wheel.tint.rgb, (0.55 + 0.35 * dish) * pulse);
         alpha = max(alpha, 0.88 * cut);
+    } else if (hovered) {
+        col = mix(col, vec3<f32>(0.42, 0.52, 0.78), (0.5 + 0.3 * dish));
+        alpha = max(alpha, 0.84 * cut);
     }
 
     // A rim on both walls of the band, brighter on the chosen wedge — the same trick the glass

@@ -44,9 +44,19 @@ const GHOST_HOLD: f32 = 0.42;
 /// How fast the heal/hit flashes fade, per second. Long enough to catch out of the corner of
 /// an eye in a four-body fight, short enough to be gone before the next blow lands.
 const PULSE_FADE: f32 = 2.4;
-/// How fast a slosh settles. Slower than the flashes: this one is the liquid finding its level
-/// again, and a pool that stops dead was never moving.
-const SLOSH_FADE: f32 = 1.5;
+/// How fast the FLOW settles once the level stops moving. Slower than the flashes: the surface
+/// keeps running for a moment after the number lands, which is what a liquid does and what a
+/// bar that simply snapped to its new value does not.
+const FLOW_FADE: f32 = 1.6;
+/// How fast the shown level rolls toward the real one, as a fraction of the bar per second,
+/// and the least it will ever move in one second.
+///
+/// ⚠️ **THE NUMBER ROLLS; IT DOES NOT SNAP** (EarthBound's meter). A bar and a number that
+/// jump have already finished telling you what happened by the time you look at them — the
+/// counting IS the readout, and it is what makes a big hit feel big and a scratch feel like a
+/// scratch. The floor is what keeps a one-point tick from being instant.
+const ROLL_RATE: f32 = 0.55;
+const ROLL_FLOOR: f32 = 0.08;
 
 /// The stroke's inner and outer radius as a fraction of the mesh — mirrored from
 /// `feet_ring.wgsl`, which cuts the annulus, and held against it by test. The Rust side needs
@@ -99,8 +109,13 @@ pub(crate) struct CombatantRing {
     pub(crate) hit: f32,
     /// What is left of the beat the red bed stays open for before it starts closing.
     pub(crate) hold: f32,
-    /// How hard the pool is rocking, 1 at the shove and fading from there.
-    pub(crate) slosh: f32,
+    /// Which way the level is going and how hard: **positive while draining**, negative while
+    /// filling, decaying to nothing once it settles. It is what the surface waves ride.
+    pub(crate) flow: f32,
+    /// The level being SHOWN, rolling toward the real one. A second blow during the roll only
+    /// moves the target, so the meter carries straight on from wherever it had got to rather
+    /// than restarting — which is the whole reason the roll is a state and not an animation.
+    pub(crate) shown: f32,
 }
 
 /// The ring's RIM colour for a combatant: the same side reading the turn-order bar uses, so a
@@ -127,6 +142,15 @@ pub(crate) fn barrier_fill(c: &CombatantView) -> f32 {
 /// A combatant's health as a fraction, clamped — the one number the ring draws.
 pub(crate) fn hp_fill(c: &CombatantView) -> f32 {
     (c.hp as f32 / c.max_hp.max(1) as f32).clamp(0.0, 1.0)
+}
+
+/// The HP a rolling ring is currently SHOWING, as a whole number. It is what the digits in the
+/// stroke read, so the number and the bar can never disagree about how far through a roll they
+/// are — and a body still standing never reads 0 mid-roll, since the last point is exactly the
+/// one the player is watching.
+pub(crate) fn shown_hp(shown: f32, c: &CombatantView) -> i32 {
+    let v = (shown * c.max_hp as f32).round() as i32;
+    if c.hp > 0 { v.max(1) } else { v.max(0) }
 }
 
 /// Close the red bed toward the pool standing in it, after holding it open. Returns the new
@@ -227,7 +251,8 @@ pub(crate) fn spawn_ring(
             heal: 0.0,
             hit: 0.0,
             hold: 0.0,
-            slosh: 0.0,
+            flow: 0.0,
+            shown: fill,
         },
         Mesh3d(mesh),
         MeshMaterial3d(mat),
@@ -295,29 +320,49 @@ pub(crate) fn drive_rings(
         if *vis != want {
             *vis = want;
         }
-        let fill = hp_fill(c);
+        let target = hp_fill(c);
         // A HEAL AND A HIT ARE THE SAME WIRE FIELD MOVING IN OPPOSITE DIRECTIONS. Nothing on
         // `CombatantView` says which one happened, so the level's own direction is the event.
-        if fill > ring.last + 0.001 {
+        if target > ring.last + 0.001 {
             ring.heal = 1.0;
-        } else if fill < ring.last - 0.001 {
+        } else if target < ring.last - 0.001 {
             ring.hit = 1.0;
             ring.hold = GHOST_HOLD;
         }
-        ring.last = fill;
-        if shoved.as_deref() == Some(ring.id.as_str()) {
-            ring.slosh = 1.0;
-        }
+        ring.last = target;
+        // …and the SHOWN level rolls toward it. Everything below reads `fill`, so the bar, the
+        // bed, the waves and the number are all one moving quantity rather than four things
+        // that have to be kept in step.
+        let step = (ROLL_RATE * (target - ring.shown).abs()).max(ROLL_FLOOR) * dt;
+        ring.shown = if (target - ring.shown).abs() <= step {
+            target
+        } else {
+            ring.shown + (target - ring.shown).signum() * step
+        };
+        let fill = ring.shown;
         ring.heal = fade(ring.heal, dt);
         ring.hit = fade(ring.hit, dt);
-        ring.slosh = (ring.slosh - SLOSH_FADE * dt).max(0.0);
+        // The surface runs while the level does. A shove from the command wheel opening counts
+        // too: the ring is physically pushed then, and a pool that ignored that would be the
+        // one moment the bar stopped behaving like liquid.
+        // The surface runs while the SHOWN level is still moving — which is the whole roll,
+        // not just the frame the wire changed on.
+        if fill > target + 0.0005 || shoved.as_deref() == Some(ring.id.as_str()) {
+            ring.flow = 1.0;
+        } else if fill < target - 0.0005 {
+            ring.flow = -1.0;
+        }
+        ring.flow -= ring.flow.signum() * FLOW_FADE * dt;
+        if ring.flow.abs() < 0.02 {
+            ring.flow = 0.0;
+        }
         let (ghost, hold) = chase_ghost(ring.ghost, fill, ring.hold, dt);
         ring.ghost = ghost;
         ring.hold = hold;
         let active = battle.active.as_deref() == Some(ring.id.as_str());
         let Some(mut mat) = rings.get_mut(&ring.mat) else { continue };
         mat.params = Vec4::new(fill, ring.ghost, t, if active { 1.0 } else { 0.0 });
-        mat.pulse = Vec4::new(ring.heal, ring.hit, barrier_fill(c), ring.slosh);
+        mat.pulse = Vec4::new(ring.heal, ring.hit, barrier_fill(c), ring.flow);
     }
 }
 
@@ -455,5 +500,48 @@ mod tests {
     fn a_body_the_camera_cannot_see_writes_nothing() {
         assert!(arc_text(5, 8.0, |_| None).is_empty());
         assert_eq!(arc_scale(|_| Some(Vec2::ZERO)), None, "a ring with no size is not a ring");
+    }
+
+    /// **THE METER ROLLS, AND A SECOND BLOW ONLY MOVES THE TARGET.** A bar that jumps has
+    /// finished telling you what happened before you look at it; and a roll that RESTARTED on
+    /// the next hit would lose the ground it had already counted, which is the one thing
+    /// EarthBound's meter never does.
+    #[test]
+    fn the_meter_rolls_and_a_second_blow_carries_on_from_here() {
+        let step = |shown: f32, target: f32, dt: f32| {
+            let s = (ROLL_RATE * (target - shown).abs()).max(ROLL_FLOOR) * dt;
+            if (target - shown).abs() <= s { target } else { shown + (target - shown).signum() * s }
+        };
+        // It does not arrive in one frame…
+        let after = step(1.0, 0.4, 1.0 / 60.0);
+        assert!(after < 1.0 && after > 0.4, "the meter snapped: {after}");
+        // …it does arrive.
+        let mut v = 1.0;
+        for _ in 0..600 {
+            v = step(v, 0.4, 1.0 / 60.0);
+        }
+        assert!((v - 0.4).abs() < 1e-5, "the roll never landed: {v}");
+        // A second blow part-way through carries on from where it had got to.
+        let mut v = 1.0;
+        for _ in 0..12 {
+            v = step(v, 0.6, 1.0 / 60.0);
+        }
+        let mid = v;
+        assert!(mid < 1.0 && mid > 0.6);
+        let next = step(mid, 0.2, 1.0 / 60.0);
+        assert!(next < mid, "the roll went backwards on a second hit");
+        assert!(next > 0.2, "the roll teleported to the new target");
+        // …and it rolls up as readily as down.
+        assert!(step(0.3, 0.9, 1.0 / 60.0) > 0.3, "a heal does not roll");
+    }
+
+    /// The digits read the SHOWN level, and a body still standing never shows zero mid-roll.
+    #[test]
+    fn the_number_is_whatever_the_bar_is_showing() {
+        let c = cv("a", true, 40, 100);
+        assert_eq!(shown_hp(0.4, &c), 40);
+        assert_eq!(shown_hp(1.0, &c), 100);
+        assert_eq!(shown_hp(0.001, &c), 1, "a standing body read as dead mid-roll");
+        assert_eq!(shown_hp(0.0, &cv("a", true, 0, 100)), 0, "a fallen body must reach zero");
     }
 }

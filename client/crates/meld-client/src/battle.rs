@@ -1252,8 +1252,14 @@ pub(crate) fn battle_camera(
         // Flat battle stage (actors are no longer terrain-lifted), so the framing is at a
         // fixed Y — no `terrain_height` offset, which (seeded per run) would frame empty
         // sky or ground.
-        *t = Transform::from_translation(Vec3::new(0.0, 8.6, 11.2) * dist)
-            .looking_at(Vec3::new(0.0, 0.9, -1.6), Vec3::Y);
+        // ⚠️ **THE PARTY SITS OFF THE BOTTOM EDGE, AND THE COMMAND WHEEL NEEDS THAT ROOM.**
+        // Aiming at z = -1.6 put the creatures near the middle of the frame and the party's
+        // feet 20-110px from the bottom — fine while nothing was drawn on the ground around a
+        // hero, and impossible once a wheel is, since a ground ring centred on a body has a
+        // FRONT and the front had nowhere to go. Aiming nearer the party lifts the whole
+        // formation; the extra height and distance keep the creature line in frame.
+        *t = Transform::from_translation(Vec3::new(0.0, 9.4, 12.1) * dist)
+            .looking_at(Vec3::new(0.0, 0.9, 0.4), Vec3::Y);
         // A HEAVY BLOW MOVES THE WHOLE FRAME. Applied AFTER `looking_at` and to the
         // translation only, so the camera is displaced rather than re-aimed — rotating it
         // swings the whole arena and reads as the world moving, not as an impact.
@@ -2782,7 +2788,16 @@ pub(crate) fn render_ring_labels(
                 // arena gets a number in proportion to the bar it is written on instead of a
                 // fixed one that swallows it.
                 let fs = (px_per_rad * 0.185).clamp(10.0, 21.0);
-                let label = format!("{}/{}", c.hp, c.max_hp);
+                // ⚠️ **THE NUMBER IS WHAT THE BAR IS SHOWING, NOT WHAT THE WIRE SAYS.** The
+                // meter rolls (EarthBound's), so reading `c.hp` here would have the digits
+                // land on the new value while the liquid behind them was still counting down
+                // to it — two readouts of one fact disagreeing for the whole of every hit.
+                let shown = rings
+                    .iter()
+                    .find(|(r, _)| r.id == c.id)
+                    .map(|(r, _)| battle_rings::shown_hp(r.shown, c))
+                    .unwrap_or(c.hp);
+                let label = format!("{}/{}", shown, c.max_hp);
                 let is_target = focus.as_deref() == Some(c.id.as_str());
                 let mine = battle.your_ids.contains(&c.id);
                 let commanding_name = battle.hero_label(&c.id);
