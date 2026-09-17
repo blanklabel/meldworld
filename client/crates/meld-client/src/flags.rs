@@ -212,6 +212,17 @@ pub(crate) fn battle_opening_flag() -> Option<String> {
     std::env::var("MELD_OPENING").ok().filter(|s| !s.is_empty())
 }
 
+/// Force a kind of weather on, for a capture. `MELD_WEATHER=rain|storm|snow|ash`.
+///
+/// Whether it is raining is a pure function of `(world_seed, world tick)` (`FS-5`), so a
+/// session either walks into a storm or does not — measured, a fresh mire world sat at
+/// `weather = 0` for as long as anyone watched. The weather is the one effect in the game
+/// that cannot be reached by standing somewhere, and `storm` also forces the SUPER storm,
+/// which is what the lightning is gated on.
+pub(crate) fn weather_mock_flag() -> Option<String> {
+    std::env::var("MELD_WEATHER").ok().filter(|s| !s.is_empty())
+}
+
 /// Land a Shift on a loop, for a capture. `MELD_SHIFT=<biome>` (or `1` for a default).
 ///
 /// The same argument as [`battle_fx_flag`], at world scale and worse: a Shift is scheduled

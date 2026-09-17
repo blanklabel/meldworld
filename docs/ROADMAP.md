@@ -5778,6 +5778,39 @@ only the things that can't be class-gated.
     half of the ground and the effect drew across the bottom of the screen only. That reads
     exactly like a broken effect and was a broken FIXTURE.
 
+- [x] **UX-25 — The weather covers what you can see.** Rain, snow, ashfall and the drifting
+  motes were each a few hundred mesh entities whose `Transform` was rewritten every frame —
+  and each was confined to a volume sized for a much tighter camera than this game uses:
+  **rain 18 units, snow and ash 34, motes 62, against ~200 units of ground on screen.**
+  Reported from play as the weather only covering a small part of the screen, which is
+  exactly what it was doing; rain's own comment called the disc deliberate ("so the shower
+  tracks the cloud rather than filling the screen"), and that reads as a bug at this camera.
+  - ⚠️ **The fix is not a bigger number of nodes.** Holding the old density over the ground a
+    player can see needs ~31,000 drops against the 460 the CPU path could afford — the same
+    wall the turn bar's fire hit at forty ember nodes per fighter. They are `bevy_hanabi`
+    emitters now, spawning on a disc ABOVE the camera and falling through the view.
+  - ⚠️ **The emitters follow the camera and the particles do NOT.** `SimulationSpace::Global`
+    detaches a particle from its emitter as it spawns, so the spawn volume tracks the view
+    while the snow already falling stays where it was. Simulated locally, a turn of the
+    camera would drag the whole snowfall around with it.
+  - ⚠️ **Falling weather hangs off the camera; the motes stand on the GROUND.** Rain, snow and
+    ash are born above the camera's own y and fall past it, which keeps them out of the
+    terrain on raised ground. Fireflies are the opposite case and hanging them off the
+    camera's y put them fourteen units up, hovering above the treeline.
+  - ⚠️ **A GPU particle cannot light anything**, and a firefly that throws no light is a
+    yellow dot. The motes are particles and the glow is `FIREFLY_LAMPS` real `PointLight`s
+    drifting among them — few, short-range and never casters, because this scene has already
+    overflowed the GPU cluster index list once and a shadowed point light is six scene passes
+    a frame. They are lit by NIGHT, not by the clock alone.
+  - **A night super-storm throws LIGHTNING** — only the storm that covers the whole area,
+    and only after dark, because a flash that lights nothing up is a white rectangle. The
+    strike is two beats, the stroke and its echo: one clean fade reads as the screen fading
+    to white.
+  - `MELD_WEATHER=rain|storm|snow|ash` forces a kind on. Whether it is raining is a pure
+    function of `(world_seed, world tick)` (`FS-5`), so a session either walks into a storm or
+    does not — measured, a fresh mire world sat at `weather = 0` for as long as anyone
+    watched, and the weather is the one effect that cannot be reached by standing somewhere.
+
 - [ ] **UX-1 — Last City minimap & compass (town-only).** A minimap and compass
   **for Last City itself** so players can navigate the hub — locate the districts
   (Vault-Deep, Market, Forge/Alembic, Bounty Board, Drill Yard, Vanguard Wall),

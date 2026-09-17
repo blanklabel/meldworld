@@ -56,6 +56,7 @@ mod turn_order; // the charging line across the top of a fight: who goes next, b
 mod tutorial; // onboarding: the town welcome tour + the first-dive briefing
 mod tutorial_predive; // the [T] guided dive's own pre-dive welcome + 4-class picker
 mod world_render; // asset load + scene setup, biome ground, sky/weather/water
+mod weather_fx; // rain, snow, ashfall and fireflies as GPU particles sized to the view
 mod world_fx; // the world's own big moments as particles: the Shift's debris
 pub(crate) use battle::*;
 pub(crate) use city::*;
@@ -353,6 +354,7 @@ fn main() {
         .insert_resource(bevy::light::PointLightShadowMap { size: 512 })
         .init_resource::<battle_fx::BattleFx>()
         .init_resource::<world_fx::WorldFx>()
+        .init_resource::<weather_fx::Lightning>()
         .init_resource::<builder::BuildMode>()
         .init_resource::<hd2d::Look>()
         .init_resource::<hd2d::LookWatch>()
@@ -447,7 +449,7 @@ fn main() {
         .init_resource::<GearHold>()
         .add_systems(
             Startup,
-            (setup, load_ui_font, apply_class_flag, mock_battle_setup, mock_overlay_setup, ambient::setup_ambient, music::setup_music, minimap::setup, battle_fx::init_death_burst, battle_fx::init_hit_sparks, world_fx::init_shift_dust),
+            (setup, load_ui_font, apply_class_flag, mock_battle_setup, mock_overlay_setup, ambient::setup_ambient, music::setup_music, minimap::setup, battle_fx::init_death_burst, battle_fx::init_hit_sparks, world_fx::init_shift_dust, weather_fx::init_weather_fx),
         )
         // run in every state: net pump, demo autopilot, the HD-2D file channel
         // (hot-reload look params + honour screenshot requests), cloud drift, and
@@ -459,12 +461,11 @@ fn main() {
                 demo_driver,
                 hd2d_remote,
                 hd2d::billboard_shadow_policy,
-                (world_render::anchor_sky_dome, world_render::drive_snow),
+                (world_render::anchor_sky_dome,),
                 drift_clouds,
                 tile_ground_detail,
                 follow_world_ground,
                 update_ground_biome_rings,
-                drift_motes,
                 drive_ashfall,
                 anchor_backdrop,
                 advance_sky,
@@ -694,7 +695,14 @@ fn main() {
         // the queue was drained on the wrong screen is a Shift that happened to nobody.
         .add_systems(
             Update,
-            (world_fx::spawn_shift_dust, world_fx::advance_shift_dust, mocks::mock_shift),
+            (
+                world_fx::spawn_shift_dust,
+                world_fx::advance_shift_dust,
+                mocks::mock_shift,
+                weather_fx::drive_weather_fx,
+                weather_fx::drive_firefly_lamps,
+                weather_fx::drive_lightning,
+            ),
         )
         .add_systems(
             Update,
