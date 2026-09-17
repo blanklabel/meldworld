@@ -32,7 +32,7 @@ struct WheelParams {
     // One colour per wedge, in wedge order: what each verb IS. ⚠️ Declaration order is the ABI
     // (`AsBindGroup` packs one `#[uniform(100)]` block in order), so this sits exactly where
     // the Rust puts it.
-    hues: array<vec4<f32>, 5>,
+    hues: array<vec4<f32>, 6>,
 
     // ⚠️ **THE ORDER OF THESE FIELDS IS THE ABI.** `AsBindGroup` packs one `#[uniform(100)]`
     // struct in DECLARATION order, so a field added here in a different place than in the Rust
@@ -46,7 +46,7 @@ const TAU: f32 = 6.2831853;
 // The band the wedges occupy, as a fraction of the mesh radius. Thick, because a wedge has to
 // hold an icon over a word — a thin one is a pie chart with writing on it.
 // ⚠️ `battle_radial::W_IN`/`W_OUT` mirror these; a test reads them back out of this file.
-const W_IN: f32 = 0.52;
+const W_IN: f32 = 0.46;
 const W_OUT: f32 = 0.97;
 // Half the gap between two wedges, in turns. It is what makes them read as separate choices
 // rather than as one ring with text on it.
@@ -68,8 +68,16 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     // lands on and the layout never depends on where the body happens to be standing.
     let a = fract(atan2(p.x, p.y) / TAU + 1.0 - bearing);
 
-    // Which wedge this pixel is in, and how far across it.
+    // Which sector this pixel is in, and how far across it.
     let slot = floor(a * count);
+    // ⚠️ **SECTOR 0 IS A HOLE, ON PURPOSE, AND IT FACES THE ENEMY.** The ring carries one more
+    // sector than it has verbs and the spare one is centred on the FAR arc, so nothing stands
+    // between the hero and the creatures it is being pointed at. Putting it on the near arc
+    // instead — the first cut — spends the widest, closest part of the wheel on nothing and
+    // leaves the buttons stacked over the half you are looking through to read the fight.
+    if (slot < 0.5) {
+        discard;
+    }
     let across = fract(a * count);
     // The gap, cut from both ends of every wedge.
     let edge = min(across, 1.0 - across);

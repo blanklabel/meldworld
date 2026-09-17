@@ -1038,6 +1038,40 @@ it grew out of — at the first scale that left the ring as a green thread under
 Nesting it INSIDE the ring the way the reference art does is impossible here: that caps an
 inner wheel at ~73px of screen radius for five words.
 
+**THE RING HAS A HOLE IN IT, AND THE HOLE FACES THE ENEMY.** It carries one more sector than it
+has verbs and the spare one is centred on the FAR arc, so nothing stands between the hero and
+the creatures it is being pointed at. ⚠️ The first cut put the hole on the NEAR arc and that was
+backwards twice over: the near arc is the half you look THROUGH to read the fight, and it is
+where the wheel is widest on screen, so it is at once the worst place to spend on nothing and
+the best place to put buttons. ⚠️ **And the hole is what lets every bearing rule hold at once** —
+with it at the front, FLEE could not also be due south and the rules genuinely fought; with it
+at the back the sector opposite is due south, so **Flee is south, Attack and Skill flank the
+hole facing the enemy line, and Item and Defend take the flanks**. A layout in which every
+stated rule is satisfiable is the tell that the hole is on the right side.
+⚠️ **TWO ORIGINS MEET IN `slot_turns` AND THEY ARE HALF A TURN APART**: sectors are numbered
+from the GAP (far arc) while `wheel_point` measures from the NEAR arc. Forgetting the half turn
+put FLEE exactly in the hole — the one sector nothing is drawn in.
+⚠️ **THE DISC MUST NOT CAST A SHADOW.** The mesh is a full circle and the wedges are cut out in
+the fragment stage — but a shadow is rasterised from the GEOMETRY, not from what the shader kept,
+so the sun threw a solid disc on the ground and everything the material discards (the hub the
+hero stands in, the seams, the gap) came back as a dark ellipse underneath. Reported as the
+missing spot "not being transparent", which is exactly what it was: transparent, over its own
+shadow. `NotShadowCaster`.
+
+**AND THE WEDGES CARRY ICONS, NOT WORDS.** A sector seen in perspective is a different shape at
+every bearing and every camera distance, and a six-character word is the thing that will not fit
+the narrow ones — DEFEND ran over the hero standing beside the wheel, and each attempt to make
+it fit was a smaller word in a shape that was still wrong. An icon is one glyph: it fits any
+sector at any zoom by construction. What the highlighted verb IS is said once, in full, in the
+CAPTION above the wheel, where there is room for a sentence.
+⚠️ **AND THE GLYPH IS SIZED FROM ITS SECTOR EVERY FRAME, WITH NO FLOOR.** Reported from play:
+*"when I scale out or scale in with the camera, the text moves."* It did, and it had to — a
+label is a screen-space node laid over a world-space shape, so unless its size tracks the
+projection the two diverge the moment the camera moves, and a floor makes that certain (past the
+zoom where the clamp bites, the sector keeps shrinking and the glyph does not). The HIT BOX
+keeps its minimum, because a target too small to click is the one failure this menu may not
+have — it is invisible, so it may diverge where a glyph may not.
+
 ⚠️ **AND THE WORD IS SIZED AND PLACED BY THE WEDGE, NOT BY A CONSTANT.** The wheel lies on the
 GROUND, so its five sectors are five different shapes on screen — the near and far ones face the
 camera, the side ones are nearly edge-on at a fraction of the width. Three consequences, all of
@@ -1057,6 +1091,12 @@ scratched into the dirt rather than printed on a face.
 only an icon, a word and a hit box, and both the cursor and the hover are drawn by the shader.
 A rectangle lit on top of a sector is what made the tiles read as five plates parked near a
 hero, which is the one thing the wheel exists not to be.
+⚠️ **EVERY LABEL READS LEFT TO RIGHT.** They used to take a share of the arc's tangent so they
+would "belong to the curve", damped and capped because following it fully stands the side
+wedges on their ends. It was wrong at any strength: on a wheel you do not read round, you read
+the wedge you are pointing at — and a tilted word is also the thing that leaves a sector through
+its corners, so the whole class of overhang went with the tilt.
+
 ⚠️ **AND THE ARROWS ARE NOT A D-PAD ANY MORE.** The cross mapped `ArrowDown` to FLEE and
 `ArrowRight` to DEFEND — the hazard `swallow_the_key_you_walked_in_on` exists to catch. ←/→
 run the cursor round the wheel (it WRAPS; a wheel has no ends), Enter picks, every wedge
