@@ -5652,6 +5652,32 @@ only the things that can't be class-gated.
     order, so the shader read one member's bytes as another's — a wedge in completely the wrong
     colour, no error anywhere. The field order of that struct is an ABI.
 
+- [x] **CL-4 — Regen belongs to the mender, and an aura wears the pose of the body under
+  it.** Two reports, one shape: a thing that is supposed to belong to one class or one body
+  leaking onto everything around it.
+  - *Everyone started the fight with regen whenever a Resonant was in the party.* The
+    "Blood and Balm" SYNERGY (Resonant + Hunter) granted `PartyRegen` to **every** hero at
+    the bell — which is why it read as *occasional*: it fired only when a Hunter happened to
+    stand beside her. That undid three rules at once: the Resonant is the only class with an
+    innate regen, deepening it (`mender_regen`) is the only twist nobody else can spend, and
+    its walking regen out on the overworld already tends only Resonants. The effect is
+    `MenderRegen` now and lands on Resonants alone — the pairing deepens the mender rather
+    than handing her row to people who did not train for it.
+  - ⚠️ **The overworld half was already correct and must stay as it is.** `pour_regen` takes
+    the Resonant-only slot list for the walking regen; the second, party-wide call is the
+    KEEPER's alembic field, which is deliberately everyone's because a field is a PLACE you
+    choose to stand.
+  - *An aura faced the camera while the body faced away.* A condition rim is a tinted COPY
+    of the sprite, and its texture was cloned once when the condition landed — so it froze
+    on whichever frame the body was on and never turned again. The body kept walking and
+    turning underneath a silhouette that did not.
+  - The rim's material is handed to `CharSprite::rim` and written by `hd2d::animate_chars`
+    **in the same breath as the base frame**, exactly as `emissive_texture` is. Mirroring it
+    from the system that owns the rim instead is a system in a different tuple with no
+    ordering against the animator — which is the judder that note already records. Its
+    staleness is checked on the rim's OWN material, because a rim spawned mid-walk starts on
+    a stale pose while the body's material is already correct.
+
 - [ ] **UX-1 — Last City minimap & compass (town-only).** A minimap and compass
   **for Last City itself** so players can navigate the hub — locate the districts
   (Vault-Deep, Market, Forge/Alembic, Bounty Board, Drill Yard, Vanguard Wall),

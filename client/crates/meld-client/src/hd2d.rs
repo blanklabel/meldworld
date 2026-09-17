@@ -837,6 +837,19 @@ pub fn load_creature_clips(
 pub struct CharSprite {
     pub frames: CharacterFrames,
     pub mat: Handle<StandardMaterial>,
+    /// A CONDITION RIM's material, while this body is wearing one.
+    ///
+    /// ⚠️ **It is written here, in the same breath as the base frame, for the reason the
+    /// emissive layer below is.** The rim is a tinted COPY of the sprite drawn a little
+    /// larger and a hair behind, so it has to show the same pose — and its texture is a
+    /// clone taken when the condition landed, which freezes it on whichever frame the body
+    /// happened to be on. The body then walks and turns underneath a silhouette that does
+    /// not, so a hero facing away from the camera wears an aura facing the camera.
+    ///
+    /// Mirroring it from the system that OWNS the rim instead means a system in a different
+    /// tuple with no ordering against this one, which is the judder `emissive_texture`
+    /// already records. Set together, the pose can never be half-applied.
+    pub rim: Option<Handle<StandardMaterial>>,
     pub timer: Timer,
     pub frame: usize,
     pub facing: Vec2, // world-space heading (xz) the character faces
@@ -877,6 +890,7 @@ impl CharSprite {
         CharSprite {
             frames,
             mat,
+            rim: None,
             timer: Timer::from_seconds(0.1, TimerMode::Repeating),
             frame: 0,
             facing: Vec2::new(0.0, 1.0), // world south (+Z) — faces a yaw-0 camera
@@ -998,6 +1012,20 @@ pub fn animate_chars(
         let moved = mats.get(&cs.mat).is_some_and(|m| {
             m.base_color_texture.as_ref() != Some(&tex) || m.emissive_texture.as_ref() != Some(&tex)
         });
+        // A condition rim is a copy of this sprite, so it wears this frame too — and it is
+        // checked on its OWN material, because a rim spawned mid-walk starts on a stale
+        // pose while the body's material is already correct and `moved` is false.
+        let rim_moved = cs.rim.as_ref().is_some_and(|h| {
+            mats.get(h).is_some_and(|m| m.base_color_texture.as_ref() != Some(&tex))
+        });
+        if !moved && !rim_moved {
+            continue;
+        }
+        if rim_moved {
+            if let Some(mut m) = cs.rim.as_ref().and_then(|h| mats.get_mut(h)) {
+                m.base_color_texture = Some(tex.clone());
+            }
+        }
         if !moved {
             continue;
         }

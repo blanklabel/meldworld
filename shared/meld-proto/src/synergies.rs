@@ -118,8 +118,20 @@ pub fn combo_from_primer(status: &str) -> Option<&'static ComboDef> {
 pub enum SynergyEffect {
     /// Every hero starts the fight holding this much Barrier.
     PartyBarrier,
-    /// Every hero gains this much Regen.
-    PartyRegen,
+    /// The party's RESONANTS regenerate harder — nobody else.
+    ///
+    /// ⚠️ **It is not party-wide, and the name it replaces said it was.** Regen is the
+    /// Resonant's own thing: it is the only class with an innate one, deepening it is the
+    /// only twist nobody else can spend (`mender_regen`), and its walking regen out on the
+    /// overworld already tends only Resonants. A synergy that handed every hero a free
+    /// regen at the bell undid all three at once — reported from play as everyone starting
+    /// a fight with regen whenever a Resonant was in the party, which is precisely what it
+    /// did whenever a Hunter stood beside her.
+    ///
+    /// The rule it answers to is the one this file's `PartyBarrier` note already states: a
+    /// free synergy must be worth less than a spent turn. Regen on somebody who is not a
+    /// mender is not worth less than the mender's own row — it is that row, for free.
+    MenderRegen,
     /// Back-row heroes gain this much Evasion (percentage points).
     BackRowEvasion,
 }
@@ -149,8 +161,8 @@ pub const SYNERGIES: &[SynergyDef] = &[
         name: "Blood and Balm",
         a: CharacterClass::Resonant,
         b: CharacterClass::Hunter,
-        effect: SynergyEffect::PartyRegen,
-        description: "A kit that pays in blood pairs with one that gives it back.",
+        effect: SynergyEffect::MenderRegen,
+        description: "A kit that pays in blood keeps the mender's hands full, and she works the harder for it.",
     },
     SynergyDef {
         key: "covering_blink",
