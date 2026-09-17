@@ -5602,6 +5602,26 @@ only the things that can't be class-gated.
     reason `MELD_FX` tours the casts: the two things the ring exists to show are the two a
     still frame cannot otherwise contain.
 
+- [x] **CN-9 — The opening beat says who everybody is.** Reported from play as the first
+  couple of seconds of a fight showing nothing but Explorer sprites — and *a couple of
+  seconds* is `[battle] open_grace_ms` exactly, which is the whole tell.
+  - The server broadcasts a `battle.gauge_update` every tick whether or not the engine
+    returned any events, and that message serializes `Battle::gauge_views`, which reads each
+    fighter's `statuses_cache`. The refresh that fills that cache sat at the END of `tick`,
+    past the grace's early return — so for the entire opening beat the cache stayed the
+    **empty vector every `Fighter` is born with**.
+  - **An empty status list is not "no news" on the far side.** The client assigns it
+    wholesale (`c.statuses = statuses`), so every combatant lost its `class:`, its
+    `row:back`, its barrier, its pack role and its attributes at once. `spawn_hero_actor`
+    falls back to the default class when `class:` is absent, so the arena opened as a line
+    of Explorers and corrected itself the instant the grace ended and real statuses flowed.
+  - `refresh_all_wire_statuses` is called on **every** path out of `tick` now. The
+    per-fighter signature check makes it a no-op unless something moved, which is what makes
+    it safe to call on a path where by definition nothing has.
+  - ⚠️ The regression test asserts the PAYLOAD a session would receive during the grace
+    rather than the engine's own struct — the same reason `the_blow_tells_the_client_what_it
+    _was_made_of` does. Without the fix it fails with `[]`, which is the bug stated exactly.
+
 - [ ] **UX-1 — Last City minimap & compass (town-only).** A minimap and compass
   **for Last City itself** so players can navigate the hub — locate the districts
   (Vault-Deep, Market, Forge/Alembic, Bounty Board, Drill Yard, Vanguard Wall),
