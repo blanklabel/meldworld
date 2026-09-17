@@ -248,6 +248,12 @@ pub(crate) struct BattleFx {
     /// first. Held as an impulse the loudest blow wins rather than a sum, so a five-target
     /// sweep resolving on one frame shakes once instead of five times as hard.
     pub(crate) shake: f32,
+    /// Bodies that fell this frame, drained by [`spawn_death_bursts`].
+    ///
+    /// Queued rather than spawned at the wire, for the same reason `queue` is: the handler
+    /// runs off an incoming message and has no access to the arena's transforms, and a
+    /// death has to be drawn where the BODY is.
+    pub(crate) deaths: Vec<String>,
     /// ONE unit quad, shared by every burst ever spawned, sized through the transform.
     ///
     /// A `Rectangle::new(scale, scale)` per burst allocates a mesh asset per target per
@@ -593,6 +599,9 @@ pub(crate) fn react_to_conditions(
 /// first thing the NEXT fight showed — over whichever combatant happened to reuse the id.
 pub(crate) fn reset_battle_fx(mut fx: ResMut<BattleFx>) {
     fx.queue.clear();
+    // A death queued on the frame the fight ended would otherwise be the first thing the
+    // NEXT fight drew, over a body that is not there — the same trap as `queue` above.
+    fx.deaths.clear();
     fx.seed = 0;
     // A shake left running would follow the camera onto the overworld, where nothing is
     // hitting anybody.
@@ -604,6 +613,38 @@ pub(crate) fn reset_battle_fx(mut fx: ResMut<BattleFx>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn view(id: &str, is_player: bool) -> meld_client::net::CombatantView {
+        meld_client::net::CombatantView {
+            id: id.into(),
+            name: id.into(),
+            hp: 0,
+            max_hp: 10,
+            level: 1,
+            gauge: 0.0,
+            is_player,
+            player_id: None,
+            statuses: Vec::new(),
+        }
+    }
+
+    /// **A FELLED CREATURE EARNS A BURST, AND A FALLEN HERO DOES NOT.** The arena stops
+    /// drawing a body the moment `hp > 0` goes false, so without this the thing you have
+    /// been hitting is replaced by nothing between two frames. Showering your own party in
+    /// ash for the same event reads as a loss rather than as a setback.
+    #[test]
+    fn a_felled_enemy_earns_a_burst_and_a_fallen_hero_does_not() {
+        let roster = vec![view("m1", false), view("h1", true)];
+        assert!(is_enemy_death("ko", "m1", &roster), "a felled creature drew nothing");
+        assert!(!is_enemy_death("ko", "h1", &roster), "a fallen hero showered the party in ash");
+        // …and only a KO. Every blow that merely HURT something must not fire it, or a
+        // fight is one long cloud of ash.
+        assert!(!is_enemy_death("damage", "m1", &roster));
+        assert!(!is_enemy_death("heal", "m1", &roster));
+        // A body the client has no view of yet (a reinforcement arriving mid-frame) is not
+        // assumed to be an enemy — the burst would be drawn at the origin.
+        assert!(!is_enemy_death("ko", "nobody", &roster));
+    }
 
     /// **Every damage type draws something.** `element_of` is a total match, so the
     /// compiler holds that every type has an entry — this pins the half it cannot: that
@@ -791,5 +832,200 @@ mod tests {
         fx.queue.clear();
         fx.seed = 0;
         assert!(fx.queue.is_empty());
+    }
+}
+
+// ---------------------------------------------------------- death bursts ---
+
+/// **A FELLED CREATURE COMES APART.** One GPU particle burst, at the body that just fell.
+///
+/// The fourth tier, and the only one that is not a quad: a body that simply stops being
+/// drawn is the one moment in a fight with no feedback at all — the thing you have been
+/// hitting is replaced by nothing between two frames, and the KO! number is the only
+/// evidence it was ever there. `bevy_hanabi` runs the simulation on the GPU, so a pack of
+/// five going down at once costs a handful of draw calls rather than hundreds of entities.
+///
+/// ⚠️ **ONE ASSET FOR EVERY DEATH, tinted per burst.** The same argument the impact shader
+/// makes for its `kind` uniform: an `EffectAsset` per creature kind is a pipeline per
+/// creature kind, compiled the first time each one dies — a hitch in the middle of a fight,
+/// once per species, forever. The burst takes the body's own colour through
+/// [`DeathBurst::tint`] instead.
+#[derive(Resource)]
+pub(crate) struct DeathBurst {
+    pub(crate) effect: Handle<bevy_hanabi::EffectAsset>,
+}
+
+/// How long a spent burst lingers before its entity is despawned.
+///
+/// ⚠️ A ONE-SHOT EFFECT DOES NOT CLEAN ITSELF UP. `SpawnerSettings::once` emits a single
+/// burst and then sits there, so without this every creature felled in a fight leaves an
+/// idle effect entity behind for the rest of it — `BattleFxRoot` only collects them when
+/// the whole fight ends. It is the particle LIFETIME plus a beat, so nothing is cut off
+/// mid-fade.
+const DEATH_BURST_TTL: f32 = 1.6;
+
+/// A spent burst, aged by [`advance_death_bursts`].
+#[derive(Component)]
+pub(crate) struct DeathBurstTtl(pub(crate) f32);
+
+/// Build the one death effect. Registered at startup, so the pipeline is compiled before
+/// anything dies rather than on the frame something does.
+pub(crate) fn init_death_burst(
+    mut commands: Commands,
+    mut effects: ResMut<Assets<bevy_hanabi::EffectAsset>>,
+) {
+    use bevy_hanabi::*;
+
+    let writer = ExprWriter::new();
+
+    // Start scattered through the body's own volume rather than at a point: the motes are
+    // what the creature was made of, so they come apart from where it stood.
+    let init_pos = SetPositionSphereModifier {
+        center: writer.lit(Vec3::Y * 0.9).expr(),
+        radius: writer.lit(0.55).expr(),
+        dimension: ShapeDimension::Volume,
+    };
+    // Outward and mostly gentle — this is a body falling apart, not an explosion. The
+    // upward bias is what keeps it from reading as the sprite sinking through the floor.
+    let init_vel = SetVelocitySphereModifier {
+        center: writer.lit(Vec3::Y * 0.6).expr(),
+        speed: writer.lit(1.1).uniform(writer.lit(2.6)).expr(),
+    };
+    let lifetime = writer.lit(0.7).uniform(writer.lit(1.25)).expr();
+    let init_lifetime = SetAttributeModifier::new(Attribute::LIFETIME, lifetime);
+    let init_age = SetAttributeModifier::new(Attribute::AGE, writer.lit(0.).expr());
+    // Gravity, so the motes arc and fall. Without it they drift outward forever and read
+    // as a puff of smoke rather than as something coming apart.
+    let accel = AccelModifier::new(writer.lit(Vec3::Y * -6.5).expr());
+    // Drag, so the outward throw dies away and the fall dominates the second half.
+    let drag = LinearDragModifier::new(writer.lit(2.4).expr());
+
+    // **THE BODY'S OWN COLOUR, PER BURST, FROM ONE ASSET.** A property rather than a
+    // second `EffectAsset`: an asset per creature kind is a pipeline per creature kind,
+    // compiled the first time each one dies. `spawn_death_bursts` writes it through
+    // `EffectProperties` on the spawned entity.
+    let tint = writer.add_property("tint", Value::Vector(Vec3::ONE.into()));
+    let tint = writer.prop(tint);
+    // Each mote takes the colour at birth, so the gradient below only carries the FADE.
+    let init_colour = SetAttributeModifier::new(
+        Attribute::COLOR,
+        tint.vec4_xyz_w(writer.lit(1.)).pack4x8unorm().expr(),
+    );
+
+    // White at the head, falling to nothing. `Attribute::COLOR` above carries the hue and
+    // this multiplies it, which is why this gradient is colourless.
+    let mut colour = Gradient::new();
+    colour.add_key(0.0, Vec4::new(1.0, 1.0, 1.0, 1.0));
+    colour.add_key(0.35, Vec4::new(1.0, 1.0, 1.0, 0.85));
+    colour.add_key(1.0, Vec4::new(1.0, 1.0, 1.0, 0.0));
+
+    // Shrinking, so the motes read as cooling rather than as receding.
+    let mut size = Gradient::new();
+    size.add_key(0.0, Vec3::splat(0.16));
+    size.add_key(1.0, Vec3::splat(0.02));
+
+    let effect = effects.add(
+        EffectAsset::new(256, SpawnerSettings::once(48.0.into()), writer.finish())
+            .with_name("death_burst")
+            .init(init_pos)
+            .init(init_vel)
+            .init(init_lifetime)
+            .init(init_age)
+            .init(init_colour)
+            .update(accel)
+            .update(drag)
+            .render(ColorOverLifetimeModifier {
+                gradient: colour,
+                ..default()
+            })
+            .render(SizeOverLifetimeModifier {
+                gradient: size,
+                screen_space_size: false,
+            }),
+    );
+    commands.insert_resource(DeathBurst { effect });
+}
+
+/// Whether this resolved effect is an ENEMY falling — the one thing that earns a burst.
+///
+/// A free function so the rule is testable without pumping a wire message through the whole
+/// client: the trap this repo keeps recording is a feature generated correctly and consumed
+/// nowhere, and a death queue nothing ever pushes to looks exactly like a working one.
+///
+/// ⚠️ Enemies only. A hero going down is somebody you are about to raise, and showering your
+/// own party in ash reads as a loss rather than as the setback it is.
+pub(crate) fn is_enemy_death(
+    kind: &str,
+    target: &str,
+    combatants: &[meld_client::net::CombatantView],
+) -> bool {
+    kind.eq_ignore_ascii_case("ko")
+        && combatants.iter().any(|c| c.id == target && !c.is_player)
+}
+
+/// Drain the queued deaths into bursts, at the body each one belongs to.
+///
+/// ⚠️ **The burst is placed at the ACTOR, never at a screen position or a party slot** —
+/// the same rule the floating numbers had to learn (`render_hit_fx`): a body that fell is
+/// the one thing on screen the effect is about, and anchoring by role puts every death in
+/// a pack onto the first one.
+///
+/// A body whose actor is already gone is dropped rather than drawn at the origin. The
+/// arena rebuilds on `hp > 0`, so a KO and the despawn can land on the same frame, and a
+/// burst at `(0,0,0)` is a puff of ash in the middle of the floor.
+pub(crate) fn spawn_death_bursts(
+    mut commands: Commands,
+    mut fx: ResMut<BattleFx>,
+    burst: Option<Res<DeathBurst>>,
+    actors: Query<(&crate::battle::BattleActor, &GlobalTransform)>,
+    quads: Query<&crate::SpriteQuad>,
+) {
+    if fx.deaths.is_empty() {
+        return;
+    }
+    let Some(burst) = burst else {
+        fx.deaths.clear();
+        return;
+    };
+    for id in std::mem::take(&mut fx.deaths) {
+        let Some((_, gt)) = actors.iter().find(|(a, _)| a.id == id) else {
+            continue;
+        };
+        // The body's own colour, so a bog serpent does not come apart in the same ash as a
+        // golem. The gradient carries the fade and this carries the hue, which is why the
+        // gradient is white: the two multiply.
+        let tint = quads
+            .iter()
+            .find(|q| q.id == id)
+            .map(|q| q.base)
+            .unwrap_or(Color::srgb(0.85, 0.82, 0.78));
+        let rgb = tint.to_linear();
+        let mut props = bevy_hanabi::EffectProperties::default();
+        props.set(
+            "tint",
+            bevy_hanabi::Value::Vector(Vec3::new(rgb.red, rgb.green, rgb.blue).into()),
+        );
+        commands.spawn((
+            BattleFxRoot,
+            DeathBurstTtl(DEATH_BURST_TTL),
+            bevy_hanabi::ParticleEffect::new(burst.effect.clone()),
+            props,
+            Transform::from_translation(gt.translation()),
+        ));
+    }
+}
+
+/// Age the spent bursts out.
+pub(crate) fn advance_death_bursts(
+    mut commands: Commands,
+    time: Res<Time>,
+    mut q: Query<(Entity, &mut DeathBurstTtl)>,
+) {
+    let dt = time.delta_secs();
+    for (e, mut ttl) in &mut q {
+        ttl.0 -= dt;
+        if ttl.0 <= 0.0 {
+            commands.entity(e).despawn();
+        }
     }
 }

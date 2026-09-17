@@ -38,6 +38,7 @@ bevy_embedded_assets = { version = "0.16", optional = true }
 # files at once and a low soft limit (256 on a GUI/launchd-launched macOS process)
 # makes loads fail with "Too many open files", silently dropping sprites + models.
 rlimit = "0.10"
+bevy_hanabi = { version = "0.19", default-features = false, features = ["3d"] }
 
 [features]
 # Bake every game asset into the binary (via bevy_embedded_assets) instead of

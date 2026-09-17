@@ -560,6 +560,17 @@ pub(crate) fn pump_net(
                             .unwrap_or(0);
                         struck.push((e.target.clone(), e.amount.unwrap_or(0), max));
                     }
+                    // A FELLED BODY COMES APART. The arena stops drawing it the moment
+                    // `hp > 0` goes false, so without this the thing you have been hitting
+                    // is replaced by nothing between two frames and the KO! number is the
+                    // only evidence it was ever there. Enemies only: a hero going down is
+                    // somebody you are about to raise, and showering the party in ash reads
+                    // as a loss rather than as a setback.
+                    if crate::battle_fx::is_enemy_death(&e.kind, &e.target, &battle.combatants)
+                        && !battle_fx.deaths.contains(&e.target)
+                    {
+                        battle_fx.deaths.push(e.target.clone());
+                    }
                     push_hit_fx(&mut hitfx, &e, show_elements);
                 }
                 // A damaging action makes its actor lunge in to strike — AT the body it

@@ -907,7 +907,14 @@ pub fn party_fighters(
                 E::PartyBarrier => {
                     f.barrier += frac_of(f.max_hp, adv.synergy_party_barrier_fraction)
                 }
-                E::PartyRegen => f.regen += frac_of(f.max_hp, adv.synergy_party_regen_fraction),
+                // ONLY a Resonant. Regen belongs to the class that has it innately and
+                // spends turns on it; handing every hero one at the bell is the mender's
+                // own row, for free, to people who did not train for it.
+                E::MenderRegen => {
+                    if matches!(f.class_key.as_str(), "resonant") {
+                        f.regen += frac_of(f.max_hp, adv.synergy_party_regen_fraction);
+                    }
+                }
                 E::BackRowEvasion => {
                     if f.back_row {
                         f.evasion += adv.synergy_back_row_evasion as f64 / 100.0;
@@ -2613,13 +2620,30 @@ mod tests {
             );
         }
 
-        // Blood and Balm (Resonant + Hunter) gives the party Regen — a kit that pays
-        // in Adrenaline and blood beside one that gives it back. The Resonant's
-        // innate Regen is on top, not replaced.
+        // **BLOOD AND BALM DEEPENS THE MENDER, AND REACHES NOBODY ELSE.** Regen is the
+        // Resonant's own thing — the only innate one in the game, the only twist nobody
+        // else can spend, and out on the overworld its walking regen already tends only
+        // Resonants. A synergy that handed every hero one at the bell undid all three at
+        // once, and it fired whenever a Hunter stood beside her: reported from play as
+        // everyone starting a fight with regen just for fielding a Resonant.
         let sustained = vec![member(CharacterClass::Hunter), member(CharacterClass::Resonant)];
         let f = party_fighters(&sustained, &runs, &b, &[]);
-        let want_regen = frac_of(f[0].max_hp, b.adventure.synergy_party_regen_fraction);
-        assert!(f[0].regen >= want_regen, "hunter regen {}", f[0].regen);
+        let hunter = f.iter().find(|x| x.class_key == "hunter").expect("the hunter is fielded");
+        assert_eq!(
+            hunter.regen, 0,
+            "a hero who is not a mender opened the fight regenerating {}",
+            hunter.regen
+        );
+        // …and the mender gets it ON TOP of her innate regen rather than instead of it.
+        let mender = f.iter().find(|x| x.class_key == "resonant").expect("the resonant is fielded");
+        let alone = vec![member(CharacterClass::Resonant)];
+        let solo = party_fighters(&alone, &runs, &b, &[]);
+        assert!(
+            mender.regen > solo[0].regen,
+            "the synergy did not deepen the mender: {} with a hunter, {} without",
+            mender.regen,
+            solo[0].regen
+        );
     }
 
 

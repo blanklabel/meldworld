@@ -111,7 +111,9 @@ pub(crate) struct ActiveTurnArrow {
 pub(crate) struct SpriteQuad {
     pub(crate) id: String,
     mat: Handle<StandardMaterial>,
-    base: Color,
+    /// The body's own colour. Read by the death burst so a felled creature comes apart in
+    /// the colour it was, rather than in one generic ash for the whole bestiary.
+    pub(crate) base: Color,
     forward: Vec3,
 }
 
@@ -2970,8 +2972,15 @@ pub(crate) fn update_condition_rims(
     battle: Res<BattleData>,
     wa: Option<Res<WorldAssets>>,
     mut mats: ResMut<Assets<StandardMaterial>>,
-    quads: Query<(Entity, &SpriteQuad, Option<&Children>)>,
+    quads: Query<(Entity, &SpriteQuad, Option<&Children>, &ChildOf)>,
     rims: Query<(&ConditionRim, &MeshMaterial3d<StandardMaterial>)>,
+    // ⚠️ **THE RIM'S POSE IS NOT THIS SYSTEM'S TO SET.** The texture cloned below is the
+    // frame the body happened to be on when the condition landed, and the body keeps
+    // walking and turning afterwards — so the rim is handed to `CharSprite` and
+    // `hd2d::animate_chars` writes it in the same breath as the base frame. Setting it
+    // here instead is a system in a different tuple with no ordering against that one,
+    // which is the judder `CharSprite::rim` records.
+    mut chars: Query<&mut hd2d::CharSprite>,
 ) {
     let Some(wa) = wa else { return };
     // Slower and gentler than the reach rim, and it never drops out: a condition is a
@@ -2980,7 +2989,7 @@ pub(crate) fn update_condition_rims(
     // Quantised: the rim material below is then written a few times a second, not every frame.
     let alpha = ((0.46 + 0.22 * phase) * 64.0).round() / 64.0;
 
-    for (quad, sq, kids) in &quads {
+    for (quad, sq, kids, parent) in &quads {
         let want = battle
             .combatants
             .iter()
@@ -3025,6 +3034,9 @@ pub(crate) fn update_condition_rims(
                     cull_mode: None,
                     ..default()
                 });
+                if let Ok(mut cs) = chars.get_mut(parent.parent()) {
+                    cs.rim = Some(rim.clone());
+                }
                 commands.entity(quad).with_children(|p| {
                     p.spawn((
                         ConditionRim(key),
@@ -3039,6 +3051,13 @@ pub(crate) fn update_condition_rims(
             None => {
                 for e in mine {
                     commands.entity(e).despawn();
+                }
+                // Cleared with the rim itself: a handle left behind is a material this
+                // body keeps repainting every frame for a silhouette nobody draws.
+                if let Ok(mut cs) = chars.get_mut(parent.parent()) {
+                    if cs.rim.is_some() {
+                        cs.rim = None;
+                    }
                 }
             }
         }

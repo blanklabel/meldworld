@@ -3837,8 +3837,8 @@ impl WorldActor {
                         "every hero opens each fight with Barrier worth {:.0}% of its own HP",
                         adv.synergy_party_barrier_fraction * 100.0
                     ),
-                    E::PartyRegen => format!(
-                        "every hero regenerates {:.1}% of its own HP a turn",
+                    E::MenderRegen => format!(
+                        "your Resonants regenerate a further {:.1}% of their own HP a turn",
                         adv.synergy_party_regen_fraction * 100.0
                     ),
                     E::BackRowEvasion => format!(
