@@ -1,5 +1,7 @@
-//! Battle: the ATB command panel (d-pad), party HUD, 3D arena actors + camera,
-//! targeting, order queue, hit FX, and per-class kits.
+//! Battle: the ATB command pages, 3D arena actors + camera, targeting, order queue, hit FX,
+//! and per-class kits. A martial hero's ROOT page is the arc around its own body
+//! (`battle_radial`) and its health is the ring at its feet (`battle_rings`); what is left
+//! here is every page that is a LIST — skills, items, targets, a Psyker's manifestations.
 //! Extracted from `main.rs` during the module reorg.
 
 use std::collections::{HashMap, HashSet};
@@ -27,10 +29,11 @@ pub(crate) fn reset_menu(menu: &mut BattleMenu) {
 /// holding a direction and the first hero immediately acts on it — south FLEES the fight,
 /// east DEFENDS — before you have looked at the screen.
 ///
-/// It is the d-pad root doing exactly what it says (`ArrowDown` is Flee, `ArrowRight` is
-/// Defend) sharing its keys with the overworld's movement. The fix is not to move the
-/// bindings — the d-pad is the point of a martial's root menu — it is to require a FRESH
-/// press: `reset_all` drops the held/just-pressed state carried across the transition, and
+/// It is a root page whose keys are the overworld's movement keys. Flee has since come off the
+/// arrows entirely (`battle_radial`: an arc has one axis, so ←/→ move a cursor), which retires
+/// the worst reading of this — but a held key still commits whatever it is bound to, so the
+/// rule stands: require a FRESH press. `reset_all` drops the held/just-pressed state carried
+/// across the transition, and
 /// because Bevy only re-presses on an actual key-down event, a key still physically held
 /// stays silent until it is released and pressed again.
 ///
@@ -152,6 +155,8 @@ pub(crate) fn spawn_hero_actor(
     commands: &mut Commands,
     wa: &WorldAssets,
     mats: &mut Assets<StandardMaterial>,
+    rings: &mut Assets<crate::battle_rings::FeetRing>,
+    battle: &BattleData,
     c: &CombatantView,
     root: Vec3,
     facing: Vec2,
@@ -262,6 +267,15 @@ pub(crate) fn spawn_hero_actor(
                         .with_rotation(Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2))
                         .with_scale(Vec3::new(1.0, 0.55, 1.0)),
                 ));
+                // …and its health, on the ground it is standing on.
+                crate::battle_rings::spawn_ring(
+                    p,
+                    wa.shadow_mesh.clone(),
+                    rings,
+                    &c.id,
+                    crate::battle_rings::ring_color(c, battle.your_ids.contains(&c.id)),
+                    crate::battle_rings::hp_fill(c),
+                );
             }
             // The active-turn arrow: hidden until `highlight_active_turn` (below)
             // says this is the hero on the clock.
@@ -325,6 +339,7 @@ pub(crate) fn spawn_enemy_actor(
     commands: &mut Commands,
     wa: &WorldAssets,
     mats: &mut Assets<StandardMaterial>,
+    rings: &mut Assets<crate::battle_rings::FeetRing>,
     c: &CombatantView,
     root: Vec3,
     h: f32,
@@ -426,6 +441,16 @@ pub(crate) fn spawn_enemy_actor(
                     .with_rotation(Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2))
                     .with_scale(Vec3::new(h * 0.42, h * 0.23, 1.0)),
             ));
+            // …and its health, on the ground it is standing on. A creature is never MINE, so
+            // its ring always wears the foe colour.
+            crate::battle_rings::spawn_ring(
+                p,
+                wa.shadow_mesh.clone(),
+                rings,
+                &c.id,
+                crate::battle_rings::ring_color(c, false),
+                crate::battle_rings::hp_fill(c),
+            );
             // ⚠️ A BOSS LIGHTS ITS OWN GROUND. The party carried every light in the arena,
             // so the far rank was lit only by whatever spilled across it and a named boss
             // arrived as a silhouette — the one creature the whole walk out is pointed at,
@@ -566,6 +591,7 @@ pub(crate) fn sync_battle_actors(
     battle: Res<BattleData>,
     wa: Option<Res<WorldAssets>>,
     mut mats: ResMut<Assets<StandardMaterial>>,
+    mut rings: ResMut<Assets<crate::battle_rings::FeetRing>>,
     q: Query<(Entity, &BattleActor)>,
 ) {
     let Some(wa) = wa else { return };
@@ -647,7 +673,7 @@ pub(crate) fn sync_battle_actors(
         // Full sprites for everyone: the head→torso "bust" crop dropped the legs +
         // shadow, so cropped heroes read as floating torsos ("hovering"). Render
         // the whole body grounded instead.
-        spawn_hero_actor(&mut commands, &wa, &mut mats, c, Vec3::new(x, 0.0, z), Vec2::new(0.0, -1.0), false);
+        spawn_hero_actor(&mut commands, &wa, &mut mats, &mut rings, &battle, c, Vec3::new(x, 0.0, z), Vec2::new(0.0, -1.0), false);
     }
     // Allies fill the remaining edges; a rare 4th+ party reuses the north edge.
     let edges = [PartyEdge::North, PartyEdge::West, PartyEdge::East];
@@ -656,7 +682,7 @@ pub(crate) fn sync_battle_actors(
         let heroes = &allies[owner];
         for (i, c) in heroes.iter().enumerate() {
             let (root, facing) = edge.slot(i, heroes.len());
-            spawn_hero_actor(&mut commands, &wa, &mut mats, c, root, facing, false);
+            spawn_hero_actor(&mut commands, &wa, &mut mats, &mut rings, &battle, c, root, facing, false);
         }
     }
     // Enemies cluster in the centre; a solo fight keeps the classic far-line framing,
@@ -687,7 +713,7 @@ pub(crate) fn sync_battle_actors(
             (front_n, fi - 1, 0.0, 0.0)
         };
         let x = (idx as f32 - (n.max(1) as f32 - 1.0) * 0.5 + inset) * gap;
-        spawn_enemy_actor(&mut commands, &wa, &mut mats, c, Vec3::new(x, 0.0, cz + z_off), h);
+        spawn_enemy_actor(&mut commands, &wa, &mut mats, &mut rings, c, Vec3::new(x, 0.0, cz + z_off), h);
     }
 }
 
@@ -1741,9 +1767,9 @@ pub(crate) fn held_potions(backpack: &RunBackpack, slot: usize) -> Vec<(String, 
         .collect()
 }
 
-/// Keyboard control for the command panel. Orders are *queued* for the active hero
-/// and fire when its ATB fills. At the martial root the ARROWS are the d-pad —
-/// ↑ Skill · ← Item · → Defend · ↓ Flee — and ENTER/SPACE/A = Attack (the centre).
+/// Keyboard control for the command pages. Orders are *queued* for the active hero
+/// and fire when its ATB fills. At the martial root ←/→ run the cursor along the arc around
+/// that hero and ENTER/SPACE picks it; A/D/I/S/F fire Attack/Defend/Item/Skill/Flee outright.
 /// TAB (or clicking another ready hero's box) switches which hero you're commanding;
 /// 1-4 jump straight to a hero. In a sub-page ↑/↓ move the highlight, ENTER selects,
 /// ESC backs out. A Psyker's root is a short list, navigated like a sub-page.
@@ -1838,9 +1864,10 @@ pub(crate) fn menu_keyboard(
 
     let digits = [KeyCode::Digit1, KeyCode::Digit2, KeyCode::Digit3, KeyCode::Digit4];
 
-    // Root of a MARTIAL hero: the arrows ARE the actions (the d-pad), not a cursor.
-    // (Indices match `menu_entries`' Root order: 0 Attack, 1 Defend, 2 Item, 3 Skill,
-    // 4 Flee.)
+    // Root of a MARTIAL hero: the five verbs arced around that hero's own body
+    // (`battle_radial`). ←/→ run the cursor ALONG the arc and Enter picks it; the letters
+    // still fire a verb outright. (Indices match `menu_entries`' Root order: 0 Attack,
+    // 1 Defend, 2 Item, 3 Skill, 4 Flee.)
     if menu.level == MenuLevel::Root && class != "psyker" {
         // Jump straight to a hero by number (only a commandable one).
         for (i, key) in digits.iter().enumerate() {
@@ -1853,19 +1880,28 @@ pub(crate) fn menu_keyboard(
                 return;
             }
         }
-        let pick = if keys.just_pressed(KeyCode::ArrowUp) || keys.just_pressed(KeyCode::KeyS) {
+        // ⚠️ **FLEE IS NOT ON AN ARROW ANY MORE.** `swallow_the_key_you_walked_in_on` exists
+        // because walking into a creature holding south ENDED the fight before the player had
+        // looked at the screen. An arc has one axis, so the direction keys move the highlight
+        // and the only way to leave a fight is to say so — `F`, or the chip.
+        if keys.just_pressed(KeyCode::ArrowLeft) {
+            menu.cursor = crate::battle_radial::step_cursor(menu.cursor, -1);
+        }
+        if keys.just_pressed(KeyCode::ArrowRight) {
+            menu.cursor = crate::battle_radial::step_cursor(menu.cursor, 1);
+        }
+        let pick = if keys.just_pressed(KeyCode::KeyS) {
             Some(3) // Skill
-        } else if keys.just_pressed(KeyCode::ArrowLeft) || keys.just_pressed(KeyCode::KeyI) {
+        } else if keys.just_pressed(KeyCode::KeyI) {
             Some(2) // Item
-        } else if keys.just_pressed(KeyCode::ArrowRight) || keys.just_pressed(KeyCode::KeyD) {
+        } else if keys.just_pressed(KeyCode::KeyD) {
             Some(1) // Defend
-        } else if keys.just_pressed(KeyCode::ArrowDown) || keys.just_pressed(KeyCode::KeyF) {
+        } else if keys.just_pressed(KeyCode::KeyF) {
             Some(4) // Flee
-        } else if keys.just_pressed(KeyCode::Enter)
-            || keys.just_pressed(KeyCode::Space)
-            || keys.just_pressed(KeyCode::KeyA)
-        {
-            Some(0) // Attack (the centre / default)
+        } else if keys.just_pressed(KeyCode::KeyA) {
+            Some(0) // Attack
+        } else if keys.just_pressed(KeyCode::Enter) || keys.just_pressed(KeyCode::Space) {
+            Some(menu.cursor) // whatever the arc is pointing at (Attack at rest)
         } else {
             None
         };
@@ -1971,48 +2007,11 @@ pub(crate) fn party_select_click(
     }
 }
 
-/// One command tile in the cross, tagged with its menu-entry index.
-pub(crate) fn cmd_tile(
-    parent: &mut ChildSpawnerCommands,
-    index: usize,
-    label: &str,
-    w: f32,
-    border: Color,
-    text: Color,
-) {
-    parent
-        .spawn((
-            Button,
-            MenuRow { index },
-            Node {
-                border_radius: BorderRadius::all(Val::Px(8.0)),
-                width: Val::Px(w),
-                height: Val::Px(46.0),
-                justify_content: JustifyContent::Center,
-                align_items: AlignItems::Center,
-                border: UiRect::all(Val::Px(1.0)),
-                ..default()
-            },
-            BorderColor::all(border),
-            BackgroundColor(glass::GLASS_THIN),
-        ))
-        .with_children(|t| {
-            t.spawn((
-                Text::new(label.to_string()),
-                TextFont {
-                    font_size: FontSize::Px(15.0),
-                    ..default()
-                },
-                TextColor(text),
-            ));
-        });
-}
-
 /// Rebuild the floating command panel. It's shown ONLY while a hero needs orders
 /// (`battle.active` is set) — once every ready hero has locked an action the panel
-/// vanishes, so it never just sits on screen or covers the party boxes below. A
-/// martial hero's root is a d-pad cross (Attack centre · Skill ↑ · Item ← · Defend →
-/// · Flee ↓); a Psyker's root and every Skill/Item/Target sub-page is a compact list.
+/// vanishes, so it never just sits on screen or covers the fight. It draws every page that is
+/// a LIST: a Psyker's root, and Skill/Item/Target/Revoke for everybody. A martial hero's root
+/// is the arc around its own body and is drawn by `battle_radial`, which this stands down for.
 /// The panel is rebuilt only when its signature (shown? · which hero · which page)
 /// changes, so button `Interaction` survives across frames within one state.
 pub(crate) fn rebuild_command_menu(
@@ -2056,6 +2055,12 @@ pub(crate) fn rebuild_command_menu(
     if !show {
         return;
     }
+    // ONE OF THE TWO DRAWS THE PAGE. A martial hero's root is the arc around its own body
+    // (`battle_radial`), so the panel stands down rather than answering the same question a
+    // second time in a second place.
+    if crate::battle_radial::radial_root(&battle, &menu) {
+        return;
+    }
     let class = battle.active_class();
     let is_psyker = class == "psyker";
     let hero_level = battle.active_level();
@@ -2068,22 +2073,7 @@ pub(crate) fn rebuild_command_menu(
     let active_adrenaline =
         battle.view(&active_id).map(|v| status_num(&v.statuses, "adrenaline:")).unwrap_or(0);
 
-    // Palette for the d-pad tiles: neutral for Item/Defend/Skill, gold for the
-    // primary Attack, red for Flee — so the two "big" choices read at a glance.
-    let neutral_edge = glass::EDGE_SOFT;
-    let neutral_text = Color::srgb(0.92, 0.94, 1.0);
     let gold = Color::srgb(1.0, 0.85, 0.45);
-    let red = Color::srgb(1.0, 0.55, 0.5);
-    // The guided [T]-dive walkthrough's paced command-menu explainer: brighten
-    // whichever tile is currently being explained, in place, rather than an
-    // overlay box — same idiom as everywhere else in this feature.
-    let intro_edge = |step: BattleIntroStep, base: Color| {
-        if tutorial_run.battle_intro == Some(step) { glass::ACTIVE_EDGE } else { base }
-    };
-    let attack_edge = intro_edge(BattleIntroStep::Attack, gold);
-    let defend_edge = intro_edge(BattleIntroStep::Defend, neutral_edge);
-    let skill_edge = intro_edge(BattleIntroStep::Skill, neutral_edge);
-    let flee_edge = intro_edge(BattleIntroStep::Flee, red);
 
     // Row label + enabled state + Adrenaline cost (if any) for the list renderer:
     // the dynamic Target/Revoke pages draw from `menu.rows` (+ a Back row, always
@@ -2235,43 +2225,7 @@ pub(crate) fn rebuild_command_menu(
                         ));
                     }
                 }
-                if level == MenuLevel::Root && !is_psyker {
-                    // The d-pad cross. Indices match `menu_entries` Root order.
-                    panel
-                        .spawn(Node {
-                            flex_direction: FlexDirection::Column,
-                            align_items: AlignItems::Center,
-                            row_gap: Val::Px(6.0),
-                            ..default()
-                        })
-                        .with_children(|cross| {
-                            cross
-                                .spawn(Node {
-                                    flex_direction: FlexDirection::Row,
-                                    ..default()
-                                })
-                                .with_children(|r| cmd_tile(r, 3, "\u{f0068} Skill", 92.0, skill_edge, neutral_text));
-                            cross
-                                .spawn(Node {
-                                    flex_direction: FlexDirection::Row,
-                                    column_gap: Val::Px(6.0),
-                                    ..default()
-                                })
-                                .with_children(|r| {
-                                    // mdi glyphs (see UiFont): flask=Item, sword=Attack,
-                                    // shield=Defend, run-fast=Flee, auto-fix=Skill.
-                                    cmd_tile(r, 2, "\u{f0093} Item", 92.0, neutral_edge, neutral_text);
-                                    cmd_tile(r, 0, "\u{f04e5} Attack", 92.0, attack_edge, gold);
-                                    cmd_tile(r, 1, "\u{f132} Defend", 92.0, defend_edge, neutral_text);
-                                });
-                            cross
-                                .spawn(Node {
-                                    flex_direction: FlexDirection::Row,
-                                    ..default()
-                                })
-                                .with_children(|r| cmd_tile(r, 4, "\u{f070e} Flee", 92.0, flee_edge, red));
-                        });
-                } else {
+                {
                     let header: &str = match level {
                         MenuLevel::Root => "ACTIONS", // Psyker root list
                         MenuLevel::Skills => "SKILL",
@@ -2368,38 +2322,6 @@ pub(crate) fn rebuild_command_menu(
                                     },
                                 ));
                             }
-                        });
-                }
-                // The auto-battle toggle — the last keyboard-only battle control ([T]), and
-                // also a tap button so a fight is fully click/tap driven. **Always shown**:
-                // it used to appear only when an Phoenix Guard stood in the line, which hid
-                // the feature from most parties entirely (see [`AutoBattle`]).
-                {
-                    let (label, col) = if auto.0 {
-                        ("\u{f132} AUTO-BATTLE: ON  [T]", Color::srgb(0.55, 0.95, 0.65))
-                    } else {
-                        ("\u{f132} AUTO-BATTLE: OFF  [T]", Color::srgb(0.75, 0.8, 0.95))
-                    };
-                    panel
-                        .spawn((
-                            Button,
-                            AutoBattleButton,
-                            Node {
-                                border_radius: BorderRadius::all(Val::Px(6.0)),
-                                margin: UiRect::top(Val::Px(6.0)),
-                                padding: UiRect::axes(Val::Px(10.0), Val::Px(4.0)),
-                                border: UiRect::all(Val::Px(1.0)),
-                                ..default()
-                            },
-                            BorderColor::all(glass::EDGE_SOFT),
-                            BackgroundColor(glass::GLASS_THIN),
-                        ))
-                        .with_children(|b| {
-                            b.spawn((
-                                Text::new(label),
-                                TextFont { font_size: FontSize::Px(13.0), ..default() },
-                                TextColor(col),
-                            ));
                         });
                 }
             });
@@ -2554,7 +2476,12 @@ pub(crate) fn auto_battle_click(
 /// they read as buttons; list rows fall back to transparent.
 pub(crate) fn style_command_menu(
     menu: Res<BattleMenu>,
-    mut rows: Query<(&MenuRow, &Interaction, &mut BackgroundColor)>,
+    // The arc around the acting hero styles itself (`battle_radial::style_radial`): its chips
+    // stand over the fight rather than inside a panel, so they may never fall to transparent.
+    mut rows: Query<
+        (&MenuRow, &Interaction, &mut BackgroundColor),
+        Without<crate::battle_radial::RadialChip>,
+    >,
 ) {
     // Cross tiles keep a faint glass base so they read as buttons; list rows are
     // transparent until hovered/selected.
@@ -2681,17 +2608,6 @@ pub(crate) fn flashing(hitfx: &HitFx, feel: &BattleFeel, id: &str) -> bool {
     hitfx.items.iter().any(|h| h.target == id && h.age < feel.flash_ttl)
 }
 
-/// During the Target picker, classify a combatant: `(is a candidate, is the
-/// highlighted pick)`. Off the Target page both are false, so panels render normally.
-pub(crate) fn target_state(menu: &BattleMenu, id: &str) -> (bool, bool) {
-    if menu.level != MenuLevel::Target {
-        return (false, false);
-    }
-    let candidate = menu.rows.iter().any(|(_, v)| v == id);
-    let cursor = menu.rows.get(menu.cursor).map(|(_, v)| v.as_str()) == Some(id);
-    (candidate, cursor)
-}
-
 /// Immediate-mode enemy HUD: a compact name + HP bar floated in screen space
 /// **under each enemy's 3D sprite** (projected from the arena each frame), so the
 /// health reads on the creature itself instead of a detached row of chips. The bar
@@ -2784,32 +2700,41 @@ pub(crate) fn render_watch_banner(
         });
 }
 
-pub(crate) fn render_enemy_panel(
+/// **THE NUMBER GOES IN THE BAR.** Every living combatant's HP is written INTO the stroke of
+/// its own feet ring, a glyph at a time along the arc nearest the camera, so the digits and
+/// the bar describing them are one object lying on one piece of ground.
+///
+/// ⚠️ **ONE SYSTEM FOR BOTH SIDES.** Heroes and creatures had separate readouts in separate
+/// places, which is how a party of four and a pack of five ended up with nine bars around the
+/// edges of a fight happening in the middle. Everything with a body gets the same label at
+/// the same spot relative to its own feet.
+pub(crate) fn render_ring_labels(
     mut commands: Commands,
     battle: Res<BattleData>,
     hitfx: Res<HitFx>,
     feel: Res<BattleFeel>,
     menu: Res<BattleMenu>,
     target: Res<BattleTarget>,
-    perks: Res<PerksRes>,
     cam_q: Query<(&Camera, &GlobalTransform), With<Camera3d>>,
     actors: Query<(&BattleActor, &GlobalTransform)>,
+    rings: Query<(&battle_rings::CombatantRing, &GlobalTransform)>,
     existing: Query<Entity, With<BattleScene>>,
     cam_moved: Query<(), (With<Camera3d>, Changed<GlobalTransform>)>,
     actors_moved: Query<(), (With<BattleActor>, Changed<GlobalTransform>)>,
+    rings_moved: Query<(), (With<battle_rings::CombatantRing>, Changed<GlobalTransform>)>,
 ) {
-    // REBUILD ON CHANGE, NOT ON FRAME. Everything this draws is read from these inputs;
-    // when none of them moved, last frame's nodes are exactly right and tearing them down
-    // re-runs layout and glyph shaping for nothing.
+    // REBUILD ON CHANGE, NOT ON FRAME — see the note this replaced: everything drawn here is
+    // read from these inputs, so when none of them moved, last frame's nodes are exactly
+    // right and tearing them down re-runs layout and glyph shaping for nothing.
     if !(existing.is_empty()
         || battle.is_changed()
         || hitfx.is_changed()
         || feel.is_changed()
         || menu.is_changed()
         || target.is_changed()
-        || perks.is_changed()
         || !cam_moved.is_empty()
-        || !actors_moved.is_empty())
+        || !actors_moved.is_empty()
+        || !rings_moved.is_empty())
     {
         return;
     }
@@ -2818,75 +2743,142 @@ pub(crate) fn render_enemy_panel(
     }
     let Some((cam, cam_tf)) = cam_q.iter().next() else { return };
     let focus = highlight_focus(&battle, &menu, &target);
-    // A full-screen, non-interactive layer; each enemy's bar is absolutely placed.
     commands
         .spawn((
             BattleScene,
-            Node {
-                width: Val::Percent(100.0),
-                height: Val::Percent(100.0),
-                ..default()
-            },
+            Node { width: Val::Percent(100.0), height: Val::Percent(100.0), ..default() },
         ))
         .with_children(|p| {
-            for c in battle.combatants.iter().filter(|c| !c.is_player && c.hp > 0) {
-                // Project the enemy sprite's feet to the screen and hang the bar just
-                // below them. Skip if it has no arena actor yet or is behind the camera.
+            for c in battle.combatants.iter().filter(|c| c.hp > 0) {
                 let Some((_, gt)) = actors.iter().find(|(a, _)| a.id == c.id) else { continue };
-                let Ok(feet) = cam.world_to_viewport(cam_tf, gt.translation()) else { continue };
-                let frac = c.hp as f32 / c.max_hp.max(1) as f32;
-                let hurt = flashing(&hitfx, &feel, &c.id);
+                // THE NUMBER IS WRITTEN INTO THE RING, ALONG ITS OWN CURVE. A pill hanging
+                // under the body is a second object to read; digits lying in the stroke are
+                // part of the bar they are describing, and they foreshorten with the ground
+                // exactly as the ring does.
+                //
+                // ⚠️ **ANCHORED ON THE RING, NOT ON THE ACTOR.** The ring follows the body's
+                // lunge (`ring_follows_body`) and the actor ROOT does not move at all, so
+                // projecting from the root writes the number where the bar used to be for the
+                // whole of every swing. The ring's own `GlobalTransform` is the one place
+                // that already knows where it ended up.
+                let base = rings
+                    .iter()
+                    .find(|(r, _)| r.id == c.id)
+                    .map(|(_, rt)| rt.translation())
+                    .unwrap_or_else(|| gt.translation());
+                let centre = Vec3::new(base.x, base.y + RING_TEXT_LIFT, base.z);
+                let Some(front) = (cam_tf.translation() - centre).with_y(0.0).try_normalize()
+                else {
+                    continue;
+                };
+                let project = |theta: f32| {
+                    let dir = Quat::from_rotation_y(theta) * front;
+                    cam.world_to_viewport(cam_tf, centre + dir * battle_rings::TEXT_RADIUS)
+                        .ok()
+                        .map(|v| Vec2::new(v.x, v.y))
+                };
+                let Some(px_per_rad) = battle_rings::arc_scale(project) else { continue };
+                // Sized off the ring's own on-screen size, so a creature at the back of the
+                // arena gets a number in proportion to the bar it is written on instead of a
+                // fixed one that swallows it.
+                let fs = (px_per_rad * 0.185).clamp(10.0, 21.0);
+                let label = format!("{}/{}", c.hp, c.max_hp);
                 let is_target = focus.as_deref() == Some(c.id.as_str());
-                let faction = c.statuses.iter().find_map(|s| s.strip_prefix("faction:"));
-                let hp_fill = if hurt {
-                    Color::srgb(1.0, 0.95, 0.95)
-                } else if let Some((tint, _)) = condition_tint(&c.statuses) {
-                    // A creature under a condition says so on its own bar — the mustard on a
-                    // blazed target is the party's cue that this is the one to hit.
-                    tint
-                } else {
-                    faction.map(faction_color).unwrap_or(Color::srgb(0.85, 0.3, 0.3))
-                };
-                let name_color = if hurt {
-                    Color::srgb(1.0, 1.0, 1.0)
-                } else if is_target {
-                    Color::srgb(1.0, 0.9, 0.45)
-                } else {
-                    Color::srgb(0.95, 0.72, 0.72)
-                };
-                const W: f32 = 132.0;
-                p.spawn(Node {
-                    position_type: PositionType::Absolute,
-                    left: Val::Px(feet.x - W * 0.5),
-                    top: Val::Px(feet.y + 8.0),
-                    width: Val::Px(W),
-                    flex_direction: FlexDirection::Column,
-                    align_items: AlignItems::Center,
-                    row_gap: Val::Px(3.0),
-                    ..default()
-                })
-                .with_children(|e| {
-                    e.spawn((
-                        Text::new(format!(
-                            "{}  {}/{}",
-                            pack_label(&c.name, &c.statuses),
-                            c.hp,
-                            c.max_hp
-                        )),
-                        TextFont { font_size: FontSize::Px(14.0), ..default() },
-                        TextColor(name_color),
-                    ));
-                    meter(e, frac, 10.0, hp_fill);
-                    // Hunter "Predator's Eye" top tier (`hunter_intel_atb_at`): reveal the
-                    // enemy's ATB gauge — otherwise you read foe HP and guess at its turn.
-                    // The perk moved to the Hunter with CL-2; the label said Explorer.
-                    if perks.0.hunter_intel >= 3 {
-                        meter(e, c.gauge as f32, 5.0, Color::srgb(0.5, 0.72, 1.0));
+                let mine = battle.your_ids.contains(&c.id);
+                let commanding_name = battle.hero_label(&c.id);
+                // DARK INK ON BRIGHT LIQUID — the number sits ON the pool, which is the whole
+                // point of putting it there. Under `RING_INK_FLIP` there is no pool left under
+                // the digits, so the ink turns bright instead of vanishing into the empty bed,
+                // and a body that dark is one the player has to look at anyway.
+                // ⚠️ **WHITE ON A DARK OUTLINE, NOT INK PICKED PER BACKGROUND.** The number
+                // sits on a bar that is green at one end, red at the other and dark where it
+                // is empty, and it crosses all three as the fight goes — so any single ink is
+                // wrong somewhere, and choosing one per state makes the digits change colour
+                // for reasons that have nothing to do with what they say.
+                let ink = if is_target { Color::srgb(1.0, 0.94, 0.72) } else { Color::WHITE };
+                // WHOSE BODY THIS IS, INSIDE THE CIRCLE. The ring's interior is the one piece
+                // of ground in the arena with nothing drawn on it, it belongs to exactly one
+                // fighter, and it sits where the eye already is — so the name goes there
+                // rather than on a plate hanging over the head, where four of them in a row
+                // become a line of text across the middle of a fight. In the SIDE's colour,
+                // which is the one fact the liquid gave up when green became life.
+                // ⚠️ **BEHIND THE FEET, NOT IN FRONT OF THEM.** Three things want the
+                // front-bottom of the same body — the HP digits on the band, the command
+                // wheel's near wedge, and this — and on screen they stack into one unreadable
+                // pile. The inside-back of the circle is the only part of that disc nothing
+                // else claims, and a UI plate draws over the sprite standing in it anyway.
+                if let Ok(name_at) =
+                    cam.world_to_viewport(cam_tf, centre - front * (battle_rings::TEXT_RADIUS * 0.44))
+                {
+                    let nfs = (fs * 0.82).max(8.0);
+                    let w = nfs * 0.62 * (commanding_name.chars().count() as f32) + 10.0;
+                    p.spawn((
+                        Node {
+                            border_radius: BorderRadius::all(Val::Px(nfs * 0.45)),
+                            position_type: PositionType::Absolute,
+                            left: Val::Px(name_at.x - w * 0.5),
+                            top: Val::Px(name_at.y - nfs * 0.7),
+                            width: Val::Px(w),
+                            justify_content: JustifyContent::Center,
+                            padding: UiRect::axes(Val::Px(4.0), Val::Px(0.0)),
+                            ..default()
+                        },
+                        // A plate, because the inside of the ring is bare ground: the name is
+                        // the one thing here NOT painted on the stroke, so it carries its own.
+                        BackgroundColor(Color::srgba(0.04, 0.05, 0.08, 0.62)),
+                    ))
+                    .with_children(|n| {
+                        n.spawn((
+                            Text::new(commanding_name.clone()),
+                            TextFont { font_size: FontSize::Px(nfs), ..default() },
+                            TextColor(battle_rings::ring_color(c, mine)),
+                        ));
+                    });
+                }
+                let places: Vec<(Vec2, f32)> =
+                    battle_rings::arc_text(label.chars().count(), fs * 0.62, project);
+                // ⚠️ **THE OUTLINE IS A SECOND, BIGGER GLYPH BEHIND THE FIRST.** Only a
+                // Regular face ships (`JetBrainsMonoNerdFont-Regular`), so weight has to be
+                // drawn rather than selected — and a dark glyph a fifth larger peeks out on
+                // every side of the light one, which is an outline AND the extra heft in one
+                // node instead of the four an offset-per-direction outline would cost, on a
+                // readout that is rebuilt whenever a body moves.
+                for (pass, (col, size)) in
+                    [(Color::srgb(0.03, 0.05, 0.04), fs * 1.34), (ink, fs)].into_iter().enumerate()
+                {
+                    for (ch, (at, rot)) in label.chars().zip(places.iter().copied()) {
+                        let box_w = fs * 1.4;
+                        p.spawn((
+                            Node {
+                                position_type: PositionType::Absolute,
+                                left: Val::Px(at.x - box_w * 0.5),
+                                top: Val::Px(at.y - box_w * 0.62),
+                                width: Val::Px(box_w),
+                                height: Val::Px(box_w * 1.24),
+                                justify_content: JustifyContent::Center,
+                                align_items: AlignItems::Center,
+                                ..default()
+                            },
+                            UiTransform::from_rotation(Rot2::radians(rot)),
+                            // Spawn order is draw order, so the dark pass has to come first.
+                            GlobalZIndex(if pass == 0 { 1 } else { 2 }),
+                        ))
+                        .with_children(|g| {
+                            g.spawn((
+                                Text::new(ch.to_string()),
+                                TextFont { font_size: FontSize::Px(size), ..default() },
+                                TextColor(col),
+                            ));
+                        });
                     }
-                });
+                }
             }
         });
 }
+
+/// How far above the ground the digits are written — the ring's own height, so the number and
+/// the stroke it is written on foreshorten together instead of one floating over the other.
+const RING_TEXT_LIFT: f32 = 0.031;
 
 /// Full-screen, non-interactive layer holding the floating status-effect icons that
 /// hover over each afflicted combatant. Rebuilt every frame like [`render_enemy_panel`].
@@ -3480,284 +3472,6 @@ pub(crate) fn ally_cell(
         });
 }
 
-/// Immediate-mode party window (bottom-left): one row per hero with HP bar, ATB
-/// gauge, the active-hero highlight, a ready flag, and the queued-order icon.
-/// One Lufia-style party window (name + Lv, HP + ATB bars, portrait, order icon).
-/// How many heroes a player may field. Mirrors `[runs] party_size_per_player`, which the
-/// client cannot read — it is a separate workspace with no balance loader.
-const PARTY_SLOTS: usize = 4;
-
-/// A party cell's share of the HUD row, as a percentage.
-///
-/// A FIXED share rather than `flex_grow`, which is what makes the row build out from the
-/// centre: below a full party there is nothing to shrink, so two heroes are two
-/// quarter-width cells in the middle of the bar instead of two half-screen ones jammed
-/// against the left edge.
-const PARTY_CELL_PCT: f32 = 100.0 / PARTY_SLOTS as f32;
-
-pub(crate) fn party_cell(
-    parent: &mut ChildSpawnerCommands,
-    battle: &BattleData,
-    hitfx: &HitFx,
-    feel: &BattleFeel,
-    menu: &BattleMenu,
-    flash: &AtbFlash,
-    id: &str,
-    _idx: usize,
-) {
-    let Some(c) = battle.view(id) else { return };
-    let active = battle.active.as_deref() == Some(id);
-    let ready = battle.ready.contains(id);
-    let queued = battle.queued.get(id).map(|o| o.kind);
-    // While aiming an ally-targeted action, this cell is a candidate; the cursor one
-    // gets the bright ring (reusing the active-hero highlight colour).
-    let (_is_cand, is_target_cursor) = target_state(menu, id);
-    let hp_frac = c.hp as f32 / c.max_hp.max(1) as f32;
-    let gauge = c.gauge.clamp(0.0, 1.0) as f32;
-    let name = battle.hero_label(id);
-    let hurt = flashing(hitfx, feel, id);
-    // "Turn's up" pop: 1.0 the instant the gauge fills, fading to 0 over the TTL.
-    let atb_pop = flash
-        .age
-        .get(id)
-        .map(|a| (1.0 - a / feel.atb_flash_ttl).clamp(0.0, 1.0))
-        .unwrap_or(0.0);
-    // Frosted glass: hairline edge normally, a brighter gold edge for the active /
-    // target hero so it still stands out without a heavy border.
-    let base_border = if is_target_cursor || active {
-        glass::ACTIVE_EDGE
-    } else {
-        glass::EDGE_SOFT
-    };
-    parent
-        .spawn((
-            // The whole cell is a button: tap it to command that hero (see
-            // `party_select_click`).
-            Button,
-            PartyCellButton { id: id.to_string() },
-            Node {
-                border_radius: BorderRadius::all(Val::Px(10.0)),
-                // ⚠️ A CELL IS A QUARTER OF THE ROW WHATEVER THE PARTY SIZE, and the row
-                // CENTRES them. `flex_grow: 1.0` with a zero basis made every cell share
-                // the full width instead, so a party of two got two enormous half-screen
-                // cells and a party of three three fat ones — the HUD changed shape with
-                // the roster, and the readout inside it stretched with it.
-                //
-                // Shrink stays on so four cells plus their gaps still fit exactly; below
-                // four there is nothing to shrink and a cell is its true quarter, which is
-                // what makes two heroes read as two cells in the middle of the bar rather
-                // than as a different HUD.
-                flex_grow: 0.0,
-                flex_shrink: 1.0,
-                flex_basis: Val::Percent(PARTY_CELL_PCT),
-                flex_direction: FlexDirection::Row,
-                column_gap: Val::Px(8.0),
-                padding: UiRect::all(Val::Px(7.0)),
-                border: UiRect::all(Val::Px(1.0)),
-                ..default()
-            },
-            // Flash the edge toward bright gold-white as the turn comes up.
-            BorderColor::all(if atb_pop > 0.0 {
-                lerp_color(base_border, Color::srgb(1.0, 0.98, 0.7), atb_pop)
-            } else {
-                base_border
-            }),
-            // A condition repaints the cell, so the HP/ATB readout itself carries the news.
-            // Being hit still wins (it is the most urgent thing on screen), and so does the
-            // active/target highlight — you must always be able to see whose turn it is.
-            BackgroundColor(if hurt {
-                Color::srgba(0.4, 0.12, 0.14, 0.55)
-            } else if is_target_cursor {
-                Color::srgba(0.28, 0.26, 0.1, 0.5)
-            } else if active {
-                glass::ACTIVE
-            } else if let Some((tint, _)) = condition_tint(&c.statuses) {
-                tint.with_alpha(0.5)
-            } else {
-                glass::GLASS_THIN
-            }),
-        ))
-        .with_children(|cell| {
-            // Compact 3-line readout: name + Lv/tag, HP bar (number inside), ATB bar.
-            cell.spawn(Node {
-                flex_grow: 1.0,
-                flex_direction: FlexDirection::Column,
-                row_gap: Val::Px(2.0),
-                ..default()
-            })
-            .with_children(|col| {
-                // Line 1: name (left); Lv + action tag (right).
-                col.spawn(Node {
-                    flex_direction: FlexDirection::Row,
-                    justify_content: JustifyContent::SpaceBetween,
-                    align_items: AlignItems::Center,
-                    column_gap: Val::Px(6.0),
-                    ..default()
-                })
-                .with_children(|line| {
-                    line.spawn((
-                        Text::new(name),
-                        TextFont { font_size: FontSize::Px(16.0), ..default() },
-                        TextColor(if c.hp == 0 {
-                            Color::srgb(0.55, 0.55, 0.6)
-                        } else {
-                            Color::srgb(0.85, 0.92, 1.0)
-                        }),
-                    ));
-                    line.spawn(Node {
-                        flex_direction: FlexDirection::Row,
-                        align_items: AlignItems::Center,
-                        column_gap: Val::Px(6.0),
-                        ..default()
-                    })
-                    .with_children(|right| {
-                        let (tag, tag_color) = match queued {
-                            Some(k) => (k.tag().to_string(), k.color()),
-                            None if ready => ("!".to_string(), Color::srgb(0.98, 0.8, 0.3)),
-                            None => (String::new(), Color::NONE),
-                        };
-                        if !tag.is_empty() {
-                            right.spawn((
-                                Text::new(tag),
-                                TextFont { font_size: FontSize::Px(13.0), ..default() },
-                                TextColor(tag_color),
-                            ));
-                        }
-                        right.spawn((
-                            Text::new(format!("Lv{}", c.level)),
-                            TextFont { font_size: FontSize::Px(12.0), ..default() },
-                            TextColor(Color::srgb(0.95, 0.85, 0.4)),
-                        ));
-                    });
-                });
-                // Line 2: HP bar with the number inside, plus status suffixes when
-                // present — Barrier ◆, Regen /t, Evasion ~%, Adrenaline ⚡ (the
-                // action tag already rides Line 1, so it isn't repeated here).
-                let barrier = status_num(&c.statuses, "barrier:");
-                let regen = status_num(&c.statuses, "regen:");
-                let evasion = status_num(&c.statuses, "evasion:");
-                let mut hp_label = format!("{}/{}", c.hp, c.max_hp);
-                // Status suffixes use Nerd Font icons (see UiFont): shield =
-                // Barrier, heart-pulse = Regen, runner = Evasion, bolt = Adrenaline.
-                if barrier > 0 {
-                    hp_label.push_str(&format!("  \u{f132}{barrier}")); // shield = Barrier
-                }
-                if regen > 0 {
-                    hp_label.push_str(&format!("  \u{f05f7}{regen}/t")); // heart-pulse = Regen/turn
-                }
-                if evasion > 0 {
-                    hp_label.push_str(&format!("  \u{f070e}{evasion}%")); // runner = Evasion (dodge)
-                }
-                let adrenaline_max = status_num(&c.statuses, "adrenaline_max:");
-                if adrenaline_max > 0 {
-                    let adr = status_num(&c.statuses, "adrenaline:");
-                    hp_label.push_str(&format!("  \u{f0e7}{adr}/{adrenaline_max}")); // bolt = Adrenaline
-                }
-                meter_labeled(col, hp_frac, 15.0, Color::srgb(0.35, 0.6, 0.95), hp_label);
-                // Line 3: ATB bar — flares gold-white the instant the gauge fills.
-                let atb_fill = lerp_color(
-                    Color::srgb(0.4, 0.85, 0.5),
-                    Color::srgb(1.0, 0.98, 0.7),
-                    atb_pop,
-                );
-                meter(col, gauge, 6.0, atb_fill);
-                // Psyker: a compact row of Focus slots (filled = manifestation abbrev).
-                let (fmax, foci) = parse_foci(&c.statuses);
-                if fmax > 0 {
-                    col.spawn(Node {
-                        flex_direction: FlexDirection::Row,
-                        column_gap: Val::Px(5.0),
-                        margin: UiRect::top(Val::Px(1.0)),
-                        ..default()
-                    })
-                    .with_children(|row| {
-                        for slot in 0..fmax {
-                            let (label, filled) = match foci.get(slot) {
-                                Some((k, s)) => {
-                                    let tag = if *s > 1 {
-                                        format!("{}{}", manifest_abbrev(k), s)
-                                    } else {
-                                        manifest_abbrev(k)
-                                    };
-                                    (tag, true)
-                                }
-                                None => ("-".to_string(), false),
-                            };
-                            row.spawn((
-                                Text::new(label),
-                                TextFont { font_size: FontSize::Px(12.0), ..default() },
-                                TextColor(if filled {
-                                    Color::srgb(0.8, 0.6, 1.0)
-                                } else {
-                                    Color::srgb(0.4, 0.45, 0.6)
-                                }),
-                            ));
-                        }
-                    });
-                }
-            });
-        });
-}
-
-/// Immediate-mode party grid: a 2×2 of Lufia-style windows across the bottom,
-/// with the command cross floating in the centre gap.
-pub(crate) fn render_party_window(
-    mut commands: Commands,
-    battle: Res<BattleData>,
-    hitfx: Res<HitFx>,
-    feel: Res<BattleFeel>,
-    menu: Res<BattleMenu>,
-    flash: Res<AtbFlash>,
-    existing: Query<Entity, With<PartyWindow>>,
-) {
-    // Rebuild on change, not on frame — see `render_enemy_panel`.
-    if !(existing.is_empty()
-        || battle.is_changed()
-        || hitfx.is_changed()
-        || feel.is_changed()
-        || menu.is_changed()
-        || flash.is_changed())
-    {
-        return;
-    }
-    for e in &existing {
-        commands.entity(e).despawn();
-    }
-    let ids = battle.your_ids.clone();
-    // Compact HD-2D HUD: a single row of slim hero status cells across the very
-    // bottom, leaving the arena above open for the 3D combatant sprites.
-    commands
-        .spawn((
-            PartyWindow,
-            Node {
-                position_type: PositionType::Absolute,
-                left: Val::Px(10.0),
-                right: Val::Px(10.0),
-                bottom: Val::Px(10.0),
-                // Tall enough for 4 lines: name + HP + ATB + the Psyker's Focus-slot
-                // row. At 74px the Focus row overflowed and clipped the ATB bar, so
-                // a Psyker's gauge looked like it never filled.
-                height: Val::Px(92.0),
-                flex_direction: FlexDirection::Row,
-                column_gap: Val::Px(8.0),
-                // BUILD OUT FROM THE CENTRE. A party of two or three used to be laid out
-                // as four slots with the empty ones spawned as flex-grow spacers, so the
-                // heroes bunched against the LEFT edge and the right of the bar was a hole
-                // — which reads as a missing panel rather than as a smaller party.
-                justify_content: JustifyContent::Center,
-                ..default()
-            },
-        ))
-        .with_children(|row| {
-            // Only the heroes we actually field. No placeholder slots: an empty slot is
-            // not a thing the player has, and spawning one is what pushed the party off
-            // centre in the first place.
-            for (i, id) in ids.iter().take(PARTY_SLOTS).enumerate() {
-                party_cell(row, &battle, &hitfx, &feel, &menu, &flash, id, i);
-            }
-        });
-}
-
 /// Start a fading flash for any hero whose ATB just filled (rising edge into
 /// `ready`) and age out the running ones — the "your turn is up" pop that
 /// [`party_cell`] renders on the ATB bar. Frozen in the static mockup.
@@ -4065,32 +3779,6 @@ pub(crate) fn push_hit_fx(hitfx: &mut HitFx, e: &HitEffect, show_elements: bool)
 mod pack_tests {
     use super::*;
 
-    /// **A FULL PARTY IS EXACTLY THE ROW, AND A SMALLER ONE IS CENTRED IN IT.** The cells
-    /// are a fixed share rather than `flex_grow` — that is what centres a party of two or
-    /// three — so the share has to tile a full party precisely. Over a quarter and four
-    /// heroes overflow the bar; under it and a full party leaves a hole, which is the bug
-    /// this replaced wearing different clothes.
-    ///
-    /// `flex_shrink` stays on to absorb the 8px gaps at exactly four; it must never be
-    /// absorbing the CELLS, or the HUD changes size with the roster again.
-    #[test]
-    fn a_full_party_is_exactly_the_hud_row() {
-        let full = PARTY_CELL_PCT * PARTY_SLOTS as f32;
-        assert!(
-            (full - 100.0).abs() < 0.01,
-            "{PARTY_SLOTS} cells at {PARTY_CELL_PCT}% each is {full}% of the row"
-        );
-        // The centring claim itself: below a full party the cells cannot fill the row, so
-        // `justify_content: Center` has slack to work with and puts them in the middle.
-        for fielded in 1..PARTY_SLOTS {
-            let used = PARTY_CELL_PCT * fielded as f32;
-            assert!(
-                used < 100.0,
-                "a party of {fielded} already fills the row ({used}%), so there is nothing \
-                 for the centring to centre"
-            );
-        }
-    }
 
     /// **EVERY CREATURE BILLBOARD IN THE ARENA IS GROUNDED THROUGH THE ONE RULE.**
     ///

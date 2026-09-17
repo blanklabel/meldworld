@@ -903,7 +903,10 @@ than as impact — and cleared by `reset_battle_fx`, or it follows the camera on
 overworld where nothing is hitting anybody. A **crit** lifts both the burst and the shake:
 the number already says CRIT!, and text being the loudest feedback in a fight is the gap.
 
-⚠️ **`make check` NEVER BOOTS THE APP, so a WGSL error ships green.** `MELD_FX=<element>|all`
+⚠️ **`make check` NEVER BOOTS THE APP, so a WGSL error ships green.** `MELD_BATTLE=1` also
+drains and refills a hero on a loop (`mock_ring_liquid`), because the two things a feet ring
+exists to show — the bed a hit opens and the green flowing back over it — are unreachable in
+a still frame otherwise. `MELD_FX=<element>|all`
 fires casts on a loop inside the `MELD_BATTLE` mockup — which otherwise resolves nothing, so
 a battle effect is unreachable in a screenshot. It re-fires just UNDER the burst's own TTL,
 because a capture is one frame at an arbitrary moment and a cadence longer than the effect
@@ -942,11 +945,49 @@ order to expect: a control that lit up and did nothing was a louder lie than the
 had been. Anything that makes affordance visible has to land together with the greying, or
 it advertises every remaining gap.
 
-**THE PARTY HUD BUILDS OUT FROM THE CENTRE.** A cell is a quarter of the row at every party
-size and the row centres them. It used to spawn four slots and fill the empty ones with
-flex-grow spacers, so two heroes bunched against the LEFT edge with a hole on the right —
-which reads as a missing panel rather than as a smaller party. The arena had this right
-already (`x = (i - (n-1)/2) * 2.7`); it was the HUD alone.
+**THE FIGHT IS READ ON THE BODIES FIGHTING IT.** There is no party HUD along the bottom edge
+and no plate floating over a creature: a combatant's health is a **ring on the ground at its
+feet** ([`battle_rings.rs`](client/crates/meld-client/src/battle_rings.rs) +
+`feet_ring.wgsl`), and the orders for whoever is being asked are a **wheel of wedges
+around that hero** ([`battle_radial.rs`](client/crates/meld-client/src/battle_radial.rs) +
+`command_wheel.wgsl`), lying on the ground with the body standing in it. A readout kept
+anywhere else makes "how is the Knight doing" a question you answer by looking away from the
+Knight, and four heroes against a pack of five put nine of them around the edges of a fight
+happening in the middle.
+
+The ring is read as **LIQUID**: a green pool, the red bed a hit opens under it, a dark vessel
+holding both, gradients rather than cuts between the three. **Green is life and red is what
+life cost** — whose body it is rides the outer hairline, since the body is standing inside the
+ring. The pool is centred on the arc nearest the camera and empties toward the BACK, so the
+readable half stays full until the fighter is nearly gone; the HP number is written into the
+stroke along its own curve, a glyph at a time, each turned to the tangent taken from the
+PROJECTION (the ring is an ellipse on screen, so the tangent at an angle is not that angle).
+⚠️ The red bed **holds** before it drains — a bar that starts closing on the frame it opened
+shows a fifth of a bar for a third of a second, which neither a capture nor an eye catches.
+A **Barrier** lines the inner wall in steel blue (temp HP is a shell in front of health, so it
+belongs on the health readout and inside the stroke, which is what a blow meets first), the
+pool **boils and embers** under a third of a bar, and a blow sends a narrow line across the
+stroke. The fighter's NAME sits inside the circle in its own side's colour.
+⚠️ **AND THE RING FOLLOWS THE BODY.** The lunge, recoil and shake are written onto the sprite
+BILLBOARD and the ring is its SIBLING, so a hero that stepped forward to swing left its health
+bar behind it. `ring_follows_body` copies the sprite's own horizontal offset rather than
+re-deriving the motion; the digits and the command wheel both anchor on the RING.
+
+⚠️ **THE WHEEL SITS BEHIND THE BODY BY HALF ITS RADIUS, AND OUTSIDE THE HEALTH RING.** The
+party stands at the bottom edge of the frame and a ground wheel has a front: centred on the
+feet its near wedge runs off the screen, and at a token set-back it lands on the HP digits.
+Nesting it inside the health ring the way the reference art does is impossible at this camera
+— the health band's inner wall caps an inner wheel at ~73px of screen radius for five words.
+⚠️ **AND THE ARROWS ARE NOT A D-PAD ANY MORE.** The cross mapped `ArrowDown` to FLEE and
+`ArrowRight` to DEFEND — the hazard `swallow_the_key_you_walked_in_on` exists to catch. ←/→
+run the cursor round the wheel (it WRAPS; a wheel has no ends), Enter picks, every wedge
+carries its own letter key, and **Flee is off the arrows entirely**. Auto-battle is its own corner chip, because it
+is a decision about the FIGHT and the menu it used to sit in is gone between turns.
+
+**AND THE ARENA BUILDS OUT FROM THE CENTRE.** `x = (i - (n-1)/2) * 2.7` at every party size —
+the retired HUD row spawned four slots and filled the empty ones with flex-grow spacers, so
+two heroes bunched against the LEFT edge with a hole on the right, which reads as a missing
+panel rather than as a smaller party.
 
 **A number belongs to the combatant it landed on — anchor to the ACTOR, never to a role.**
 `render_hit_fx` used to place a floating number by identity: `monster_combatant` (which is

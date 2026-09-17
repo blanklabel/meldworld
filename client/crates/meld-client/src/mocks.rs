@@ -218,6 +218,8 @@ pub(crate) fn mock_battle_setup(
     // (the one thing that tells you whose turn is coming) is in the frame.
     perks.0.hunter_intel = 3;
     add(&mut battle, "h1", &["barrier:8", "regen:3"]);
+    // …and a deep one on a creature, so the lining is wide enough to READ in a capture.
+    add(&mut battle, "grendel", &["barrier:22"]);
 
     add(&mut battle, "h3", &["evasion:20"]);
     // The turn-order bar's THIRD rail needs somebody on it, from both sides: a hero that
@@ -336,6 +338,46 @@ pub(crate) fn mock_battle_opening(
     // ordinary bell, which has its own FIGHT! card since the grace beat otherwise reads as
     // the screen having frozen.
     open.raise(&spec);
+}
+
+/// **DRAIN AND REFILL A RING, SO A CAPTURE CAN CATCH THE LIQUID MOVING.** The static fixture
+/// holds every combatant at one HP forever, which means the two things the ring exists to show
+/// — the red bed a hit opens and the green flowing back over it — are unreachable in a
+/// screenshot, and the one reading nobody can infer from a still frame was the one never in
+/// one. Walks a hero down in bites and then heals it back in one.
+///
+/// Same argument as `MELD_FX`'s cast tour and `MELD_TALLY`'s held haul.
+pub(crate) fn mock_ring_liquid(
+    time: Res<Time>,
+    mut battle: ResMut<BattleData>,
+    mut hitfx: ResMut<HitFx>,
+    mut next_at: Local<f32>,
+) {
+    if !battle_mockup_flag() {
+        return;
+    }
+    let now = time.elapsed_secs();
+    if now < *next_at {
+        return;
+    }
+    *next_at = now + 1.1;
+    let Some(c) = battle.combatants.iter_mut().find(|c| c.id == "h1") else {
+        return;
+    };
+    // Down in bites so the bed is open for most of the cycle, then back up in one so the heal
+    // sweep is a distinct event rather than the mirror of the drain. It is walked all the way
+    // into the DANGER band on purpose: the boil is the one ring state a healthy fixture can
+    // never show, and it is the state a player most needs to catch out of the corner of an eye.
+    if c.hp <= c.max_hp / 8 {
+        c.hp = c.max_hp;
+    } else {
+        c.hp = (c.hp - c.max_hp / 6).max(1);
+    }
+    // …and step the body, because the other half of this is whether the ring TRAVELS with it.
+    // A lunge is written onto the sprite and the ring is that sprite's sibling, so a capture
+    // of a hero mid-step is the only thing that can show the two staying together.
+    hitfx.acts.insert("h1".to_string(), 0.0);
+    hitfx.act_target.insert("h1".to_string(), "grendel".to_string());
 }
 
 /// **RE-FIRE THE RECOIL SO A CAPTURE CAN CATCH IT.** A knock backwards is a punch that lasts

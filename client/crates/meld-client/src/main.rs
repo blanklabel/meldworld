@@ -37,7 +37,9 @@ use net::{ClientCmd, CombatantView, EntityKind, GearLine, Net, SkillLine};
 mod ambient; // client-side decorative life: world-snapped grass scatter + biome motes
 mod builder;
 mod battle; // ATB command panel, party HUD, 3D arena + camera, per-class kits
-mod battle_fx; // elemental impact bursts, the screen wash, and buff/rage sprite reactions
+mod battle_fx;
+mod battle_radial; // the five root verbs, arced around the hero being asked
+mod battle_rings; // each combatant's health, painted on the ground at its feet // elemental impact bursts, the screen wash, and buff/rage sprite reactions
 mod city; // The Last City hub: districts, plaza, HUD
 mod feel; // battle-feel timings/magnitudes, in one runtime-tunable place
 mod flags; // launch-time `MELD_*` / `?query` toggles
@@ -331,6 +333,8 @@ fn main() {
         // a plain `Node` cannot ramp a gradient or add light (see `turn_order::FireTrail`).
         .add_plugins(bevy::ui_render::UiMaterialPlugin::<turn_order::FireTrail>::default())
         .add_plugins(bevy::ui_render::UiMaterialPlugin::<turn_order::StateFx>::default())
+        .add_plugins(MaterialPlugin::<battle_rings::FeetRing>::default())
+        .add_plugins(MaterialPlugin::<battle_radial::CommandWheel>::default())
         .add_plugins(MaterialPlugin::<battle_fx::AbilityFx>::default())
         .add_plugins(MaterialPlugin::<battle_fx::ScreenWash>::default())
         // The corner map's ground. A map is a GRID, and it was being drawn as one
@@ -796,9 +800,11 @@ fn main() {
             OnExit(Screen::Battle),
             (
                 despawn::<BattleScene>,
-                despawn::<PartyWindow>,
                 despawn::<AllyPartyStrips>,
                 despawn::<CommandWindow>,
+                despawn::<battle_radial::RadialMenu>,
+                despawn::<battle_radial::CommandWheelDisc>,
+                despawn::<battle_radial::AutoChipRoot>,
                 despawn::<HitFxRoot>,
                 despawn::<BattleActor>,
                 // Floating status badges (regen/barrier/…) are rebuilt each frame by
@@ -839,8 +845,7 @@ fn main() {
                 party_select_click,
                 rebuild_command_menu,
                 style_command_menu,
-                render_enemy_panel,
-                render_party_window,
+                render_ring_labels,
                 render_ally_parties,
                 ally_collapse_click,
                 advance_hit_fx,
@@ -889,6 +894,22 @@ fn main() {
                 mocks::mock_battle_fx,
                 mocks::mock_battle_opening,
                 mocks::mock_turn_recoil,
+                mocks::mock_ring_liquid,
+            )
+                .run_if(in_state(Screen::Battle)),
+        )
+        // The orders arced around the acting hero (`battle_radial`). Its own call for the same
+        // reason `battle_fx` and `turn_order` have one: the Battle tuple above is already
+        // nested once to stay under Bevy's arity cap, and overflowing it produces a wall of
+        // type error that says nothing at all about arity.
+        .add_systems(
+            Update,
+            (
+                battle_radial::rebuild_radial_menu,
+                battle_radial::drive_command_wheel,
+                battle_radial::follow_radial_menu,
+                battle_radial::rebuild_auto_chip,
+                battle_radial::style_radial,
             )
                 .run_if(in_state(Screen::Battle)),
         )
@@ -898,7 +919,12 @@ fn main() {
         // names `IntoObserverSystem` and says nothing at all about arity.
         .add_systems(
             Update,
-            (turn_order::rebuild_turn_bar, turn_order::animate_turn_bar)
+            (
+                turn_order::rebuild_turn_bar,
+                turn_order::animate_turn_bar,
+                battle_rings::drive_rings,
+                battle_rings::ring_follows_body,
+            )
                 .run_if(in_state(Screen::Battle)),
         )
         // Onboarding: the guided [T]-dive's first-fight command-menu walkthrough.
@@ -1571,8 +1597,8 @@ enum TutorialStep {
 }
 
 /// The first tutorial battle's paced, one-at-a-time Attack/Defend/Skill/Flee
-/// explainer — a sub-state of `TutorialStep::Fight`. Order matches the d-pad
-/// cross's own layout (`rebuild_command_menu`).
+/// explainer — a sub-state of `TutorialStep::Fight`. Each step brightens its own chip on the
+/// arc around the acting hero (`battle_radial`), in place, rather than pointing at one.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum BattleIntroStep {
     Attack,
@@ -1767,48 +1793,12 @@ enum QueuedKind {
     Flee,
 }
 
-impl QueuedKind {
-    /// Short tag shown as the queued-order icon next to a hero.
-    fn tag(self) -> &'static str {
-        match self {
-            QueuedKind::Attack => "ATK",
-            QueuedKind::Defend => "DEF",
-            QueuedKind::Skill(_) => "SKL",
-            QueuedKind::Item(_) => "ITM",
-            QueuedKind::Focus("cast", _) => "CST",
-            QueuedKind::Focus("reinforce", _) => "RNF",
-            QueuedKind::Focus("revoke", _) => "RVK",
-            QueuedKind::Focus(_, _) => "FOC",
-            QueuedKind::Hold => "...",
-            QueuedKind::Flee => "FLEE",
-        }
-    }
-    fn color(self) -> Color {
-        match self {
-            QueuedKind::Attack => Color::srgb(0.95, 0.55, 0.5),
-            QueuedKind::Defend => Color::srgb(0.55, 0.7, 1.0),
-            QueuedKind::Skill(_) => Color::srgb(0.8, 0.6, 1.0),
-            QueuedKind::Item(_) => Color::srgb(0.5, 0.9, 0.6),
-            QueuedKind::Focus(_, _) => Color::srgb(0.8, 0.6, 1.0),
-            QueuedKind::Hold => Color::srgb(0.6, 0.65, 0.8),
-            QueuedKind::Flee => Color::srgb(1.0, 0.5, 0.45),
-        }
-    }
-}
 
 /// The Psyker's manifestations, read from the shared registry rather than listed
 /// here: a hand-kept copy silently stops offering whatever the server learned to
 /// resolve, which is exactly what happened when the ladder grew past four.
 fn manifests() -> Vec<&'static meld_proto::skills::SkillDef> {
     meld_proto::skills::skills_for_class("psyker")
-}
-
-/// Short two-letter tag for a manifestation kind (focus-bar display).
-fn manifest_abbrev(kind: &str) -> String {
-    kind.split('_')
-        .filter_map(|w| w.chars().next())
-        .map(|c| c.to_ascii_uppercase())
-        .collect()
 }
 
 /// Parse a Psyker's Focus state out of its wire statuses:
@@ -2758,9 +2748,10 @@ fn menu_entries(
             e("Hold", EntryAction::Hold),
             e("Flee", EntryAction::Flee),
         ],
-        // The d-pad cross keys off these indices: 0 Attack (centre), 1 Defend
-        // (right), 2 Item (left), 3 Skill (up), 4 Flee (down). Keep this order in
-        // sync with `rebuild_command_menu`'s cross and `menu_keyboard`'s arrows.
+        // ⚠️ **THE INDEX IS THE CONTRACT.** `battle_radial::SLOTS` places a chip per index and
+        // `menu_click` fires whatever index the chip carries, so reordering this list points
+        // every chip at a different verb — silently. 0 Attack, 1 Defend, 2 Item, 3 Skill,
+        // 4 Flee, and a test in `battle_radial` holds the arc to covering exactly these.
         MenuLevel::Root => vec![
             e("Attack", EntryAction::Attack),
             // ⚠️ DEFEND BUYS TEMPO TOO, and nothing said so. The row halves the next blow
@@ -2892,9 +2883,6 @@ struct OverworldRoot;
 /// Immediate-mode enemy panel + battle banner (top of the screen).
 #[derive(Component)]
 struct BattleScene;
-/// Immediate-mode party status window (bottom-left).
-#[derive(Component)]
-struct PartyWindow;
 /// Immediate-mode edge strips showing joined allies' parties (north/west/east).
 #[derive(Component)]
 struct AllyPartyStrips;
