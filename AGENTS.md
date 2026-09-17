@@ -962,6 +962,25 @@ ring. The pool is centred on the arc nearest the camera and empties toward the B
 readable half stays full until the fighter is nearly gone; the HP number is written into the
 stroke along its own curve, a glyph at a time, each turned to the tangent taken from the
 PROJECTION (the ring is an ellipse on screen, so the tangent at an angle is not that angle).
+⚠️ **AND IT RIDES THE SURFACE FACING THE VIEWER, NOT THE CENTRE-LINE.** `TEXT_RADIUS` is the
+torus's MAJOR radius — the circle through the MIDDLE of the tube, where nothing is drawn — so
+digits written there straddle the rim, half on the green and half over the bare ground inside
+the hole. That is what *"the text isn't on the glass tube"* looks like, and two attempts to
+nudge it with a constant both failed and had to: **the offset is a DIRECTION, not a height.**
+The part of a fat tube a camera sees is its centre-line pushed one minor radius straight AT
+the camera — outward and upward together, in proportions that change with the pitch — so it is
+taken from the camera each frame and stays seated at any angle. A shade past the surface
+(1.15x), because a glyph is placed by its centre and read by its mass.
+⚠️ **A `ForwardDecal` is the better answer and it is BLOCKED.** Projecting the number onto the
+tube would wrap the curve for free, and `bevy_pbr`'s forward decals require a `DepthPrepass` on
+the camera rendering them — which this camera deliberately does not have, because
+`ground_biome.wgsl` displaces the ground in its vertex stage and does not override
+`prepass_vertex_shader`, so the prepass rasterises the ground FLAT and the world renders as a
+strip of land over open sky. The prerequisite is a prepass vertex entry applying the same
+`total_height`, exactly as `spawn_camera`'s own note says. Note also that the obvious spawn
+(`ForwardDecal` + a plain `StandardMaterial`) does not compile: it wants
+`ForwardDecalMaterial<StandardMaterial>`, an `ExtendedMaterial`. And a live number cannot be a
+static PNG, so it needs a glyph atlas or a procedural font in the decal's own shader.
 ⚠️ The red bed **holds** before it drains — a bar that starts closing on the frame it opened
 shows a fifth of a bar for a third of a second, which neither a capture nor an eye catches.
 

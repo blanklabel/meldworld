@@ -3011,9 +3011,30 @@ pub(crate) fn render_ring_labels(
                 else {
                     continue;
                 };
+                // ⚠️ **THE DIGITS RIDE THE SURFACE FACING THE VIEWER, NOT THE CENTRE-LINE.**
+                // `TEXT_RADIUS` is the torus's MAJOR radius — the circle through the middle of
+                // the tube — and the middle of a fat tube is inside it, where nothing is drawn.
+                // Written there the number straddled the rim: half on the green, half over the
+                // bare ground in the hole, which is what "the text isn't on the tube" looks
+                // like. Two attempts to nudge it with a constant both failed, and had to: the
+                // offset is not a height, it is a direction. The point of the tube a camera
+                // actually sees is its centre-line pushed one minor radius STRAIGHT AT THE
+                // CAMERA — outward and upward together, in proportions that change with the
+                // pitch. Taken from the camera itself, so it stays on the tube at any angle
+                // rather than at the one the battle camera happens to sit at today.
+                //
+                // ⚠️ A shade PAST the surface (1.15), because a glyph is placed by its centre
+                // and read by its mass: seated exactly on the tangent point the digits' tops
+                // ran over the inner rim, since most of a numeral sits above its own centre.
+                let to_cam = (cam_tf.translation() - centre).normalize_or_zero();
+                let reach = battle_rings::RING_MINOR * 1.15;
+                let surface_out = to_cam.with_y(0.0).length() * reach;
+                let surface_up = to_cam.y * reach;
+                let band = centre + Vec3::Y * surface_up;
+                let radius = battle_rings::TEXT_RADIUS + surface_out;
                 let project = |theta: f32| {
                     let dir = Quat::from_rotation_y(theta) * front;
-                    cam.world_to_viewport(cam_tf, centre + dir * battle_rings::TEXT_RADIUS)
+                    cam.world_to_viewport(cam_tf, band + dir * radius)
                         .ok()
                         .map(|v| Vec2::new(v.x, v.y))
                 };
@@ -3021,7 +3042,10 @@ pub(crate) fn render_ring_labels(
                 // Sized off the ring's own on-screen size, so a creature at the back of the
                 // arena gets a number in proportion to the bar it is written on instead of a
                 // fixed one that swallows it.
-                let fs = (px_per_rad * 0.185).clamp(10.0, 21.0);
+                // ⚠️ **AND BIG ENOUGH TO BE THE READOUT.** The ceiling was 21px, which on a
+                // body near the camera left the number smaller than the tube carrying it — a
+                // health bar whose number is the faintest thing on it.
+                let fs = (px_per_rad * 0.205).clamp(11.0, 26.0);
                 // ⚠️ **THE NUMBER IS WHAT THE BAR IS SHOWING, NOT WHAT THE WIRE SAYS.** The
                 // meter rolls (EarthBound's), so reading `c.hp` here would have the digits
                 // land on the new value while the liquid behind them was still counting down
@@ -3097,8 +3121,12 @@ pub(crate) fn render_ring_labels(
                         ));
                     });
                 }
+                // The advance is wider than the face's own (~0.6em) on purpose: the glyphs
+                // then span more of the arc, and the CURVE — the whole reason the number is
+                // written into the ring rather than under it — becomes visible as a curve
+                // instead of four characters that happen to sit on a shallow slope.
                 let places: Vec<(Vec2, f32)> =
-                    battle_rings::arc_text(label.chars().count(), fs * 0.62, project);
+                    battle_rings::arc_text(label.chars().count(), fs * 0.74, project);
                 // ⚠️ **THE OUTLINE IS A SECOND, BIGGER GLYPH BEHIND THE FIRST.** Only a
                 // Regular face ships (`JetBrainsMonoNerdFont-Regular`), so weight has to be
                 // drawn rather than selected — and a dark glyph a fifth larger peeks out on
@@ -3106,7 +3134,7 @@ pub(crate) fn render_ring_labels(
                 // node instead of the four an offset-per-direction outline would cost, on a
                 // readout that is rebuilt whenever a body moves.
                 for (pass, (col, size)) in
-                    [(Color::srgb(0.03, 0.05, 0.04), fs * 1.34), (ink, fs)].into_iter().enumerate()
+                    [(Color::srgb(0.02, 0.03, 0.03), fs * 1.42), (ink, fs)].into_iter().enumerate()
                 {
                     for (ch, (at, rot)) in label.chars().zip(places.iter().copied()) {
                         let box_w = fs * 1.4;
@@ -3140,6 +3168,8 @@ pub(crate) fn render_ring_labels(
 
 /// How far above the ground the digits are written — the ring's own height, so the number and
 /// the stroke it is written on foreshorten together instead of one floating over the other.
+/// Kept only for the name plate inside the circle; the DIGITS derive their own offset from the
+/// camera (see `render_ring_labels`).
 const RING_TEXT_LIFT: f32 = 0.031;
 
 /// Full-screen, non-interactive layer holding the floating status-effect icons that
