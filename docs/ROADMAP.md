@@ -5865,6 +5865,29 @@ only the things that can't be class-gated.
   - ⚠️ It fires on the card CHANGING hero, not on the card being up, or a scroll through four
     heroes would re-fire on every frame it was on screen.
 
+- [x] **UX-29 — The fight's own states get their own particles.** Two things the engine
+  models carefully and the arena never showed.
+  - **A Barrier** is temp HP that goes UP when somebody spends a turn on it and BREAKS when
+    it is spent. It rode the wire as `barrier:<n>` and drew as a steel-blue line inside the
+    health ring — a readout of a number, with no moment attached to either end of it. It now
+    CLOSES onto the body (motes drawn inward, which is the whole difference between a shell
+    forming and a shell breaking) and SHATTERS outward and falls, in the same steel blue the
+    ring already wears so the two are plainly the same thing.
+  - **The catch-up** (`UX-15`): five good blows in a row fill the striker's gauge outright,
+    and only the turn bar reacted — so the reward for having worked out what you are fighting
+    was a bar moving slightly faster. It throws a white-gold burst, the same currency the
+    level-up spends, because both are the game handing something back for playing well.
+  - ⚠️ **All three fire on an EDGE, never on a state.** `barrier:<n>` is restated in every
+    gauge update, so drawing it while it is HELD would light the shell ten times a second.
+  - ⚠️ **A combatant with no previous state has not changed**: a fresh body carrying a
+    Barrier is a hero who walked in wearing one, not one that was just raised. The map is
+    rebuilt each pass, so a body that leaves stops being tracked and one that returns is new.
+  - ⚠️ Broken, not merely decayed: a Barrier ticks down at the start of its holder's turn, so
+    only the step that empties it is worth showing.
+  - `MELD_STATES=1` cycles the three edges in the battle mockup, which sets its statuses once
+    and never moves them — every one of these is otherwise unreachable in a still frame, and
+    the cadence sits just UNDER the bursts' own lives for the reason `mock_battle_fx` does.
+
 - [ ] **UX-1 — Last City minimap & compass (town-only).** A minimap and compass
   **for Last City itself** so players can navigate the hub — locate the districts
   (Vault-Deep, Market, Forge/Alembic, Bounty Board, Drill Yard, Vanguard Wall),

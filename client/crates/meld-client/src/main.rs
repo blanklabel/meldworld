@@ -355,6 +355,7 @@ fn main() {
         .init_resource::<battle_fx::BattleFx>()
         .init_resource::<world_fx::WorldFx>()
         .init_resource::<weather_fx::Lightning>()
+        .init_resource::<battle_fx::StateFx>()
         .init_resource::<builder::BuildMode>()
         .init_resource::<hd2d::Look>()
         .init_resource::<hd2d::LookWatch>()
@@ -449,7 +450,7 @@ fn main() {
         .init_resource::<GearHold>()
         .add_systems(
             Startup,
-            (setup, load_ui_font, apply_class_flag, mock_battle_setup, mock_overlay_setup, ambient::setup_ambient, music::setup_music, minimap::setup, battle_fx::init_death_burst, battle_fx::init_hit_sparks, world_fx::init_shift_dust, weather_fx::init_weather_fx, world_fx::init_payout_fx, world_fx::init_extract_fx, world_fx::init_levelup_fx),
+            (setup, load_ui_font, apply_class_flag, mock_battle_setup, mock_overlay_setup, ambient::setup_ambient, music::setup_music, minimap::setup, battle_fx::init_death_burst, battle_fx::init_hit_sparks, world_fx::init_shift_dust, weather_fx::init_weather_fx, world_fx::init_payout_fx, world_fx::init_extract_fx, world_fx::init_levelup_fx, battle_fx::init_state_fx),
         )
         // run in every state: net pump, demo autopilot, the HD-2D file channel
         // (hot-reload look params + honour screenshot requests), cloud drift, and
@@ -921,11 +922,13 @@ fn main() {
             (
                 battle_fx::spawn_ability_fx,
                 battle_fx::spawn_death_bursts,
+                battle_fx::spawn_state_fx,
                 battle_fx::advance_death_bursts,
                 battle_fx::advance_ability_fx,
                 battle_fx::advance_screen_wash,
                 battle_fx::react_to_conditions,
                 mocks::mock_battle_fx,
+                mocks::mock_states,
                 mocks::mock_battle_opening,
                 mocks::mock_turn_recoil,
                 mocks::mock_ring_liquid,
@@ -1870,7 +1873,7 @@ fn hero_class(view: &CombatantView) -> String {
 }
 
 /// A numeric status value (`prefix<n>`) parsed from a combatant's statuses.
-fn status_num(statuses: &[String], prefix: &str) -> i32 {
+pub(crate) fn status_num(statuses: &[String], prefix: &str) -> i32 {
     statuses
         .iter()
         .find_map(|s| s.strip_prefix(prefix).and_then(|n| n.parse().ok()))
