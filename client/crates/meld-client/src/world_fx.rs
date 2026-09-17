@@ -562,6 +562,39 @@ mod tests {
         }
     }
 
+    fn combatant(id: &str, is_player: bool, name: &str) -> meld_client::net::CombatantView {
+        meld_client::net::CombatantView {
+            id: id.into(),
+            name: name.into(),
+            hp: 10,
+            max_hp: 10,
+            gauge: 0.0,
+            is_player,
+            level: 1,
+            statuses: vec![format!("name:{name}")],
+            player_id: None,
+        }
+    }
+
+    /// A level lands on the hero the card NAMES, matched through the `name:` token both
+    /// sides already carry rather than a second identifier invented for the purpose.
+    ///
+    /// ⚠️ And only on a PLAYER's body: a creature can be called anything, and a level-up
+    /// burst on something across the field is worse than no burst at all.
+    #[test]
+    fn a_level_lands_on_the_hero_that_earned_it() {
+        let roster = vec![
+            combatant("mob-1", false, "Rell"),
+            combatant("hero-2", true, "Rell"),
+            combatant("hero-3", true, "Sable"),
+        ];
+        assert_eq!(levelling_body("Rell", &roster), Some("hero-2"));
+        assert_eq!(levelling_body("Sable", &roster), Some("hero-3"));
+        // Nobody by that name is fielded: the card is honest on its own, and a burst with
+        // no body under it would be a light hanging in mid-air.
+        assert_eq!(levelling_body("Nobody", &roster), None);
+    }
+
     /// Each kind of payout wears its own colour. Three is a distinction the eye can hold in
     /// one dive; two that matched would make the chest — the only payout a player goes out
     /// of their way for — indistinguishable from scenery they walked over.
@@ -785,4 +818,146 @@ pub(crate) fn drive_extract_plume(
             spawner.active = on;
         }
     }
+}
+
+/// **A LEVEL IS EARNED BY A BODY, SO IT LANDS ON ONE** (`UX-28`).
+///
+/// The level-up scroll is a centred card naming a hero and printing what moved — and the
+/// hero it names is standing right there in the arena the XP was earned in, doing nothing.
+/// `UX-19` went to some trouble to play that card WHERE the fight happened rather than over
+/// a world you are already walking around in; this is the other half of that argument.
+#[derive(Resource)]
+pub(crate) struct LevelUpFx {
+    pub(crate) effect: Handle<bevy_hanabi::EffectAsset>,
+    pub(crate) dot: Handle<Image>,
+    /// Who the card was naming last frame, so the burst fires on the CHANGE rather than
+    /// every frame the card is up.
+    pub(crate) showing: Option<String>,
+}
+
+pub(crate) fn init_levelup_fx(
+    mut commands: Commands,
+    mut effects: ResMut<Assets<bevy_hanabi::EffectAsset>>,
+    mut images: ResMut<Assets<Image>>,
+) {
+    use bevy_hanabi::*;
+
+    let dot = soft_dot(&mut images);
+    let writer = ExprWriter::new();
+    let texture_slot = writer.lit(0u32).expr();
+
+    // A ring at the feet rather than a cloud on the body: the motes rise PAST the hero, so
+    // the sprite stays readable and the lift is something happening to them rather than a
+    // haze drawn over them.
+    let init_pos = SetPositionCircleModifier {
+        center: writer.lit(Vec3::ZERO).expr(),
+        axis: writer.lit(Vec3::Y).expr(),
+        radius: writer.lit(0.85).expr(),
+        dimension: ShapeDimension::Surface,
+    };
+    let init_vel = SetAttributeModifier::new(
+        Attribute::VELOCITY,
+        (writer.lit(Vec3::new(0.0, 3.4, 0.0))
+            + writer.lit(Vec3::new(0.7, 1.6, 0.7))
+                * (writer.rand(ValueType::Vector(VectorType::VEC3F))
+                    - writer.lit(Vec3::splat(0.5))))
+        .expr(),
+    );
+    let init_life =
+        SetAttributeModifier::new(Attribute::LIFETIME, writer.lit(0.9).uniform(writer.lit(1.5)).expr());
+    let init_age = SetAttributeModifier::new(Attribute::AGE, writer.lit(0.).expr());
+    // Gold, because that is what this game already spends on treasure and on a title.
+    let init_colour = SetAttributeModifier::new(
+        Attribute::COLOR,
+        writer
+            .lit(Vec3::new(1.0, 0.86, 0.38))
+            .vec4_xyz_w(writer.lit(1.0))
+            .pack4x8unorm()
+            .expr(),
+    );
+    // Slowing as it climbs rather than falling back: nothing about a level goes away again.
+    let drag = LinearDragModifier::new(writer.lit(1.9).expr());
+
+    let mut colour = Gradient::new();
+    colour.add_key(0.0, Vec4::new(1.0, 1.0, 1.0, 1.0));
+    colour.add_key(0.55, Vec4::new(1.0, 1.0, 1.0, 0.9));
+    colour.add_key(1.0, Vec4::new(1.0, 1.0, 1.0, 0.0));
+
+    let mut size = Gradient::new();
+    size.add_key(0.0, Vec3::splat(0.22));
+    size.add_key(1.0, Vec3::splat(0.04));
+
+    let mut module = writer.finish();
+    module.add_texture_slot("dot");
+
+    let effect = effects.add(
+        EffectAsset::new(192, SpawnerSettings::once(64.0.into()), module)
+            .with_name("level_up")
+            .with_alpha_mode(bevy_hanabi::AlphaMode::Add)
+            .init(init_pos)
+            .init(init_vel)
+            .init(init_life)
+            .init(init_age)
+            .init(init_colour)
+            .update(drag)
+            .render(ParticleTextureModifier {
+                texture_slot,
+                sample_mapping: ImageSampleMapping::ModulateOpacityFromR,
+            })
+            .render(ColorOverLifetimeModifier { gradient: colour, ..default() })
+            .render(SizeOverLifetimeModifier { gradient: size, screen_space_size: false }),
+    );
+    commands.insert_resource(LevelUpFx { effect, dot, showing: None });
+}
+
+/// Which arena body belongs to the hero a level-up card is naming.
+///
+/// Heroes ride the wire carrying `name:<name>` (`CL-1`), and the card carries the same name,
+/// so the two can be matched without inventing a second identifier for a hero. A free
+/// function so the matching is testable without an arena.
+///
+/// ⚠️ It must match a PLAYER's body: a creature could be called anything, and a level-up
+/// burst on a corpse across the field is worse than no burst at all.
+pub(crate) fn levelling_body<'a>(
+    name: &str,
+    combatants: &'a [meld_client::net::CombatantView],
+) -> Option<&'a str> {
+    let tag = format!("name:{name}");
+    combatants
+        .iter()
+        .find(|c| c.is_player && c.statuses.contains(&tag))
+        .map(|c| c.id.as_str())
+}
+
+/// Fire one burst on the body the card names, each time the card moves to a new hero.
+pub(crate) fn spawn_levelup_burst(
+    mut commands: Commands,
+    mut fx: ResMut<LevelUpFx>,
+    queue: Res<crate::LevelUpQueue>,
+    battle: Res<crate::BattleData>,
+    actors: Query<(&crate::battle::BattleActor, &GlobalTransform)>,
+) {
+    let who = queue.current.as_ref().map(|l| l.name.clone());
+    if who == fx.showing {
+        return;
+    }
+    fx.showing = who.clone();
+    let Some(name) = who else {
+        return;
+    };
+    // No arena means the scroll is playing somewhere the body is not — the card is honest
+    // on its own there, and a burst with nothing under it would be a light in mid-air.
+    let Some(id) = levelling_body(&name, &battle.combatants) else {
+        return;
+    };
+    let Some((_, gt)) = actors.iter().find(|(a, _)| a.id == id) else {
+        return;
+    };
+    commands.spawn((
+        crate::battle_fx::BattleFxRoot,
+        ShiftDustTtl(2.0),
+        bevy_hanabi::ParticleEffect::new(fx.effect.clone()),
+        bevy_hanabi::EffectMaterial { images: vec![fx.dot.clone()] },
+        Transform::from_translation(gt.translation()),
+    ));
 }
