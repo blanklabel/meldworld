@@ -445,7 +445,7 @@ fn main() {
         .init_resource::<GearHold>()
         .add_systems(
             Startup,
-            (setup, load_ui_font, apply_class_flag, mock_battle_setup, mock_overlay_setup, ambient::setup_ambient, music::setup_music, minimap::setup, battle_fx::init_death_burst),
+            (setup, load_ui_font, apply_class_flag, mock_battle_setup, mock_overlay_setup, ambient::setup_ambient, music::setup_music, minimap::setup, battle_fx::init_death_burst, battle_fx::init_hit_sparks),
         )
         // run in every state: net pump, demo autopilot, the HD-2D file channel
         // (hot-reload look params + honour screenshot requests), cloud drift, and
@@ -857,6 +857,15 @@ fn main() {
                 // HD-2D arena: 3D combatant sprites + battle camera, framed by the UI.
                 // Nested so the battle system tuple stays under Bevy's 20-arg cap.
                 (
+                    // A felled body LEAVES rather than popping: marked before the roster
+                    // is recomputed (or the rebuild tears it down on the frame it fell),
+                    // then collapsed inward over half a second. Grouped as one element to
+                    // stay under Bevy's 20-arg tuple cap, like the nesting above.
+                    (
+                        battle::mark_dying.before(sync_battle_actors),
+                        battle::advance_dissolve,
+                        battle_fx::spawn_hit_sparks,
+                    ),
                     sync_battle_actors,
                     battle_click_target,
                     highlight_target,

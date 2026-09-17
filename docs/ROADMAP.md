@@ -5701,6 +5701,38 @@ only the things that can't be class-gated.
     and tested directly, which is the half a gate *can* hold. The burst itself still needs a
     captured frame.
 
+- [x] **UX-23 — A felled body leaves, and a blow leaves the mark its weapon makes.**
+  - *A felled creature stayed standing for the rest of the fight.* `sync_battle_actors`
+    keyed its roster on `(id, class)` with **no HP filter at all**, so every body that ever
+    entered the fight kept its actor — `UX-22`'s death burst played over a corpse that never
+    left. Dropping the dead outright is the other failure, and the one the burst exists to
+    prevent: the body would pop out of existence on the frame it fell. The roster is the
+    LIVING plus whatever is still dissolving, and `mark_dying` (ordered before the rebuild)
+    is what puts a fallen body in the second group — so the two halves agree by construction.
+  - *A body is sucked away rather than switched off*: it collapses inward and lifts as it
+    fades, over `DISSOLVE_SECS`, then its actor is despawned. **Heroes too** — a hero falling
+    is the same event from the other side, and a party member that simply stopped being drawn
+    was the same silent pop. ⚠️ The material has to stop being `AlphaMode::Mask` for the fade
+    to exist at all: a cutout ignores alpha until it crosses the threshold and then vanishes
+    at once, which is a pop wearing a fade's clothes.
+  - *Every unelemental blow drew a PROHIBITION SIGN.* The shader's physical branch was a
+    diagonal slash through the middle plus an expanding `shock_ring` — a circle with a line
+    through it, the universal "no", on most of the blows in the game. It said *denied* at the
+    exact moment something had connected.
+  - **The three weapon types now draw three marks**, because a sword, a hammer and a spear
+    leave three different ones: a **cut** top-left to bottom-right, thrown off centre so it
+    is a stroke rather than a symbol; the **punch** the turn bar already throws at a recoiled
+    icon, a solid core with a squeezed compression ring and no cut anywhere; and an
+    **open-bottomed chevron** with two trailing lines parallel to its own sides, all three
+    from one distance expression so they cannot drift apart. They shared one kind and differed
+    only in colour temperature — which is the channel already spent on what was HIT.
+  - **And the debris is tinted by lineage** (`HitSparks`, normal and crit). Red for animals,
+    green for fungus, from `meld_proto::factions::faction_rgb` — authored, replacing a hash
+    of the faction NAME into a hue, which was stable, reproducible and completely arbitrary.
+    A player learns "the mushroom thing bursts green" in one fight; nobody learns a hash.
+  - ⚠️ A hero gets its own steel rather than the unknown-lineage bone white, which is
+    reserved as the tell that a faction is missing from the table.
+
 - [ ] **UX-1 — Last City minimap & compass (town-only).** A minimap and compass
   **for Last City itself** so players can navigate the hub — locate the districts
   (Vault-Deep, Market, Forge/Alembic, Bounty Board, Drill Yard, Vanguard Wall),

@@ -43,6 +43,43 @@ pub const SLIME: &str = "slime";
 pub const FACTIONS: &[&str] =
     &["beast", "construct", DRACONIC, FAE, "fiend", "fungal", SLIME, UNDEAD];
 
+/// **WHAT A LINEAGE LOOKS LIKE, AUTHORED.** Linear RGB, read by every surface that colours
+/// a creature by what it IS: the nameplate, and the sparks a blow throws off it.
+///
+/// ⚠️ **Authored rather than hashed.** The client derived this by hashing the faction NAME
+/// into a hue, which is stable and reproducible and completely arbitrary — the fungal
+/// lineage came out whatever `"fungal"` happened to hash to, and nothing about the colour
+/// said *fungus*. A player reads "red thing bleeds red, mushroom thing bursts green" in one
+/// fight; they never learn a hash. The cost is that a new faction must pick a colour here,
+/// which is exactly the prompt a new faction should get.
+///
+/// It lives in the registry beside the hostility table for the reason the boss names do:
+/// a second copy on the far side of the wire is a copy that goes stale.
+pub fn faction_rgb(faction: &str) -> [f32; 3] {
+    match faction {
+        // Animals bleed.
+        "beast" => [0.72, 0.10, 0.09],
+        // Spores and sap.
+        "fungal" => [0.24, 0.70, 0.26],
+        // Grave-light: cold, pale, and the only one that is brighter than its own body.
+        UNDEAD => [0.62, 0.78, 0.74],
+        // Ember and scale.
+        DRACONIC => [0.88, 0.45, 0.10],
+        // Hot metal and cinders.
+        "fiend" => [0.85, 0.16, 0.30],
+        // Struck stone and steel.
+        "construct" => [0.58, 0.62, 0.70],
+        // Glamour.
+        FAE => [0.68, 0.40, 0.86],
+        // Ooze.
+        SLIME => [0.30, 0.72, 0.66],
+        // An unknown lineage is deliberately COLOURLESS rather than a random hue: a bone
+        // white spark reads as "something hit it" without claiming a kinship it has not
+        // got, and it is the tell that a faction is missing from the table above.
+        _ => [0.86, 0.84, 0.80],
+    }
+}
+
 /// Unordered creature-faction pairs that don't get along. Tuned so **every** biome
 /// roster (`creatures_for_biome`) pairs two mutually-hostile factions, so overworld
 /// skirmishes are visible everywhere — not just tundra/mire.
@@ -141,6 +178,43 @@ pub fn battle_at_odds(a_faction: &str, a_kind: &str, b_faction: &str, b_kind: &s
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **EVERY LINEAGE HAS AN AUTHORED COLOUR, AND THEY ARE TELLABLE APART.** The client
+    /// derived this by hashing the faction NAME into a hue — stable, reproducible and
+    /// completely arbitrary, so nothing about the fungal colour said *fungus*. A player
+    /// learns "the mushroom thing bursts green" in one fight and never learns a hash.
+    #[test]
+    fn every_lineage_has_its_own_authored_colour() {
+        // The two the request names, because they are the ones a player states as a rule.
+        let beast = faction_rgb("beast");
+        let fungal = faction_rgb("fungal");
+        assert!(
+            beast[0] > beast[1] && beast[0] > beast[2],
+            "animals do not bleed red: {beast:?}"
+        );
+        assert!(
+            fungal[1] > fungal[0] && fungal[1] > fungal[2],
+            "fungus does not burst green: {fungal:?}"
+        );
+        // Every faction is authored, and no two share a colour — a lineage that fell
+        // through to the unknown case would be indistinguishable from a missing one.
+        let mut seen: Vec<[f32; 3]> = Vec::new();
+        let unknown = faction_rgb("not-a-lineage");
+        for f in FACTIONS {
+            let rgb = faction_rgb(f);
+            assert_ne!(rgb, unknown, "{f} is not in the colour table");
+            assert!(
+                !seen.contains(&rgb),
+                "{f} shares its colour with another lineage: {rgb:?}"
+            );
+            // Bright enough to read as a spark against a lit arena.
+            assert!(
+                rgb.iter().cloned().fold(0.0f32, f32::max) > 0.5,
+                "{f} is too dim to see: {rgb:?}"
+            );
+            seen.push(rgb);
+        }
+    }
 
     #[test]
     fn player_fights_creatures_not_itself() {

@@ -79,6 +79,89 @@ pub(crate) struct BattleActor {
     /// prior behaviour) could never catch that: the set is unchanged, only its
     /// content is.
     pub(crate) class: String,
+    /// This body has fallen and is dissolving out of the arena.
+    ///
+    /// Held on the ACTOR rather than derived from the combatant's HP, because the two
+    /// answer different questions: HP says *is it dead*, and this says *is its body still
+    /// on screen*. `sync_battle_actors` needs the second — the roster it rebuilds from is
+    /// the living plus whatever is still leaving, so a body that popped out of existence
+    /// the frame it died and a corpse that stood there forever are both avoided.
+    pub(crate) dying: bool,
+}
+
+/// How long a felled body takes to leave the arena, in seconds.
+///
+/// Short enough that it never holds up the next turn, long enough to read as the body
+/// going somewhere rather than being switched off. The death burst it plays alongside
+/// outlives it deliberately: the motes are what is left after the body has gone.
+pub(crate) const DISSOLVE_SECS: f32 = 0.5;
+
+/// How far into its dissolve a body is, in seconds.
+#[derive(Component)]
+pub(crate) struct Dissolving(pub(crate) f32);
+
+/// **MARK A FALLEN BODY BEFORE THE ARENA IS REBUILT.** Ordered before
+/// [`sync_battle_actors`], because that function's roster is "the living plus whatever is
+/// still dissolving" — a body that has died but not yet been marked belongs to neither
+/// group, and the rebuild would tear it down on the frame it fell.
+pub(crate) fn mark_dying(
+    mut commands: Commands,
+    battle: Res<BattleData>,
+    mut actors: Query<(Entity, &mut BattleActor), Without<Dissolving>>,
+) {
+    for (e, mut actor) in &mut actors {
+        let fallen = battle
+            .combatants
+            .iter()
+            .any(|c| c.id == actor.id && c.hp <= 0);
+        if fallen {
+            actor.dying = true;
+            commands.entity(e).insert(Dissolving(0.0));
+        }
+    }
+}
+
+/// **A BODY IS SUCKED AWAY RATHER THAN SWITCHED OFF.** It collapses inward and lifts as it
+/// goes, fading out, and its actor is despawned when there is nothing left.
+///
+/// Heroes as well as creatures: a hero falling is the same event from the other side, and a
+/// party member who simply stopped being drawn was the same silent pop.
+///
+/// ⚠️ **The material has to stop being MASKED for this to be visible at all.** A sprite
+/// billboard is `AlphaMode::Mask(0.5)`, which is a cutout: lowering `base_color`'s alpha
+/// does nothing until it crosses the threshold and then the whole body vanishes at once —
+/// a pop wearing a fade's clothes. Switched to `Blend` for the dissolve, on the actor's own
+/// material, which `spawn_hero_actor`/`spawn_enemy_actor` allocate per body.
+pub(crate) fn advance_dissolve(
+    mut commands: Commands,
+    time: Res<Time>,
+    mut mats: ResMut<Assets<StandardMaterial>>,
+    mut actors: Query<(Entity, &mut Dissolving, &mut Transform, Option<&Children>)>,
+    quads: Query<&SpriteQuad>,
+) {
+    let dt = time.delta_secs();
+    for (e, mut d, mut tf, kids) in &mut actors {
+        d.0 += dt;
+        let t = (d.0 / DISSOLVE_SECS).clamp(0.0, 1.0);
+        if t >= 1.0 {
+            commands.entity(e).despawn();
+            continue;
+        }
+        // Collapsing inward and lifting: the body is drawn INTO nothing rather than
+        // falling over, which is what separates a death from a knockdown at a glance.
+        let shrink = 1.0 - t * t;
+        tf.scale = Vec3::new(shrink.max(0.02), shrink.max(0.02), 1.0);
+        tf.translation.y += dt * 1.4;
+        // Fade every billboard this body owns, its condition rim included — a rim left at
+        // full alpha over a vanishing body is the aura outliving the creature.
+        let alpha = 1.0 - t;
+        for k in kids.into_iter().flatten() {
+            let Ok(sq) = quads.get(*k) else { continue };
+            let Some(mut m) = mats.get_mut(&sq.mat) else { continue };
+            m.alpha_mode = AlphaMode::Blend;
+            m.base_color = m.base_color.with_alpha(alpha);
+        }
+    }
 }
 
 /// The floating diamond marker over an enemy, carrying the enemy id it belongs to
@@ -204,7 +287,7 @@ pub(crate) fn spawn_hero_actor(
     let quad = if bust { wa.bust_quad.clone() } else { wa.sprite_quad.clone() };
     commands
         .spawn((
-            BattleActor { id: c.id.clone(), class: class_status.to_string() },
+            BattleActor { id: c.id.clone(), class: class_status.to_string(), dying: false },
             Transform::from_translation(root),
             Visibility::default(),
             cs,
@@ -397,7 +480,7 @@ pub(crate) fn spawn_enemy_actor(
         // mid-fight — this stays empty so the set-plus-class diff in
         // `sync_battle_actors` never mistakes an unrelated status change on the
         // SAME enemy for a reason to respawn the whole arena.
-        BattleActor { id: c.id.clone(), class: String::new() },
+        BattleActor { id: c.id.clone(), class: String::new(), dying: false },
         Transform::from_translation(root),
         Visibility::default(),
     ));
@@ -624,8 +707,24 @@ pub(crate) fn sync_battle_actors(
     fn class_of(c: &CombatantView) -> &str {
         c.statuses.iter().find_map(|s| s.strip_prefix("class:")).unwrap_or("")
     }
-    let live: HashSet<(&str, &str)> =
-        battle.combatants.iter().map(|c| (c.id.as_str(), class_of(c))).collect();
+    // **A FELLED BODY LEAVES THE ARENA, AND IT TAKES A MOMENT DOING IT.** The set used to
+    // be every combatant whatever its HP, so a creature you killed stayed standing for the
+    // rest of the fight — the death burst played over a corpse that never left. Dropping
+    // the dead outright is the other failure: the body would pop out of existence on the
+    // frame it fell, which is the thing the burst exists to stop.
+    //
+    // So the roster is the LIVING plus whatever is still dissolving, and `mark_dying` (which
+    // runs before this) is what puts a fallen body in the second group. The two halves agree
+    // by construction: while a body dissolves both sets hold it, and the frame its actor is
+    // despawned both sets lose it.
+    let dissolving: HashSet<&str> =
+        q.iter().filter(|(_, a)| a.dying).map(|(_, a)| a.id.as_str()).collect();
+    let live: HashSet<(&str, &str)> = battle
+        .combatants
+        .iter()
+        .filter(|c| c.hp > 0 || dissolving.contains(c.id.as_str()))
+        .map(|c| (c.id.as_str(), class_of(c)))
+        .collect();
     let have: HashSet<(&str, &str)> =
         q.iter().map(|(_, a)| (a.id.as_str(), a.class.as_str())).collect();
     if live == have {
