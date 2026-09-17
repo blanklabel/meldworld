@@ -5830,6 +5830,26 @@ only the things that can't be class-gated.
   - The motes rise rather than fall: gravity here would read as the reward being dropped on
     the floor.
 
+- [x] **UX-27 — Going home is the dissolve, run backwards.** Extraction is the act a whole
+  dive is pointed at — the moment the loot in your bag stops being at risk — and the client
+  drew it as a progress bar. `UX-23` already gave this game a vocabulary for a body being
+  drawn up into nothing when it falls; this is the same motion, CHOSEN rather than suffered,
+  so the two read as opposites of one idea.
+  - Motes are born on a ring on the GROUND around the hero rather than in a cloud around
+    them — they have to be seen leaving the floor for the column to read as a lift instead
+    of as a glow the hero is standing in — then accelerate up and are pulled INWARD to the
+    hero's own axis. The inward pull is the half that makes it a funnel rather than a
+    fountain, and the taper is what says something is taking you.
+  - ⚠️ **The emitter is moved and gated, never respawned.** An extraction can be interrupted,
+    which is the whole tension of it; tearing the emitter down would delete the motes already
+    in the air, so a cancelled extraction would blink out instead of falling apart.
+  - ⚠️ The channel's method only ever survived as a status STRING ("extracting..." /
+    "gathering..."), so `Session::extracting` carries it instead: deciding what to draw by
+    parsing prose back out of a label is a rule that breaks the day somebody rewords it.
+  - `MELD_EXTRACT=1` holds the plume up for a capture — extracting for real needs a Town
+    Portal in the bag or an hour's walk to the deep portal, and the channel is over in
+    seconds.
+
 - [ ] **UX-1 — Last City minimap & compass (town-only).** A minimap and compass
   **for Last City itself** so players can navigate the hub — locate the districts
   (Vault-Deep, Market, Forge/Alembic, Bounty Board, Drill Yard, Vanguard Wall),

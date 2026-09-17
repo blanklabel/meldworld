@@ -800,14 +800,16 @@ pub(crate) fn pump_net(
                 // The bar restarts from empty on every fill, so the client only needs
                 // the fill length and when this one began.
                 session.channel_fill_ms = fill_ms;
-                session.status = if method.starts_with("harvest") {
-                    "gathering...".to_string()
-                } else {
+                session.extracting = !method.starts_with("harvest");
+                session.status = if session.extracting {
                     "extracting...".to_string()
+                } else {
+                    "gathering...".to_string()
                 };
             }
             ServerMsg::ChannelInterrupted => {
                 session.channeling = false;
+                session.extracting = false;
                 session.channel_fill_ms = 0;
                 session.status = String::new();
             }

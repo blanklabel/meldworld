@@ -649,3 +649,140 @@ mod tests {
         assert!(pts.iter().all(|p| p.distance(at) < far));
     }
 }
+
+/// **GOING HOME IS THE DISSOLVE, RUN BACKWARDS** (`UX-27`).
+///
+/// Extraction is the act a whole dive is pointed at — the moment the loot in your bag stops
+/// being at risk — and the client drew it as a progress bar. `UX-23` already gave this game
+/// a vocabulary for a body being drawn up into nothing when it falls; this is the same
+/// motion, chosen rather than suffered, so the two read as opposites of one idea.
+#[derive(Resource)]
+pub(crate) struct ExtractFx {
+    pub(crate) effect: Handle<bevy_hanabi::EffectAsset>,
+    pub(crate) dot: Handle<Image>,
+    pub(crate) spawned: bool,
+}
+
+/// Marks the one long-lived extraction emitter.
+#[derive(Component)]
+pub(crate) struct ExtractPlume;
+
+pub(crate) fn init_extract_fx(
+    mut commands: Commands,
+    mut effects: ResMut<Assets<bevy_hanabi::EffectAsset>>,
+    mut images: ResMut<Assets<Image>>,
+) {
+    use bevy_hanabi::*;
+
+    let dot = soft_dot(&mut images);
+    let writer = ExprWriter::new();
+    let texture_slot = writer.lit(0u32).expr();
+
+    // Born on a ring on the GROUND around the hero, not in a cloud around them: the motes
+    // have to be seen leaving the floor for the column to read as a lift rather than as a
+    // glow the hero is standing in.
+    let init_pos = SetPositionCircleModifier {
+        center: writer.lit(Vec3::ZERO).expr(),
+        axis: writer.lit(Vec3::Y).expr(),
+        radius: writer.lit(1.9).expr(),
+        dimension: ShapeDimension::Surface,
+    };
+    let init_vel = SetAttributeModifier::new(
+        Attribute::VELOCITY,
+        (writer.lit(Vec3::new(0.0, 2.2, 0.0))
+            + writer.lit(Vec3::new(0.35, 1.4, 0.35))
+                * (writer.rand(ValueType::Vector(VectorType::VEC3F))
+                    - writer.lit(Vec3::splat(0.5))))
+        .expr(),
+    );
+    let init_life =
+        SetAttributeModifier::new(Attribute::LIFETIME, writer.lit(1.1).uniform(writer.lit(1.9)).expr());
+    let init_age = SetAttributeModifier::new(Attribute::AGE, writer.lit(0.).expr());
+    let init_colour = SetAttributeModifier::new(
+        Attribute::COLOR,
+        writer
+            .lit(Vec3::new(1.0, 0.94, 0.72))
+            .vec4_xyz_w(writer.lit(1.0))
+            .pack4x8unorm()
+            .expr(),
+    );
+
+    // Accelerating UP, so the column speeds away rather than drifting — what is happening is
+    // something taking you, not something you are doing.
+    let lift = AccelModifier::new(writer.lit(Vec3::Y * 7.5).expr());
+    // And pulled INWARD to the hero's own axis, which is the half that makes it a funnel
+    // instead of a fountain. Negative, because a positive radial acceleration pushes out.
+    let pull = RadialAccelModifier::new(writer.lit(Vec3::ZERO).expr(), writer.lit(-4.5).expr());
+
+    let mut colour = Gradient::new();
+    colour.add_key(0.0, Vec4::new(1.0, 1.0, 1.0, 0.0));
+    colour.add_key(0.15, Vec4::new(1.0, 1.0, 1.0, 0.95));
+    colour.add_key(1.0, Vec4::new(1.0, 1.0, 1.0, 0.0));
+
+    // Narrowing as it climbs: the taper IS the funnel, and a column of constant width reads
+    // as a pillar of light standing there rather than as something being drawn up.
+    let mut size = Gradient::new();
+    size.add_key(0.0, Vec3::splat(0.20));
+    size.add_key(1.0, Vec3::splat(0.04));
+
+    let mut module = writer.finish();
+    module.add_texture_slot("dot");
+
+    let effect = effects.add(
+        EffectAsset::new(1024, SpawnerSettings::rate(150.0.into()), module)
+            .with_name("extract_plume")
+            .with_alpha_mode(bevy_hanabi::AlphaMode::Add)
+            .init(init_pos)
+            .init(init_vel)
+            .init(init_life)
+            .init(init_age)
+            .init(init_colour)
+            .update(lift)
+            .update(pull)
+            .render(ParticleTextureModifier {
+                texture_slot,
+                sample_mapping: ImageSampleMapping::ModulateOpacityFromR,
+            })
+            .render(ColorOverLifetimeModifier { gradient: colour, ..default() })
+            .render(SizeOverLifetimeModifier { gradient: size, screen_space_size: false }),
+    );
+    commands.insert_resource(ExtractFx { effect, dot, spawned: false });
+}
+
+/// Stand the plume up once, keep it under the hero, and run it only while extracting.
+///
+/// ⚠️ **The emitter is moved and gated, never respawned.** An extraction can be interrupted
+/// — that is the whole tension of it — and tearing the emitter down would delete the motes
+/// already in the air, so a cancelled extraction would end by blinking out instead of by
+/// the column falling apart.
+pub(crate) fn drive_extract_plume(
+    mut commands: Commands,
+    mut fx: ResMut<ExtractFx>,
+    session: Res<crate::Session>,
+    world: Res<crate::Overworld>,
+    mut q: Query<(&mut Transform, &mut bevy_hanabi::EffectSpawner), With<ExtractPlume>>,
+) {
+    if !fx.spawned {
+        commands.spawn((
+            ExtractPlume,
+            bevy_hanabi::ParticleEffect::new(fx.effect.clone()),
+            bevy_hanabi::EffectMaterial { images: vec![fx.dot.clone()] },
+            Transform::default(),
+        ));
+        fx.spawned = true;
+        return;
+    }
+    let on = (session.channeling && session.extracting) || crate::flags::extract_mock_flag();
+    let me = world.entities.get(&session.player_id);
+    for (mut tf, mut spawner) in &mut q {
+        if let Some(e) = me {
+            let want = Vec3::new(e.x, crate::world_render::terrain_height(e.x, e.y), e.y);
+            if tf.translation != want {
+                tf.translation = want;
+            }
+        }
+        if spawner.active != on {
+            spawner.active = on;
+        }
+    }
+}
