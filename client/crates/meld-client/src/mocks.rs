@@ -894,3 +894,54 @@ pub(crate) fn mock_overlay_setup(
     world.entities.insert("portal".into(), OwEntity::portal(14.0, 0.0));
     next.set(Screen::Overworld);
 }
+
+/// Land a Shift on a loop so its debris can be captured (`MELD_SHIFT=<biome>`).
+///
+/// It seeds the burst on a band THROUGH the camera rather than on authored coordinates:
+/// the mockup has no server and therefore no region, and a fixture that lands the effect
+/// somewhere the capture is not pointing is a fixture that reports a working shader as
+/// broken — the same trap the turn bar's impact fixture records one system over.
+pub(crate) fn mock_shift(
+    time: Res<Time>,
+    mut fx: ResMut<crate::world_fx::WorldFx>,
+    cam: Query<&Transform, With<Camera3d>>,
+    mut next_at: Local<f32>,
+) {
+    let Some(spec) = crate::flags::shift_mock_flag() else {
+        return;
+    };
+    let now = time.elapsed_secs();
+    if now < *next_at {
+        return;
+    }
+    // Under the emitters' own TTL, for the reason `mock_battle_fx` re-fires under the
+    // burst's: most single frames would otherwise catch the gap between two landings.
+    *next_at = now + 2.2;
+
+    let Some(t) = cam.iter().next() else {
+        return;
+    };
+    let at = Vec2::new(t.translation.x, t.translation.z);
+    let r = at.length().max(60.0);
+    // `MELD_SHIFT=<to>` or `<from>:<to>`. The pair matters for this effect: the throw wears
+    // the departing biome and the fall wears the arriving one, so a fixture with only one
+    // of them can only ever show half the change.
+    let (from, biome) = match spec.split_once(':') {
+        Some((f, t)) => (f, t),
+        None if spec == "1" => ("forest", "ashfall"),
+        None => ("forest", spec.as_str()),
+    };
+    // ⚠️ **THE FIXTURE'S REGION MUST NOT CLIP THE VIEW.** A synthetic band of ±90 units
+    // around the party's own radius is far smaller than a real Shift's, and `dust_points`
+    // correctly drops every candidate outside it — so the far half of the ground was refused
+    // and the effect drew across the bottom of the screen only. That reads exactly like a
+    // broken effect and is a broken FIXTURE; the region clipping has its own unit tests.
+    fx.shifts.push(crate::world_fx::ShiftBurst {
+        inner: (r - 600.0).max(0.0),
+        outer: r + 600.0,
+        arc_center: at.y.atan2(at.x),
+        arc_half: std::f32::consts::PI,
+        rgb_from: Vec3::from(meld_proto::regions::biome_rgb(from)),
+        rgb_to: Vec3::from(meld_proto::regions::biome_rgb(biome)),
+    });
+}

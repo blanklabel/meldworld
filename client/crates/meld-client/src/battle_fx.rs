@@ -864,6 +864,7 @@ mod tests {
 #[derive(Resource)]
 pub(crate) struct DeathBurst {
     pub(crate) effect: Handle<bevy_hanabi::EffectAsset>,
+    pub(crate) dot: Handle<Image>,
 }
 
 /// **WHAT A BLOW THROWS OFF THE BODY IT LANDS ON.** Two effects, because a crit is not a
@@ -989,10 +990,13 @@ pub(crate) fn init_hit_sparks(
 pub(crate) fn init_death_burst(
     mut commands: Commands,
     mut effects: ResMut<Assets<bevy_hanabi::EffectAsset>>,
+    mut images: ResMut<Assets<Image>>,
 ) {
     use bevy_hanabi::*;
 
+    let dot = crate::world_fx::soft_dot(&mut images);
     let writer = ExprWriter::new();
+    let texture_slot = writer.lit(0u32).expr();
 
     // Start scattered through the body's own volume rather than at a point: the motes are
     // what the creature was made of, so they come apart from where it stood.
@@ -1040,9 +1044,15 @@ pub(crate) fn init_death_burst(
     size.add_key(0.0, Vec3::splat(0.16));
     size.add_key(1.0, Vec3::splat(0.02));
 
+    let mut module = writer.finish();
+    module.add_texture_slot("dot");
     let effect = effects.add(
-        EffectAsset::new(256, SpawnerSettings::once(48.0.into()), writer.finish())
+        EffectAsset::new(256, SpawnerSettings::once(48.0.into()), module)
             .with_name("death_burst")
+            // Additive for the reason `world_fx`'s debris is: a blended particle quad is an
+            // opaque card over the sprite it came off, which is the trap `sprite_material`
+            // records three times over and this effect shipped carrying.
+            .with_alpha_mode(bevy_hanabi::AlphaMode::Add)
             .init(init_pos)
             .init(init_vel)
             .init(init_lifetime)
@@ -1050,6 +1060,10 @@ pub(crate) fn init_death_burst(
             .init(init_colour)
             .update(accel)
             .update(drag)
+            .render(ParticleTextureModifier {
+                texture_slot,
+                sample_mapping: ImageSampleMapping::ModulateOpacityFromR,
+            })
             .render(ColorOverLifetimeModifier {
                 gradient: colour,
                 ..default()
@@ -1059,7 +1073,7 @@ pub(crate) fn init_death_burst(
                 screen_space_size: false,
             }),
     );
-    commands.insert_resource(DeathBurst { effect });
+    commands.insert_resource(DeathBurst { effect, dot });
 }
 
 /// Whether this resolved effect is an ENEMY falling — the one thing that earns a burst.
@@ -1176,6 +1190,7 @@ pub(crate) fn spawn_death_bursts(
             BattleFxRoot,
             DeathBurstTtl(DEATH_BURST_TTL),
             bevy_hanabi::ParticleEffect::new(burst.effect.clone()),
+            bevy_hanabi::EffectMaterial { images: vec![burst.dot.clone()] },
             props,
             Transform::from_translation(gt.translation()),
         ));

@@ -113,6 +113,7 @@ pub(crate) fn pump_net(
             ResMut<crate::screens::Descent>,
             ResMut<crate::world_render::Sky>,
             ResMut<WorldListData>,
+            ResMut<crate::world_fx::WorldFx>,
         ),
     ),
     mut roster: ResMut<PartyRoster>,
@@ -120,7 +121,7 @@ pub(crate) fn pump_net(
     state: Res<State<Screen>>,
     mut next: ResMut<NextState<Screen>>,
 ) {
-    let (world_path, world_frame, terrain, report, perks, hero_names, loadouts, run_gear, world_web, dungeon_scene, vanguard, shop, notice, clock, craft, (explored, station, heat, pops, hunts, bounties, tell, battle_fx, opening_card, descent, sky, world_list)) = &mut world_res;
+    let (world_path, world_frame, terrain, report, perks, hero_names, loadouts, run_gear, world_web, dungeon_scene, vanguard, shop, notice, clock, craft, (explored, station, heat, pops, hunts, bounties, tell, battle_fx, opening_card, descent, sky, world_list, world_fx)) = &mut world_res;
     net.0.poll();
     while let Some(msg) = net.0.try_recv() {
         match msg {
@@ -961,6 +962,29 @@ pub(crate) fn pump_net(
                 // it up from the same decomposition on its next uniform upload.
                 crate::world_render::apply_region_repaints(&repaints);
                 tell.flash_until = clock.elapsed_secs_f64() + crate::SHIFT_FLASH_SECS;
+                // **AND THE LAND THROWS ITSELF UP** (`UX-24`). The ground glow says a
+                // region is going; the debris says it WENT. It is seeded from the warning's
+                // own geometry, which is still standing in `tell` — `Shifted` carries the
+                // repaints and the damage but not the patch, and re-deriving a region from a
+                // repaint map would be a second answer to "where did this land".
+                world_fx.shifts.push(crate::world_fx::ShiftBurst {
+                    inner: tell.inner,
+                    outer: tell.outer,
+                    arc_center: tell.arc_center,
+                    arc_half: tell.arc_half,
+                    // What is being sent off goes up and what is arriving settles down.
+                    // `from_biome` is empty on a world that has no record of what stood
+                    // here, and there the throw simply starts in the arriving colour —
+                    // better than inventing a departure nobody can check.
+                    rgb_from: Vec3::from(meld_proto::regions::biome_rgb(if from_biome
+                        .is_empty()
+                    {
+                        &biome
+                    } else {
+                        &from_biome
+                    })),
+                    rgb_to: Vec3::from(meld_proto::regions::biome_rgb(&biome)),
+                });
                 let hurt: i32 = damage.iter().sum();
                 let what = if from_biome.is_empty() {
                     format!("The land shifted to {}", crate::world_render::title_case(&biome))

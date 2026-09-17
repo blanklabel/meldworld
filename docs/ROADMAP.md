@@ -5733,6 +5733,51 @@ only the things that can't be class-gated.
   - ⚠️ A hero gets its own steel rather than the unknown-lineage bone white, which is
     reserved as the tell that a faction is missing from the table.
 
+- [x] **UX-24 — When the land moves, you see it move.** A Shift re-scatters a region's
+  props, re-cuts its mountains and takes Force damage off every hero standing in it, and
+  the client answered all of that with a banner and a glow on the ground — so the one event
+  where the WORLD acts looked like a notification, while a single sword blow throws sparks.
+  - The ground throws itself up: `world_fx::ShiftDust`, the same `bevy_hanabi` the death
+    burst uses, ~23,000 motes across the view.
+  - **IT GOES UP AS WHAT WAS THERE AND COMES DOWN AS WHAT ARRIVES.** The throw carries the
+    OUTGOING biome's colour and each mote crosses to the INCOMING one as it falls, so a mire
+    becoming desert is green thrown up and sand drifting back — the Shift is a substitution,
+    and this is the only place a player can watch it happen. Written in the update pass,
+    since a colour that changes over a particle's own life is not a birth-time attribute;
+    it replaces `ColorOverLifetimeModifier` rather than sitting beside it, because that
+    modifier overwrites what this computes. Colours come from the new authored
+    `meld_proto::regions::biome_rgb`, mirroring `factions::faction_rgb`.
+  - **A boom, then a float**: heavy drag against light gravity, so the throw is spent at
+    once and what is left drifts down slowly enough to watch it change. Big gravity with
+    light drag is a fountain, which is the same motion in both directions.
+  - ⚠️ **THE FOOTPRINT IS THE CAMERA'S, NOT A DISC.** A disc around the look point covers
+    the bottom of the frame and stops short of the horizon, because perspective puts the top
+    half of the screen on ground a hundred units further out — reported from play as the
+    effect only covering the bottom half. `dust_points` walks the view's own ground wedge
+    instead: forward from behind the look point out to the furnished edge, opening sideways
+    as it goes.
+  - ⚠️ **INTERSECT, NEVER CLAMP.** Clamping every offset that fell outside the region
+    stacked them all onto its boundary, drawing the landing as one blob sitting on a circle.
+    Candidates outside the region are DROPPED, so you can see the edge of the Shift.
+  - ⚠️ **ADDITIVE, the fifth time this trap has been closed** — and the death burst (`UX-22`)
+    was carrying it too, shipped unverified: a blended particle quad is an opaque CARD over
+    the art, which drew as sheets of white paper standing in the forest. Both are additive
+    now, and both take a generated soft round texture, because an untextured hanabi particle
+    is a SQUARE and reads as one.
+  - ⚠️ **An additive effect is LIFTED to a floor, never flattened to a hue.** Ashfall's
+    grey-brown added to a night forest is nothing at all; normalising to the brightest
+    channel was the overcorrection, washing every desaturated biome near-white so an ashfall
+    Shift looked like snow. Scaling until the brightest channel clears a floor keeps the
+    ratios.
+  - ⚠️ **And a landing nobody is near throws nothing** — most Shifts a session hears about
+    are elsewhere in the world, and debris past the interest radius is a draw call for ground
+    that is not furnished.
+  - `MELD_SHIFT=<to>` or `<from>:<to>` lands one on a loop for a capture. ⚠️ **Its synthetic
+    region must not clip the view**: the first cut used a ±90-unit band around the party's
+    own radius, far smaller than a real region, so `dust_points` correctly refused the far
+    half of the ground and the effect drew across the bottom of the screen only. That reads
+    exactly like a broken effect and was a broken FIXTURE.
+
 - [ ] **UX-1 — Last City minimap & compass (town-only).** A minimap and compass
   **for Last City itself** so players can navigate the hub — locate the districts
   (Vault-Deep, Market, Forge/Alembic, Bounty Board, Drill Yard, Vanguard Wall),

@@ -50,6 +50,36 @@ pub const BIOMES: [&str; 11] = [
 /// NOT be varied is the last one.
 pub const EXCLUSIVE: &[&str] = &["seraphic_oubliette"];
 
+/// **WHAT A BIOME LOOKS LIKE, AUTHORED.** Linear RGB, read by every surface that has to
+/// colour ground by which biome it IS — today the debris a Shift throws up as the land
+/// rearranges itself into this theme.
+///
+/// ⚠️ **Authored rather than sampled from the ground texture.** The tint a Shift throws has
+/// to be decided before anything is drawn, and the incoming biome's texture is not
+/// necessarily resident: a world whose party has never stood in a tundra still watches one
+/// arrive. Authoring it also lets the colour say *ash* or *ice* rather than whatever the
+/// centre pixel of a tile happens to be.
+///
+/// The `_` arm is the same reserved tell [`crate::factions::faction_rgb`] uses: a biome
+/// missing from this table draws in a colour nothing else in the game wears, so the gap
+/// shows up in a frame rather than hiding behind a plausible green.
+pub fn biome_rgb(biome: &str) -> [f32; 3] {
+    match biome {
+        "field" => [0.52, 0.66, 0.30],
+        "forest" => [0.24, 0.48, 0.26],
+        "desert" => [0.80, 0.68, 0.42],
+        "ashfall" => [0.34, 0.26, 0.25],
+        "tundra" => [0.76, 0.84, 0.92],
+        "mire" => [0.34, 0.42, 0.28],
+        "amber_wood" => [0.82, 0.56, 0.20],
+        "seized_engine" => [0.44, 0.48, 0.56],
+        "nestiphian_cradle" => [0.56, 0.32, 0.60],
+        "hearth_plains" => [0.70, 0.48, 0.28],
+        "seraphic_oubliette" => [0.88, 0.84, 0.62],
+        _ => [1.0, 0.0, 1.0],
+    }
+}
+
 /// Index of `name` in [`BIOMES`], or `None`.
 pub fn biome_index(name: &str) -> Option<usize> {
     BIOMES.iter().position(|b| *b == name)
@@ -536,6 +566,26 @@ impl Regions {
 
 #[cfg(test)]
 mod tests {
+    /// Every biome is authored, and no two share a colour. A theme that fell through to the
+    /// reserved arm would be indistinguishable from one nobody remembered to pick a colour
+    /// for, which is the whole reason that arm is a colour nothing else wears.
+    #[test]
+    fn every_biome_has_its_own_authored_colour() {
+        let unknown = super::biome_rgb("not-a-biome");
+        let mut seen: Vec<[f32; 3]> = Vec::new();
+        for b in super::BIOMES {
+            let rgb = super::biome_rgb(b);
+            assert_ne!(rgb, unknown, "{b} is not in the colour table");
+            assert!(!seen.contains(&rgb), "{b} shares its colour with another biome");
+            seen.push(rgb);
+        }
+        // A tundra is pale and an ashfall is dark: the two the eye sorts a Shift by before
+        // it has read the banner.
+        let (tundra, ash) = (super::biome_rgb("tundra"), super::biome_rgb("ashfall"));
+        let lum = |c: [f32; 3]| c[0] + c[1] + c[2];
+        assert!(lum(tundra) > lum(ash), "ice should not land darker than ash");
+    }
+
     /// A world nothing has Shifted. Most of these tests are about the DERIVATION, so they
     /// ask it with an empty delta.
     fn no_repaints() -> super::Repaints {

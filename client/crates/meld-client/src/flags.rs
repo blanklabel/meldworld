@@ -212,6 +212,16 @@ pub(crate) fn battle_opening_flag() -> Option<String> {
     std::env::var("MELD_OPENING").ok().filter(|s| !s.is_empty())
 }
 
+/// Land a Shift on a loop, for a capture. `MELD_SHIFT=<biome>` (or `1` for a default).
+///
+/// The same argument as [`battle_fx_flag`], at world scale and worse: a Shift is scheduled
+/// from `(seed, generation)` and lands somewhere in a world on the world's own clock, so
+/// standing in one on purpose is minutes of walking and a coin toss. Its debris is the
+/// loudest effect in the game and would otherwise be verified by nobody.
+pub(crate) fn shift_mock_flag() -> Option<String> {
+    std::env::var("MELD_SHIFT").ok().filter(|s| !s.is_empty())
+}
+
 /// Offline mockups for the overworld overlays (`?inventory` / `?levelup`, or
 /// `MELD_INVENTORY` / `MELD_LEVELUP`).
 pub(crate) fn inventory_mockup_flag() -> bool {
