@@ -1708,6 +1708,15 @@ impl Battle {
         // `executes_at_tick` and every `timed_status` deadline are unaffected: the fight's
         // clock simply starts two seconds later, rather than running while nobody may act.
         if self.tick_count <= self.open_grace_ticks {
+            // ⚠️ **THE CACHE HAS TO BE RIGHT EVEN WHILE NOTHING MOVES.** The server
+            // broadcasts a `gauge_update` every tick whether or not this returned any
+            // events, and that message serializes `gauge_views` — which reads
+            // `statuses_cache`. Unrefreshed, the cache is the EMPTY vector it was born
+            // with, and an empty status list is not "no news" on the far side: the client
+            // assigns it wholesale, so every combatant loses its class, its row, its
+            // barrier and its pack role for the whole of the opening beat. Heroes fall back
+            // to the default sprite and the arena opens as a line of Explorers.
+            self.refresh_all_wire_statuses();
             return events;
         }
 
@@ -1964,13 +1973,21 @@ impl Battle {
                 self.check_terminal(&mut events);
             }
         }
-        // Refresh each fighter's cached wire-status list so this tick's gauge_update
-        // can serialize from it without rebuilding (see [`Self::gauge_views`]). The
-        // signature check is a no-op unless a status/barrier/regen/focus changed.
+        self.refresh_all_wire_statuses();
+        events
+    }
+
+    /// Bring every fighter's cached wire-status list up to date, so this tick's
+    /// `gauge_update` can serialize from it without rebuilding (see [`Self::gauge_views`]).
+    ///
+    /// The per-fighter signature check makes this a no-op unless something it reads
+    /// actually moved, which is why it is safe to call on every path out of `tick` —
+    /// including the opening grace, where nothing moves and the cache would otherwise
+    /// still be the empty vector every `Fighter` is born with.
+    fn refresh_all_wire_statuses(&mut self) {
         for f in &mut self.fighters {
             f.refresh_wire_statuses();
         }
-        events
     }
 
     /// Resolve a player-submitted action. Returns the events or a rejection.
@@ -6972,6 +6989,50 @@ mod tests {
             bt.fighters[bt.idx("m1").unwrap()].gauge,
             held,
             "a pinned fighter kept charging"
+        );
+    }
+
+    /// **THE OPENING BEAT MUST NOT ARRIVE AS A LINE OF STRANGERS.** The server broadcasts a
+    /// `gauge_update` every tick whether or not the engine returned any events, and that
+    /// message serializes `gauge_views`, which reads `statuses_cache`. The refresh that
+    /// fills that cache sat at the END of `tick`, past the grace's early return — so for the
+    /// whole opening beat it stayed the empty vector every `Fighter` is born with.
+    ///
+    /// An empty status list is not "no news" on the far side: the client assigns it
+    /// wholesale, so every combatant lost its `class:`, its `row:back`, its barrier and its
+    /// pack role at once, and heroes fell back to the default sprite. Reported from play as
+    /// the first couple of seconds of a fight showing nothing but Explorers — and "a couple
+    /// of seconds" is `open_grace_ms` exactly.
+    #[test]
+    fn the_opening_grace_still_says_who_everybody_is() {
+        let b = Balance::load_default().unwrap();
+        let mut hero = player("h1", 60);
+        hero.class_key = "phoenix_guard".to_string();
+        hero.back_row = true;
+        let mut bt = Battle::new(
+            "b".into(),
+            EncounterClass::Standard,
+            vec![hero],
+            vec![monster("m1", 500, 1)],
+            &b,
+            7,
+        );
+        // Deliberately NOT `skip_opening`: the grace is the window under test.
+        assert!(b.battle.open_grace_ms > 0, "there is no grace to test");
+        bt.tick();
+        let (_, _, _, statuses) = bt
+            .gauge_views()
+            .find(|(id, _, _, _)| *id == "h1")
+            .map(|(a, b, c, d)| (a, b, c, d.to_vec()))
+            .expect("the hero is in the gauge feed");
+        assert!(
+            statuses.iter().any(|s| s == "class:phoenix_guard"),
+            "the opening beat forgot the hero's class: {statuses:?}"
+        );
+        // …and it is every status, not just the one the sprite reads.
+        assert!(
+            statuses.iter().any(|s| s == "row:back"),
+            "the opening beat forgot the formation: {statuses:?}"
         );
     }
 
