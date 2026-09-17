@@ -355,8 +355,13 @@ pub(crate) fn punch_u(age01: f32) -> f32 {
     } else if a < PUNCH_ARRIVE + PUNCH_HOLD {
         0.0
     } else {
+        // ⚠️ **IT LEAVES FAST.** `k * k` eases OUT of the hitstop, so the ball crept off the
+        // body and hung beside it — the second half of a blow reading as a slow drift past.
+        // A punch FOLLOWS THROUGH: it is a third of the way clear in a fifth of the time it
+        // has left, and the fade rides the same parameter, so both halves of "it goes by"
+        // resolve together.
         let k = (a - PUNCH_ARRIVE - PUNCH_HOLD) / (1.0 - PUNCH_ARRIVE - PUNCH_HOLD);
-        k * k
+        k.powf(0.55)
     }
 }
 
@@ -378,10 +383,27 @@ pub(crate) fn punch_rise(age01: f32) -> f32 {
 }
 
 /// How solid the ball is: almost nothing where it starts, nearly opaque at the moment of
-/// impact, fading again as it passes beyond the body until it is gone.
+/// impact, and then GONE.
+///
+/// ⚠️ **THE TWO HALVES ARE NOT THE SAME CURVE, AND SYMMETRY IS THE BUG.** `1 - u²` either
+/// side reads as an object flying PAST — it arrives and departs at the same weight, so the
+/// impact is just the middle of a trajectory. A blow that lands should spend itself on the
+/// body: the approach keeps the slow swell that makes the arc read as a wind-up, and past the
+/// apex the cube drops it to a third by a third of the way out and to nothing well before the
+/// lane ends. Reported from play as the fade *"not happening fast enough after it goes by"*.
 pub(crate) fn punch_alpha(age01: f32) -> f32 {
-    let u = punch_u(age01).abs();
-    (1.0 - u * u).clamp(0.0, 1.0)
+    punch_alpha_at(punch_u(age01))
+}
+
+/// The curve itself, in the ball's OWN position rather than in time — which is the frame the
+/// question is asked in ("how solid is it once it is past the body") and the only one in which
+/// the two halves are comparable at all, since the hitstop makes time and distance disagree.
+pub(crate) fn punch_alpha_at(u: f32) -> f32 {
+    if u <= 0.0 {
+        (1.0 - u * u).clamp(0.0, 1.0)
+    } else {
+        (1.0 - u).clamp(0.0, 1.0).powi(3)
+    }
 }
 
 /// How hard the impact is flashing, `age01` through. It exists only across the hitstop.
@@ -1488,6 +1510,23 @@ mod tests {
         assert!(punch_alpha(0.0) < 0.15, "it must come in almost transparent");
         assert!(punch_alpha(impact) > 0.9, "it must be nearly solid when it lands");
         assert!(punch_alpha(1.0) < 0.15, "…and be gone by the time it leaves");
+        // **AND IT SPENDS ITSELF ON THE BODY.** At the same DISTANCE either side of the
+        // impact it has to be far thinner on the way out than on the way in, or the ball reads
+        // as something that flew past rather than as a blow that landed. Measured in position
+        // rather than in time, because the hitstop makes the two disagree.
+        for d in [0.3_f32, 0.5, 0.7] {
+            assert!(
+                punch_alpha_at(d) < punch_alpha_at(-d) * 0.5,
+                "at {d} out it is {} against {} coming in — that is a fly-past",
+                punch_alpha_at(d),
+                punch_alpha_at(-d)
+            );
+        }
+        // …and the ball itself clears the body rather than easing away from it: a third of
+        // the way out inside a fifth of the time it has left.
+        let out_start = PUNCH_ARRIVE + PUNCH_HOLD;
+        let fifth = out_start + (1.0 - out_start) * 0.2;
+        assert!(punch_u(fifth) > 0.33, "the ball crept off the body: {}", punch_u(fifth));
         assert!(
             punch_alpha(PUNCH_ARRIVE * 0.5) < punch_alpha(PUNCH_ARRIVE * 0.9),
             "it has to build toward the hit"

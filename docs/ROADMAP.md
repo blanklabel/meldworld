@@ -5530,6 +5530,78 @@ only the things that can't be class-gated.
   earned nothing is now worth; the two answers only ever agreed until the first level-up,
   which is exactly why one of them had to be written down.
 
+- [x] **UX-20 — The fight reads on the bodies fighting it: health at the feet, orders around
+  the hero.** The battle screen answered every question somewhere other than where it was
+  asked. "How is the Knight doing" meant looking away from the Knight — down to a row of hero
+  cells along the bottom edge, or up at a plate floating over a creature — and a party of four
+  against a pack of five put **nine** readouts around the edges of a fight happening in the
+  middle. The orders were the same mistake: a glass panel in the centre of the arena, a long
+  way from the body it was about to act with, covering the fight while you read it.
+  - *Health is a RING on the ground at the feet* ([`battle_rings.rs`](../client/crates/meld-client/src/battle_rings.rs),
+    `feet_ring.wgsl`), read as **liquid**: a green pool, the red bed a hit opens under it, and
+    a dark vessel holding both, with gradients between the three rather than cuts. It lies on
+    the GROUND, so it foreshortens with the scene instead of floating in front of it, and it
+    costs no screen real estate at all. **Green is life and red is what life cost** — which
+    side a body is on moved to the ring's outer hairline, because the body standing inside the
+    ring answers that already.
+  - *The pool is centred on the FRONT and empties toward the back.* A clock-style bar starting
+    at the front puts the empty half exactly where the player is looking and where the number
+    is written; draining symmetrically keeps the arc nearest the camera — the one never behind
+    the body — full until the fighter is nearly gone.
+  - *And the number is written INSIDE the stroke, along its curve.* Per glyph, placed by
+    projecting the ring's own circle and turned to the tangent under it, so the digits are part
+    of the bar describing them rather than a second object to read. The rotation is taken from
+    the projection and never from the angle: the ring is an ELLIPSE on screen, so the tangent
+    at an angle is not that angle, and computing it by hand lays the number flat at the front
+    and leans it the wrong way at the sides.
+  - *The bed HOLDS before it closes.* Without the hold a blow worth a fifth of a bar shows for
+    about a third of a second, on a ring the eye has not reached yet — measured, most captures
+    missed it outright, and so would a player who was watching the creature. Held, the ring
+    slides from green to red and then drains.
+  - *Orders are a WHEEL around the acting hero* ([`battle_radial.rs`](../client/crates/meld-client/src/battle_radial.rs)
+    + `command_wheel.wgsl`): a ring of wedges lying on the ground with the body standing in it,
+    Attack on the arc nearest the camera and the rest round the rim. Five pills floating near a
+    hero are five things that happen to be nearby; a divided ring is ONE thing that belongs to
+    it. UI cannot draw a wedge — a `Node` is an alpha-blended rounded rectangle — so the ring is
+    a ground material and each label is UI text projected onto its own wedge, the same split
+    the health ring's curved digits use.
+  - ⚠️ *The wheel sits BEHIND the body by half its own radius.* The party stands 20-110px from
+    the bottom edge of the frame and a ground wheel has a front, so centred on the feet its
+    near wedge lands ~115px BELOW them and runs off the screen — and at a token set-back it
+    lands on the health ring's own HP digits instead, which want the same arc of the same body.
+  - ⚠️ *It is concentric OUTSIDE the health ring, which the reference art is not* — there the
+    health arcs are the wheel's own rim. Nesting it that way is not merely tight, it is
+    impossible at this camera: the health band's inner wall is 0.567 world units out, which
+    caps an inner wheel at about 73px of screen radius for five words.
+  - ⚠️ *And the arrows stopped being a cross.* The d-pad mapped `ArrowDown` to FLEE and
+    `ArrowRight` to DEFEND, which is the hazard `swallow_the_key_you_walked_in_on` exists to
+    catch: walk into a creature holding south and the fight ended before you had looked at it.
+    ←/→ run the cursor round the wheel and Enter picks — it WRAPS, because a wheel has no ends
+    and a cursor that stopped at one would invent a seam the player cannot see — and Flee is
+    off the arrows altogether, which retires the worst reading of that hazard rather than
+    guarding it twice. Every wedge carries its own letter key, so no direct press is hidden.
+  - *The ring follows the body.* The lunge, the recoil and the shake are written onto the
+    sprite BILLBOARD, and the ring is that billboard's SIBLING — so a hero stepped forward to
+    swing and left its health bar standing behind it. `ring_follows_body` copies the sprite's
+    own horizontal offset rather than re-deriving the motion, and the curved digits and the
+    wheel both anchor on the RING, so all three travel together.
+  - *Barrier, danger and impact are drawn on the ring itself.* Temp HP is a steel-blue lining
+    on the inner wall (it is a shell in front of health, so it belongs on the health readout and
+    inside the stroke, which is what a blow meets first); under a third of a bar the pool boils
+    and embers, agitating the liquid rather than recolouring it, since green still means life
+    at one hit point; and a blow sends a narrow bright line across the stroke. Each of the three
+    is a state the body is in, and none of them repeats what the turn bar already says.
+  - *And the hero's NAME goes inside the circle*, in its own side's colour — which is the one
+    fact the liquid gave up when green became life, restored in the one piece of ground in the
+    arena that belongs to exactly one fighter and has nothing else drawn on it.
+  - *The bottom party HUD is gone with the thing it duplicated*, and the auto-battle toggle
+    moved to its own corner: it is a decision about the whole FIGHT, and it used to live in a
+    panel that only exists while one particular hero is being asked for an order — so it
+    blinked out exactly when a player reaches for it.
+  - `MELD_BATTLE=1` drains and refills a hero on a loop (`mock_ring_liquid`), for the same
+    reason `MELD_FX` tours the casts: the two things the ring exists to show are the two a
+    still frame cannot otherwise contain.
+
 - [ ] **UX-1 — Last City minimap & compass (town-only).** A minimap and compass
   **for Last City itself** so players can navigate the hub — locate the districts
   (Vault-Deep, Market, Forge/Alembic, Bounty Board, Drill Yard, Vanguard Wall),
