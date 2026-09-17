@@ -1038,6 +1038,21 @@ it grew out of — at the first scale that left the ring as a green thread under
 Nesting it INSIDE the ring the way the reference art does is impossible here: that caps an
 inner wheel at ~73px of screen radius for five words.
 
+⚠️ **AND THE WORD IS SIZED AND PLACED BY THE WEDGE, NOT BY A CONSTANT.** The wheel lies on the
+GROUND, so its five sectors are five different shapes on screen — the near and far ones face the
+camera, the side ones are nearly edge-on at a fraction of the width. Three consequences, all of
+them things a fixed layout got wrong: a fixed word size that is comfortable on the near wedge is
+wider than the whole sector on a side one (**DEFEND ran off its wedge and over the hero standing
+beside it**); the hit box must be clamped UP to stay clickable while the word is fitted DOWN to
+the sector, so the two are sized by different rules on purpose; and the band's radial midpoint
+is NOT its midpoint on screen, because perspective widens the half nearer the camera's line of
+sight through the hub — so `label_radius` is weighted toward the outer wall, which is what
+*"all the action items are off centre"* actually was. The tilt cap matters for the same reason a
+sector is not a rectangle: its far corners are the first thing a rotated word runs out of.
+Every line carries a `TextShadow`, because the face beneath is dark GROUND seen in perspective
+with grass, a sprite and a health ring showing through — a thin unshadowed word on that reads as
+scratched into the dirt rather than printed on a face.
+
 ⚠️ **A TILE IS A WEDGE, NOT A PLATE ON ONE.** The wedge is the button's face — the UI carries
 only an icon, a word and a hit box, and both the cursor and the hover are drawn by the shader.
 A rectangle lit on top of a sector is what made the tiles read as five plates parked near a

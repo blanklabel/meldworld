@@ -109,9 +109,18 @@ const WHEEL_SHUT_SCALE: f32 = 1.336;
 /// How long the push takes. Long enough to be a movement the eye catches on its own, short
 /// enough that it is never between you and an order you already knew you wanted.
 const WHEEL_OPEN_SECS: f32 = 0.22;
-/// World-space radius of the middle of the band at a given scale: the line the tiles sit on.
+/// The line the tiles sit on, at a given scale.
+///
+/// ⚠️ **BIASED OUTWARD, BECAUSE THE BAND'S MIDDLE IS NOT ITS MIDDLE ON SCREEN.** The wheel lies
+/// on the GROUND and is seen in perspective, so the band's inner half — the half nearer the
+/// camera's line of sight through the hub — projects WIDER than its outer half. A label at the
+/// true radial midpoint therefore lands in the inner third of the sector it is naming, which is
+/// what *"all the action items are off centre"* was, and what a first pass at that complaint
+/// only half fixed. Weighting toward the outer wall puts the word in the middle of the shape
+/// the player actually sees. It stays strictly inside both walls (a test holds that), so the
+/// tile can never climb out of its own band.
 pub(crate) fn label_radius(scale: f32) -> f32 {
-    MESH_RADIUS * scale * (W_IN + W_OUT) * 0.5
+    MESH_RADIUS * scale * (W_IN * 0.38 + W_OUT * 0.62)
 }
 
 /// How far open the wheel is, 0..1, eased so it arrives rather than stops.
@@ -158,10 +167,35 @@ const TILE_INSET: f32 = 0.88;
 /// own wedge — reported from play as the action items being off centre. The near wedge's
 /// crowding against the HP digits is answered by the digits' own radius, not by shoving the
 /// menu around.
+/// **A LINE OF A WEDGE'S LABEL, AND HOW BIG IT IS RELATIVE TO THE WORD.**
+///
+/// ⚠️ **THE WORD IS SIZED TO THE WEDGE, NOT TO A CONSTANT.** A wheel lies on the GROUND, so
+/// its five wedges are five different shapes on screen: the near and far ones face the camera
+/// and the side ones are nearly edge-on, at a fraction of the width. A fixed 17px word is
+/// comfortable on the near wedge and wider than the whole sector on a side one — which is
+/// exactly what DEFEND did, running off its own wedge and over the hero standing beside it.
+/// The three lines share one fitted size so the stack shrinks together instead of the word
+/// alone leaving its icon behind.
+#[derive(Component)]
+pub(crate) struct WheelText {
+    wedge: usize,
+    /// This line's size as a share of the fitted word size: icon above it, key below.
+    rel: f32,
+}
+
+/// The word's size where a wedge is widest, and the floor below which it stops being a word
+/// and becomes a smudge — under this the label is better off small than crushed.
+const WORD_MAX: f32 = 19.0;
+const WORD_MIN: f32 = 9.5;
+
 const LABEL_RISE: f32 = 0.0;
 /// How much of the band's own tangent a label takes, and the most it may ever tilt.
 const LABEL_FOLLOW: f32 = 0.34;
-const LABEL_TILT_MAX: f32 = 0.60;
+/// ⚠️ **AND THE CAP IS WHAT KEEPS A WORD INSIDE ITS OWN WEDGE.** A sector is a wedge, not a
+/// rectangle: its far corners are the first thing a rotated word runs out of. At 0.60 rad
+/// (34 degrees) DEFEND — the longest word, on one of the two narrowest sectors on screen —
+/// swung its tail clean over the sector wall and onto the hero standing beside the wheel.
+const LABEL_TILT_MAX: f32 = 0.40;
 /// The caption block (who is being commanded, and what the cursor's wedge does) sits above the
 /// wheel — the one direction with room at every hero's position, since the party stands at the
 /// bottom edge of the frame.
@@ -462,22 +496,36 @@ pub(crate) fn rebuild_radial_menu(
                     UiTransform::IDENTITY,
                 ))
                 .with_children(|chip| {
+                    // ⚠️ **EVERY LINE CARRIES ITS OWN SHADOW.** The wedge under it is dark, but
+                    // it is dark GROUND seen in perspective with grass, a sprite and a health
+                    // ring showing through the gaps — and a thin unshadowed word on that read
+                    // as scratched into the dirt rather than printed on a face. One component
+                    // per line, against the four extra nodes an offset-per-direction outline
+                    // would cost on a panel rebuilt whenever the hero moves.
+                    let shadow =
+                        TextShadow { offset: Vec2::splat(1.5), color: Color::srgba(0.0, 0.0, 0.0, 0.85) };
                     chip.spawn((
+                        WheelText { wedge: n, rel: 1.25 },
                         Text::new(slot.glyph),
                         TextFont { font_size: FontSize::Px(21.0), ..default() },
                         TextColor(slot.hue),
+                        shadow,
                     ));
                     chip.spawn((
+                        WheelText { wedge: n, rel: 1.0 },
                         Text::new(slot.word),
                         TextFont { font_size: FontSize::Px(17.0), ..default() },
                         TextColor(text),
+                        shadow,
                     ));
                     // The key on the wedge, not in a legend. A wheel has no reading order, so
                     // "press F to flee" has nowhere else to be said.
                     chip.spawn((
+                        WheelText { wedge: n, rel: 0.62 },
                         Text::new(slot.key),
                         TextFont { font_size: FontSize::Px(11.0), ..default() },
                         TextColor(glass::DIM),
+                        shadow,
                     ));
                 });
             }
@@ -672,6 +720,7 @@ pub(crate) fn follow_radial_menu(
         Without<WheelCaption>,
     >,
     mut caption: Query<&mut Node, With<WheelCaption>>,
+    mut texts: Query<(&WheelText, &mut TextFont)>,
 ) {
     let Some(active) = battle.active.as_deref() else { return };
     let Some((cam, cam_tf)) = cam_q.iter().next() else { return };
@@ -688,6 +737,8 @@ pub(crate) fn follow_radial_menu(
     let (sw, sh) = window.single().map(|w| (w.width(), w.height())).unwrap_or((1920.0, 1080.0));
 
     let project = |p: Vec3| cam.world_to_viewport(cam_tf, p).ok().map(|v| Vec2::new(v.x, v.y));
+    // Each wedge's own on-screen width this frame, so its words can be cut to fit it.
+    let mut fits = [0.0f32; SLOTS.len()];
     let scale = wheel.single().map(|w| open_scale(w.open)).unwrap_or(WHEEL_SCALE);
     let (r_in, r_out) = band_radii(scale);
     let lr = label_radius(scale);
@@ -714,8 +765,15 @@ pub(crate) fn follow_radial_menu(
         if *vis != Visibility::Inherited {
             *vis = Visibility::Inherited;
         }
-        let w = (l.distance(r) * TILE_INSET).clamp(TILE_MIN_W, TILE_MAX_W);
+        // ⚠️ **THE HIT BOX AND THE WORD ARE SIZED BY DIFFERENT RULES, ON PURPOSE.** The box is
+        // clamped UP to a minimum because a target too small to click is the one failure this
+        // menu may not have; the word is fitted DOWN to the wedge's true width because a word
+        // wider than its own sector runs onto the next one — and clamping both the same way is
+        // what put DEFEND across the hero standing beside it.
+        let span = l.distance(r) * TILE_INSET;
+        let w = span.clamp(TILE_MIN_W, TILE_MAX_W);
         let h = (i.distance(o) * TILE_INSET).clamp(TILE_MIN_H, TILE_MAX_H);
+        fits[label.wedge] = span;
         // Kept inside the window: a wedge at the edge of a wide formation would otherwise hang
         // its label off the side, and an order you cannot click is the one failure this menu
         // is not allowed to have.
@@ -754,6 +812,24 @@ pub(crate) fn follow_radial_menu(
         if node.width != Val::Px(w) || node.height != Val::Px(h) {
             node.width = Val::Px(w);
             node.height = Val::Px(h);
+        }
+    }
+
+    // ⚠️ **NOW CUT EVERY WORD TO THE WEDGE IT IS STANDING IN.** The face ships Regular only and
+    // is monospace, so a word's width is exactly `chars x 0.62em` — which makes the fit
+    // arithmetic rather than a guess, and makes DEFEND (six characters on the narrowest sector
+    // on screen) the case that sets the size. The whole stack rides one number so the icon and
+    // the key shrink with the word instead of standing over a smaller one.
+    for (wt, mut font) in &mut texts {
+        let span = fits.get(wt.wedge).copied().unwrap_or(0.0);
+        if span <= 0.0 {
+            continue;
+        }
+        let chars = SLOTS.get(wt.wedge).map(|sl| sl.word.chars().count()).unwrap_or(5) as f32;
+        let fitted = (span * 0.84 / (chars * 0.62)).clamp(WORD_MIN, WORD_MAX);
+        let want = FontSize::Px(fitted * wt.rel);
+        if font.font_size != want {
+            font.font_size = want;
         }
     }
 
