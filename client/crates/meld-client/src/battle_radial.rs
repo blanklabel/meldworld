@@ -85,12 +85,17 @@ pub(crate) const W_OUT: f32 = 0.97;
 const MESH_RADIUS: f32 = 0.7;
 /// How big the wheel is in world units.
 ///
+/// ⚠️ **ITS INNER WALL MUST CLEAR THE HEALTH RING'S OUTER ONE.** `W_IN × 0.7 × scale` has to
+/// exceed 0.907 world units or the wheel is drawn straight over the bar, which at 2.05 left
+/// the health ring as a thin green thread under a dark plate. 2.62 is the first scale that
+/// clears it with a hair of gap.
+///
 /// ⚠️ **IT STANDS OUTSIDE THE HEALTH RING, WHICH THE REFERENCE DOES NOT.** In the art the
 /// health arcs are the wheel's own outer rim. Nesting it that way is not merely tight here, it
 /// is impossible: the health band's inner wall is 0.567 world units out, so a wheel inside it
 /// caps at about a third of this scale — roughly 73px of screen radius for five words. The two
 /// rings are concentric instead, and neither is a caption on the other.
-const WHEEL_SCALE: f32 = 2.05;
+const WHEEL_SCALE: f32 = 2.62;
 /// Where the wheel starts before it opens: its outer wall exactly on the health ring's, so the
 /// tiles are seen to PUSH the circle out rather than to appear beside it.
 ///
@@ -119,14 +124,12 @@ pub(crate) fn open_scale(open: f32) -> f32 {
 }
 /// How far the wheel is pushed AWAY from the camera, as a fraction of its own label radius.
 ///
-/// ⚠️ **THE PARTY STANDS AT THE BOTTOM EDGE OF THE FRAME, AND A GROUND WHEEL HAS A FRONT.**
-/// Centred on the feet, the near wedge lands ~115px BELOW them and runs off the screen — the
-/// same constraint that put the old arc in the upper half-circle, met again by a shape that
-/// has no upper half to move to. Sitting the wheel behind the body spends the room that IS
-/// there (up-screen, over open ground) to buy back the room that is not — and it has to be
-/// set back by HALF its radius, not a token amount: the near wedge otherwise lands on the
-/// health ring's own HP digits, which want the same front-bottom arc of the same body.
-const WHEEL_BACK: f32 = 0.52;
+/// ⚠️ **ZERO, AND IT HAS TO BE.** Setting the wheel back keeps its near wedge on screen and
+/// costs the only thing the shape is for: the hero stops being INSIDE its own menu and ends up
+/// standing at the front edge of a ring drawn behind it. The room it was buying is bought by
+/// the CAMERA instead, which lifts the party off the bottom edge while somebody is being asked
+/// — the fix that does not deform the thing being drawn.
+const WHEEL_BACK: f32 = 0.0;
 
 /// How far above the ground the wheel is drawn — under the health ring's own lift, so where
 /// the two overlap the bar wins. The bar is the one that has to be read at a glance.
@@ -142,7 +145,7 @@ const WHEEL_LIFT: f32 = 0.022;
 /// spills past its wedge steals the press next door, and the wrong order still resolves.
 const TILE_MIN_W: f32 = 84.0;
 const TILE_MAX_W: f32 = 210.0;
-const TILE_MIN_H: f32 = 46.0;
+const TILE_MIN_H: f32 = 62.0;
 const TILE_MAX_H: f32 = 132.0;
 /// How much of its own wedge a tile takes, leaving the wheel's gaps and walls showing round it.
 const TILE_INSET: f32 = 0.88;
@@ -176,17 +179,22 @@ pub(crate) struct Slot {
     pub(crate) key: &'static str,
 }
 
-/// The five verbs around the wheel, ATTACK on the arc nearest the camera: it is the
-/// most-pressed row in the game and the cursor's home, so it takes the one wedge that is never
-/// behind the body and never has to be looked for.
+/// The five verbs around the wheel, **laid out on the battlefield rather than on a list**.
+///
+/// The wheel lies on the ground the fight is happening on, so its bearings mean something: the
+/// enemies are north of every hero and the way out is south. **FLEE takes the south wedge**,
+/// pointing at the retreat; **ATTACK and SKILL take the two wedges facing the enemy line**,
+/// because both are things you do TO something over there; **ITEM and DEFEND take the sides**,
+/// since both are things you do to yourself and neither has a direction. A player who has
+/// understood the arena has already understood the menu.
 pub(crate) const SLOTS: [Slot; 5] = [
-    // mdi glyphs (see UiFont): sword=Attack, shield=Defend, auto-fix=Skill, flask=Item,
-    // run-fast=Flee.
-    Slot { index: 0, glyph: "\u{f04e5}", word: "ATTACK", key: "A" },
+    // mdi glyphs (see UiFont): run-fast=Flee, shield=Defend, sword=Attack, auto-fix=Skill,
+    // flask=Item. Wedge order IS array order, clockwise from the arc nearest the camera.
+    Slot { index: 4, glyph: "\u{f070e}", word: "FLEE", key: "F" },
     Slot { index: 1, glyph: "\u{f132}", word: "DEFEND", key: "D" },
+    Slot { index: 0, glyph: "\u{f04e5}", word: "ATTACK", key: "A" },
     Slot { index: 3, glyph: "\u{f0068}", word: "SKILL", key: "S" },
     Slot { index: 2, glyph: "\u{f0093}", word: "ITEM", key: "I" },
-    Slot { index: 4, glyph: "\u{f070e}", word: "FLEE", key: "F" },
 ];
 
 /// Which way round the wheel a rising wedge number goes, in world space.
@@ -246,32 +254,27 @@ pub(crate) fn wheel_centre(feet: Vec3, front: Vec3, scale: f32) -> Vec3 {
 /// What a chip is drawn on. Solid enough to read over grass and a sprite at once, which the
 /// panel's own glass is not — that sits over a scrim and this sits over the fight.
 pub(crate) const CHIP_BASE: Color = Color::srgba(0.04, 0.05, 0.09, 0.84);
-/// The highlight under the wedge the cursor is on, and under the one the pointer is over.
-///
-/// ⚠️ **DEEP, NOT BRIGHT.** A pale gold plate under gold text is gold on gold: the selected
-/// wedge — the one the player is about to press — was the least readable label on the wheel.
-/// The lift belongs on the BORDER, which is already lit, and the fill stays dark enough for
-/// the word to sit on it.
-pub(crate) const CHIP_ON: Color = Color::srgba(0.46, 0.31, 0.04, 0.92);
-pub(crate) const CHIP_HOVER: Color = Color::srgba(0.30, 0.40, 0.70, 0.85);
 
-/// Light the chip the cursor is on, and whichever one the pointer is over. Its own system
-/// rather than `style_command_menu`'s: a row in a list may fall back to transparent, and a chip
-/// standing on the battlefield may never.
+/// Report which wedge the pointer is over to the WHEEL, and leave the labels plain.
+///
+/// ⚠️ **THE HIGHLIGHT IS THE WEDGE, NOT A BOX OVER IT.** Lighting a rectangle on top of a
+/// sector is what made the tiles read as plates parked on the ring rather than as its faces,
+/// so both the cursor and the hover are drawn by `command_wheel.wgsl`. This only tells it
+/// which wedge the pointer found.
 pub(crate) fn style_radial(
-    menu: Res<BattleMenu>,
-    mut chips: Query<(&MenuRow, &Interaction, &mut BackgroundColor), With<RadialChip>>,
+    chips: Query<(&WheelLabel, &Interaction), With<RadialChip>>,
+    mut mats: ResMut<Assets<CommandWheel>>,
+    disc: Query<&MeshMaterial3d<CommandWheel>, With<CommandWheelDisc>>,
 ) {
-    for (row, interaction, mut bg) in &mut chips {
-        let want = if *interaction == Interaction::Pressed || row.index == menu.cursor {
-            CHIP_ON
-        } else if *interaction == Interaction::Hovered {
-            CHIP_HOVER
-        } else {
-            CHIP_BASE
-        };
-        if bg.0 != want {
-            *bg = BackgroundColor(want);
+    let over = chips
+        .iter()
+        .find(|(_, i)| matches!(**i, Interaction::Hovered | Interaction::Pressed))
+        .map(|(l, _)| l.wedge as f32)
+        .unwrap_or(-1.0);
+    let Ok(mat) = disc.single() else { return };
+    if let Some(mut m) = mats.get_mut(&mat.0) {
+        if m.state.x != over {
+            m.state.x = over;
         }
     }
 }
@@ -282,7 +285,7 @@ pub(crate) fn style_radial(
 /// player cannot see.
 pub(crate) fn step_cursor(cursor: usize, dir: i32) -> usize {
     let n = SLOTS.len() as i32;
-    let at = SLOTS.iter().position(|s| s.index == cursor).unwrap_or(0) as i32;
+    let at = SLOTS.iter().position(|s| s.index == cursor).unwrap_or(2) as i32;
     SLOTS[(at + dir).rem_euclid(n) as usize].index
 }
 
@@ -360,11 +363,6 @@ pub(crate) fn rebuild_radial_menu(
     let gold = Color::srgb(1.0, 0.85, 0.45);
     let red = Color::srgb(1.0, 0.55, 0.5);
     let neutral = Color::srgb(0.92, 0.94, 1.0);
-    // The guided [T]-dive's paced explainer brightens whichever chip it is currently
-    // describing, in place — the same idiom every other step of it uses.
-    let intro = |step: BattleIntroStep, base: Color| {
-        if tutorial_run.battle_intro == Some(step) { glass::ACTIVE_EDGE } else { base }
-    };
 
     commands
         .spawn((
@@ -389,7 +387,14 @@ pub(crate) fn rebuild_radial_menu(
                     4 => (red, red, Some(BattleIntroStep::Flee)),
                     _ => (glass::EDGE_SOFT, neutral, None),
                 };
-                let edge = step.map(|s| intro(s, edge)).unwrap_or(edge);
+                // The guided dive's paced explainer brightens whichever verb it is describing.
+                // It lit the chip's BORDER before; with the wedge carrying the face, the only
+                // thing left that belongs to one verb is its own word.
+                let text = step
+                    .filter(|s| tutorial_run.battle_intro == Some(*s))
+                    .map(|_| glass::ACTIVE_EDGE)
+                    .unwrap_or(text);
+                let _ = edge;
                 root.spawn((
                     Button,
                     RadialChip,
@@ -407,28 +412,31 @@ pub(crate) fn rebuild_radial_menu(
                         flex_direction: FlexDirection::Column,
                         align_items: AlignItems::Center,
                         justify_content: JustifyContent::Center,
-                        border: UiRect::all(Val::Px(1.0)),
                         ..default()
                     },
-                    BorderColor::all(edge),
-                    BackgroundColor(CHIP_BASE),
+                    // ⚠️ **NO PLATE AND NO BORDER.** The wedge beneath IS this button's face.
+                    // A rectangle drawn on top of a sector is what made the tiles read as five
+                    // plates parked near a hero rather than as the ring's own faces — which is
+                    // the whole thing the wheel exists to be. What is left here is an icon, a
+                    // word, and a hit box.
+                    BackgroundColor(Color::NONE),
                 ))
                 .with_children(|chip| {
                     chip.spawn((
                         Text::new(slot.glyph),
-                        TextFont { font_size: FontSize::Px(16.0), ..default() },
+                        TextFont { font_size: FontSize::Px(21.0), ..default() },
                         TextColor(text),
                     ));
                     chip.spawn((
                         Text::new(slot.word),
-                        TextFont { font_size: FontSize::Px(13.0), ..default() },
+                        TextFont { font_size: FontSize::Px(17.0), ..default() },
                         TextColor(text),
                     ));
                     // The key on the wedge, not in a legend. A wheel has no reading order, so
                     // "press F to flee" has nowhere else to be said.
                     chip.spawn((
                         Text::new(slot.key),
-                        TextFont { font_size: FontSize::Px(9.0), ..default() },
+                        TextFont { font_size: FontSize::Px(11.0), ..default() },
                         TextColor(glass::DIM),
                     ));
                 });
@@ -492,6 +500,9 @@ pub(crate) struct CommandWheel {
     /// The acting side's colour, with the wheel's overall opacity in `a`.
     #[uniform(100)]
     pub(crate) tint: Vec4,
+    /// `(hovered wedge, openness, _, _)` — see `command_wheel.wgsl`.
+    #[uniform(100)]
+    pub(crate) state: Vec4,
 }
 
 impl Material for CommandWheel {
@@ -538,6 +549,7 @@ pub(crate) fn drive_command_wheel(
                 let mat = mats.add(CommandWheel {
                     params: Vec4::new(SLOTS.len() as f32, -1.0, 0.0, wheel_bearing()),
                     tint: Vec4::new(0.40, 0.82, 1.0, 1.0),
+                    state: Vec4::new(-1.0, 0.0, 0.0, 0.0),
                 });
                 commands.spawn((
                     CommandWheelDisc { open: 0.0 },
@@ -593,6 +605,7 @@ pub(crate) fn drive_command_wheel(
             time.elapsed_secs(),
             wheel_bearing(),
         );
+        m.state.y = state.open;
     }
 }
 
@@ -785,21 +798,46 @@ mod tests {
         let half = 0.5 / SLOTS.len() as f32;
         assert!((wheel_bearing() + half).abs() < 1e-6, "wedge 0 is not centred on the front");
         assert_eq!(slot_turns(0), 0.0, "wedge 0 is not on the near arc");
-        assert_eq!(SLOTS[0].index, 0, "the near wedge is not Attack");
     }
 
-    /// The labels stand on the wheel, evenly spaced, one per wedge — and Attack is the one
-    /// nearest the camera, which is the whole reason it gets that wedge.
+    /// **THE MENU IS LAID OUT ON THE BATTLEFIELD.** The enemies are north of every hero and the
+    /// way out is south, so Flee points at the retreat, Attack and Skill face the enemy line,
+    /// and the two verbs with no direction — Item and Defend — take the sides. Asserted by
+    /// BEARING rather than by array index, because the rule is about where a wedge points.
+    #[test]
+    fn the_wheel_is_laid_out_on_the_arena() {
+        let feet = Vec3::ZERO;
+        // The camera is along +z, so +z is south (toward the player) and -z is the enemy line.
+        let front = Vec3::Z;
+        let at = |verb: usize| {
+            let n = SLOTS.iter().position(|s| s.index == verb).expect("verb has no wedge");
+            slot_world(feet, front, n, WHEEL_SCALE)
+        };
+        let (attack, skill, item, defend, flee) = (at(0), at(3), at(2), at(1), at(4));
+        // Flee is the southernmost thing on the wheel.
+        for (name, p) in [("attack", attack), ("skill", skill), ("item", item), ("defend", defend)]
+        {
+            assert!(flee.z > p.z, "flee is not south of {name}");
+        }
+        // Attack and Skill are the two facing the enemies…
+        for (name, p) in [("item", item), ("defend", defend), ("flee", flee)] {
+            assert!(attack.z < p.z, "attack does not face the enemies against {name}");
+            assert!(skill.z < p.z, "skill does not face the enemies against {name}");
+        }
+        // …and they are on opposite sides of the centre line, so neither is straight ahead.
+        assert!(attack.x * skill.x < 0.0, "attack and skill are on the same flank");
+        // Item and Defend take the flanks, one each.
+        assert!(item.x * defend.x < 0.0, "item and defend are on the same side");
+        assert!(defend.x > 0.0, "defend is not on the right");
+    }
+
+    /// The labels stand on the wheel, evenly spaced, one per wedge.
     #[test]
     fn every_wedge_gets_its_own_place_on_the_wheel() {
         let feet = Vec3::ZERO;
-        // The camera is somewhere along +z, so "front" is +z.
         let front = Vec3::Z;
         let places: Vec<Vec3> =
             (0..SLOTS.len()).map(|n| slot_world(feet, front, n, WHEEL_SCALE)).collect();
-        // Measured from the WHEEL's own middle, which sits behind the body (`WHEEL_BACK`) so
-        // its near wedge stays on screen — the labels ride the band, not a circle round the
-        // feet.
         let hub = wheel_centre(feet, front, WHEEL_SCALE);
         for (i, a) in places.iter().enumerate() {
             assert!(
@@ -813,12 +851,9 @@ mod tests {
                 );
             }
         }
-        // Attack is nearest the camera, and still in FRONT of the body despite the set-back —
-        // a near wedge that ended up behind the hero is a wheel the hero is not standing in.
-        assert!(places[0].z > places[1].z, "Attack is not on the near arc");
-        assert!(places[0].z > feet.z, "the set-back pushed the near wedge behind the body");
-        // …and Defend is to its right, which is the only thing that settles `SPIN`.
-        assert!(places[1].x > 0.0, "Defend landed to the LEFT — flip SPIN");
+        // ⚠️ The wheel is CENTRED on the body now, so its hub is the feet: a set-back wheel
+        // leaves the hero standing at the front edge of a ring drawn behind it.
+        assert!(hub.distance(feet) < 1e-5, "the wheel is not centred on the hero");
     }
 
     /// **THE TILES PUSH THE CIRCLE OUT, AND THAT IS THE TELL.** The wheel starts with its
@@ -847,14 +882,26 @@ mod tests {
         assert!(open_ease(0.5) > 0.7, "the push is not front-loaded: {}", open_ease(0.5));
     }
 
+    /// **THE WHEEL DOES NOT COVER THE BAR IT GREW OUT OF.** Its inner wall has to clear the
+    /// health ring's outer one, or the wheel is drawn straight over the readout it is supposed
+    /// to have pushed outward — which at the first scale left the ring as a green thread under
+    /// a dark plate.
+    #[test]
+    fn the_wheel_clears_the_health_ring() {
+        let inner = W_IN * MESH_RADIUS * WHEEL_SCALE;
+        let health_outer = 0.7 * 1.35 * 0.96;
+        assert!(inner > health_outer, "the wheel covers the bar: {inner} against {health_outer}");
+    }
+
     /// **THE CURSOR WRAPS.** A wheel has no ends, so a cursor that stopped at one would be
     /// inventing a seam the player cannot see — and it must reach every wedge either way
     /// round, or a verb is keyboard-unreachable.
     #[test]
     fn the_cursor_goes_round_the_wheel() {
-        // Attack · Defend · Skill · Item · Flee, clockwise from the near arc.
-        assert_eq!(step_cursor(0, 1), 1, "clockwise of Attack is Defend");
-        assert_eq!(step_cursor(0, -1), 4, "anticlockwise of Attack is Flee");
+        // Flee · Defend · Attack · Skill · Item, clockwise from the near arc.
+        assert_eq!(step_cursor(0, 1), 3, "clockwise of Attack is Skill");
+        assert_eq!(step_cursor(0, -1), 1, "anticlockwise of Attack is Defend");
+        assert_eq!(step_cursor(4, -1), 2, "anticlockwise of Flee wraps to Item");
         let mut seen = vec![0];
         let mut c = 0;
         for _ in 1..SLOTS.len() {

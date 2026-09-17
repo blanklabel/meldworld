@@ -29,7 +29,8 @@ struct RingParams {
     // The SIDE this body is on, worn as the outer rim only, with an overall opacity in `a`.
     tint: vec4<f32>,
     // x = a heal just landed (1 → 0), y = a hit just landed (1 → 0), z = the Barrier this
-    // body is holding as a fraction of its own max HP, w = how hard the pool is SLOSHING.
+    // body is holding as a fraction of its own max HP, w = the level's FLOW: positive while
+    // it is draining, negative while it is filling, and zero the moment it settles.
     pulse: vec4<f32>,
 };
 
@@ -77,15 +78,6 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     let heal = clamp(ring.pulse.x, 0.0, 1.0);
     let hit = clamp(ring.pulse.y, 0.0, 1.0);
     let ward = clamp(ring.pulse.z, 0.0, 1.0);
-    // THE POOL ROCKS WHEN THE WHEEL PUSHES THE CIRCLE OUT. It is liquid, and the one moment
-    // the ring is physically shoved is the moment it should behave like liquid — the slosh is
-    // what sells the command wheel growing OUT OF the bar rather than appearing over it.
-    let slosh = clamp(ring.pulse.w, 0.0, 1.0);
-    // DANGER is a state, not a second reading of the level: the pool boils and embers when
-    // there is nearly none of it left. It never recolours the liquid wholesale — green still
-    // means life at one hit point — it agitates it, which is what the eye catches in a fight
-    // it is not looking directly at.
-    let danger = 1.0 - smoothstep(0.12, 0.34, fill);
 
     // The mesh is a unit `Circle`, so its uv is the bounding square: recentre to get a local
     // position, and work in polar from there.
@@ -111,30 +103,31 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     // and the whole point of the ring is that it is ONE body of liquid at a level.
     // ⚠️ A full ring has its edge at d = 1, which is the seam at the back — `step` pins it
     // open, or a body at full health wears a dark notch behind it.
-    // The surface swings, and it swings by POSITION round the ring, so one end piles up while
-    // the other draws down — a level that merely pulsed up and down together would read as the
-    // bar changing value rather than as the liquid moving.
-    let wob = slosh * 0.055 * sin(d * 7.5 - t * 12.0);
-    let fill_s = clamp(fill + wob, 0.0, 1.0);
+    // ⚠️ **WAVES RUN THE WAY THE LEVEL IS GOING, AND ONLY WHILE IT IS GOING.** An ambient
+    // swell was built first and did not land: a sine travelling round a stroke twenty pixels
+    // thick, on textured ground, seen in perspective, is not liquid — it is a bar that will
+    // not hold still. What reads as liquid is the surface breaking up WHEN IT MOVES, so the
+    // ripple's amplitude is the flow itself and a settled bar is perfectly flat.
+    //
+    // The phase runs in `d` — distance from the near arc, which is the axis the pool actually
+    // drains along — so a crest travels toward the empty end while it is draining and back
+    // toward full while it is filling, mirrored on both halves the way the pool itself is.
+    let flow = clamp(ring.pulse.w, -1.0, 1.0);
+    let surge = sign(flow) * min(abs(flow), 1.0);
+    let lvl = fill + 0.017 * abs(surge) * sin(d * 34.0 - t * 9.0 * surge);
 
-    var green = 1.0 - smoothstep(fill_s - BLEND, fill_s + BLEND, d);
+    var green = 1.0 - smoothstep(lvl - BLEND, lvl + BLEND, d);
     green = max(green, step(0.999, fill));
     let has_bed = smoothstep(0.0, 0.01, ghost - fill);
-    var red = smoothstep(fill_s - BLEND, fill_s + BLEND, d)
+    var red = smoothstep(lvl - BLEND, lvl + BLEND, d)
         * (1.0 - smoothstep(ghost - BLEND, ghost + BLEND, d));
-    red = max(red, step(0.999, ghost) * smoothstep(fill_s - BLEND, fill_s + BLEND, d)) * has_bed;
+    red = max(red, step(0.999, ghost) * smoothstep(lvl - BLEND, lvl + BLEND, d)) * has_bed;
 
-    // LIQUID, NOT PAINT: light gathers against the inner wall, the surface deepens toward the
-    // outer one, and a slow swell travels round the ring so the level looks held rather than
-    // drawn. It is the same shading in both sections, which is what makes them one fluid.
-    // The swell QUICKENS as the pool runs out — the same trick a channeling body uses to say
-    // "soon" with its own pulse instead of a second widget saying it.
-    let swell = 0.5 + 0.5 * sin(a * TAU * (2.0 + 2.0 * slosh) - t * (0.9 + 4.5 * danger + 7.0 * slosh));
+    // Light gathers along the inner wall. This does NOT move — depth is a property of the
+    // vessel, and the only thing that animates is the surface, and only when it is going
+    // somewhere.
     let across = 1.0 - smoothstep(0.12, 1.0, u);
-    // ⚠️ **THE FLOOR IS HIGH ON PURPOSE.** This ring is alpha-blended onto bright ground, so a
-    // shading term that dips far below 1 does not read as depth in the liquid, it reads as the
-    // grass coming through and the whole ring going pale.
-    let shade = 0.82 + 0.10 * across + 0.10 * swell * across;
+    let shade = 0.88 + 0.12 * across;
 
     var col = EMPTY;
     var alpha = 0.72;
@@ -142,13 +135,12 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     // missing from it rather than a hole in the picture.
     col = mix(col, LOSS * shade, red);
     alpha = mix(alpha, 0.98, red);
-    let pool = mix(LIFE, vec3<f32>(1.0, 0.62, 0.18), danger * (0.35 + 0.25 * swell));
-    col = mix(col, pool * shade, green);
+    col = mix(col, LIFE * shade, green);
     alpha = mix(alpha, 1.0, green);
 
     // THE WATERLINE: a bright meniscus where the pool ends. It is what makes a change of level
     // legible at a glance — the eye tracks the line, not the area.
-    let edge = 1.0 - smoothstep(0.0, BLEND * 0.8, abs(d - fill_s));
+    let edge = 1.0 - smoothstep(0.0, BLEND * 0.8, abs(d - lvl));
     let has_line = (1.0 - step(0.999, fill)) * step(0.001, fill);
     col = mix(col, mix(LIFE, vec3<f32>(1.0), 0.5), edge * has_line * 0.45);
     alpha = max(alpha, edge * has_line * 0.7);

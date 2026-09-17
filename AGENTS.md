@@ -964,6 +964,18 @@ stroke along its own curve, a glyph at a time, each turned to the tangent taken 
 PROJECTION (the ring is an ellipse on screen, so the tangent at an angle is not that angle).
 ⚠️ The red bed **holds** before it drains — a bar that starts closing on the frame it opened
 shows a fifth of a bar for a third of a second, which neither a capture nor an eye catches.
+
+⚠️ **THE METER ROLLS; IT DOES NOT SNAP** (EarthBound's). The shown level counts toward the
+real one and the DIGITS read the shown level, so the number and the liquid can never disagree
+about how far through a hit they are. A second blow part-way through only moves the target, so
+the meter carries on from where it had got to rather than restarting.
+
+⚠️ **AND THE WAVES RUN THE WAY THE LEVEL IS GOING, ONLY WHILE IT IS GOING.** An ambient swell
+was built first and did not land: a sine travelling round a stroke twenty pixels thick, on
+textured ground, in perspective, is not liquid — it is a bar that will not hold still. The
+ripple's amplitude IS the flow, so a settled bar is perfectly flat, and its phase runs in the
+axis the pool drains along, so a crest travels toward the empty end while draining and back
+toward full while filling.
 A **Barrier** lines the inner wall in steel blue (temp HP is a shell in front of health, so it
 belongs on the health readout and inside the stroke, which is what a blow meets first), the
 pool **boils and embers** under a third of a bar, and a blow sends a narrow line across the
@@ -973,11 +985,26 @@ BILLBOARD and the ring is its SIBLING, so a hero that stepped forward to swing l
 bar behind it. `ring_follows_body` copies the sprite's own horizontal offset rather than
 re-deriving the motion; the digits and the command wheel both anchor on the RING.
 
-⚠️ **THE WHEEL SITS BEHIND THE BODY BY HALF ITS RADIUS, AND OUTSIDE THE HEALTH RING.** The
-party stands at the bottom edge of the frame and a ground wheel has a front: centred on the
-feet its near wedge runs off the screen, and at a token set-back it lands on the HP digits.
-Nesting it inside the health ring the way the reference art does is impossible at this camera
-— the health band's inner wall caps an inner wheel at ~73px of screen radius for five words.
+**THE WHEEL IS LAID OUT ON THE ARENA, NOT ON A LIST.** It lies on the ground the fight is
+happening on, so its bearings mean something: the enemies are north of every hero and the way
+out is south. **FLEE takes the south wedge**, **ATTACK and SKILL the two facing the enemy
+line**, **ITEM and DEFEND the flanks** — both are things you do to yourself and neither has a
+direction. A player who has understood the arena has already understood the menu, and the
+tests assert it by BEARING rather than by array index.
+
+⚠️ **THE WHEEL IS CENTRED ON THE BODY, AND THE CAMERA PAID FOR IT.** Setting it back keeps the
+near wedge on screen and costs the only thing the shape is for — the hero stops being INSIDE
+its own menu. `battle_camera` aims nearer the party (`z = 0.4`, was `-1.6`) so the formation
+lifts off the bottom edge and a centred ground wheel fits. ⚠️ Its inner wall must also clear
+the health band's outer one (`W_IN × 0.7 × scale > 0.907`) or the wheel is drawn over the bar
+it grew out of — at the first scale that left the ring as a green thread under a dark plate.
+Nesting it INSIDE the ring the way the reference art does is impossible here: that caps an
+inner wheel at ~73px of screen radius for five words.
+
+⚠️ **A TILE IS A WEDGE, NOT A PLATE ON ONE.** The wedge is the button's face — the UI carries
+only an icon, a word and a hit box, and both the cursor and the hover are drawn by the shader.
+A rectangle lit on top of a sector is what made the tiles read as five plates parked near a
+hero, which is the one thing the wheel exists not to be.
 ⚠️ **AND THE ARROWS ARE NOT A D-PAD ANY MORE.** The cross mapped `ArrowDown` to FLEE and
 `ArrowRight` to DEFEND — the hazard `swallow_the_key_you_walked_in_on` exists to catch. ←/→
 run the cursor round the wheel (it WRAPS; a wheel has no ends), Enter picks, every wedge

@@ -5622,6 +5622,36 @@ only the things that can't be class-gated.
     rather than the engine's own struct — the same reason `the_blow_tells_the_client_what_it
     _was_made_of` does. Without the fix it fails with `[]`, which is the bug stated exactly.
 
+- [x] **UX-21 — The wheel is the ring: tiles in the circle, a meter that rolls, and waves that
+  run the way the level is going.** `UX-20` shipped the wheel as five plates floating near the
+  hero rather than as the ring's own faces, the push-out was invisible behind a set-back that
+  put the hero at the front edge of its own menu, and the "liquid" was an ambient swell that
+  read as a bar refusing to hold still. All three came back from play as not landing.
+  - *A tile IS a wedge.* The wedge is the button's face — the UI carries only an icon, a word
+    and a hit box, and both the cursor and the hover are drawn by `command_wheel.wgsl`. A
+    rectangle lit on top of a sector is what made the tiles read as plates parked near a hero.
+  - *The wheel is centred on the body, and the CAMERA paid for it.* Setting it back kept the
+    near wedge on screen and cost the only thing the shape is for. `battle_camera` aims nearer
+    the party (`z = 0.4`, was `-1.6`), which lifts the formation off the bottom edge — the fix
+    that does not deform the thing being drawn. Its inner wall also has to clear the health
+    band's outer one, or the wheel is drawn over the bar it grew out of.
+  - *The menu is laid out on the ARENA.* Enemies are north of every hero and the way out is
+    south, so **Flee takes the south wedge**, **Attack and Skill the two facing the enemy
+    line**, and **Item and Defend the flanks** — both are things you do to yourself and neither
+    has a direction. Asserted by BEARING rather than by array index.
+  - *The meter ROLLS* (EarthBound's): the shown level counts toward the real one and the digits
+    read the shown level, so the number and the liquid cannot disagree about how far through a
+    hit they are. A second blow part-way through only moves the target, so the roll carries on
+    from where it had got to rather than restarting.
+  - *And the waves run the way the level is going, only while it is going.* The ripple's
+    amplitude IS the flow, so a settled bar is flat; its phase runs in the axis the pool drains
+    along, so a crest travels toward the empty end while draining and back toward full while
+    filling. The ambient swell it replaces is deleted, with the reason recorded in the shader.
+  - ⚠️ *One bug worth the note:* the hover uniform was added AFTER `tint` in the Rust and
+    BEFORE it in the WGSL. `AsBindGroup` packs one `#[uniform(100)]` struct in DECLARATION
+    order, so the shader read one member's bytes as another's — a wedge in completely the wrong
+    colour, no error anywhere. The field order of that struct is an ABI.
+
 - [ ] **UX-1 — Last City minimap & compass (town-only).** A minimap and compass
   **for Last City itself** so players can navigate the hub — locate the districts
   (Vault-Deep, Market, Forge/Alembic, Bounty Board, Drill Yard, Vanguard Wall),
