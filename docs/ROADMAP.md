@@ -5850,6 +5850,21 @@ only the things that can't be class-gated.
     Portal in the bag or an hour's walk to the deep portal, and the channel is over in
     seconds.
 
+- [x] **UX-28 — A level is earned by a body, so it lands on one.** The level-up scroll is a
+  centred card naming a hero and printing what moved — and the hero it names is standing
+  right there in the arena the XP was earned in, doing nothing. `UX-19` went to some trouble
+  to play that card WHERE the fight happened rather than over a world you are already walking
+  around in; this is the other half of that argument.
+  - A gold burst rises off that hero's own body, from a ring at its FEET rather than a cloud
+    on the sprite, so the art stays readable and the lift is something happening TO them.
+    It slows as it climbs rather than falling back: nothing about a level goes away again.
+  - The card and the wire already share a name for a hero (`name:` — `CL-1`), so
+    `levelling_body` matches on that rather than inventing a second identifier. ⚠️ It must
+    match a PLAYER's body: a creature can be called anything, and a burst on something across
+    the field is worse than no burst at all.
+  - ⚠️ It fires on the card CHANGING hero, not on the card being up, or a scroll through four
+    heroes would re-fire on every frame it was on screen.
+
 - [ ] **UX-1 — Last City minimap & compass (town-only).** A minimap and compass
   **for Last City itself** so players can navigate the hub — locate the districts
   (Vault-Deep, Market, Forge/Alembic, Bounty Board, Drill Yard, Vanguard Wall),
