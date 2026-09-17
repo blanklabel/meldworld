@@ -174,30 +174,20 @@ const TILE_INSET: f32 = 0.88;
 /// own wedge — reported from play as the action items being off centre. The near wedge's
 /// crowding against the HP digits is answered by the digits' own radius, not by shoving the
 /// menu around.
-/// **A LINE OF A WEDGE'S LABEL, AND HOW BIG IT IS RELATIVE TO THE WORD.**
+/// **THE ICON IS A FIXED SIZE, AND THAT IS THE POINT.**
 ///
-/// ⚠️ **THE WORD IS SIZED TO THE WEDGE, NOT TO A CONSTANT.** A wheel lies on the GROUND, so
-/// its five wedges are five different shapes on screen: the near and far ones face the camera
-/// and the side ones are nearly edge-on, at a fraction of the width. A fixed 17px word is
-/// comfortable on the near wedge and wider than the whole sector on a side one — which is
-/// exactly what DEFEND did, running off its own wedge and over the hero standing beside it.
-/// The three lines share one fitted size so the stack shrinks together instead of the word
-/// alone leaving its icon behind.
-#[derive(Component)]
-pub(crate) struct WheelText {
-    wedge: usize,
-    /// This line's size as a share of the fitted word size: icon above it, key below.
-    rel: f32,
-}
-
-/// The icon's ceiling: past this it outgrows the band's depth on the wedges that face the
-/// camera squarely. ⚠️ **There is deliberately no FLOOR** — see the note where this is used.
+/// ⚠️ **IT USED TO BE FITTED TO ITS SECTOR EVERY FRAME AND THAT WAS THE BUG.** Reported from
+/// play: *"when I scale out or scale in with the camera, the text moves."* The first answer was
+/// to make the glyph track the projection exactly — which does stop it drifting relative to its
+/// wedge, and leaves it growing and shrinking under the player's hand as the camera breathes.
+/// Neither is what a BUTTON does. A control holds still: same size, same place, whatever the
+/// camera is doing. So the size is a constant and the position is the sector's own centre, and
+/// the only thing the zoom moves is the wheel underneath it.
 ///
-/// ⚠️ **AND IT IS THE BUTTON NOW, SO IT IS SIZED LIKE ONE.** With the words gone the glyph is
-/// the whole of what a player reads off a wedge, and it was still wearing a size picked when it
-/// was a decoration sitting above a word — small enough to be an ornament on a label that no
-/// longer exists.
-const GLYPH_MAX: f32 = 54.0;
+/// ⚠️ The trade is real and bounded: zoom far enough out and fixed-size icons crowd a shrinking
+/// wheel. The battle camera auto-fits to the party rather than being free, so that range is
+/// small — if a future camera opens it up, this is the constant that has to become a clamp.
+const GLYPH_PX: f32 = 38.0;
 
 const LABEL_RISE: f32 = 0.0;
 /// The caption block (who is being commanded, and what the cursor's wedge does) sits above the
@@ -229,6 +219,14 @@ pub(crate) struct Slot {
     /// caps is what makes them read as the labels ON a control rather than as text near one.
     pub(crate) word: &'static str,
     pub(crate) key: &'static str,
+    /// The font's OWN name for `glyph`. ⚠️ **A codepoint with nothing checking it is how this
+    /// repo drew a keyboard where a chest plate should have been** (`icons.rs`): this face's
+    /// Material Design block is shifted from the upstream table, so a hand-copied codepoint
+    /// lands on a neighbour and renders perfectly as the wrong picture. These five were exactly
+    /// that — five hand-copied codepoints with no test on them — while every icon in `icons.rs`
+    /// had been held to its name since the keyboard.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) icon: &'static str,
 }
 
 /// The five verbs around the wheel, **laid out on the battlefield rather than on a list**.
@@ -245,11 +243,15 @@ pub(crate) const SLOTS: [Slot; 5] = [
     // gap is on the FAR arc, so slot 0 is the sector just clockwise of the enemy-facing hole
     // and slot 2 lands dead south. Read it as a clock with the enemies at twelve: Skill and
     // Attack either side of twelve, Item and Defend at nine and three, Flee at six.
-    Slot { index: 3, glyph: "\u{f0068}", word: "SKILL", key: "S", hue: INTENT_SKILL },
-    Slot { index: 2, glyph: "\u{f0093}", word: "ITEM", key: "I", hue: INTENT_MEND },
-    Slot { index: 4, glyph: "\u{f070e}", word: "FLEE", key: "F", hue: INTENT_FLEE },
-    Slot { index: 1, glyph: "\u{f132}", word: "DEFEND", key: "D", hue: INTENT_GUARD },
-    Slot { index: 0, glyph: "\u{f04e5}", word: "ATTACK", key: "A", hue: INTENT_STRIKE },
+    Slot { index: 3, glyph: "\u{f0068}", icon: "md-auto_fix", word: "SKILL", key: "S", hue: INTENT_SKILL },
+    Slot { index: 2, glyph: "\u{f0093}", icon: "md-flask", word: "ITEM", key: "I", hue: INTENT_MEND },
+    // ⚠️ U+F070E is `md-run`, NOT `md-run_fast` — this drew a plain walker while the comment
+    // above claimed the sprinter, and nothing checked it until the test below existed. The
+    // verified codepoint is the one `icons.rs::nf::RUN_FAST` already carries.
+    Slot { index: 4, glyph: "\u{f046e}", icon: "md-run_fast", word: "FLEE", key: "F", hue: INTENT_FLEE },
+    // ⚠️ A HALVED shield, asked for by name — `fa-shield_halved`, not `fa-shield`.
+    Slot { index: 1, glyph: "\u{ED25}", icon: "fa-shield_halved", word: "DEFEND", key: "D", hue: INTENT_GUARD },
+    Slot { index: 0, glyph: "\u{f04e5}", icon: "md-sword", word: "ATTACK", key: "A", hue: INTENT_STRIKE },
 ];
 
 /// **THE COLOUR OF AN INTENT.** Shared by the wheel's wedges and — once it lands — the glow on
@@ -543,38 +545,26 @@ pub(crate) fn rebuild_radial_menu(
                     UiTransform::IDENTITY,
                 ))
                 .with_children(|chip| {
-                    // ⚠️ **EVERY LINE CARRIES ITS OWN SHADOW.** The wedge under it is dark, but
-                    // it is dark GROUND seen in perspective with grass, a sprite and a health
-                    // ring showing through the gaps — and a thin unshadowed word on that read
-                    // as scratched into the dirt rather than printed on a face. One component
-                    // per line, against the four extra nodes an offset-per-direction outline
-                    // would cost on a panel rebuilt whenever the hero moves.
-                    let shadow =
-                        TextShadow { offset: Vec2::splat(1.5), color: Color::srgba(0.0, 0.0, 0.0, 0.85) };
+                    // ⚠️ **THE ICON IS THE WHOLE BUTTON: no word under it and no key letter.**
+                    // A sector seen in perspective is a different shape at every bearing and
+                    // every camera distance, and a six-character word is the thing that will
+                    // not fit the narrow ones — DEFEND ran over the hero standing beside the
+                    // wheel, and each attempt to make it fit was a smaller word in a shape
+                    // that was still wrong. One glyph fits any sector by construction. It is
+                    // also the only way it lands CENTRED: a stack of icon-over-letter centres
+                    // the STACK, which puts the icon itself above the middle of its wedge.
+                    // The verb's name and its key are said in the caption, once, where there
+                    // is room for them.
                     chip.spawn((
-                        WheelText { wedge: n, rel: 1.0 },
                         Text::new(slot.glyph),
-                        TextFont { font_size: FontSize::Px(21.0), ..default() },
-                        TextColor(slot.hue),
-                        shadow,
-                    ));
-                    // ⚠️ **NO WORD.** A wedge seen in perspective is a different shape at every
-                    // bearing and at every camera distance, and a six-character word is the
-                    // thing that will not fit in the narrow ones — DEFEND ran over the hero
-                    // beside the wheel, and every attempt to make it fit was a smaller word in
-                    // a shape that was still the wrong one. An icon is one glyph: it fits any
-                    // sector at any zoom by construction. What the highlighted verb IS is said
-                    // once, in full, in the caption above the wheel — where there is room for a
-                    // sentence — rather than five times in a space with room for none.
-                    let _ = text;
-                    // The key on the wedge, not in a legend. A wheel has no reading order, so
-                    // "press F to flee" has nowhere else to be said.
-                    chip.spawn((
-                        WheelText { wedge: n, rel: 0.30 },
-                        Text::new(slot.key),
-                        TextFont { font_size: FontSize::Px(11.0), ..default() },
-                        TextColor(glass::DIM),
-                        shadow,
+                        TextFont { font_size: FontSize::Px(GLYPH_PX), ..default() },
+                        TextColor(text),
+                        // The face beneath is dark, but it is dark GROUND in perspective with
+                        // grass, a sprite and a health ring showing through the gaps.
+                        TextShadow {
+                            offset: Vec2::splat(2.0),
+                            color: Color::srgba(0.0, 0.0, 0.0, 0.85),
+                        },
                     ));
                 });
             }
@@ -621,9 +611,13 @@ pub(crate) fn rebuild_radial_menu(
                 // once, in full, in its own intent colour, where there is room for it. Said on
                 // every wedge it was five cramped words in five shapes none of them fit; said
                 // here it is one, and it is already rebuilt whenever the cursor moves.
+                // ⚠️ **AND IT CARRIES THE KEY, because the wedge no longer can.** A wheel has
+                // no reading order, so "press F to flee" has nowhere to be said except beside
+                // the verb it belongs to — and the letters were the second thing crowding an
+                // icon that had to be the whole button.
                 if let Some(slot) = SLOTS.iter().find(|s| s.index == menu.cursor) {
                     cap.spawn((
-                        Text::new(slot.word),
+                        Text::new(format!("{}  [{}]", slot.word, slot.key)),
                         TextFont { font_size: FontSize::Px(17.0), ..default() },
                         TextColor(slot.hue),
                     ));
@@ -793,7 +787,6 @@ pub(crate) fn follow_radial_menu(
         Without<WheelCaption>,
     >,
     mut caption: Query<&mut Node, With<WheelCaption>>,
-    mut texts: Query<(&WheelText, &mut TextFont)>,
 ) {
     let Some(active) = battle.active.as_deref() else { return };
     let Some((cam, cam_tf)) = cam_q.iter().next() else { return };
@@ -810,8 +803,6 @@ pub(crate) fn follow_radial_menu(
     let (sw, sh) = window.single().map(|w| (w.width(), w.height())).unwrap_or((1920.0, 1080.0));
 
     let project = |p: Vec3| cam.world_to_viewport(cam_tf, p).ok().map(|v| Vec2::new(v.x, v.y));
-    // Each wedge's own on-screen width this frame, so its words can be cut to fit it.
-    let mut fits = [0.0f32; SLOTS.len()];
     let scale = wheel.single().map(|w| open_scale(w.open)).unwrap_or(WHEEL_SCALE);
     let (r_in, r_out) = band_radii(scale);
     let lr = label_radius(scale);
@@ -863,7 +854,6 @@ pub(crate) fn follow_radial_menu(
         let span = l.distance(r) * TILE_INSET;
         let w = span.clamp(TILE_MIN_W, TILE_MAX_W);
         let h = (i.distance(o) * TILE_INSET).clamp(TILE_MIN_H, TILE_MAX_H);
-        fits[label.wedge] = span;
         // Kept inside the window: a wedge at the edge of a wide formation would otherwise hang
         // its label off the side, and an order you cannot click is the one failure this menu
         // is not allowed to have.
@@ -893,29 +883,6 @@ pub(crate) fn follow_radial_menu(
     // arithmetic rather than a guess, and makes DEFEND (six characters on the narrowest sector
     // on screen) the case that sets the size. The whole stack rides one number so the icon and
     // the key shrink with the word instead of standing over a smaller one.
-    // ⚠️ **AND THE GLYPH IS SIZED BY ITS SECTOR EVERY FRAME, WHICH IS WHAT STOPS IT DRIFTING.**
-    // Reported from play: *"when I scale out or scale in with the camera, the text moves."* It
-    // did, and it had to — the label is a screen-space node laid over a world-space shape, so
-    // if its size does not track the projection then the two diverge the moment the camera
-    // does anything. A floor makes that certain: past the zoom where the clamp bites, the
-    // sector keeps shrinking and the glyph does not, so it creeps out of its own wedge.
-    // Sizing off the sector's own projected width with NO floor makes the label scale exactly
-    // as the wheel does, so it holds still relative to the thing it is standing on. The hit
-    // box keeps its minimum — that is a different rule for a different reason (a target too
-    // small to click), and the box is invisible, so it may diverge where a glyph may not.
-    for (wt, mut font) in &mut texts {
-        let span = fits.get(wt.wedge).copied().unwrap_or(0.0);
-        if span <= 0.0 {
-            continue;
-        }
-        // One glyph, so the sector's width IS the budget. The ceiling only stops the icon
-        // outgrowing the band's depth on the two wedges that face the camera squarely.
-        let fitted = (span * 0.82).min(GLYPH_MAX);
-        let want = FontSize::Px(fitted * wt.rel);
-        if font.font_size != want {
-            font.font_size = want;
-        }
-    }
 
     if let Ok(mut node) = caption.single_mut() {
         if let Ok(p) = cam.world_to_viewport(cam_tf, feet) {
@@ -984,6 +951,34 @@ pub(crate) fn rebuild_auto_chip(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **EVERY WEDGE'S ICON IS THE GLYPH IT CLAIMS TO BE.**
+    ///
+    /// ⚠️ The wheel's five codepoints were hand-copied and nothing checked them, which is the
+    /// exact gap `icons.rs` closed for every other icon in the game after `md-tshirt_crew` drew
+    /// a KEYBOARD — present in the font, rendered happily, and the wrong picture. This face's
+    /// Material Design block is shifted from the upstream table, so "is it in the font" is not
+    /// the question; the face knows its own glyph names, so ask it.
+    #[test]
+    fn every_wedge_icon_is_the_glyph_it_claims_to_be() {
+        let face = ttf_parser::Face::parse(crate::netglue::UI_FONT_BYTES, 0)
+            .expect("the bundled UI font parses");
+        for slot in SLOTS {
+            let ch = slot.glyph.chars().next().expect("a glyph is at least one char");
+            let gid = face.glyph_index(ch).unwrap_or_else(|| {
+                panic!("{} (U+{:X}) is not in the font at all", slot.icon, ch as u32)
+            });
+            assert_eq!(
+                face.glyph_name(gid),
+                Some(slot.icon),
+                "{}'s icon U+{:X} is {:?}, not {} — the codepoint is off",
+                slot.word,
+                ch as u32,
+                face.glyph_name(gid),
+                slot.icon,
+            );
+        }
+    }
 
     /// **A CHIP FIRES THE INDEX IT CARRIES.** `menu_click` looks up `menu_entries`' Root list
     /// by index, so a slot pointing at the wrong one hands the server a different order than
