@@ -97,7 +97,8 @@ pub(crate) fn update_music(
             AudioPlayer(assets.handle(want)),
             PlaybackSettings {
                 mode: PlaybackMode::Loop,
-                volume: Volume::Linear(0.5),
+                // Silent on a capture run — see `flags::muted_flag`.
+                volume: Volume::Linear(if crate::flags::muted_flag() { 0.0 } else { 0.5 }),
                 ..default()
             },
             MusicEntity,

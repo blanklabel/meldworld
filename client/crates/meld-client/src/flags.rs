@@ -166,6 +166,19 @@ pub(crate) fn party_flag() -> Option<String> {
 /// `MELD_BATTLE=coop` adds joined ally parties (the surround layout); `=skills` opens
 /// the Skill page, which is the only one that draws a tooltip — an ability's prose and
 /// its magnitudes are otherwise unreachable in a screenshot without driving a fight.
+/// **A CAPTURE RUN HAS NOBODY LISTENING.** `MELD_MUTE=1` silences the music, and a run driving
+/// the screenshot file channel (`MELD_SHOT_CHANNEL`) is muted whether it asks or not.
+///
+/// ⚠️ **THIS IS NOT A NICETY.** A harness client is launched in the background, often several
+/// at once across agents, and it plays the battle theme at half volume into whatever the person
+/// at the keyboard is doing — reported from play as having to close the window mid-call, which
+/// also kills the capture that was the point of the run. A run whose whole output is a PNG has
+/// no use for audio.
+pub(crate) fn muted_flag() -> bool {
+    std::env::var("MELD_SHOT_CHANNEL").is_ok()
+        || matches!(std::env::var("MELD_MUTE").as_deref(), Ok("1") | Ok("true"))
+}
+
 pub(crate) fn battle_mockup_flag() -> bool {
     std::env::var("MELD_BATTLE").is_ok()
 }

@@ -955,6 +955,9 @@ pub(crate) struct WorldAssets {
     /// [`hd2d::bust_billboard_mesh`]).
     pub(crate) bust_quad: Handle<Mesh>,
     pub(crate) shadow_mesh: Handle<Mesh>,
+    /// The health ring's two shells: the liquid inside and the glass around it.
+    pub(crate) ring_liquid_mesh: Handle<Mesh>,
+    pub(crate) ring_glass_mesh: Handle<Mesh>,
     pub(crate) shadow_mat: Handle<StandardMaterial>,
     /// The active-turn arrow's cone, apex up as `Cone` spawns it — flipped per-instance
     /// at each hero's own spawn site (`spawn_hero_actor`), not baked in here, since every
@@ -1535,6 +1538,16 @@ pub(crate) fn setup(
         // Head→torso crop (top 55%) for stacked back-row busts.
         bust_quad: meshes.add(hd2d::bust_billboard_mesh(2.2, 2.2, 12, 60.0, 0.55)),
         shadow_mesh: meshes.add(Circle::new(0.7)),
+        // ⚠️ **THE HEALTH RING IS REAL GEOMETRY NOW, NOT AN ANNULUS CUT OUT OF A DISC.** A
+        // flat disc can be shaded to look round and never reads as round, because the light
+        // is a guess rather than the surface — three hand-written terms for specular, back
+        // wall and fresnel still came back from play as "doesn't read as a tube". A torus
+        // carries real normals, so the scene's own light does the work, and its UVs are
+        // already the two coordinates the bar needs: `u` round the ring (the level) and `v`
+        // round the tube (the cross-section).
+        ring_liquid_mesh: meshes.add(Torus { major_radius: 0.78, minor_radius: 0.105 }),
+        // The shell is a hair larger, so the liquid sits INSIDE it rather than z-fighting it.
+        ring_glass_mesh: meshes.add(Torus { major_radius: 0.78, minor_radius: 0.135 }),
         shadow_mat: mats.add(hd2d::contact_shadow_material()),
         // A small, bright, unlit cone — noticeable without needing new PixelLab art
         // the way the target diamond has. Unlit so it reads the same colour at

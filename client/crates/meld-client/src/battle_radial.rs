@@ -34,6 +34,8 @@ use bevy::reflect::TypePath;
 use bevy::render::render_resource::AsBindGroup;
 use bevy::shader::ShaderRef;
 
+use std::f32::consts::FRAC_PI_2;
+
 use meld_client::glass;
 
 use super::*;
@@ -149,11 +151,17 @@ const TILE_MIN_H: f32 = 62.0;
 const TILE_MAX_H: f32 = 132.0;
 /// How much of its own wedge a tile takes, leaving the wheel's gaps and walls showing round it.
 const TILE_INSET: f32 = 0.88;
-/// How far up-screen a label sits from its wedge's own centre. The near wedge would otherwise
-/// touch the health ring's HP digits, which sit on the band directly below it — and lifting
-/// every label uniformly keeps the wheel reading as one control, where lifting the one that
-/// collides would be a special case nothing else on the wheel obeys.
-const LABEL_RISE: f32 = 14.0;
+/// How far up-screen a label sits from its wedge's own centre.
+///
+/// ⚠️ **ZERO: A LABEL SITS ON ITS BAND.** Any lift at all reads as the word floating off the
+/// tile it names, and at this radius a uniform one put every verb near the outer wall of its
+/// own wedge — reported from play as the action items being off centre. The near wedge's
+/// crowding against the HP digits is answered by the digits' own radius, not by shoving the
+/// menu around.
+const LABEL_RISE: f32 = 0.0;
+/// How much of the band's own tangent a label takes, and the most it may ever tilt.
+const LABEL_FOLLOW: f32 = 0.34;
+const LABEL_TILT_MAX: f32 = 0.60;
 /// The caption block (who is being commanded, and what the cursor's wedge does) sits above the
 /// wheel — the one direction with room at every hero's position, since the party stands at the
 /// bottom edge of the frame.
@@ -420,6 +428,7 @@ pub(crate) fn rebuild_radial_menu(
                     // the whole thing the wheel exists to be. What is left here is an icon, a
                     // word, and a hit box.
                     BackgroundColor(Color::NONE),
+                    UiTransform::IDENTITY,
                 ))
                 .with_children(|chip| {
                     chip.spawn((
@@ -623,14 +632,17 @@ pub(crate) fn follow_radial_menu(
     // The wheel's own openness, so a tile rides the push out instead of snapping to where the
     // wheel will end up — the growth IS the tell, and half of it is the labels moving with it.
     wheel: Query<&CommandWheelDisc>,
-    mut labels: Query<(&WheelLabel, &mut Node, &mut Visibility), Without<WheelCaption>>,
+    mut labels: Query<
+        (&WheelLabel, &mut Node, &mut UiTransform, &mut Visibility),
+        Without<WheelCaption>,
+    >,
     mut caption: Query<&mut Node, With<WheelCaption>>,
 ) {
     let Some(active) = battle.active.as_deref() else { return };
     let Some((cam, cam_tf)) = cam_q.iter().next() else { return };
     let Some(feet) = rings.iter().find(|(r, _)| r.id == active).map(|(_, t)| t.translation())
     else {
-        for (_, _, mut vis) in &mut labels {
+        for (_, _, _, mut vis) in &mut labels {
             if *vis != Visibility::Hidden {
                 *vis = Visibility::Hidden;
             }
@@ -645,7 +657,7 @@ pub(crate) fn follow_radial_menu(
     let (r_in, r_out) = band_radii(scale);
     let lr = label_radius(scale);
 
-    for (label, mut node, mut vis) in &mut labels {
+    for (label, mut node, mut tf, mut vis) in &mut labels {
         let turns = slot_turns(label.wedge);
         // The wedge's OWN corners: its two arc ends at the label radius, and its inner and
         // outer wall at its centre bearing. A tile cut to those sits in the ring rather than
@@ -677,6 +689,32 @@ pub(crate) fn follow_radial_menu(
         if node.left != Val::Px(x) || node.top != Val::Px(y) {
             node.left = Val::Px(x);
             node.top = Val::Px(y);
+        }
+        // **THE WORD FOLLOWS THE CURVE — PART OF THE WAY.** A label set square on a ring drawn
+        // in perspective is the one thing on the wheel that is not part of it. The angle is
+        // taken from the PROJECTION (the two arc ends this tile was measured between), for the
+        // same reason the HP digits take theirs there: the ring is an ellipse on screen, so the
+        // tangent at a bearing is not that bearing.
+        //
+        // ⚠️ **BUT ONLY A SHARE OF IT, AND CAPPED.** On a ground ellipse at this camera the
+        // tangent at the side wedges is nearly VERTICAL, so following it fully stands ATTACK
+        // and ITEM on their ends — unreadable, and not what the reference art does either,
+        // where every label is upright. A third of the angle reads as belonging to the curve
+        // while the word still reads as a word.
+        let along = r - l;
+        let full = along.y.atan2(along.x);
+        // Keep it the short way round: a tangent measured the other way is the same line, and
+        // taking the raw angle would flip a label upside down on half the wheel.
+        let folded = if full > FRAC_PI_2 {
+            full - std::f32::consts::PI
+        } else if full < -FRAC_PI_2 {
+            full + std::f32::consts::PI
+        } else {
+            full
+        };
+        let rot = Rot2::radians((folded * LABEL_FOLLOW).clamp(-LABEL_TILT_MAX, LABEL_TILT_MAX));
+        if tf.rotation != rot {
+            tf.rotation = rot;
         }
         if node.width != Val::Px(w) || node.height != Val::Px(h) {
             node.width = Val::Px(w);

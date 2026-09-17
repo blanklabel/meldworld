@@ -28,9 +28,12 @@ use crate::battle::SpriteQuad;
 use crate::{status_num, BattleData};
 use meld_client::net::CombatantView;
 
-/// How wide the ring is, in world units. Sized to sit just outside the contact shadow so the
-/// two read as one footprint rather than as a disc with a hoop around it.
-const RING_SCALE: f32 = 1.35;
+/// How high the tube's centre floats above the ground. Its own minor radius, so the tube sits
+/// ON the ground rather than half sunk into it.
+pub(crate) const RING_LIFT: f32 = 0.115;
+/// The torus's major radius — the line the tube runs along, and where the HP digits sit.
+/// ⚠️ Mirrored from `world_render`'s `ring_liquid_mesh`; a test holds the two together.
+pub(crate) const RING_MAJOR: f32 = 0.78;
 /// How fast the red bed a hit opened closes back up, as a fraction of the ring per second.
 const GHOST_CHASE: f32 = 0.28;
 /// How long it stays open at full width first, in seconds.
@@ -44,6 +47,103 @@ const GHOST_HOLD: f32 = 0.42;
 /// How fast the heal/hit flashes fade, per second. Long enough to catch out of the corner of
 /// an eye in a four-body fight, short enough to be gone before the next blow lands.
 const PULSE_FADE: f32 = 2.4;
+/// How many points the wave is simulated at, around the whole ring.
+///
+/// ⚠️ **PACKED AS `vec4`s BECAUSE std140 GIVES A BARE `f32` ARRAY A 16-BYTE STRIDE.** An array
+/// of floats in a uniform block costs four times its own size and reads back wrong if the two
+/// sides disagree about the padding; four-to-a-`vec4` is the packing both sides can state.
+pub(crate) const WAVE_N: usize = 48;
+pub(crate) const WAVE_VEC4S: usize = WAVE_N / 4;
+/// How stiff the surface is — this is the wave SPEED, and it is the number to reason about
+/// rather than guess.
+///
+/// ⚠️ The discrete wave equation carries a disturbance at `sqrt(STIFF)` samples per second, so
+/// at 260 a splash crossed four of forty-eight samples in a quarter second and died where it
+/// landed — a dent, not a wave. 6400 is ~80 samples/s, about two-thirds of a lap per second,
+/// which is what reads as water moving. ⚠️ It is bounded by stability: `STIFF * dt²` must stay
+/// under 1 or the integrator diverges, and at 6400 with a 1/120 step it is 0.44.
+const WAVE_STIFF: f32 = 6400.0;
+/// The restoring pull toward flat. This is what makes it WATER rather than sound: without it a
+/// disturbance propagates forever and never settles into a level.
+const WAVE_SPRING: f32 = 7.0;
+/// Velocity damping, so a ring that was hit eventually goes still.
+const WAVE_DAMP: f32 = 3.6;
+/// A slow bleed on the height itself, as the reference does (`pressure *= 0.999`). Velocity
+/// damping alone leaves a damped oscillator whose envelope is set by the spring, which is a
+/// long tail on a bar that has to be still between blows.
+const WAVE_BLEED: f32 = 0.9965;
+/// The fixed step the surface is integrated at. A wave equation solved on a variable frame
+/// time changes its own speed with the frame rate and blows up on a long one.
+const WAVE_DT: f32 = 1.0 / 120.0;
+/// How broad a splash is, in samples squared.
+///
+/// ⚠️ **A NARROW PULSE DOES NOT TRAVEL, IT SITS THERE AND DISPERSES.** On a discrete Laplacian
+/// the group velocity falls to zero as the wavelength approaches two samples, so a tight
+/// Gaussian is almost entirely made of components that go nowhere — measured, a 1.7-sample
+/// splash put 5e-11 of itself on the far side of the ring after a quarter second. Four and a
+/// half samples wide is low-frequency enough to actually propagate.
+const WAVE_SPLASH_WIDTH: f32 = 40.0;
+
+/// The surface of one ring's liquid: height and velocity at [`WAVE_N`] points around it.
+///
+/// ⚠️ **THE WAVE NEVER MOVES THE WATERLINE.** The boundary between green and red IS the health
+/// number — displace it and the bar reads as the value changing, which came back from play as
+/// *people think they're getting slight heals*. The surface rides INSIDE the liquid as light
+/// and shade, and the level it sits on is only ever the real one.
+pub(crate) struct RingWave {
+    p: [f32; WAVE_N],
+    v: [f32; WAVE_N],
+    /// Left-over time, so the step stays fixed whatever the frame did.
+    acc: f32,
+}
+
+// ⚠️ Hand-written: `Default` is only derived for arrays up to 32, and the surface is 48 points.
+impl Default for RingWave {
+    fn default() -> Self {
+        Self { p: [0.0; WAVE_N], v: [0.0; WAVE_N], acc: 0.0 }
+    }
+}
+
+impl RingWave {
+    /// Integrate the surface forward. Periodic: it is a ring, so a wave that leaves one end
+    /// arrives at the other rather than reflecting off a wall that is not there.
+    pub(crate) fn step(&mut self, dt: f32) {
+        self.acc = (self.acc + dt).min(WAVE_DT * 8.0);
+        while self.acc >= WAVE_DT {
+            self.acc -= WAVE_DT;
+            let old = self.p;
+            for i in 0..WAVE_N {
+                let left = old[(i + WAVE_N - 1) % WAVE_N];
+                let right = old[(i + 1) % WAVE_N];
+                let accel = (left + right - 2.0 * old[i]) * WAVE_STIFF - WAVE_SPRING * old[i];
+                self.v[i] = (self.v[i] + accel * WAVE_DT) * (1.0 - WAVE_DAMP * WAVE_DT);
+            }
+            for i in 0..WAVE_N {
+                self.p[i] = (self.p[i] + self.v[i] * WAVE_DT) * WAVE_BLEED;
+            }
+        }
+    }
+
+    /// Drop something in at `at` (0..1 around the ring), with `amp` as its size.
+    pub(crate) fn splash(&mut self, at: f32, amp: f32) {
+        let centre = at.rem_euclid(1.0) * WAVE_N as f32;
+        for i in 0..WAVE_N {
+            // Distance the short way round, since the two ends of the array are neighbours.
+            let d = ((i as f32 - centre).abs()).min(WAVE_N as f32 - (i as f32 - centre).abs());
+            self.v[i] += amp * (-d * d / WAVE_SPLASH_WIDTH).exp();
+        }
+    }
+
+    /// The surface, packed for the shader.
+    pub(crate) fn packed(&self) -> [Vec4; WAVE_VEC4S] {
+        let mut out = [Vec4::ZERO; WAVE_VEC4S];
+        for (i, q) in out.iter_mut().enumerate() {
+            *q = Vec4::new(self.p[i * 4], self.p[i * 4 + 1], self.p[i * 4 + 2], self.p[i * 4 + 3]);
+        }
+        out
+    }
+}
+
 /// How fast the FLOW settles once the level stops moving. Slower than the flashes: the surface
 /// keeps running for a moment after the number lands, which is what a liquid does and what a
 /// bar that simply snapped to its new value does not.
@@ -58,16 +158,8 @@ const FLOW_FADE: f32 = 1.6;
 const ROLL_RATE: f32 = 0.55;
 const ROLL_FLOOR: f32 = 0.08;
 
-/// The stroke's inner and outer radius as a fraction of the mesh — mirrored from
-/// `feet_ring.wgsl`, which cuts the annulus, and held against it by test. The Rust side needs
-/// them because the HP number is written ALONG the middle of that stroke.
-pub(crate) const R_IN: f32 = 0.60;
-pub(crate) const R_OUT: f32 = 0.96;
-/// `WorldAssets::shadow_mesh` is a `Circle::new(0.7)`, and the ring borrows it rather than
-/// carrying a second disc.
-const MESH_RADIUS: f32 = 0.7;
 /// World-space radius of the middle of the stroke: the line the digits sit on.
-pub(crate) const TEXT_RADIUS: f32 = MESH_RADIUS * RING_SCALE * (R_IN + R_OUT) * 0.5;
+pub(crate) const TEXT_RADIUS: f32 = RING_MAJOR;
 
 /// The ring material. One per combatant, driven every frame it changes.
 #[derive(Asset, AsBindGroup, TypePath, Debug, Clone)]
@@ -79,18 +171,29 @@ pub(crate) struct FeetRing {
     /// life and red is what life cost, for everybody, because that reading needs no key.
     #[uniform(100)]
     pub(crate) tint: Vec4,
-    /// `(heal, hit, _, _)` — the two momentary flashes, each fading to nothing.
+    /// `(heal, hit, barrier, flow)`.
     #[uniform(100)]
     pub(crate) pulse: Vec4,
+    /// `(front bearing in turns, _, _, _)` — where the camera-facing arc is on the torus's own
+    /// `u`. ⚠️ Handed in rather than read off the mesh: `u` starts wherever the generator began
+    /// winding, and reading that seam instead is what put the pool behind the body once already.
+    #[uniform(100)]
+    pub(crate) view: Vec4,
+    /// The liquid's surface, four samples to a `vec4`, [`WAVE_N`] round the ring.
+    #[uniform(100)]
+    pub(crate) wave: [Vec4; WAVE_VEC4S],
 }
 
 impl Material for FeetRing {
     fn fragment_shader() -> ShaderRef {
         "shaders/feet_ring.wgsl".into()
     }
-    /// Alpha-blended, not additive: this is paint on the ground, not light cast onto it.
+    /// ⚠️ **OPAQUE, because it is now a solid thing inside a transparent one.** Blending the
+    /// liquid made sense while it was paint on the ground; inside a glass shell it has to be
+    /// what the shell REFRACTS, and a transmissive material cannot pick up something that is
+    /// itself drawn in the transparent pass.
     fn alpha_mode(&self) -> AlphaMode {
-        AlphaMode::Blend
+        AlphaMode::Opaque
     }
 }
 
@@ -112,6 +215,8 @@ pub(crate) struct CombatantRing {
     /// Which way the level is going and how hard: **positive while draining**, negative while
     /// filling, decaying to nothing once it settles. It is what the surface waves ride.
     pub(crate) flow: f32,
+    /// This ring's own liquid surface.
+    pub(crate) wave: RingWave,
     /// The level being SHOWN, rolling toward the real one. A second blow during the roll only
     /// moves the target, so the meter carries straight on from wherever it had got to rather
     /// than restarting — which is the whole reason the roll is a state and not an animation.
@@ -228,10 +333,43 @@ pub(crate) fn arc_text(
 
 /// Spawn the ring under a combatant, as a child of its actor — the two actor spawners already
 /// place a contact shadow at exactly this spot.
+/// The glass the liquid sits in: a plain `StandardMaterial` doing real specular transmission.
+///
+/// ⚠️ **THIS IS WHY THE HAND-WRITTEN GLASS TERMS ARE GONE.** A specular, a far wall and a
+/// fresnel written by hand are an impression of what glass does; `specular_transmission` with
+/// an index of refraction is what it does. Keeping both would be two lighting models arguing
+/// over one object.
+///
+/// ⚠️ It needs `Msaa::Off`, which the HD-2D camera already sets — so this costs the battle
+/// screen a transmissive pass and costs the rest of the game nothing.
+pub(crate) fn glass_shell() -> StandardMaterial {
+    // ⚠️ **TRANSMISSION AT 0.92 IS AN INVISIBLE TUBE.** Glass that transmits almost everything
+    // shows you the grass behind it, so the empty half of the bar — the half that says how much
+    // health is GONE — disappeared entirely. Glass reads by what it does NOT transmit: a body
+    // tint, a rougher surface catching more light, and enough thickness to tint what passes
+    // through. It is a readout first and a material second.
+    StandardMaterial {
+        // ⚠️ **AND 0.72 HID THE LIQUID.** The two failures are a pair: transmit everything and
+        // the empty half vanishes, tint it enough to see and the full half goes grey. The glass
+        // has to be faint enough to look through and present enough to be there, which is a
+        // narrow band — and the other half of the answer is that the LIQUID carries its own
+        // light (below) rather than relying on the scene to push it through the shell.
+        base_color: Color::srgba(0.76, 0.85, 0.96, 0.34),
+        perceptual_roughness: 0.16,
+        metallic: 0.0,
+        specular_transmission: 0.70,
+        ior: 1.52,
+        thickness: 0.22,
+        alpha_mode: AlphaMode::Blend,
+        ..default()
+    }
+}
+
 pub(crate) fn spawn_ring(
     parent: &mut ChildSpawnerCommands,
-    mesh: Handle<Mesh>,
+    meshes: (Handle<Mesh>, Handle<Mesh>),
     rings: &mut Assets<FeetRing>,
+    glass: &mut Assets<StandardMaterial>,
     id: &str,
     col: Color,
     fill: f32,
@@ -241,7 +379,16 @@ pub(crate) fn spawn_ring(
         params: Vec4::new(fill, fill, 0.0, 0.0),
         tint: Vec4::new(c.red, c.green, c.blue, 1.0),
         pulse: Vec4::ZERO,
+        view: Vec4::ZERO,
+        wave: [Vec4::ZERO; WAVE_VEC4S],
     });
+    // The shell, around everything. Spawned first so the liquid inside it is already in the
+    // scene when the transmissive pass samples what is behind the glass.
+    parent.spawn((
+        Mesh3d(meshes.1),
+        MeshMaterial3d(glass.add(glass_shell())),
+        Transform::from_xyz(0.0, RING_LIFT, 0.0),
+    ));
     parent.spawn((
         CombatantRing {
             id: id.to_string(),
@@ -253,14 +400,13 @@ pub(crate) fn spawn_ring(
             hold: 0.0,
             flow: 0.0,
             shown: fill,
+            wave: RingWave::default(),
         },
-        Mesh3d(mesh),
+        Mesh3d(meshes.0),
         MeshMaterial3d(mat),
-        // Flat on the ground, a hair above it so it does not z-fight the terrain and a hair
-        // above the contact shadow so the two do not fight each other either.
-        Transform::from_xyz(0.0, 0.03, 0.0)
-            .with_rotation(Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2))
-            .with_scale(Vec3::splat(RING_SCALE)),
+        // ⚠️ **NO ROTATION.** A torus is already generated in the XZ plane, so the -90° turn the
+        // flat disc needed would stand this one on its edge.
+        Transform::from_xyz(0.0, RING_LIFT, 0.0),
     ));
 }
 
@@ -301,7 +447,8 @@ pub(crate) fn drive_rings(
     time: Res<Time>,
     battle: Res<BattleData>,
     mut rings: ResMut<Assets<FeetRing>>,
-    mut q: Query<(&mut CombatantRing, &mut Visibility)>,
+    cam: Query<&GlobalTransform, With<Camera3d>>,
+    mut q: Query<(&mut CombatantRing, &mut GlobalTransform, &mut Visibility), Without<Camera3d>>,
     // Who was being asked last frame. The command wheel pushing this body's circle out is the
     // same event as the turn arriving on it, so the slosh is triggered from the turn rather
     // than plumbed across from the wheel — one fact, read where it already is.
@@ -313,7 +460,12 @@ pub(crate) fn drive_rings(
     if battle.active != *last_active {
         *last_active = battle.active.clone();
     }
-    for (mut ring, mut vis) in &mut q {
+    // Where the camera is, so each ring can put its pool on the arc facing the viewer. ⚠️ This
+    // is per-ring, not global: two bodies at opposite ends of a wide formation are seen from
+    // measurably different bearings, and a single number would swing one of their pools off
+    // the front.
+    let eye = cam.iter().next().map(|t| t.translation());
+    for (mut ring, gt, mut vis) in &mut q {
         let Some(c) = battle.view(&ring.id) else { continue };
         // A body that is down has no health to report and no turn to take.
         let want = if c.hp > 0 { Visibility::Inherited } else { Visibility::Hidden };
@@ -356,6 +508,22 @@ pub(crate) fn drive_rings(
         if ring.flow.abs() < 0.02 {
             ring.flow = 0.0;
         }
+
+        // ── the surface ───────────────────────────────────────────────────────────────────
+        // A blow drops something in AT THE WATERLINE, which is where it physically lands: the
+        // level is symmetric about the near arc, so that is two points, one each side.
+        // ⚠️ The disturbance is a VELOCITY, not a displacement — pushing the height directly
+        // gives a square-edged bump that reads as a graphics error rather than as a splash.
+        if ring.hit >= 0.999 || ring.heal >= 0.999 {
+            let amp = if ring.hit >= 0.999 { 3.4 } else { 2.0 };
+            ring.wave.splash(fill * 0.5, amp);
+            ring.wave.splash(1.0 - fill * 0.5, amp);
+        }
+        // …and the wheel shoving the ring open rocks the whole thing from the front.
+        if shoved.as_deref() == Some(ring.id.as_str()) {
+            ring.wave.splash(0.0, 2.6);
+        }
+        ring.wave.step(dt);
         let (ghost, hold) = chase_ghost(ring.ghost, fill, ring.hold, dt);
         ring.ghost = ghost;
         ring.hold = hold;
@@ -363,6 +531,15 @@ pub(crate) fn drive_rings(
         let Some(mut mat) = rings.get_mut(&ring.mat) else { continue };
         mat.params = Vec4::new(fill, ring.ghost, t, if active { 1.0 } else { 0.0 });
         mat.pulse = Vec4::new(ring.heal, ring.hit, barrier_fill(c), ring.flow);
+        mat.wave = ring.wave.packed();
+        // ⚠️ **THE TORUS'S `u = 0` IS WHEREVER ITS GENERATOR STARTED WINDING**, which has
+        // nothing to do with the camera. Bevy winds it from +x, so the bearing of the viewer in
+        // the ring's own frame is `atan2(dz, dx)` turned into turns.
+        if let Some(eye) = eye {
+            let to_eye = eye - gt.translation();
+            let turns = to_eye.z.atan2(to_eye.x) / std::f32::consts::TAU;
+            mat.view.x = turns.rem_euclid(1.0);
+        }
     }
 }
 
@@ -437,25 +614,36 @@ mod tests {
         assert_eq!(g, 0.0, "the bed never closed");
     }
 
-    /// **THE DIGITS ARE WRITTEN ON THE STROKE THE SHADER CUTS.** The annulus is cut in WGSL
-    /// and the number is laid along the middle of it from Rust, so the two copies of where
-    /// that stroke IS have to agree — and `make check` never builds a pipeline, so a drift
-    /// here ships green and lands the HP number on bare grass.
+    /// **THE RING'S GEOMETRY IS DECLARED IN ONE PLACE AND USED IN ANOTHER.** The two tori are
+    /// built in `world_render` and everything here — where the digits sit, how high the tube
+    /// floats — is stated against their radii. `make check` never builds a mesh, so a radius
+    /// changed on one side and not the other ships green and puts the number in mid-air.
     #[test]
-    fn the_stroke_is_where_the_shader_cuts_it() {
-        let src = include_str!("../assets/shaders/feet_ring.wgsl");
-        let read = |name: &str| -> f32 {
+    fn the_tube_is_the_size_the_meshes_are() {
+        let src = include_str!("world_render.rs");
+        let read = |mesh: &str, field: &str| -> f32 {
             let line = src
                 .lines()
-                .find(|l| l.trim_start().starts_with(&format!("const {name}: f32")))
-                .unwrap_or_else(|| panic!("{name} is gone from the shader"));
-            line.split('=').nth(1).unwrap().trim().trim_end_matches(';').parse().unwrap()
+                .find(|l| l.contains(mesh) && l.contains("Torus"))
+                .unwrap_or_else(|| panic!("{mesh} is gone"));
+            let at = line.find(field).unwrap_or_else(|| panic!("{mesh} has no {field}"));
+            line[at + field.len()..]
+                .trim_start_matches(|c: char| c == ':' || c.is_whitespace())
+                .split([',', ' ', '}'])
+                .next()
+                .unwrap()
+                .parse()
+                .unwrap()
         };
-        assert_eq!(read("R_IN"), R_IN, "the inner wall moved in the shader only");
-        assert_eq!(read("R_OUT"), R_OUT, "the outer wall moved in the shader only");
-        // …and the digits sit between the two walls rather than on one of them.
-        let mid = TEXT_RADIUS / (MESH_RADIUS * RING_SCALE);
-        assert!(mid > R_IN && mid < R_OUT, "the number is written off the stroke: {mid}");
+        let liquid_major = read("ring_liquid_mesh", "major_radius");
+        let liquid_minor = read("ring_liquid_mesh", "minor_radius");
+        let glass_minor = read("ring_glass_mesh", "minor_radius");
+        assert_eq!(liquid_major, RING_MAJOR, "the digits sit off the tube");
+        assert_eq!(read("ring_glass_mesh", "major_radius"), RING_MAJOR, "the shells are not concentric");
+        // The shell has to be the larger of the two, or the liquid pokes through its own glass.
+        assert!(glass_minor > liquid_minor, "the liquid is fatter than its shell");
+        // …and the tube sits ON the ground rather than half sunk into it.
+        assert!(RING_LIFT >= glass_minor * 0.8, "the tube is buried: {RING_LIFT}");
     }
 
     /// **A HEAL AND A HIT ARE THE SAME FIELD MOVING TWO WAYS**, and each gets its own flash —
@@ -543,5 +731,41 @@ mod tests {
         assert_eq!(shown_hp(1.0, &c), 100);
         assert_eq!(shown_hp(0.001, &c), 1, "a standing body read as dead mid-roll");
         assert_eq!(shown_hp(0.0, &cv("a", true, 0, 100)), 0, "a fallen body must reach zero");
+    }
+
+    /// **THE SURFACE IS A WAVE, AND IT SETTLES.** A disturbance has to travel (a splash at one
+    /// point must reach a point away from it) and it has to DIE (a ring that rang forever
+    /// would be a bar that never holds still, which is the complaint this replaced).
+    #[test]
+    fn the_surface_carries_a_wave_and_then_goes_flat() {
+        let mut w = RingWave::default();
+        w.splash(0.0, 3.0);
+        // It moves at all…
+        w.step(0.05);
+        let near = w.packed()[0].x.abs();
+        assert!(near > 1e-4, "the splash did nothing: {near}");
+        // …it travels away from where it landed…
+        w.step(0.25);
+        let far: f32 = w.packed()[WAVE_VEC4S / 2].to_array().iter().map(|v| v.abs()).sum();
+        assert!(far > 1e-4, "the wave never reached the far side: {far}");
+        // …and it ends flat rather than ringing forever. Measured as the DEEPEST remaining
+        // sample, which is the thing a player could still see — a sum over 48 points answers
+        // a question nobody is asking and fails on a ring that is visibly still.
+        for _ in 0..300 {
+            w.step(1.0 / 60.0);
+        }
+        let left = w.packed().iter().flat_map(|q| q.to_array()).fold(0.0_f32, |m, v| m.max(v.abs()));
+        assert!(left < 0.02, "the surface never settled: {left}");
+    }
+
+    /// **A SPLASH IS PERIODIC.** The ring has no ends, so a disturbance near the seam has to
+    /// reach round it — landing at 0.99 must stir the samples just past 0.0.
+    #[test]
+    fn a_splash_reaches_round_the_seam() {
+        let mut w = RingWave::default();
+        w.splash(0.995, 3.0);
+        w.step(1.0 / 120.0);
+        let first = w.packed()[0].x.abs();
+        assert!(first > 1e-5, "the splash stopped at the seam: {first}");
     }
 }
