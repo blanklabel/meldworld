@@ -331,45 +331,30 @@ pub(crate) fn arc_text(
         .collect()
 }
 
-/// Spawn the ring under a combatant, as a child of its actor — the two actor spawners already
-/// place a contact shadow at exactly this spot.
-/// The glass the liquid sits in: a plain `StandardMaterial` doing real specular transmission.
+/// **ONE MESH, ONE MATERIAL — the glass is a term in the shader, not a second torus.**
 ///
-/// ⚠️ **THIS IS WHY THE HAND-WRITTEN GLASS TERMS ARE GONE.** A specular, a far wall and a
-/// fresnel written by hand are an impression of what glass does; `specular_transmission` with
-/// an index of refraction is what it does. Keeping both would be two lighting models arguing
-/// over one object.
+/// ⚠️ This spawned TWO tori for a while: the liquid, and a slightly fatter
+/// `StandardMaterial` shell around it with `specular_transmission` on, so the vessel would
+/// be real glass with real refraction. It reads correctly at the size that reference art is
+/// drawn at and it does not read at all at the size a feet ring occupies on screen — a
+/// twenty-pixel stroke seen nearly edge-on. Reported from play as **"you have these double
+/// stacked on enemies"**, and that is the honest reading of the picture: two concentric
+/// rings, one grey and one green, not liquid inside a vessel.
 ///
-/// ⚠️ It needs `Msaa::Off`, which the HD-2D camera already sets — so this costs the battle
-/// screen a transmissive pass and costs the rest of the game nothing.
-pub(crate) fn glass_shell() -> StandardMaterial {
-    // ⚠️ **TRANSMISSION AT 0.92 IS AN INVISIBLE TUBE.** Glass that transmits almost everything
-    // shows you the grass behind it, so the empty half of the bar — the half that says how much
-    // health is GONE — disappeared entirely. Glass reads by what it does NOT transmit: a body
-    // tint, a rougher surface catching more light, and enough thickness to tint what passes
-    // through. It is a readout first and a material second.
-    StandardMaterial {
-        // ⚠️ **AND 0.72 HID THE LIQUID.** The two failures are a pair: transmit everything and
-        // the empty half vanishes, tint it enough to see and the full half goes grey. The glass
-        // has to be faint enough to look through and present enough to be there, which is a
-        // narrow band — and the other half of the answer is that the LIQUID carries its own
-        // light (below) rather than relying on the scene to push it through the shell.
-        base_color: Color::srgba(0.76, 0.85, 0.96, 0.34),
-        perceptual_roughness: 0.16,
-        metallic: 0.0,
-        specular_transmission: 0.70,
-        ior: 1.52,
-        thickness: 0.22,
-        alpha_mode: AlphaMode::Blend,
-        ..default()
-    }
-}
-
+/// ⚠️ **And the shell ATE the readout it was decorating.** Alpha-blended over an opaque
+/// liquid it greyed the pool down, so a creature at FULL health — the case with the most
+/// green to show — drew as a plain grey ring with nothing in it. The two failures its own
+/// retired comment recorded (transmit everything and the empty half vanishes; tint it enough
+/// to see and the full half goes grey) were not a band to be threaded. They were the shape
+/// being wrong.
+///
+/// So the tube is ONE torus and `feet_ring.wgsl` draws its empty part as empty glass instead
+/// of discarding it. The vessel is then the same object as its contents by construction, and
+/// nothing can stack on anything.
 pub(crate) fn spawn_ring(
     parent: &mut ChildSpawnerCommands,
-    meshes: (Handle<Mesh>, Handle<Mesh>),
+    mesh: Handle<Mesh>,
     rings: &mut Assets<FeetRing>,
-    glass: &mut Assets<StandardMaterial>,
     id: &str,
     col: Color,
     fill: f32,
@@ -382,13 +367,6 @@ pub(crate) fn spawn_ring(
         view: Vec4::ZERO,
         wave: [Vec4::ZERO; WAVE_VEC4S],
     });
-    // The shell, around everything. Spawned first so the liquid inside it is already in the
-    // scene when the transmissive pass samples what is behind the glass.
-    parent.spawn((
-        Mesh3d(meshes.1),
-        MeshMaterial3d(glass.add(glass_shell())),
-        Transform::from_xyz(0.0, RING_LIFT, 0.0),
-    ));
     parent.spawn((
         CombatantRing {
             id: id.to_string(),
@@ -402,7 +380,7 @@ pub(crate) fn spawn_ring(
             shown: fill,
             wave: RingWave::default(),
         },
-        Mesh3d(meshes.0),
+        Mesh3d(mesh),
         MeshMaterial3d(mat),
         // ⚠️ **NO ROTATION.** A torus is already generated in the XZ plane, so the -90° turn the
         // flat disc needed would stand this one on its edge.
@@ -635,15 +613,18 @@ mod tests {
                 .parse()
                 .unwrap()
         };
-        let liquid_major = read("ring_liquid_mesh", "major_radius");
-        let liquid_minor = read("ring_liquid_mesh", "minor_radius");
-        let glass_minor = read("ring_glass_mesh", "minor_radius");
-        assert_eq!(liquid_major, RING_MAJOR, "the digits sit off the tube");
-        assert_eq!(read("ring_glass_mesh", "major_radius"), RING_MAJOR, "the shells are not concentric");
-        // The shell has to be the larger of the two, or the liquid pokes through its own glass.
-        assert!(glass_minor > liquid_minor, "the liquid is fatter than its shell");
-        // …and the tube sits ON the ground rather than half sunk into it.
-        assert!(RING_LIFT >= glass_minor * 0.8, "the tube is buried: {RING_LIFT}");
+        let major = read("ring_liquid_mesh", "major_radius");
+        let minor = read("ring_liquid_mesh", "minor_radius");
+        assert_eq!(major, RING_MAJOR, "the digits sit off the tube");
+        // ⚠️ **AND THERE IS EXACTLY ONE OF THEM.** A second concentric torus is what
+        // `spawn_ring`'s note calls the double-stacked reading; re-adding one is re-adding
+        // that bug, so the absence is asserted rather than left to memory.
+        assert!(
+            !src.contains("ring_glass_mesh"),
+            "the ring is one torus: a second shell reads as two rings, not as liquid in glass",
+        );
+        // The tube sits ON the ground rather than half sunk into it.
+        assert!(RING_LIFT >= minor * 0.8, "the tube is buried: {RING_LIFT}");
     }
 
     /// **A HEAL AND A HIT ARE THE SAME FIELD MOVING TWO WAYS**, and each gets its own flash —

@@ -29,6 +29,11 @@ struct WheelParams {
     // the "five plates parked near a hero" reading this whole file exists to retire.
     state: vec4<f32>,
 
+    // One colour per wedge, in wedge order: what each verb IS. ⚠️ Declaration order is the ABI
+    // (`AsBindGroup` packs one `#[uniform(100)]` block in order), so this sits exactly where
+    // the Rust puts it.
+    hues: array<vec4<f32>, 5>,
+
     // ⚠️ **THE ORDER OF THESE FIELDS IS THE ABI.** `AsBindGroup` packs one `#[uniform(100)]`
     // struct in DECLARATION order, so a field added here in a different place than in the Rust
     // makes the shader read one member's bytes as another's — which shows up as a wedge in
@@ -88,18 +93,25 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     // sprite and a health ring at once.
     var col = vec3<f32>(0.04, 0.05, 0.09);
     var alpha = 0.90 * cut * (0.72 + 0.28 * dish);
+    // **THE WEDGE LIGHTS IN ITS OWN VERB'S COLOUR.** Not one highlight for everything: what
+    // you are about to do has a colour, and it is the same colour the body you are about to do
+    // it to will wear.
+    let hue = wheel.hues[i32(slot)].rgb;
+    // ⚠️ **LIT, NOT FLOODED.** A wedge taken all the way to its hue is a solid red plate with a
+    // word lost on it. Two thirds of the way keeps the verb's colour unmistakable and keeps the
+    // label the brightest thing on its own tile.
     if (chosen) {
-        col = mix(col, wheel.tint.rgb, (0.55 + 0.35 * dish) * pulse);
-        alpha = max(alpha, 0.88 * cut);
+        col = mix(col, hue * 0.62, (0.62 + 0.30 * dish) * pulse);
+        alpha = max(alpha, 0.90 * cut);
     } else if (hovered) {
-        col = mix(col, vec3<f32>(0.42, 0.52, 0.78), (0.5 + 0.3 * dish));
-        alpha = max(alpha, 0.84 * cut);
+        col = mix(col, hue * 0.50, (0.60 + 0.28 * dish));
+        alpha = max(alpha, 0.88 * cut);
     }
 
     // A rim on both walls of the band, brighter on the chosen wedge — the same trick the glass
     // panels use to say "this is an object" rather than "this is a stain".
     let rim = 1.0 - smoothstep(0.0, 0.16, min(u, 1.0 - u));
-    let rim_col = select(vec3<f32>(0.42, 0.48, 0.62), wheel.tint.rgb, chosen);
+    let rim_col = select(vec3<f32>(0.42, 0.48, 0.62), hue, chosen || hovered);
     col = mix(col, rim_col, rim * 0.8 * cut);
     alpha = max(alpha, rim * cut * select(0.55, 0.9, chosen));
 

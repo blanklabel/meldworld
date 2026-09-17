@@ -965,6 +965,24 @@ PROJECTION (the ring is an ellipse on screen, so the tangent at an angle is not 
 ⚠️ The red bed **holds** before it drains — a bar that starts closing on the frame it opened
 shows a fifth of a bar for a third of a second, which neither a capture nor an eye catches.
 
+⚠️ **THE VESSEL IS THE SAME TORUS AS ITS CONTENTS, AND IT WAS TWO FOR A WHILE.** The glass was
+its own slightly fatter mesh — a `StandardMaterial` with `specular_transmission`/`ior`/
+`thickness`, real refraction, the shape the reference art is drawn in. It does not survive the
+size a feet ring actually occupies: a twenty-pixel stroke seen nearly edge-on, where two
+concentric tori read as **two rings stacked on one body** rather than as liquid in a vessel
+(reported from play in exactly those words). And the shell ATE the readout it was decorating —
+alpha-blended over the pool it greyed it down, so a fighter at FULL health, the case with the
+most green to show, drew as a bare grey ring. The two failures its own comment had recorded
+(transmit everything and the empty half vanishes; tint it enough to see and the full half goes
+grey) were never a narrow band to be threaded; they were the shape being wrong. `feet_ring.wgsl`
+draws the empty part of the tube as empty glass instead of `discard`ing it, so vessel and
+contents cannot separate — and a test asserts there is no second mesh, because re-adding one is
+re-adding the bug.
+⚠️ **It also fixed a corpse wearing a health bar.** `drive_rings` hides a ring at `hp == 0`, and
+the shell carried no `CombatantRing`, so the hiding never reached it: every downed body kept an
+empty ring at its feet for the rest of the fight. **A second entity beside the one a system
+drives is a second entity that system does not drive.**
+
 ⚠️ **THE METER ROLLS; IT DOES NOT SNAP** (EarthBound's). The shown level counts toward the
 real one and the DIGITS read the shown level, so the number and the liquid can never disagree
 about how far through a hit they are. A second blow part-way through only moves the target, so

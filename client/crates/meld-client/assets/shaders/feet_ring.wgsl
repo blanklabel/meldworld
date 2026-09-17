@@ -5,6 +5,14 @@
 // behind the pool, and nothing at all past that — where the tube is empty you see empty glass,
 // because the shell (a plain `StandardMaterial` with specular transmission) is always there.
 //
+// ⚠️ **AND IT IS ONE TORUS, VESSEL AND CONTENTS TOGETHER.** The glass was a SECOND, fatter
+// torus wrapped around this one, a `StandardMaterial` with real specular transmission. Two
+// concentric tori do not read as liquid in a vessel at the size a feet ring draws — they read
+// as **two rings stacked on one body**, which is how it came back from play — and the shell
+// greyed the pool out from in front of it, so a fighter at FULL health drew as a bare grey
+// ring. The vessel is the `d > ghost` branch below now: same mesh, same normals, same light,
+// so the glass cannot separate from the liquid it holds because it IS the liquid's own mesh.
+//
 // ⚠️ **IT IS A TORUS, NOT AN ANNULUS CUT FROM A DISC.** The flat version was shaded to look
 // round with three hand-written terms — a specular, a far wall, a fresnel — and still came back
 // from play as not reading as a tube. It never could: the light was a guess about a surface
@@ -76,9 +84,31 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     let signed = rel - select(0.0, 1.0, rel > 0.5);
     let d = abs(signed) * 2.0;
 
-    // Past the bed there is no liquid at all: what shows is the empty glass of the shell.
+    // ── real light on a real surface ──────────────────────────────────────────────────────
+    // The torus gives us its own normal, so this is shading rather than an impression of it.
+    // ⚠️ It is computed BEFORE the empty branch, because the EMPTY glass is lit by the same
+    // normal the liquid is — that shared light is what makes one tube out of two states.
+    let n = normalize(in.world_normal);
+    let key = normalize(vec3<f32>(-0.35, 0.85, 0.40));
+    let lambert = clamp(dot(n, key), 0.0, 1.0);
+    // The tube's upper half catches the light; `v` runs round the cross-section, so this is
+    // the meniscus — liquid climbing the glass — sitting where it physically would.
+    let climb = pow(clamp(sin(in.uv.y * TAU), 0.0, 1.0), 2.0);
+    // A hot line where the eye grazes the tube's silhouette: the tube's own edges, which is
+    // what says "cylinder" rather than "painted stripe" whether or not anything is inside it.
+    let sheen = pow(clamp(1.0 - abs(sin(in.uv.y * TAU)), 0.0, 1.0), 3.0);
+
+    // ⚠️ **PAST THE BED IS EMPTY GLASS, NOT A HOLE.** `discard` here is what forced a second
+    // mesh to exist: something has to draw the part of the tube that has no liquid in it, or
+    // the vessel simply stops where the health does and the bar has no length to read against.
+    // Drawn by this mesh, the empty end is unmistakably the same tube — dark, cool, and lit by
+    // the same key — and there is no second object to stack.
     if (d > ghost + BLEND) {
-        discard;
+        let glass = vec3<f32>(0.20, 0.24, 0.31) * (0.55 + 0.75 * lambert);
+        // The rim is the brightest thing on empty glass: with nothing inside to carry light,
+        // the silhouette IS the read.
+        let lit = mix(glass, vec3<f32>(0.62, 0.71, 0.86), sheen * 0.55 + climb * 0.18);
+        return vec4<f32>(lit, ring.tint.a);
     }
 
     let green = 1.0 - smoothstep(fill - BLEND, fill + BLEND, d);
@@ -92,14 +122,6 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     let h = mix(wave_at(w0), wave_at((w0 + 1) % 48), wf);
     let crest = clamp(h * 9.0, -1.0, 1.0);
 
-    // ── real light on a real surface ──────────────────────────────────────────────────────
-    // The torus gives us its own normal, so this is shading rather than an impression of it.
-    let n = normalize(in.world_normal);
-    let key = normalize(vec3<f32>(-0.35, 0.85, 0.40));
-    let lambert = clamp(dot(n, key), 0.0, 1.0);
-    // The tube's upper half catches the light; `v` runs round the cross-section, so this is
-    // the meniscus — liquid climbing the glass — sitting where it physically would.
-    let climb = pow(clamp(sin(in.uv.y * TAU), 0.0, 1.0), 2.0);
 
     // ⚠️ **THE LIQUID CARRIES ITS OWN LIGHT.** It is seen THROUGH a shell, and anything that
     // only reflects the scene comes out the far side as grey — the bar went pale the moment the
@@ -120,9 +142,10 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     col = mix(col, vec3<f32>(1.0, 0.72, 0.62), red * hit * 0.4);
 
     // WHOSE BODY THIS IS, on the liquid's own rim — one hairline, because the body standing
-    // inside the ring has already answered that.
-    let rim = pow(clamp(1.0 - abs(sin(in.uv.y * TAU)), 0.0, 1.0), 3.0);
-    col = mix(col, ring.tint.rgb, rim * 0.30);
+    // inside the ring has already answered that. Same `sheen` the empty glass wears, so the
+    // tube's silhouette runs unbroken through the waterline instead of starting at it.
+    col = mix(col, ring.tint.rgb, sheen * 0.30);
+    col = mix(col, mix(col, vec3<f32>(1.0), 0.6), sheen * 0.22);
 
     // WHOSE TURN IT IS: a light running round the tube. The turn-order bar says who is NEXT;
     // this says who is being asked right now, on the body about to be given an order.

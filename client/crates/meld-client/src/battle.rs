@@ -363,9 +363,8 @@ pub(crate) fn spawn_hero_actor(
                 // …and its health, on the ground it is standing on.
                 crate::battle_rings::spawn_ring(
                     p,
-                    (wa.ring_liquid_mesh.clone(), wa.ring_glass_mesh.clone()),
+                    wa.ring_liquid_mesh.clone(),
                     rings,
-                    mats,
                     &c.id,
                     crate::battle_rings::ring_color(c, battle.your_ids.contains(&c.id)),
                     crate::battle_rings::hp_fill(c),
@@ -539,9 +538,8 @@ pub(crate) fn spawn_enemy_actor(
             // its ring always wears the foe colour.
             crate::battle_rings::spawn_ring(
                 p,
-                (wa.ring_liquid_mesh.clone(), wa.ring_glass_mesh.clone()),
+                wa.ring_liquid_mesh.clone(),
                 rings,
-                mats,
                 &c.id,
                 crate::battle_rings::ring_color(c, false),
                 crate::battle_rings::hp_fill(c),
