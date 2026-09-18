@@ -332,38 +332,14 @@ pub(crate) fn arc_scale(project: impl Fn(f32) -> Option<Vec2>) -> Option<f32> {
     (px > 1.0).then_some(px)
 }
 
-/// Lay `n` glyphs along the ring's front arc, each `advance` pixels from the last, centred on
-/// the point nearest the camera. Returns a screen position and a clockwise rotation per glyph.
-///
-/// ⚠️ **THE ROTATION IS TAKEN FROM THE PROJECTION, NOT FROM THE ANGLE.** The ring is an ellipse
-/// on screen, so the tangent at a given angle is not that angle — computing it by hand would
-/// have the number lying flat on the ground at the front and leaning the wrong way at the
-/// sides. Sampling either side of each glyph gets it right for any camera.
-pub(crate) fn arc_text(
-    n: usize,
-    advance: f32,
-    project: impl Fn(f32) -> Option<Vec2>,
-) -> Vec<(Vec2, f32)> {
-    let Some(px_per_rad) = arc_scale(&project) else { return Vec::new() };
-    // Which way round the ring is LEFT TO RIGHT on screen. Getting this wrong writes the
-    // number backwards, and it flips as the camera orbits past the body.
-    let reading = match (project(0.0), project(ARC_EPS)) {
-        (Some(a), Some(b)) if b.x < a.x => -1.0,
-        _ => 1.0,
-    };
-    let step = advance / px_per_rad * reading;
-    let mid = (n as f32 - 1.0) * 0.5;
-    (0..n)
-        .filter_map(|i| {
-            let theta = (i as f32 - mid) * step;
-            let at = project(theta)?;
-            let back = project(theta - ARC_EPS * reading)?;
-            let ahead = project(theta + ARC_EPS * reading)?;
-            let d = ahead - back;
-            Some((at, d.y.atan2(d.x)))
-        })
-        .collect()
-}
+// ⚠️ **`arc_text` USED TO LIVE HERE, AND ITS ABSENCE IS THE POINT.** It laid the HP digits
+// out a glyph at a time along the ring's PROJECTED arc, taking each glyph's rotation by
+// sampling the projection either side of it — because a ring lying on the ground is an
+// ellipse on screen, so the tangent at an angle is not that angle. Every line of it was
+// correct and the whole approach was steering text to look as though it were on the tube.
+// The number is a `ForwardDecal` printed onto the tube now (`crate::ring_digits`), which
+// takes the curve from the tube instead of being told about it. `arc_scale` survives because
+// the NAME plate is still screen-space and still wants the ring's on-screen size.
 
 /// **ONE MESH, ONE MATERIAL — the glass is a term in the shader, not a second torus.**
 ///
@@ -389,6 +365,7 @@ pub(crate) fn spawn_ring(
     parent: &mut ChildSpawnerCommands,
     mesh: Handle<Mesh>,
     rings: &mut Assets<FeetRing>,
+    digits: Option<&crate::ring_digits::DigitAtlas>,
     id: &str,
     col: Color,
     fill: f32,
@@ -419,7 +396,16 @@ pub(crate) fn spawn_ring(
         // ⚠️ **NO ROTATION.** A torus is already generated in the XZ plane, so the -90° turn the
         // flat disc needed would stand this one on its edge.
         Transform::from_xyz(0.0, RING_LIFT, 0.0),
-    ));
+    ))
+    // …and the NUMBER, printed on this tube. Its quads are children of the ring so they
+    // follow the body's lunge by the same route the bar does and vanish with it when the
+    // body falls — see `ring_digits::spawn_ring_digits` for why that parent is the whole
+    // point.
+    .with_children(|r| {
+        if let Some(digits) = digits {
+            crate::ring_digits::spawn_ring_digits(r, digits, id);
+        }
+    });
 }
 
 /// Anything lying on the ground at one fighter's feet, and whose body it belongs to.
@@ -947,37 +933,10 @@ mod tests {
         assert_eq!(fade(0.0, 1.0), 0.0, "an unlit ring must stay unlit");
     }
 
-    /// **THE NUMBER FOLLOWS THE RING.** Laid on a plain circle the glyphs come out evenly
-    /// spaced along the arc, centred on the front, reading left to right, and each turned to
-    /// the curve under it — which is the whole difference between a number written IN the ring
-    /// and a number lying on top of one.
-    #[test]
-    fn the_digits_lie_along_the_arc() {
-        // A circle of radius 100 in screen space, angle 0 at the bottom (the front), with y
-        // growing downward the way a viewport does.
-        let project = |t: f32| Some(Vec2::new(100.0 * t.sin(), 100.0 * t.cos()));
-        assert_eq!(arc_scale(project).map(|p| p.round()), Some(100.0));
-
-        let slots = arc_text(5, 8.0, project);
-        assert_eq!(slots.len(), 5);
-        // Evenly spaced, at about the advance asked for.
-        for pair in slots.windows(2) {
-            let gap = pair[0].0.distance(pair[1].0);
-            assert!((gap - 8.0).abs() < 0.2, "glyphs are {gap} apart, not 8");
-            assert!(pair[1].0.x > pair[0].0.x, "the number reads backwards");
-        }
-        // Centred on the front of the ring…
-        assert!(slots[2].0.x.abs() < 0.001, "the label is not centred on the front");
-        // …and each glyph is turned to the curve, so the ends lean and the middle does not.
-        assert!(slots[2].1.abs() < 0.01, "the middle glyph is not level");
-        assert!(slots[0].1 * slots[4].1 < 0.0, "the ends lean the same way — that is a line");
-    }
-
     /// A projection that cannot answer — a body behind the camera — draws nothing rather than
     /// stacking every digit at the origin.
     #[test]
     fn a_body_the_camera_cannot_see_writes_nothing() {
-        assert!(arc_text(5, 8.0, |_| None).is_empty());
         assert_eq!(arc_scale(|_| Some(Vec2::ZERO)), None, "a ring with no size is not a ring");
     }
 

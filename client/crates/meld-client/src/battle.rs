@@ -305,6 +305,7 @@ pub(crate) fn spawn_hero_actor(
     mats: &mut Assets<StandardMaterial>,
     rings: &mut Assets<crate::battle_rings::FeetRing>,
     banked: &mut Assets<crate::battle_rings::ResourceRing>,
+    digits: Option<&crate::ring_digits::DigitAtlas>,
     battle: &BattleData,
     c: &CombatantView,
     root: Vec3,
@@ -421,6 +422,7 @@ pub(crate) fn spawn_hero_actor(
                     p,
                     wa.ring_liquid_mesh.clone(),
                     rings,
+                    digits,
                     &c.id,
                     crate::battle_rings::ring_color(c, battle.your_ids.contains(&c.id)),
                     crate::battle_rings::hp_fill(c),
@@ -512,6 +514,7 @@ pub(crate) fn spawn_enemy_actor(
     mats: &mut Assets<StandardMaterial>,
     rings: &mut Assets<crate::battle_rings::FeetRing>,
     banked: &mut Assets<crate::battle_rings::ResourceRing>,
+    digits: Option<&crate::ring_digits::DigitAtlas>,
     c: &CombatantView,
     root: Vec3,
     h: f32,
@@ -612,6 +615,7 @@ pub(crate) fn spawn_enemy_actor(
                 p,
                 wa.ring_liquid_mesh.clone(),
                 rings,
+                digits,
                 &c.id,
                 crate::battle_rings::ring_color(c, false),
                 crate::battle_rings::hp_fill(c),
@@ -714,6 +718,7 @@ pub(crate) fn sync_battle_actors(
     mut mats: ResMut<Assets<StandardMaterial>>,
     mut rings: ResMut<Assets<crate::battle_rings::FeetRing>>,
     mut banked: ResMut<Assets<crate::battle_rings::ResourceRing>>,
+    digits: Option<Res<crate::ring_digits::DigitAtlas>>,
     q: Query<(Entity, &BattleActor)>,
 ) {
     let Some(wa) = wa else { return };
@@ -811,7 +816,7 @@ pub(crate) fn sync_battle_actors(
         // Full sprites for everyone: the head→torso "bust" crop dropped the legs +
         // shadow, so cropped heroes read as floating torsos ("hovering"). Render
         // the whole body grounded instead.
-        spawn_hero_actor(&mut commands, &wa, &mut mats, &mut rings, &mut banked, &battle, c, Vec3::new(x, 0.0, z), Vec2::new(0.0, -1.0), false);
+        spawn_hero_actor(&mut commands, &wa, &mut mats, &mut rings, &mut banked, digits.as_deref(), &battle, c, Vec3::new(x, 0.0, z), Vec2::new(0.0, -1.0), false);
     }
     // Allies fill the remaining edges; a rare 4th+ party reuses the north edge.
     let edges = [PartyEdge::North, PartyEdge::West, PartyEdge::East];
@@ -820,7 +825,7 @@ pub(crate) fn sync_battle_actors(
         let heroes = &allies[owner];
         for (i, c) in heroes.iter().enumerate() {
             let (root, facing) = edge.slot(i, heroes.len());
-            spawn_hero_actor(&mut commands, &wa, &mut mats, &mut rings, &mut banked, &battle, c, root, facing, false);
+            spawn_hero_actor(&mut commands, &wa, &mut mats, &mut rings, &mut banked, digits.as_deref(), &battle, c, root, facing, false);
         }
     }
     // Enemies cluster in the centre; a solo fight keeps the classic far-line framing,
@@ -851,7 +856,7 @@ pub(crate) fn sync_battle_actors(
             (front_n, fi - 1, 0.0, 0.0)
         };
         let x = (idx as f32 - (n.max(1) as f32 - 1.0) * 0.5 + inset) * gap;
-        spawn_enemy_actor(&mut commands, &wa, &mut mats, &mut rings, &mut banked, c, Vec3::new(x, 0.0, cz + z_off), h);
+        spawn_enemy_actor(&mut commands, &wa, &mut mats, &mut rings, &mut banked, digits.as_deref(), c, Vec3::new(x, 0.0, cz + z_off), h);
     }
 }
 
@@ -3040,21 +3045,18 @@ pub(crate) fn render_ring_labels(
                 else {
                     continue;
                 };
-                // ⚠️ **THE DIGITS RIDE THE SURFACE FACING THE VIEWER, NOT THE CENTRE-LINE.**
-                // `TEXT_RADIUS` is the torus's MAJOR radius — the circle through the middle of
-                // the tube — and the middle of a fat tube is inside it, where nothing is drawn.
-                // Written there the number straddled the rim: half on the green, half over the
-                // bare ground in the hole, which is what "the text isn't on the tube" looks
-                // like. Two attempts to nudge it with a constant both failed, and had to: the
-                // offset is not a height, it is a direction. The point of the tube a camera
-                // actually sees is its centre-line pushed one minor radius STRAIGHT AT THE
-                // CAMERA — outward and upward together, in proportions that change with the
-                // pitch. Taken from the camera itself, so it stays on the tube at any angle
-                // rather than at the one the battle camera happens to sit at today.
+                // The tube's own surface as the camera sees it — its centre-line pushed one
+                // minor radius straight AT the viewer, outward and upward together in
+                // proportions that change with the pitch.
                 //
-                // ⚠️ A shade PAST the surface (1.15), because a glyph is placed by its centre
-                // and read by its mass: seated exactly on the tangent point the digits' tops
-                // ran over the inner rim, since most of a numeral sits above its own centre.
+                // ⚠️ **THIS IS ALL THAT IS LEFT OF AIMING TEXT AT A TUBE, AND IT ONLY SIZES A
+                // NAME NOW.** It used to place the HP digits, through three failed attempts —
+                // a constant height, a bigger constant, then this — because the offset is a
+                // DIRECTION rather than a height and nothing shorter is correct at every
+                // camera angle. The digits are decals printed onto the tube itself
+                // (`ring_digits`), so none of this decides where they land any more; the arc's
+                // projected scale is kept only to size the name plate in proportion to the
+                // ring it is standing in.
                 let to_cam = (cam_tf.translation() - centre).normalize_or_zero();
                 let reach = battle_rings::RING_MINOR * 1.15;
                 let surface_out = to_cam.with_y(0.0).length() * reach;
@@ -3075,29 +3077,9 @@ pub(crate) fn render_ring_labels(
                 // body near the camera left the number smaller than the tube carrying it — a
                 // health bar whose number is the faintest thing on it.
                 let fs = (px_per_rad * 0.205).clamp(11.0, 26.0);
-                // ⚠️ **THE NUMBER IS WHAT THE BAR IS SHOWING, NOT WHAT THE WIRE SAYS.** The
-                // meter rolls (EarthBound's), so reading `c.hp` here would have the digits
-                // land on the new value while the liquid behind them was still counting down
-                // to it — two readouts of one fact disagreeing for the whole of every hit.
-                let shown = rings
-                    .iter()
-                    .find(|(r, _)| r.id == c.id)
-                    .map(|(r, _)| battle_rings::shown_hp(r.shown, c))
-                    .unwrap_or(c.hp);
-                let label = format!("{}/{}", shown, c.max_hp);
                 let is_target = focus.as_deref() == Some(c.id.as_str());
                 let mine = battle.your_ids.contains(&c.id);
                 let commanding_name = battle.hero_label(&c.id);
-                // DARK INK ON BRIGHT LIQUID — the number sits ON the pool, which is the whole
-                // point of putting it there. Under `RING_INK_FLIP` there is no pool left under
-                // the digits, so the ink turns bright instead of vanishing into the empty bed,
-                // and a body that dark is one the player has to look at anyway.
-                // ⚠️ **WHITE ON A DARK OUTLINE, NOT INK PICKED PER BACKGROUND.** The number
-                // sits on a bar that is green at one end, red at the other and dark where it
-                // is empty, and it crosses all three as the fight goes — so any single ink is
-                // wrong somewhere, and choosing one per state makes the digits change colour
-                // for reasons that have nothing to do with what they say.
-                let ink = if is_target { Color::srgb(1.0, 0.94, 0.72) } else { Color::WHITE };
                 // WHOSE BODY THIS IS, INSIDE THE CIRCLE — **ONLY WHILE IT IS THE ONE BEING
                 // POINTED AT.** The ring's interior belongs to exactly one fighter and sits
                 // where the eye already is, which is why the name goes there rather than on a
@@ -3150,47 +3132,15 @@ pub(crate) fn render_ring_labels(
                         ));
                     });
                 }
-                // The advance is wider than the face's own (~0.6em) on purpose: the glyphs
-                // then span more of the arc, and the CURVE — the whole reason the number is
-                // written into the ring rather than under it — becomes visible as a curve
-                // instead of four characters that happen to sit on a shallow slope.
-                let places: Vec<(Vec2, f32)> =
-                    battle_rings::arc_text(label.chars().count(), fs * 0.74, project);
-                // ⚠️ **THE OUTLINE IS A SECOND, BIGGER GLYPH BEHIND THE FIRST.** Only a
-                // Regular face ships (`JetBrainsMonoNerdFont-Regular`), so weight has to be
-                // drawn rather than selected — and a dark glyph a fifth larger peeks out on
-                // every side of the light one, which is an outline AND the extra heft in one
-                // node instead of the four an offset-per-direction outline would cost, on a
-                // readout that is rebuilt whenever a body moves.
-                for (pass, (col, size)) in
-                    [(Color::srgb(0.02, 0.03, 0.03), fs * 1.42), (ink, fs)].into_iter().enumerate()
-                {
-                    for (ch, (at, rot)) in label.chars().zip(places.iter().copied()) {
-                        let box_w = fs * 1.4;
-                        p.spawn((
-                            Node {
-                                position_type: PositionType::Absolute,
-                                left: Val::Px(at.x - box_w * 0.5),
-                                top: Val::Px(at.y - box_w * 0.62),
-                                width: Val::Px(box_w),
-                                height: Val::Px(box_w * 1.24),
-                                justify_content: JustifyContent::Center,
-                                align_items: AlignItems::Center,
-                                ..default()
-                            },
-                            UiTransform::from_rotation(Rot2::radians(rot)),
-                            // Spawn order is draw order, so the dark pass has to come first.
-                            GlobalZIndex(if pass == 0 { 1 } else { 2 }),
-                        ))
-                        .with_children(|g| {
-                            g.spawn((
-                                Text::new(ch.to_string()),
-                                TextFont { font_size: FontSize::Px(size), ..default() },
-                                TextColor(col),
-                            ));
-                        });
-                    }
-                }
+                // ⚠️ **THE DIGITS ARE NOT DRAWN HERE ANY MORE.** They were two passes of
+                // screen-space glyphs — a dark one a fifth larger behind a light one — laid
+                // along the ring's PROJECTED arc, which meant every property the number should
+                // have had for free was a calculation that could be wrong, and this whole
+                // system had to be torn down and rebuilt whenever the camera or any body
+                // moved. They are `ForwardDecal`s printed onto the tube itself now
+                // (`ring_digits`), so they take the curve from the tube and hold still in the
+                // world. What is left here is the NAME plate, which is the one thing in this
+                // readout that is deliberately not painted on the stroke.
             }
         });
 }

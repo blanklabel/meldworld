@@ -37,9 +37,9 @@ use net::{ClientCmd, CombatantView, EntityKind, GearLine, Net, SkillLine};
 mod ambient; // client-side decorative life: world-snapped grass scatter + biome motes
 mod builder;
 mod battle; // ATB command panel, party HUD, 3D arena + camera, per-class kits
-mod battle_fx;
+mod battle_fx; // elemental impact bursts, the screen wash, and buff/rage sprite reactions
 mod battle_radial; // the five root verbs, arced around the hero being asked
-mod battle_rings; // each combatant's health, painted on the ground at its feet // elemental impact bursts, the screen wash, and buff/rage sprite reactions
+mod battle_rings; // each combatant's health, painted on the ground at its feet
 mod city; // The Last City hub: districts, plaza, HUD
 mod feel; // battle-feel timings/magnitudes, in one runtime-tunable place
 mod flags; // launch-time `MELD_*` / `?query` toggles
@@ -51,6 +51,7 @@ mod music; // one looping background track per screen (assets/music/*.mp3)
 mod netglue; // server messages → state, demo driver, despawn + font install
 mod overlays; // inventory/equip/status, gear tooltip, loot report, level-up
 mod overworld; // movement/camera, sprite reconciler, terrain, followers, minimap
+mod ring_digits; // the HP number, printed onto the feet ring itself as forward decals
 mod screens; // Join, co-op Lobby, Ended summary
 mod turn_order; // the charging line across the top of a fight: who goes next, both sides
 mod tutorial; // onboarding: the town welcome tour + the first-dive briefing
@@ -337,6 +338,7 @@ fn main() {
         .add_plugins(bevy::ui_render::UiMaterialPlugin::<turn_order::StateFx>::default())
         .add_plugins(MaterialPlugin::<battle_rings::FeetRing>::default())
         .add_plugins(MaterialPlugin::<battle_rings::ResourceRing>::default())
+        .add_plugins(MaterialPlugin::<ring_digits::RingDigitDecal>::default())
         .add_plugins(MaterialPlugin::<battle_radial::CommandWheel>::default())
         // GPU particles, for the one tier of battle VFX a quad cannot do: a felled body
         // coming apart. See `battle_fx::DeathBurst`.
@@ -451,7 +453,7 @@ fn main() {
         .init_resource::<GearHold>()
         .add_systems(
             Startup,
-            (setup, load_ui_font, apply_class_flag, mock_battle_setup, mock_overlay_setup, ambient::setup_ambient, music::setup_music, minimap::setup, battle_fx::init_death_burst, battle_fx::init_hit_sparks, world_fx::init_shift_dust, weather_fx::init_weather_fx, world_fx::init_payout_fx, world_fx::init_extract_fx, world_fx::init_levelup_fx, battle_fx::init_state_fx),
+            (setup, load_ui_font, apply_class_flag, mock_battle_setup, mock_overlay_setup, ambient::setup_ambient, music::setup_music, minimap::setup, battle_fx::init_death_burst, battle_fx::init_hit_sparks, world_fx::init_shift_dust, weather_fx::init_weather_fx, world_fx::init_payout_fx, world_fx::init_extract_fx, world_fx::init_levelup_fx, battle_fx::init_state_fx, ring_digits::load_digit_atlas),
         )
         // run in every state: net pump, demo autopilot, the HD-2D file channel
         // (hot-reload look params + honour screenshot requests), cloud drift, and
@@ -966,6 +968,10 @@ fn main() {
                 turn_order::animate_turn_bar,
                 battle_rings::drive_rings,
                 battle_rings::drive_resource_rings,
+                // The HP number, printed onto the tube as forward decals — see
+                // `ring_digits`. World-space, so unlike the screen-space text it replaces it
+                // does not have to be rebuilt every time the camera moves.
+                ring_digits::place_ring_digits,
                 // ⚠️ ONE system, registered once per hoop lying at a body's feet. See
                 // `battle_rings::AtTheFeetOf`: a ring that is not driven is a ring that stays
                 // behind when the hero lunges, and that has already shipped once.

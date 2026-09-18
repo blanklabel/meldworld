@@ -5971,6 +5971,61 @@ only the things that can't be class-gated.
     unreachable in a capture. `mock_resource` walks the Adrenaline up in swings and spends it in
     one, because a still frame cannot show a bar filling.
 
+- [x] **UX-32 — The HP number is printed on the glass tube, not aimed at it.** A combatant's
+  health is a ring of liquid at its feet and the number belongs IN that stroke. Getting it there
+  was screen-space text: the ring was projected to the viewport, a font size was derived from
+  the projected arc, and each glyph was placed and rotated by sampling the projection either
+  side of itself. Every property the number should have had for free was a calculation that
+  could be wrong, and in turn each one was. It is a `ForwardDecal` now
+  ([`ring_digits.rs`](../client/crates/meld-client/src/ring_digits.rs)), projected onto whatever
+  is under it — so it takes the tube's curvature from the tube, and it is world-space, so it
+  cannot drift when the camera moves because it is not placed relative to the camera at all.
+  - ⚠️ **THE BLOCKER ON THIS HAD BEEN DEAD FOR A LONG TIME AND NOBODY RE-CHECKED.** A forward
+    decal needs a `DepthPrepass`, which this camera lacked because the ground displaces in its
+    vertex stage and the prepass would rasterise it flat. The recorded prerequisite was "a
+    prepass vertex entry applying the same `total_height`" — and `ground_prepass.wgsl` was
+    written later for an unrelated reason (the terrain was shadowing itself with that same
+    undisplaced sheet) and does exactly that. Both passes take their vertex stage from the SAME
+    hook, so the blocker died the day that file landed. **A recorded blocker is a fact with a
+    timestamp on it.** Verified by rendering the overworld either side of the change, which is
+    the only thing that could have shown the failure it used to cause.
+  - ⚠️ **AND IT REVEALED THAT `DepthOfField` HAS NEVER RUN** — the fourth inert instrument this
+    repo has found, after `MELD_GEAR_TIER`, `MELD_WIN` and the MCP backpack. DoF reads the depth
+    texture; with no prepass the authored tilt-shift did nothing, for its whole life. The
+    prepass switched it on by accident and at `aperture` 2.2 it blurred the entire arena,
+    pixel art included. Set to 0 (off), plumbing kept, any positive f-stop turns it on — it may
+    well be wanted (it is a signature HD-2D effect) but it is a LOOK change and deserves its own
+    pass rather than riding in on this one.
+  - ⚠️ **AND IT USES OUR OWN DECAL MATERIAL, NOT `bevy_pbr`'s.** `get_forward_decal_info`
+    recovers a decal's scale as the SUM OF ITS MATRIX'S BASIS COLUMNS, which is `(sx, sy, sz)`
+    only when the rotation is identity; it then divides the tangent by that to build a TBN and
+    parallax-corrects the UV in tangent space. Every glyph quad here is rotated, each one
+    differently, so the correction is skewed by an orientation-dependent amount — glyphs at one
+    end of every number smeared, then vanished, antisymmetrically along the arc. **Four rounds
+    of constant-tuning moved which digits were lost and never fixed it**, which is the tell that
+    it was never a constant. `ring_digit.wgsl` projects orthographically along the quad's own
+    normal instead: read the prepass depth, rebuild the world point under the pixel, drop it
+    into the quad's frame, use the in-plane coordinates as the UV. No tangent space, so nothing
+    for a rotation to corrupt — correct AND shorter, and a fragment outside its own box is
+    rejected rather than smeared.
+  - **One decal per GLYPH, not one per number.** A single quad carrying the whole label is half
+    the draw calls and only touches the tube in the middle, so the ends of the number hang off
+    into the hole and smear down the ground. Per glyph, each quad sits over its own nearly-flat
+    stretch of tube.
+  - ⚠️ **The atlas's transparent margin is load-bearing.** Under OIT — which this camera runs —
+    `pbr.wgsl` discards the fragment into `oit_draw` *before* the decal's edge-fade alpha is
+    applied, so the fade that stops a decal printing on distant geometry never runs. What keeps
+    the digits on the tube is that a fragment which misses it lands in margin.
+  - The glyphs are baked from the game's own font by `client/scripts/make_digit_atlas.py`.
+    JetBrains Mono is MONOSPACE, which is what makes a uniform grid exact and lets a glyph be
+    picked with nothing but a `uv_transform` offset; eleven immutable materials and a handle
+    swap, never a material write, since `Assets::get_mut` rebuilds a bind group.
+  - ⚠️ **AND I "FIXED" THE ORIENTATION ONCE WHEN IT WAS ALREADY RIGHT.** The first capture
+    looked rotated a half turn, so both basis axes were negated — which is a real half turn, and
+    made it genuinely wrong. What that capture was showing was the DoF blur above, on a
+    twenty-pixel number. Settled by sweeping the sign in one process with the glyphs temporarily
+    blown up fivefold, where `1 / 4` is unambiguous. **A blurred thumbnail is not evidence.**
+
 - [ ] **UX-1 — Last City minimap & compass (town-only).** A minimap and compass
   **for Last City itself** so players can navigate the hub — locate the districts
   (Vault-Deep, Market, Forge/Alembic, Bounty Board, Drill Yard, Vanguard Wall),
