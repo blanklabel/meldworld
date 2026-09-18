@@ -147,6 +147,22 @@ impl Material for RingDigitDecal {
     fn alpha_mode(&self) -> AlphaMode {
         AlphaMode::Blend
     }
+    /// ⚠️ **A DECAL HAS TO WIN AGAINST THE THING IT IS PRINTED ON.** These quads stand
+    /// `CLEARANCE` off the tube's surface, and 0.035 of a world unit is nothing at the far
+    /// rank — so the trailing digits of a distant creature's number were resolved against the
+    /// tube behind them and simply never drawn.
+    ///
+    /// ⚠️ **AND IT WAS FOUND BY MAKING THE SHADER SAY WHAT IT WAS DOING, not by more guessing.**
+    /// Painting the out-of-box and no-depth branches in flat colours showed the far creature had
+    /// no quad fragments there AT ALL — neither on target nor missing — and a one-shot log then
+    /// proved placement was fine (`label="44/60" placed=[0,1,2,3,4]`). Between those two facts
+    /// the answer can only be that the fragments were killed before the shader ran. A/B'd in ONE
+    /// binary at one window size, because the two captures that first suggested it had been
+    /// taken at different resolutions and depth precision is exactly what was in question:
+    /// bias 0 draws `44/6`, bias 1000 draws `44/60`.
+    fn depth_bias(&self) -> f32 {
+        1000.0
+    }
 }
 
 /// The eleven materials, one per character, built once and shared by every glyph in the arena.
