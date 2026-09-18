@@ -958,6 +958,11 @@ pub(crate) struct WorldAssets {
     /// The glass is a term in `feet_ring.wgsl` now — the empty part of the tube is drawn by
     /// this same mesh — so there is nothing left to stack.
     pub(crate) ring_liquid_mesh: Handle<Mesh>,
+    /// The resource hoop: a second, thinner torus lying INSIDE the health ring, for the
+    /// classes that bank something (a Hunter's Adrenaline, a Psyker's Focus). Its own mesh
+    /// rather than the health ring's scaled down, because the two have to read as different
+    /// objects and the thickness is most of what says so — see `battle_rings::RES_MAJOR`.
+    pub(crate) ring_resource_mesh: Handle<Mesh>,
     /// **THE WEIRD YELLOW ONE.** The floating target gem: a small faceted diamond that
     /// hovers, bobs and slowly spins over whichever body an order is aimed at. #83 swapped
     /// it for a PixelLab billboard and it was asked for back by name — a real mesh catches
@@ -1554,6 +1559,15 @@ pub(crate) fn setup(
         // already the two coordinates the bar needs: `u` round the ring (the level) and `v`
         // round the tube (the cross-section).
         ring_liquid_mesh: meshes.add(Torus { major_radius: 0.78, minor_radius: 0.135 }),
+        // ⚠️ **BUILT FROM THE CONSTANTS RATHER THAN MIRRORING THEM.** The health ring above
+        // states its radii here as literals and pays for it with a test that reads this file
+        // back, because `make check` never builds a mesh and a radius moved on one side alone
+        // ships green. Taking them from `battle_rings` deletes the whole class of bug instead
+        // of catching it: there is only one number.
+        ring_resource_mesh: meshes.add(Torus {
+            major_radius: crate::battle_rings::RES_MAJOR,
+            minor_radius: crate::battle_rings::RES_MINOR,
+        }),
         target_gem_mesh: meshes.add(hd2d::diamond_mesh(0.32, 0.5)),
         shadow_mat: mats.add(hd2d::contact_shadow_material()),
         // A small, bright, unlit cone — noticeable without needing new PixelLab art

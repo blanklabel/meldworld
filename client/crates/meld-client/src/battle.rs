@@ -304,6 +304,7 @@ pub(crate) fn spawn_hero_actor(
     wa: &WorldAssets,
     mats: &mut Assets<StandardMaterial>,
     rings: &mut Assets<crate::battle_rings::FeetRing>,
+    banked: &mut Assets<crate::battle_rings::ResourceRing>,
     battle: &BattleData,
     c: &CombatantView,
     root: Vec3,
@@ -424,6 +425,20 @@ pub(crate) fn spawn_hero_actor(
                     crate::battle_rings::ring_color(c, battle.your_ids.contains(&c.id)),
                     crate::battle_rings::hp_fill(c),
                 );
+                // …and, for a body that BANKS something, a second hoop inside the first.
+                // ⚠️ Spawned through `resource_of` rather than off a class name, so the arena
+                // grows a readout for a new resource the day the server sends one — and grows
+                // nothing at all for the six classes that bank nothing, which is the common
+                // case and must not cost an entity per body.
+                if let Some(res) = crate::battle_rings::resource_of(c) {
+                    crate::battle_rings::spawn_resource_ring(
+                        p,
+                        wa.ring_resource_mesh.clone(),
+                        banked,
+                        &c.id,
+                        &res,
+                    );
+                }
             }
             // The active-turn arrow: hidden until `highlight_active_turn` (below)
             // says this is the hero on the clock.
@@ -496,6 +511,7 @@ pub(crate) fn spawn_enemy_actor(
     wa: &WorldAssets,
     mats: &mut Assets<StandardMaterial>,
     rings: &mut Assets<crate::battle_rings::FeetRing>,
+    banked: &mut Assets<crate::battle_rings::ResourceRing>,
     c: &CombatantView,
     root: Vec3,
     h: f32,
@@ -600,6 +616,18 @@ pub(crate) fn spawn_enemy_actor(
                 crate::battle_rings::ring_color(c, false),
                 crate::battle_rings::hp_fill(c),
             );
+            // Nothing in the engine gives a creature a resource today, so this spawns for
+            // none of them — but asking is the same three lines as assuming, and assuming is
+            // the hand-written list `resource_of` exists to avoid, one level down.
+            if let Some(res) = crate::battle_rings::resource_of(c) {
+                crate::battle_rings::spawn_resource_ring(
+                    p,
+                    wa.ring_resource_mesh.clone(),
+                    banked,
+                    &c.id,
+                    &res,
+                );
+            }
             // ⚠️ A BOSS LIGHTS ITS OWN GROUND. The party carried every light in the arena,
             // so the far rank was lit only by whatever spilled across it and a named boss
             // arrived as a silhouette — the one creature the whole walk out is pointed at,
@@ -685,6 +713,7 @@ pub(crate) fn sync_battle_actors(
     wa: Option<Res<WorldAssets>>,
     mut mats: ResMut<Assets<StandardMaterial>>,
     mut rings: ResMut<Assets<crate::battle_rings::FeetRing>>,
+    mut banked: ResMut<Assets<crate::battle_rings::ResourceRing>>,
     q: Query<(Entity, &BattleActor)>,
 ) {
     let Some(wa) = wa else { return };
@@ -782,7 +811,7 @@ pub(crate) fn sync_battle_actors(
         // Full sprites for everyone: the head→torso "bust" crop dropped the legs +
         // shadow, so cropped heroes read as floating torsos ("hovering"). Render
         // the whole body grounded instead.
-        spawn_hero_actor(&mut commands, &wa, &mut mats, &mut rings, &battle, c, Vec3::new(x, 0.0, z), Vec2::new(0.0, -1.0), false);
+        spawn_hero_actor(&mut commands, &wa, &mut mats, &mut rings, &mut banked, &battle, c, Vec3::new(x, 0.0, z), Vec2::new(0.0, -1.0), false);
     }
     // Allies fill the remaining edges; a rare 4th+ party reuses the north edge.
     let edges = [PartyEdge::North, PartyEdge::West, PartyEdge::East];
@@ -791,7 +820,7 @@ pub(crate) fn sync_battle_actors(
         let heroes = &allies[owner];
         for (i, c) in heroes.iter().enumerate() {
             let (root, facing) = edge.slot(i, heroes.len());
-            spawn_hero_actor(&mut commands, &wa, &mut mats, &mut rings, &battle, c, root, facing, false);
+            spawn_hero_actor(&mut commands, &wa, &mut mats, &mut rings, &mut banked, &battle, c, root, facing, false);
         }
     }
     // Enemies cluster in the centre; a solo fight keeps the classic far-line framing,
@@ -822,7 +851,7 @@ pub(crate) fn sync_battle_actors(
             (front_n, fi - 1, 0.0, 0.0)
         };
         let x = (idx as f32 - (n.max(1) as f32 - 1.0) * 0.5 + inset) * gap;
-        spawn_enemy_actor(&mut commands, &wa, &mut mats, &mut rings, c, Vec3::new(x, 0.0, cz + z_off), h);
+        spawn_enemy_actor(&mut commands, &wa, &mut mats, &mut rings, &mut banked, c, Vec3::new(x, 0.0, cz + z_off), h);
     }
 }
 

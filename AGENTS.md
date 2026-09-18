@@ -1022,6 +1022,53 @@ BILLBOARD and the ring is its SIBLING, so a hero that stepped forward to swing l
 bar behind it. `ring_follows_body` copies the sprite's own horizontal offset rather than
 re-deriving the motion; the digits and the command wheel both anchor on the RING.
 
+**AND WHAT YOU HAVE BANKED IS A SECOND RING, INSIDE THE FIRST.** The class RESOURCE — a
+Hunter's Adrenaline, a Psyker's held Focus — is the number a player of that class watches
+between turns, and it had nowhere: Adrenaline existed only as a figure greying out menu rows,
+Focus only as indented entries on a page that is not on screen during anybody else's turn. A
+thinner hoop lies INSIDE the health ring and fills from the same arc
+([`battle_rings.rs`](client/crates/meld-client/src/battle_rings.rs) + `resource_ring.wgsl`).
+⚠️ **Inside, because outside is full**: the health tube reaches 0.915 and the command wheel's
+inner wall stands at 0.941, and the hole in the middle is the only ground left — which is the
+right place anyway, since the resource matters most on the hero being asked for an order, which
+is exactly when the wheel is open around it.
+⚠️ **IT IS CHARGE, NOT LIQUID.** Health is a pool with a surface, a bed and waves; this has no
+surface, flickers harder the more of it there is, and runs a light round itself at capacity.
+Drawn in the same language two concentric tori read as **two rings stacked on one body**, which
+is the exact reading the health ring's own glass shell was deleted for — so the gap between them
+is wider than the hoop itself and the hoop is under 70% of the tube's thickness, both asserted at
+COMPILE TIME beside the constants rather than in a test, and the MESH is built from those
+constants instead of repeating them.
+⚠️ **AND IT IS THE FRONT ARC ONLY, WHICH ONLY A RENDER COULD HAVE SHOWN.** The hoop is 0.98
+across with a hero standing in the middle of it, so about the front HALF is ever on screen and a
+robed class hides the rest outright — run a 0..1 level round the whole circle and half its range
+lands where nothing can be seen. Measured: a Psyker holding two of four slots drew exactly like
+one holding none, and a Hunter at 75 exactly like one at 100, which is the difference between
+affording Frenzy (80) and not. **Both fill directions were tried and both failed the same way**,
+which is the tell that the direction was never the problem. The tube's rear is DISCARDED (it was
+never on screen, so this costs nothing) and the whole range is laid across the arc that is
+actually visible, ending at the two points where the projected ellipse is widest — picked as the
+WORST case, the robe, so it is fully visible for every class rather than for most of them. The
+body standing inside completes the circle for the eye. ⚠️ The health ring keeps its full sweep
+and does not want this: its interesting end is already at the front, and a pool needs a vessel
+that goes all the way round to drain into.
+⚠️ **AND THE RESOURCE IS READ OFF THE WIRE, NEVER OFF A CLASS NAME.** `resource_of` asks for
+`adrenaline_max:` and `focus_slots:`, which only a fighter that HAS the thing ever sends, so a
+class that gains a resource gets a hoop the day the server sends one; `match class {…}` is the
+hand-written list of ability keys this repo has deleted twice, wearing a different hat. **Focus
+carries division notches and Adrenaline does not** — slots are whole things and "two of four
+held" is countable, while Adrenaline banks 25 a swing against costs of 30/35/40/80, so a grid at
+any granularity would make three notches read as *affordable* and buy nothing.
+⚠️ **ONE FOLLOW SYSTEM, REGISTERED PER HOOP** (`AtTheFeetOf`), because a ring a system does not
+drive is a ring that stays behind when the body lunges and hangs over it when it falls — the
+glass shell's bug, one hoop in. Whether the hoop is drawn at all is ONE predicate
+(`resource_shown`), so it can be asserted instead of buried in a system nothing can build a
+`World` for.
+⚠️ `MELD_BATTLE=1` puts the Hunter in the ACTIVE slot deliberately: the hard case is the wheel
+open around the same body, and with an Explorer there it was unreachable in a capture.
+`mock_resource` banks it in swings and spends it in one, since a still frame cannot show a bar
+filling.
+
 **THE WHEEL IS LAID OUT ON THE ARENA, NOT ON A LIST.** It lies on the ground the fight is
 happening on, so its bearings mean something: the enemies are north of every hero and the way
 out is south. **FLEE takes the south wedge**, **ATTACK and SKILL the two facing the enemy
