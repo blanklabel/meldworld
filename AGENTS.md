@@ -1009,6 +1009,16 @@ rotation), and use the two in-plane coordinates as the UV. There is no tangent s
 is nothing for a rotation to corrupt; it is both correct and shorter. A fragment landing outside
 its own box is REJECTED rather than smeared, which is also what makes the quads safe to overlap
 and safe to hang past the tube.
+⚠️ **AND A DECAL NEEDS A `depth_bias` TO WIN AGAINST THE THING IT IS PRINTED ON.** The quads
+stand `CLEARANCE` off the tube, and 0.035 of a world unit is nothing at the far rank — so a
+distant creature's trailing digits resolved against the tube behind them and were never drawn,
+while the creature beside it was perfect. ⚠️ **It was found by making the shader SAY what it was
+doing**: painting the out-of-box and no-depth branches in flat colours showed there were no quad
+fragments there at all — neither on target nor missing — and a one-shot log then proved the
+placement was fine (`label="44/60" placed=[0,1,2,3,4]`). Between those two facts the fragments
+could only have been killed before the shader ran. A/B'd in ONE binary at one window size,
+because the two captures that first suggested it were taken at different resolutions and depth
+precision was exactly what was in question: bias 0 draws `44/6`, bias 1000 draws `44/60`.
 ⚠️ **ONE DECAL PER GLYPH, NOT ONE PER NUMBER.** A single quad carrying the whole label is half
 the draw calls and is the obvious shape — and a flat quad over a CURVED arc only touches the
 tube in the middle, so the ends of the number hang off into the hole and smear down the ground.

@@ -6008,6 +6008,13 @@ only the things that can't be class-gated.
     into the quad's frame, use the in-plane coordinates as the UV. No tangent space, so nothing
     for a rotation to corrupt — correct AND shorter, and a fragment outside its own box is
     rejected rather than smeared.
+  - ⚠️ **AND A DECAL NEEDS A `depth_bias`.** The quads stand `CLEARANCE` off the tube, which at
+    the far rank is inside the depth buffer's precision — a distant creature's trailing digits
+    resolved against the tube behind them and were never drawn. Found by making the shader say
+    what it was doing (flat colours on the out-of-box and no-depth branches showed NO quad
+    fragments there at all) plus a one-shot log proving placement was fine; A/B'd in one binary
+    at one window size, since the first two captures differed in resolution and depth precision
+    was the thing in question. Bias 0 draws `44/6`; bias 1000 draws `44/60`.
   - **One decal per GLYPH, not one per number.** A single quad carrying the whole label is half
     the draw calls and only touches the tube in the middle, so the ends of the number hang off
     into the hole and smear down the ground. Per glyph, each quad sits over its own nearly-flat
