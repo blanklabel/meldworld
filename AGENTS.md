@@ -971,16 +971,57 @@ The part of a fat tube a camera sees is its centre-line pushed one minor radius 
 the camera — outward and upward together, in proportions that change with the pitch — so it is
 taken from the camera each frame and stays seated at any angle. A shade past the surface
 (1.15x), because a glyph is placed by its centre and read by its mass.
-⚠️ **A `ForwardDecal` is the better answer and it is BLOCKED.** Projecting the number onto the
-tube would wrap the curve for free, and `bevy_pbr`'s forward decals require a `DepthPrepass` on
-the camera rendering them — which this camera deliberately does not have, because
-`ground_biome.wgsl` displaces the ground in its vertex stage and does not override
-`prepass_vertex_shader`, so the prepass rasterises the ground FLAT and the world renders as a
-strip of land over open sky. The prerequisite is a prepass vertex entry applying the same
-`total_height`, exactly as `spawn_camera`'s own note says. Note also that the obvious spawn
-(`ForwardDecal` + a plain `StandardMaterial`) does not compile: it wants
-`ForwardDecalMaterial<StandardMaterial>`, an `ExtendedMaterial`. And a live number cannot be a
-static PNG, so it needs a glyph atlas or a procedural font in the decal's own shader.
+**AND THE NUMBER IS A `ForwardDecal` NOW, PRINTED ONTO THE TUBE**
+([`ring_digits.rs`](client/crates/meld-client/src/ring_digits.rs)). It is projected onto
+whatever is under it, so it takes the tube's curvature FROM the tube instead of being told
+about it — and it is a world-space object, so it cannot drift when the camera moves, because it
+is not placed relative to the camera at all. The paragraph above is what the screen-space
+version cost: three failed attempts at an offset that is a DIRECTION rather than a height, a
+rotation that had to be sampled from the projection because a ring on the ground is an ellipse
+on screen, and a whole readout rebuilt every time the camera or any body moved.
+⚠️ **THIS ENTRY USED TO SAY "BLOCKED", AND THE BLOCKER HAD BEEN GONE FOR A LONG TIME.** Forward
+decals need a `DepthPrepass`; this camera had none, because the ground displaces in its vertex
+stage and the prepass would have rasterised it FLAT — the world renders as a strip of land over
+open sky. The prerequisite written down here was "a prepass vertex entry applying the same
+`total_height`" — and `ground_prepass.wgsl` was written later, for an unrelated reason (the
+terrain was shadowing itself with exactly that undisplaced sheet), and does precisely that. The
+shadow pass and the depth prepass take their vertex stage from the SAME hook, so the blocker
+died the day that file landed and the note was the only thing still saying otherwise. **A
+recorded blocker is a fact with a timestamp on it**; re-check the cause before believing one.
+⚠️ **AND IT IS OUR OWN DECAL MATERIAL, NOT `bevy_pbr`'s — ONE LINE OF ITS SHADER IS WHY.**
+`get_forward_decal_info` recovers a decal's scale as `(world_from_local * vec4(1,1,1,0)).xyz`,
+which is the SUM OF THE MATRIX'S THREE BASIS COLUMNS and equals `(sx, sy, sz)` only when the
+rotation is IDENTITY. It divides the tangent by that to build a TBN and parallax-corrects the UV
+in tangent space — fine for the axis-aligned decal stamped on flat ground that the engine ships
+for. Every glyph quad here is rotated, and each one differently (they follow the arc AND turn to
+face the camera), so that divisor is an arbitrary vector — measured on a failing glyph,
+`(0.141, -0.065, 0.280)`, negative in one axis and an order of magnitude apart between them. The
+TBN is skewed by an amount that depends purely on orientation, and the UV with it: glyphs at one
+end of every number came out smeared, then missing, ANTISYMMETRICALLY along the arc, worse the
+further the quad stood off its surface and indifferent to the quad's size.
+⚠️ **FOUR ROUNDS OF TUNING CONSTANTS MOVED WHICH DIGITS WERE LOST AND NEVER FIXED IT**, which is
+the tell that it was never a constant — reported from play as *"seems like you might be hitting
+your head against a wall"*, and the right answer was to read the engine's shader instead of
+permuting inputs to it. `ring_digit.wgsl` projects ORTHOGRAPHICALLY ALONG THE QUAD'S OWN NORMAL:
+read the prepass depth, rebuild the world point under the pixel, drop it into the quad's frame
+(a dot against each column over its squared length — no matrix inverse, no assumption about the
+rotation), and use the two in-plane coordinates as the UV. There is no tangent space, so there
+is nothing for a rotation to corrupt; it is both correct and shorter. A fragment landing outside
+its own box is REJECTED rather than smeared, which is also what makes the quads safe to overlap
+and safe to hang past the tube.
+⚠️ **ONE DECAL PER GLYPH, NOT ONE PER NUMBER.** A single quad carrying the whole label is half
+the draw calls and is the obvious shape — and a flat quad over a CURVED arc only touches the
+tube in the middle, so the ends of the number hang off into the hole and smear down the ground.
+⚠️ **AND THE TRANSPARENT MARGIN IN THE ATLAS IS LOAD-BEARING.** Under Order-Independent
+Transparency — which this camera runs — `pbr.wgsl` hands the fragment to `oit_draw` and
+DISCARDS it *before* the decal's own edge-fade alpha is applied, so the fade that normally stops
+a decal printing on distant geometry never runs. What keeps the digits on the tube is that a
+fragment which misses it lands in margin.
+The glyphs are baked from the game's own font by `client/scripts/make_digit_atlas.py` —
+JetBrains Mono is MONOSPACE, which is what makes a uniform-grid atlas exact and lets a glyph be
+picked with nothing but a `uv_transform` offset. Eleven immutable materials and a handle swap,
+never a material write: `Assets::get_mut` rebuilds a bind group, and that would be up to
+sixty-three of them a frame for a readout that changes a few times a second.
 ⚠️ The red bed **holds** before it drains — a bar that starts closing on the frame it opened
 shows a fifth of a bar for a third of a second, which neither a capture nor an eye catches.
 
@@ -1683,6 +1724,15 @@ BOTH read as no change**; uncapped (`MELD_VSYNC=0`) the same two arms moved -69%
 Two hypotheses were "refuted" by a clamp before anyone noticed. **Uncap before concluding
 anything about where a frame goes** — and cap it again to play, since the uncapped renderer
 is not the game's pacing.
+⚠️ **AND `DepthOfField` WAS INERT FOR AS LONG AS IT EXISTED — the fourth of these.** The camera
+spawned it unconditionally and it did nothing: Bevy's DoF reads the depth texture and this
+camera had no prepass, so the authored tilt-shift never once ran. Adding the prepass for the HP
+decals switched it on by accident, and at the authored `aperture` 2.2 it softened the whole
+arena, pixel-art sprites included — which is the one thing this renderer must not do. It is
+`Look::aperture = 0` (off) now, and any positive f-stop turns it on. The rule these four share:
+**a feature nobody could see was never tuned**, so switching one on is a LOOK CHANGE and belongs
+in its own pass rather than riding in on an unrelated one.
+
 ⚠️ **And `MELD_WIN` was INERT for as long as it existed**, which is the third time this repo
 has tuned through a broken instrument (`MELD_GEAR_TIER`, the MCP backpack). `mode` was
 `default_window_mode()` unconditionally, so the window always took the monitor's video mode

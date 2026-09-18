@@ -177,7 +177,7 @@ pub struct Look {
     pub cam_yaw: f32,   // degrees around the target
     pub cam_dist: f32,  // distance from the focus point
     pub focus: f32,     // DoF focal distance (what stays sharp)
-    pub aperture: f32,  // DoF f-stops — LOWER = more (tilt-shift) blur
+    pub aperture: f32,  // DoF f-stops — LOWER = more (tilt-shift) blur; 0 = DoF off
     pub bloom: f32,     // bloom intensity
     pub fog_start: f32,
     pub fog_end: f32,
@@ -240,9 +240,15 @@ impl Default for Look {
             cam_pitch: 30.0,
             cam_yaw: 0.0,
             cam_dist: 26.0,
-            focus: 26.0,   // track cam_dist so the followed hero stays sharp
-            aperture: 2.2, // tilt-shift: softens the far field for a diorama look while
-                           // the followed hero (focus tracks cam_dist) + near play stay sharp
+            focus: 26.0, // track cam_dist so the followed hero stays sharp
+            // ⚠️ **0 IS OFF, AND IT IS OFF BECAUSE IT HAS ALWAYS EFFECTIVELY BEEN OFF.** This
+            // read 2.2 — a tilt-shift that softens the far field for a diorama look while the
+            // followed hero stays sharp — and it never ran: DoF needs a depth prepass and this
+            // camera had none, for its whole life. The prepass the HP decals need turns it on,
+            // and at 2.2 it blurs the pixel art along with the far field. Set any positive
+            // f-stop here to try it (higher = deeper focus = subtler); it is a look decision
+            // that deserves its own pass, not a side effect of a decal landing.
+            aperture: 0.0,
             // ⚠️ 0.15, NOT 0.4 — AND THE REASON IS THE SHADOW FIX. Bevy's `Bloom::NATURAL`
             // ships at 0.15 and 0.5 is its "old school" preset, so 0.4 was near-maximum
             // glow. That was survivable while the world was 5-7x too dark (the ground was
@@ -376,7 +382,6 @@ pub fn spawn_camera(commands: &mut Commands, look: &Look, initial: Transform) ->
         // `WorldFeel::exposure`; this is the value the first frame is taken at.
         bevy::camera::Exposure { ev100: DEFAULT_EV100 },
         bloom_component(look),
-        dof_component(look),
         fog_component(look),
         initial,
     ));
@@ -389,23 +394,51 @@ pub fn spawn_camera(commands: &mut Commands, look: &Look, initial: Transform) ->
     // to FXAA for edge anti-aliasing on the low-poly geometry. This used to be gated
     // off the wasm build, which lacked the storage-buffer features OIT needs; there is
     // no wasm build any more, so it is unconditional.
+    // ⚠️ **DEPTH OF FIELD IS OFF, AND FINDING OUT WHY IS THE STORY OF THIS LINE.** It was
+    // spawned unconditionally for a long time and it did NOTHING: Bevy's DoF reads the depth
+    // texture, this camera had no prepass (see below), and so the authored tilt-shift never
+    // once ran. Adding the prepass for the HP decals switched it on by accident — measured,
+    // the whole arena went soft at `aperture` 2.2, pixel-art sprites included, which is the
+    // one thing this renderer must not do.
+    //
+    // That is the fourth inert instrument this repo has found (`MELD_GEAR_TIER`, `MELD_WIN`,
+    // the MCP backpack), and the rule they all teach applies here: a feature nobody could see
+    // was never tuned, so switching it on is a LOOK CHANGE and belongs in its own pass rather
+    // than riding in on an unrelated one. The diorama blur may well be wanted — it is a
+    // signature HD-2D effect and `Look::aperture`'s own comment asks for it — so the plumbing
+    // stays and `aperture > 0` turns it on.
+    if look.aperture > 0.0 {
+        cam.insert(dof_component(look));
+    }
     cam.insert((
         Msaa::Off,
         bevy::core_pipeline::oit::OrderIndependentTransparencySettings::default(),
         bevy::anti_alias::fxaa::Fxaa::default(),
     ));
-    // NOTE: no depth prepass. It was added for `bevy_water`, whose depth model needs one,
-    // and it BREAKS THE MAZE: `GroundBiome` has a custom vertex shader that displaces the
-    // ground into rolling hills, and `MaterialExtension` takes its prepass vertex stage
-    // from a separate hook (`prepass_vertex_shader`) we do not override — so the prepass
-    // rasterizes the ground FLAT, and every part of the real displaced ground below the
-    // flat version fails the depth test and is never drawn. The world renders as a strip of
-    // land on the high ridge with clear-colour sky beneath it.
+    // **THE DEPTH PREPASS, AND WHY IT IS SAFE NOW.** A prepass was added once for
+    // `bevy_water` and it BROKE THE MAZE: `GroundBiome` displaces the ground into rolling
+    // hills in its vertex stage, `MaterialExtension` takes its prepass vertex stage from a
+    // SEPARATE hook (`prepass_vertex_shader`), and that hook was not overridden — so the
+    // prepass rasterized the ground FLAT and every part of the real displaced ground below
+    // that sheet failed the depth test. The world rendered as a strip of land on the high
+    // ridge with clear-colour sky beneath it, and this note recorded the prerequisite:
+    // give the ground a prepass vertex entry applying the same `total_height` first.
     //
-    // The sea shader needs no prepass at all: its depth is analytic (`sea_depth_at`). If a
-    // future effect DOES want scene depth — a volumetric dust storm is the obvious one —
-    // `ground_biome.wgsl` needs a prepass vertex entry applying the same `total_height`
-    // displacement FIRST.
+    // ⚠️ **THAT PREREQUISITE WAS MET LATER, FOR A DIFFERENT REASON, AND NOBODY CAME BACK
+    // HERE.** `ground_prepass.wgsl` exists — it was written so the terrain would stop
+    // shadowing itself with an undisplaced sheet — and it applies exactly the same
+    // `total_height` the main pass does, held to it byte-for-byte by
+    // `the_two_ground_shaders_share_one_height_field`. The shadow map and the depth prepass
+    // take their vertex stage from the SAME hook, so the moment that file landed, the
+    // blocker written down here was gone and the note was the only thing still saying
+    // otherwise. **A recorded blocker is a fact with a timestamp on it**; this one outlived
+    // its cause by a long way and cost the HP decals a release.
+    //
+    // It buys `ForwardDecal`, which is how a combatant's HP is written ONTO its own glass
+    // tube instead of being screen-space text steered to look as though it were. Verified by
+    // RENDERING the overworld either side of the change, because that is the only thing that
+    // could have shown the failure it used to cause.
+    cam.insert(bevy::core_pipeline::prepass::DepthPrepass);
     cam.id()
 }
 
