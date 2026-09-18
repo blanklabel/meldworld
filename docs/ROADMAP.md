@@ -5701,11 +5701,18 @@ only the things that can't be class-gated.
     and tested directly, which is the half a gate *can* hold. The burst itself still needs a
     captured frame.
 
-- [x] **UX-27 — Aiming happens in the arena: the gem is the target picker.**
-  - ⚠️ *Renumbered from UX-24 on rebase*: `main` landed its own UX-24 (the Shift's debris) while
-    this was in flight, and UX-25/26 with it. The commits on this branch still say UX-24 —
-    the ID moved, the work did not. Same collision the UX-18 → UX-20 → UX-21 renumbering hit;
-    `ROADMAP.md` is a merge hotspot and a claimed number is not reserved until it is merged.
+- [x] **UX-31 — Aiming happens in the arena: the gem is the target picker.**
+  - ⚠️ *Renumbered TWICE, and the second time was my own mistake.* `main` landed its own UX-24
+    (the Shift's debris) while this was in flight, and UX-25/26 with it — so this moved to
+    **UX-27**, which #428 (*Going home is the dissolve*) had taken about an hour earlier. For a
+    while `ROADMAP.md` had one ID naming two different pieces of work, which is the one thing a
+    stable ID may not do. The older claim keeps the number; this is **UX-31**. The commits and
+    the PR title still say UX-24 and UX-27 — the ID moved, the work did not.
+  - ⚠️ **The lesson is the renumbering rule, stated properly**: a number is not reserved until
+    it is merged, so on rebase read the numbers off `main` *as merged* rather than off the diff
+    you were working against — mine were taken from a stale view, which is how the second
+    collision happened after the first had already been noticed. Same failure the
+    UX-18 → UX-20 → UX-21 shuffle hit.
   - *The Target page is gone.* While an order is in flight every body it can legally land on
     wears a floating gem over its own head, in that order's own colour, and the one under the
     cursor burns brightest and spins. ←/→ walk the line (↑/↓ too, since that page used to be a
@@ -5915,6 +5922,54 @@ only the things that can't be class-gated.
   - `MELD_STATES=1` cycles the three edges in the battle mockup, which sets its statuses once
     and never moves them — every one of these is otherwise unreachable in a still frame, and
     the cadence sits just UNDER the bursts' own lives for the reason `mock_battle_fx` does.
+
+- [x] **UX-30 — What you have banked is a second ring, inside the first.** Health is painted on
+  the ground a fighter stands on (`UX-20`) and the class RESOURCE — the thing a player of that
+  class actually watches between turns — had nowhere at all: a Hunter's Adrenaline existed only
+  as a number greying out menu rows, and a Psyker's held Focus only as indented entries on a
+  page that is not on screen during anybody else's turn. A second, thinner hoop lies inside the
+  health ring and fills from the same arc, so both readouts are on the body and read at the
+  front ([`battle_rings.rs`](../client/crates/meld-client/src/battle_rings.rs) +
+  `resource_ring.wgsl`).
+  - ⚠️ **INSIDE, BECAUSE OUTSIDE IS FULL.** The health tube reaches 0.915 and the command
+    wheel's inner wall stands at 0.941 — 0.026 apart, the tightest number in `battle_radial`
+    and the thing `UX-27` spent its last change buying. The hole in the middle is the only
+    ground left, and it is the right place anyway: the resource matters most on the hero being
+    asked for an order, which is exactly when the wheel is open around it.
+  - ⚠️ **IT IS CHARGE, NOT LIQUID.** The health ring is a pool with a surface, a bed and waves;
+    this has no surface, flickers harder the more of it there is, and runs a light round itself
+    at capacity. Drawn in the same language, two concentric tori read as **two rings stacked on
+    one body** — the exact reading the health ring's own glass shell was deleted for. The gap
+    between them is wider than the hoop itself and the hoop is under 70% of the tube's
+    thickness, both asserted at COMPILE TIME beside the constants.
+  - ⚠️ **AND IT IS THE FRONT ARC ONLY, WHICH ONLY A RENDER COULD HAVE SHOWN.** The hoop is 0.98
+    across with a hero standing in the middle of it, so about the front HALF is ever on screen
+    and a robed class hides the rest — run a 0..1 level round the whole circle and half its
+    range lands where nothing can be seen. Measured: a Psyker holding two of four slots drew
+    exactly like one holding none, and a Hunter at 75 exactly like one at 100 (Frenzy costs 80).
+    **Both fill directions were tried and both failed the same way**, which is the tell that the
+    direction was never the problem. The rear is discarded — it was never on screen, so it costs
+    nothing — and the range is laid across the arc that can be seen, ending where the projected
+    ellipse is widest, sized to the WORST sprite rather than the average.
+  - ⚠️ **THE RESOURCE IS READ OFF THE WIRE, NEVER OFF A CLASS NAME.** `resource_of` asks for
+    `adrenaline_max:` and `focus_slots:`, which only a fighter that HAS the thing ever sends —
+    so a class that gains a resource gets a hoop the day the server sends one. The obvious
+    `match class {…}` is the hand-written list of ability keys this repo has already deleted
+    twice, wearing a different hat.
+  - **Adrenaline carries no notches and Focus does.** Slots are whole things, so the hoop is
+    divided into them and "two of four held" is countable. Adrenaline banks 25 a swing against
+    costs of 30/35/40/80, so notches at any granularity would advertise a grid the prices do
+    not sit on — three notches filled would read as *affordable* and buy nothing.
+  - ⚠️ **ONE FOLLOW SYSTEM, REGISTERED PER HOOP** (`AtTheFeetOf`). A ring that is not driven is
+    a ring that stays behind when the body lunges and hangs over the body when it falls — which
+    has already shipped once here, as the glass shell that carried no `CombatantRing` and left
+    an empty bar on every corpse. Whether the hoop is drawn at all is ONE predicate
+    (`resource_shown`), so it can be asserted rather than buried in a system nothing can build
+    a `World` for.
+  - `MELD_BATTLE=1` puts the Hunter in the ACTIVE slot on purpose: the hoop's hard case is the
+    one where the command wheel is open around the same body, and with an Explorer there it was
+    unreachable in a capture. `mock_resource` walks the Adrenaline up in swings and spends it in
+    one, because a still frame cannot show a bar filling.
 
 - [ ] **UX-1 — Last City minimap & compass (town-only).** A minimap and compass
   **for Last City itself** so players can navigate the hub — locate the districts

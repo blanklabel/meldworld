@@ -156,12 +156,21 @@ pub(crate) fn mock_battle_setup(
     );
     battle.queued.insert(
         "h4".to_string(),
-        Order { kind: QueuedKind::Skill("power_strike"), target: Some("grendel".into()) },
+        // ⚠️ A Phoenix Guard's own opener. It queued `power_strike` — which belongs to the
+        // Hunter — so the fixture was drawing an order this hero cannot give.
+        Order { kind: QueuedKind::Skill("silvered_strike"), target: Some("grendel".into()) },
     );
     battle.combatants = vec![
-        // A Explorer + Phoenix Guard hold the front; a Psyker + Resonant sit the back row.
+        // A Hunter + Phoenix Guard hold the front; a Psyker + Resonant sit the back row.
         // (Four classes, so the fixture exercises four different command menus.)
-        hero("h1", 32, 1.0, "explorer", false),
+        //
+        // ⚠️ **THE ACTIVE HERO IS THE HUNTER, AND THAT IS THE WHOLE POINT OF PUTTING IT
+        // FIRST.** The resource hoop lies INSIDE the health ring, and the one moment it has to
+        // survive is the moment the command wheel is open around the same body — which only
+        // ever happens to `battle.active`. With an Explorer here (what this was) the crowded
+        // case was unreachable in a capture and the hoop could only ever be photographed on
+        // its own, out at the edge of the party, which is the easy half.
+        hero("h1", 32, 1.0, "hunter", false),
         hero("h2", 40, 0.4, "psyker", true),
         hero("h3", 21, 1.0, "resonant", true),
         hero("h4", 36, 0.75, "phoenix_guard", false),
@@ -222,6 +231,13 @@ pub(crate) fn mock_battle_setup(
     add(&mut battle, "grendel", &["barrier:22"]);
 
     add(&mut battle, "h3", &["evasion:20"]);
+    // THE RESOURCE HOOP, one of each kind it can draw: the Hunter's smooth Adrenaline (walked
+    // up and spent by `mock_resource` below, since a still frame cannot show it filling) and
+    // the Psyker's Focus, which is counted in whole slots and so wears division notches. A
+    // class that banks nothing gets no hoop at all, which is most of this party — that is the
+    // common case and it is in the same frame.
+    add(&mut battle, "h1", &["adrenaline:50", "adrenaline_max:100"]);
+    add(&mut battle, "h2", &["focus_slots:4", "focus:gravity_well:2", "focus:kinetic_aegis:1"]);
     // The turn-order bar's THIRD rail needs somebody on it, from both sides: a hero that
     // guarded (braced) and a creature fresh off a five-blow catch-up (surged). Without
     // these the fast lane is an empty rail in every screenshot, which reads as a stray
@@ -378,6 +394,40 @@ pub(crate) fn mock_ring_liquid(
     // of a hero mid-step is the only thing that can show the two staying together.
     hitfx.acts.insert("h1".to_string(), 0.0);
     hitfx.act_target.insert("h1".to_string(), "grendel".to_string());
+}
+
+/// **BANK IT AND SPEND IT, ON A LOOP.** The resource hoop exists to be WATCHED FILLING, and
+/// the static mockup sets its statuses once — so the three states worth a screenshot (climbing,
+/// at capacity with its light running round, and the flash of a skill spending it) were all
+/// unreachable, and the only thing a capture could ever show was one arc holding still. Walks
+/// the Hunter's Adrenaline up in swings and then spends it in one.
+///
+/// Same argument as `mock_ring_liquid`'s drain, `MELD_FX`'s cast tour and `MELD_TALLY`'s held
+/// haul: a capture is one frame at an arbitrary moment.
+pub(crate) fn mock_resource(
+    time: Res<Time>,
+    mut battle: ResMut<BattleData>,
+    mut next_at: Local<f32>,
+) {
+    if !battle_mockup_flag() {
+        return;
+    }
+    let now = time.elapsed_secs();
+    if now < *next_at {
+        return;
+    }
+    // Slower than the health ring's cycle so the two readouts are never in step: a hoop that
+    // moved on the same beat as the pool beside it would look like one effect, not two.
+    *next_at = now + 1.4;
+    let Some(c) = battle.combatants.iter_mut().find(|c| c.id == "h1") else {
+        return;
+    };
+    let banked = crate::status_num(&c.statuses, "adrenaline:");
+    // Up in swings (25 a basic attack, as the Hunter really banks it) and down in one, because
+    // a spend is a single event and the flash that marks it has to read as one.
+    let next = if banked >= 100 { 20 } else { (banked + 25).min(100) };
+    c.statuses.retain(|s| !s.starts_with("adrenaline:"));
+    c.statuses.push(format!("adrenaline:{next}"));
 }
 
 /// **RE-FIRE THE RECOIL SO A CAPTURE CAN CATCH IT.** A knock backwards is a punch that lasts

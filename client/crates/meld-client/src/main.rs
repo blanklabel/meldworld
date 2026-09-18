@@ -336,6 +336,7 @@ fn main() {
         .add_plugins(bevy::ui_render::UiMaterialPlugin::<turn_order::FireTrail>::default())
         .add_plugins(bevy::ui_render::UiMaterialPlugin::<turn_order::StateFx>::default())
         .add_plugins(MaterialPlugin::<battle_rings::FeetRing>::default())
+        .add_plugins(MaterialPlugin::<battle_rings::ResourceRing>::default())
         .add_plugins(MaterialPlugin::<battle_radial::CommandWheel>::default())
         // GPU particles, for the one tier of battle VFX a quad cannot do: a felled body
         // coming apart. See `battle_fx::DeathBurst`.
@@ -932,6 +933,7 @@ fn main() {
                 mocks::mock_battle_opening,
                 mocks::mock_turn_recoil,
                 mocks::mock_ring_liquid,
+                mocks::mock_resource,
             )
                 .run_if(in_state(Screen::Battle)),
         )
@@ -963,7 +965,12 @@ fn main() {
                 turn_order::rebuild_turn_bar,
                 turn_order::animate_turn_bar,
                 battle_rings::drive_rings,
-                battle_rings::ring_follows_body,
+                battle_rings::drive_resource_rings,
+                // ⚠️ ONE system, registered once per hoop lying at a body's feet. See
+                // `battle_rings::AtTheFeetOf`: a ring that is not driven is a ring that stays
+                // behind when the hero lunges, and that has already shipped once.
+                battle_rings::ring_follows_body::<battle_rings::CombatantRing>,
+                battle_rings::ring_follows_body::<battle_rings::ResourceRingOf>,
             )
                 .run_if(in_state(Screen::Battle)),
         )
